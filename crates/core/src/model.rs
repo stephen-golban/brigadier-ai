@@ -7,8 +7,8 @@ use brigadier_providers::{
 };
 
 use crate::work::{
-    Approval, AttachmentRef, MessageQueue, OrchestratorEntry, Plan, Question, RunState, Task,
-    UserRequest, WorkerStep,
+    Approval, AttachmentRef, MessageQueue, OrchestratorEntry, OrchestratorStep, Plan, Question,
+    RunState, Task, UserRequest, WorkerStep,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -471,6 +471,8 @@ pub struct ConversationView {
     pub requests: Vec<UserRequest>,
     /// Every worker step, in the order they happened.
     pub worker_steps: Vec<WorkerStep>,
+    /// Every orchestrator step, in the order they happened.
+    pub orchestrator_steps: Vec<OrchestratorStep>,
     pub queue: MessageQueue,
     pub run: RunState,
     /// The request the running turn serves.
@@ -756,6 +758,10 @@ pub enum DomainEvent {
     WorkerStepped {
         step: WorkerStep,
     },
+    /// The orchestrator messaged a worker, read a report, and so on.
+    OrchestratorStepped {
+        step: OrchestratorStep,
+    },
     /// The user rated an answer. Ratings stay on this machine.
     MessageRated {
         /// The answer: a message id, or `task:<id>` for a worker's report.
@@ -831,6 +837,7 @@ impl DomainEvent {
             Self::RunStateChanged { .. } => "conversation.run",
             Self::RequestUpdated { .. } => "request.updated",
             Self::WorkerStepped { .. } => "worker.step",
+            Self::OrchestratorStepped { .. } => "orchestrator.step",
             Self::MessageRated { .. } => "message.rated",
             Self::BranchSwitched { .. } => "conversation.branch",
             Self::ConversationNotice { .. } => "conversation.notice",

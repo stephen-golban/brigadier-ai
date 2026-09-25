@@ -67,6 +67,8 @@ export type { NoticeLevel } from "./NoticeLevel";
 export type { OrchestratorEntry } from "./OrchestratorEntry";
 export type { OrchestratorLogEntry } from "./OrchestratorLogEntry";
 export type { OrchestratorPage } from "./OrchestratorPage";
+export type { OrchestratorStep } from "./OrchestratorStep";
+export type { OrchestratorStepKind } from "./OrchestratorStepKind";
 export type { Outcome } from "./Outcome";
 export type { PermissionLevel } from "./PermissionLevel";
 export type { Plan } from "./Plan";

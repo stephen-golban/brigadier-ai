@@ -7,6 +7,7 @@ import type {
   MessageQueue,
   Notice,
   OrchestratorLogEntry,
+  OrchestratorStep,
   Plan,
   ProviderEvent,
   Question,
@@ -50,6 +51,8 @@ export type Board = {
   requests: Record<string, UserRequest>;
   /** Every worker step (started, finished, …), in stream order. */
   workerSteps: WorkerStep[];
+  /** Every orchestrator step (messaged a worker, read a report, …), in stream order. */
+  orchestratorSteps: OrchestratorStep[];
   /** The user's ratings of answers, by subject (a message id, or `task:<id>`). */
   ratings: Partial<Record<string, Rating>>;
   queue: MessageQueue;
@@ -96,6 +99,7 @@ export function emptyBoard(conversationId: string): Board {
     plans: {},
     requests: {},
     workerSteps: [],
+    orchestratorSteps: [],
     ratings: {},
     queue: EMPTY_QUEUE,
     run: "idle",
@@ -129,6 +133,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "messageAppended",
   "branchSwitched",
   "workerStepped",
+  "orchestratorStepped",
   "messageRated",
 ]);
 
@@ -167,6 +172,7 @@ export function boardFromView(
     plans: byId(view.plans),
     requests: byId(view.requests),
     workerSteps: view.workerSteps,
+    orchestratorSteps: view.orchestratorSteps,
     ratings: view.ratings,
     queue: view.queue,
     run: view.run,
@@ -301,6 +307,13 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       return board.workerSteps.some((step) => step.position === streamSeq)
         ? board
         : { ...board, workerSteps: [...board.workerSteps, { ...event.step, position: streamSeq }] };
+    case "orchestratorStepped":
+      return board.orchestratorSteps.some((step) => step.position === streamSeq)
+        ? board
+        : {
+            ...board,
+            orchestratorSteps: [...board.orchestratorSteps, { ...event.step, position: streamSeq }],
+          };
     case "messageRated":
       return { ...board, ratings: { ...board.ratings, [event.subject]: event.rating } };
     case "queueChanged":

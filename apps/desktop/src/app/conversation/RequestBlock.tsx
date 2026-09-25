@@ -14,8 +14,10 @@ import { type FC, lazy, Suspense, useEffect, useState } from "react";
 
 import { WorkerStepRow } from "@/app/conversation/Agents";
 import { ForkMenu } from "@/app/conversation/ForkMenu";
+import { OrchestratorSteps } from "@/app/conversation/OrchestratorSteps";
 import {
   type BlockCard,
+  type BlockOrchestratorStep,
   type BlockState,
   type BlockStep,
   isFinal,
@@ -49,6 +51,8 @@ export type BlockMeta = {
   cards: BlockCard[];
   /** The workers' steps, in order. */
   steps: BlockStep[];
+  /** The orchestrator's steps, in order. */
+  orchestratorSteps: BlockOrchestratorStep[];
   /** Messages the user steered into the turn, shown as bubbles in the work. */
   steers: { position: number; text: string; atMs: number }[];
   state: BlockState;
@@ -155,6 +159,7 @@ type Entry =
   | { kind: "text"; index: number; position: number }
   | { kind: "card"; card: BlockCard; position: number }
   | { kind: "steer"; text: string; atMs: number; position: number }
+  | { kind: "orchestrator"; steps: BlockOrchestratorStep[]; position: number }
   | { kind: "steps"; step: BlockStep["kind"]; taskIds: string[]; position: number };
 
 /** The block's replies, cards and worker steps in order; adjacent steps of a kind share a row. */
@@ -163,6 +168,11 @@ function blockSequence(meta: BlockMeta): Entry[] {
     ...meta.texts.map((text, index) => ({ kind: "text" as const, index, position: text.position })),
     ...meta.cards.map((card) => ({ kind: "card" as const, card, position: card.position })),
     ...meta.steers.map((steer) => ({ kind: "steer" as const, ...steer })),
+    ...meta.orchestratorSteps.map((step) => ({
+      kind: "orchestrator" as const,
+      steps: [step],
+      position: step.position,
+    })),
     ...meta.steps.map((step) => ({
       kind: "steps" as const,
       step: step.kind,
@@ -175,6 +185,8 @@ function blockSequence(meta: BlockMeta): Entry[] {
     const previous = merged.at(-1);
     if (entry.kind === "steps" && previous?.kind === "steps" && previous.step === entry.step) {
       for (const id of entry.taskIds) if (!previous.taskIds.includes(id)) previous.taskIds.push(id);
+    } else if (entry.kind === "orchestrator" && previous?.kind === "orchestrator") {
+      previous.steps.push(...entry.steps);
     } else merged.push(entry);
   }
   return merged;
@@ -188,6 +200,8 @@ function entryKey(entry: Entry): string {
       return `${entry.card.type}:${entry.card.id}`;
     case "steer":
       return `steer:${entry.position}`;
+    case "orchestrator":
+      return `orchestrator:${entry.position}`;
     case "steps":
       return `steps:${entry.position}`;
   }
@@ -227,6 +241,8 @@ const SequenceEntry: FC<{ entry: Entry; streaming: boolean }> = ({ entry, stream
       return <CardEntry card={entry.card} />;
     case "steer":
       return <SteerBubble text={entry.text} atMs={entry.atMs} />;
+    case "orchestrator":
+      return <OrchestratorSteps steps={entry.steps} />;
     case "steps":
       return <WorkerStepRow kind={entry.step} taskIds={entry.taskIds} />;
   }
@@ -315,7 +331,7 @@ export const RequestBlock: FC = () => {
   const folded = sequence.filter((entry) =>
     entry.kind === "text"
       ? entry.index !== answer
-      : entry.kind === "steps" || entry.kind === "steer" || !entry.card.keep,
+      : entry.kind !== "card" || !entry.card.keep,
   );
   const kept = meta.cards.filter((card) => card.keep);
   const foldable = done && folded.length > 0;

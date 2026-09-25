@@ -607,6 +607,45 @@ pub struct WorkerStep {
     pub position: i64,
 }
 
+// ----- orchestrator steps -----------------------------------------------------------------
+
+/// What the orchestrator (or a Chat's model) did that the thread tells as a grey row, in
+/// ChatGPT's words. What already shows by itself (a worker's own row, a card) has none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum OrchestratorStepKind {
+    /// "Sent message to {worker}".
+    Messaged { task_id: TaskId },
+    /// "Read {worker}'s report".
+    ReadReport { task_id: TaskId },
+    /// "Read {artifact}".
+    ReadArtifact { name: String },
+    /// "Accepted {worker}'s change".
+    Accepted { task_id: TaskId },
+    /// "Searched the web for {query}" (a Chat).
+    SearchedWeb { query: String },
+    /// "Read {page}" (a Chat).
+    ReadPage { url: String },
+}
+
+/// One step of the orchestrator, where it happened in the conversation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorStep {
+    /// The user request the turn served.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    pub kind: OrchestratorStepKind,
+    pub at_ms: i64,
+    /// Where it happened in the conversation's stream (set when the board reads it).
+    #[serde(default)]
+    pub position: i64,
+}
+
 // ----- user requests ----------------------------------------------------------------------
 
 /// Where a user's request stands.
