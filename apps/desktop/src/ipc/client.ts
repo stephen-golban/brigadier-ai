@@ -83,3 +83,21 @@ export function nowEpochMs(): number {
 export function pickFolder(starting?: string): Promise<string | null> {
   return invoke<string | null>("pick_folder", { starting: starting || null });
 }
+
+/** Saves an artifact where the user picks in the system save dialog; `false` when cancelled. */
+export async function saveArtifact(id: string, fileName: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>("save_artifact", { id, fileName });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}
+
+/** Opens an artifact with the system's default app for its type. */
+export async function openArtifact(id: string, fileName: string): Promise<void> {
+  try {
+    await invoke("open_artifact", { id, fileName });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}

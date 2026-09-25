@@ -515,6 +515,17 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 },
             }
         }
+        Request::SaveArtifact { id, path } => {
+            sessions.save_artifact(id, path).await?;
+            Response::SaveArtifact
+        }
+        Request::OpenArtifact { id, file_name } => Response::OpenArtifact {
+            path: sessions
+                .artifact_copy(id, file_name)
+                .await?
+                .display()
+                .to_string(),
+        },
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
         },

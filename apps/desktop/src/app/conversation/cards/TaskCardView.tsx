@@ -15,7 +15,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { openArtifact, saveArtifact } from "@/ipc/client";
 import type { ArtifactRef, KeptWork, RestoreOutcome, Task, TaskState } from "@/ipc/generated";
+import { formatBytes } from "@/lib/format";
 import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { pauseTask, restoreKeptWork, resumeTask, stopTask } from "@/state/actions";
@@ -192,6 +194,91 @@ function ArtifactButtons({
   );
 }
 
+/** Whether the in-app viewer can show it (text); everything else opens in its own app. */
+function isText(artifact: ArtifactRef): boolean {
+  return artifact.mime.startsWith("text/") || artifact.mime === "application/json";
+}
+
+const EXTENSIONS: Record<string, string> = {
+  "text/markdown": ".md",
+  "text/x-diff": ".diff",
+  "text/plain": ".txt",
+  "application/json": ".json",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+};
+
+/** The name a file is opened and saved under. */
+function fileNameOf(artifact: ArtifactRef): string {
+  return artifact.fileName ?? `${artifact.id.slice(0, 12)}${EXTENSIONS[artifact.mime] ?? ""}`;
+}
+
+/** One stored file: view it (text), open it in its app, or save it where the user picks. */
+function ArtifactFile({
+  artifact,
+  onView,
+}: {
+  artifact: ArtifactRef;
+  onView: (artifact: ArtifactRef) => void;
+}) {
+  const action = useAction();
+  const [saved, setSaved] = useState(false);
+  const name = fileNameOf(artifact);
+  const open = () => action.run(() => openArtifact(artifact.id, name));
+  const save = () =>
+    action.run(async () => {
+      setSaved(await saveArtifact(artifact.id, name));
+    });
+  return (
+    <li className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1.5">
+        <Button
+          size="xs"
+          variant="ghost"
+          className="min-w-0 flex-1 justify-start"
+          onClick={isText(artifact) ? () => onView(artifact) : open}
+        >
+          <span className="truncate">{artifact.title}</span>
+          {name !== artifact.title && (
+            <span className="text-muted-foreground truncate font-mono">{name}</span>
+          )}
+        </Button>
+        <span className="text-muted-foreground shrink-0 text-xs">
+          {formatBytes(artifact.bytes)}
+        </span>
+        <Button size="xs" variant="outline" disabled={action.busy} onClick={open}>
+          Open
+        </Button>
+        <Button size="xs" variant="outline" disabled={action.busy} onClick={save}>
+          Save to…
+        </Button>
+      </div>
+      {saved && !action.error && <p className="text-muted-foreground text-xs">Saved.</p>}
+      {action.error && (
+        <p role="alert" className="text-destructive text-xs">
+          {action.error}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function ArtifactFiles({
+  artifacts,
+  onView,
+}: {
+  artifacts: readonly ArtifactRef[];
+  onView: (artifact: ArtifactRef) => void;
+}) {
+  return (
+    <ul className="flex flex-col gap-1">
+      {artifacts.map((artifact) => (
+        <ArtifactFile key={artifact.id} artifact={artifact} onView={onView} />
+      ))}
+    </ul>
+  );
+}
+
 /** Unfinished work saved as a patch (its branch is gone), with "Restore as branch". */
 function KeptPatch({
   taskId,
@@ -314,12 +401,18 @@ function TaskDetails({ task, model }: { task: Task; model: string }) {
           )}
           {report.artifacts.length > 0 && (
             <Section title="Artifacts">
-              <ArtifactButtons artifacts={report.artifacts} onOpen={setArtifact} />
+              <ArtifactFiles artifacts={report.artifacts} onView={setArtifact} />
             </Section>
           )}
         </>
       ) : (
         <p className="text-muted-foreground text-xs">No report yet.</p>
+      )}
+
+      {task.outputs.length > 0 && (
+        <Section title="Outputs">
+          <ArtifactFiles artifacts={task.outputs} onView={setArtifact} />
+        </Section>
       )}
 
       {candidate && (

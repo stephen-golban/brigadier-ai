@@ -36,6 +36,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::conversation::{Cli, Envelope, safe_file_name};
+use super::outputs::outputs_dir;
 use super::{SessionManager, blocking, git_error, instructions, prompts, secrets};
 use crate::model::{
     ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
@@ -57,15 +58,8 @@ const WORKER_TOOL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const QUESTION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// Report size cap: about 800 tokens.
 pub(crate) const REPORT_MAX_BYTES: usize = 3_600;
-/// Largest file a report may attach as an artifact.
-const ARTIFACT_MAX_BYTES: u64 = 8 * 1024 * 1024;
-/// The folder in a worker's scratch folder for files meant for the orchestrator or the user.
-const OUTPUTS_DIR: &str = "outputs";
-
-/// A worker's outputs folder.
-pub(crate) fn outputs_dir(scratch: &Path) -> PathBuf {
-    scratch.join(OUTPUTS_DIR)
-}
+/// A worker's message at least this long, left out of its report, is kept as an artifact.
+const KEEP_MESSAGE_MIN_BYTES: usize = 400;
 
 /// What a task's workspace is made of, once prepared.
 #[derive(Debug, Clone)]
@@ -92,6 +86,12 @@ struct TaskLiveState {
     busy: bool,
     /// Asked once to submit its report after a turn ended without one.
     nudged: bool,
+    /// The current turn's last assistant message: the orchestrator never sees it.
+    last_message: Option<String>,
+    /// A message the worker wrote instead of reporting it, kept for its report.
+    unsent: Option<ArtifactRef>,
+    /// Its outputs folder.
+    outputs: Option<PathBuf>,
     stopping: bool,
     access: Option<Access>,
     /// Where the worker's CLI runs (a command without its own cwd runs here).
@@ -490,14 +490,22 @@ impl SessionManager {
             ),
         };
         let outputs = outputs_dir(&workspace.scratch);
-        let repo_note = format!(
+        let mut repo_note = format!(
             "{repo_note}\nYour outputs folder (files for the orchestrator and the user): {}",
             outputs.display()
         );
-        blocking(move || {
-            std::fs::create_dir_all(&outputs).map_err(|err| Error::Invalid(err.to_string()))
-        })
-        .await?;
+        if provider == ProviderKind::Codex {
+            repo_note.push_str(
+                "\nImages you generate are copied into your outputs folder as they are made.",
+            );
+        }
+        {
+            let outputs = outputs.clone();
+            blocking(move || {
+                std::fs::create_dir_all(&outputs).map_err(|err| Error::Invalid(err.to_string()))
+            })
+            .await?;
+        }
         let native = match &workspace.worktree {
             Some(worktree) => instructions::for_worker(provider, worktree).await,
             None => String::new(),
@@ -571,6 +579,7 @@ impl SessionManager {
             state.cli = Some(cli.clone());
             state.access = Some(access);
             state.cwd = Some(cwd);
+            state.outputs = Some(outputs);
             state.redactor = redactor;
             state.busy = true;
             state.stopping = false;
@@ -1095,6 +1104,27 @@ impl SessionManager {
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
             }
+            ProviderEvent::TurnStarted { .. } => {
+                live.state.lock().await.last_message = None;
+            }
+            ProviderEvent::Message {
+                role: brigadier_providers::Role::Assistant,
+                text,
+                ..
+            } => {
+                live.state.lock().await.last_message = Some(text.clone());
+            }
+            ProviderEvent::Image {
+                status: brigadier_providers::ItemStatus::Completed,
+                path: Some(path),
+                ..
+            } => {
+                let outputs = live.state.lock().await.outputs.clone();
+                if let Some(outputs) = outputs {
+                    self.keep_generated_image(outputs, PathBuf::from(path))
+                        .await;
+                }
+            }
             _ => {}
         }
         let completed = match &event {
@@ -1153,11 +1183,19 @@ impl SessionManager {
             return;
         }
         if nudge {
+            let text = match self.keep_last_message(live, task.number).await {
+                Some(_) => {
+                    "You ended your turn without calling submit_report. The orchestrator reads only your report, never your messages, so your last message has not reached it. Brigadier kept it and attaches it to your report as an artifact. If the task is done or you cannot continue, call submit_report now with a short summary; otherwise continue working."
+                }
+                None => {
+                    "You ended your turn without calling submit_report. The orchestrator reads only your report, never your messages. If the task is done or you cannot continue, call submit_report now; otherwise continue working."
+                }
+            };
             live.state.lock().await.busy = true;
             let sent = cli
                 .session
                 .send(TurnInput {
-                    text: "You ended your turn without calling submit_report. If the task is done or you cannot continue, call submit_report now; otherwise continue working.".into(),
+                    text: text.into(),
                     files: Vec::new(),
                 })
                 .await;
@@ -1365,21 +1403,28 @@ impl SessionManager {
             .sum::<usize>();
         if size > REPORT_MAX_BYTES {
             return Err(Error::Invalid(format!(
-                "The report is {size} bytes; the limit is about {REPORT_MAX_BYTES} (≈800 tokens). Move the details into files in your scratch folder, attach them as artifacts, and submit a shorter report."
+                "The report is {size} bytes; the limit is about {REPORT_MAX_BYTES} (≈800 tokens). Move the details into a file in your outputs folder, name it under `artifacts`, and submit a shorter report."
             )));
         }
-        let scratch = task
-            .workspace
-            .as_ref()
-            .map(|w| PathBuf::from(&w.scratch))
-            .ok_or_else(|| Error::Invalid("the task has no workspace".into()))?;
-        let mut artifacts = Vec::new();
-        for artifact in &input.artifacts {
-            artifacts.push(self.store_file_artifact(&live, &scratch, artifact).await?);
-        }
+        // Everything it names is stored now, before its folders can go.
+        let texts: Vec<String> = std::iter::once(&input.summary)
+            .chain(&input.decisions)
+            .chain(&input.verification)
+            .chain(&input.open_questions)
+            .cloned()
+            .collect();
+        let files = self
+            .report_files(&task, live.redactor().await, &input.artifacts, texts)
+            .await?;
+        let mut artifacts = files.artifacts;
         if let Some(diff) = self.diff_artifact(&live, &task).await {
             artifacts.push(diff);
         }
+        // What it wrote as a message instead: the report may only point at it.
+        if let Some(message) = self.keep_last_message(&live, task.number).await {
+            artifacts.push(message);
+        }
+        let outputs = files.outputs;
         let report = Report {
             summary: self.redact_for(&live, &input.summary).await,
             changes: input.changes.clone(),
@@ -1393,6 +1438,7 @@ impl SessionManager {
         let task = self
             .update_task(conversation_id, task_id, |task| {
                 task.report = Some(report.clone());
+                task.outputs = outputs;
                 task.state = TaskState::Reported;
                 task.blocked_reason = None;
             })
@@ -1414,68 +1460,6 @@ impl SessionManager {
             .await;
         }
         Ok("Report received. Your part is done: end your turn now.".into())
-    }
-
-    /// A file from the worker's scratch folder, stored as an artifact.
-    async fn store_file_artifact(
-        &self,
-        live: &Arc<TaskLive>,
-        scratch: &Path,
-        input: &crate::tools::ArtifactInput,
-    ) -> Result<ArtifactRef> {
-        let path = {
-            let given = PathBuf::from(&input.path);
-            if given.is_absolute() {
-                given
-            } else {
-                scratch.join(given)
-            }
-        };
-        let (scratch_dir, file) = (scratch.to_owned(), path.clone());
-        let bytes = blocking(move || {
-            let real = std::fs::canonicalize(&file)
-                .map_err(|err| Error::Invalid(format!("{}: {err}", file.display())))?;
-            let root = std::fs::canonicalize(&scratch_dir)
-                .map_err(|err| Error::Invalid(err.to_string()))?;
-            if !real.starts_with(&root) {
-                return Err(Error::Invalid(format!(
-                    "{} is outside your scratch folder",
-                    file.display()
-                )));
-            }
-            let meta = std::fs::metadata(&real).map_err(|err| Error::Invalid(err.to_string()))?;
-            if meta.len() > ARTIFACT_MAX_BYTES {
-                return Err(Error::Invalid(format!(
-                    "{} is larger than 8 MB",
-                    file.display()
-                )));
-            }
-            std::fs::read(&real).map_err(|err| Error::Invalid(err.to_string()))
-        })
-        .await?;
-        let mime = mime_for(&path);
-        let bytes = match (std::str::from_utf8(&bytes), live.redactor().await) {
-            (Ok(text), Some(redactor)) => redactor.redact(text).into_owned().into_bytes(),
-            _ => bytes,
-        };
-        let size = bytes.len() as u64;
-        let hash = self.core.store().blobs().put(bytes).await?;
-        Ok(ArtifactRef {
-            id: hash.to_string(),
-            title: input.title.clone(),
-            kind: if mime.starts_with("image/") {
-                ArtifactKind::Screenshot
-            } else if mime == "text/markdown" {
-                ArtifactKind::Note
-            } else {
-                ArtifactKind::File
-            },
-            mime,
-            bytes: size,
-            file_name: path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
-        })
     }
 
     /// The worker's changes so far, as a diff artifact (write tasks).
@@ -1525,6 +1509,39 @@ impl SessionManager {
             Some(redactor) => redactor.redact(text).into_owned(),
             None => text.to_owned(),
         }
+    }
+
+    /// The worker's last message of this turn, when it is long enough to hold what its report
+    /// left out, stored as an artifact (the orchestrator never sees messages). Stored once;
+    /// later calls return it again.
+    async fn keep_last_message(&self, live: &Arc<TaskLive>, number: u32) -> Option<ArtifactRef> {
+        let (message, kept) = {
+            let mut state = live.state.lock().await;
+            (state.last_message.take(), state.unsent.clone())
+        };
+        let Some(message) = message.filter(|text| text.trim().len() >= KEEP_MESSAGE_MIN_BYTES)
+        else {
+            return kept;
+        };
+        let bytes = self.redact_for(live, &message).await.into_bytes();
+        let size = bytes.len() as u64;
+        let hash = match self.core.store().blobs().put(bytes).await {
+            Ok(hash) => hash,
+            Err(err) => {
+                tracing::warn!(task = %live.id, error = %err, "could not keep the worker's message");
+                return kept;
+            }
+        };
+        let artifact = ArtifactRef {
+            id: hash.to_string(),
+            title: "The worker's last message, which its report leaves out".into(),
+            kind: ArtifactKind::Note,
+            mime: "text/markdown".into(),
+            bytes: size,
+            file_name: Some(format!("task-{number}-message.md")),
+        };
+        live.state.lock().await.unsent = Some(artifact.clone());
+        Some(artifact)
     }
 
     /// `message_worker`: answers a blocking question, steers a running worker, or sends a
@@ -1761,8 +1778,10 @@ impl SessionManager {
 
     /// A worker failed: the task ends and the orchestrator hears why.
     pub(crate) async fn worker_failed(&self, task: &Task, reason: &str) {
+        let mut kept = None;
         if let Some(live) = self.existing_task_live(&task.id) {
             live.close_cli().await;
+            kept = self.keep_last_message(&live, task.number).await;
         }
         let _ = self
             .update_task(&task.conversation_id, &task.id, |t| {
@@ -1776,7 +1795,13 @@ impl SessionManager {
                 kind: InjectionKind::TaskFailed,
                 label: format!("task-{} failed", task.number),
                 task_id: Some(task.id.clone()),
-                text: format!("[failed task-{} \"{}\"] {reason}", task.number, task.title),
+                text: match kept {
+                    Some(message) => format!(
+                        "[failed task-{} \"{}\"] {reason} Its last message was kept: artifact {} ({} bytes), for read_artifact.",
+                        task.number, task.title, message.id, message.bytes
+                    ),
+                    None => format!("[failed task-{} \"{}\"] {reason}", task.number, task.title),
+                },
             },
         )
         .await;
@@ -1804,12 +1829,17 @@ impl SessionManager {
             // A landed branch is deleted once the landing checked it is merged.
             _ => (None, false),
         };
+        // Its outputs folder goes with the scratch folder below.
+        let outputs = self.final_outputs(task).await;
         let result = self
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.state = state;
                 t.blocked_reason = None;
                 if kept.is_some() {
                     t.kept = kept;
+                }
+                if let Some(outputs) = outputs {
+                    t.outputs = outputs;
                 }
             })
             .await;
@@ -2037,24 +2067,4 @@ pub(crate) fn route_label(task: &Task) -> String {
         Some(model) => format!("{} {model}", choice.provider.label()),
         None => choice.provider.label().to_owned(),
     }
-}
-
-fn mime_for(path: &Path) -> String {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("md") => "text/markdown",
-        Some("json") => "application/json",
-        Some("diff" | "patch") => "text/x-diff",
-        Some("txt" | "log" | "out") => "text/plain",
-        _ => "application/octet-stream",
-    }
-    .into()
 }
