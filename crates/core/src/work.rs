@@ -770,6 +770,83 @@ pub struct RequestUndo {
     pub commits: Vec<String>,
 }
 
+/// What the side panel's Review tab compares (ChatGPT's scope picker).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ReviewScope {
+    /// What one request's workers landed. Absent: the latest request that landed anything.
+    LastTurn { request_id: Option<String> },
+    /// Everything not committed yet, untracked files included.
+    Uncommitted,
+    /// What is not staged yet, untracked files included.
+    Unstaged,
+    /// What is staged.
+    Staged,
+    /// One commit.
+    Commit { commit: String },
+    /// The session's branch since it left its base.
+    Branch,
+}
+
+/// How a file changed, for the Review tab's badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewFileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    TypeChanged,
+    /// New and not tracked by git yet.
+    Untracked,
+}
+
+/// One file of a review.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFile {
+    pub path: String,
+    /// A renamed file's old path.
+    pub from: Option<String>,
+    pub status: ReviewFileStatus,
+    pub insertions: u32,
+    pub deletions: u32,
+    pub binary: bool,
+}
+
+/// A commit the Review tab offers under "Committed".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCommit {
+    pub commit: String,
+    pub subject: String,
+    pub at_ms: i64,
+}
+
+/// The Review tab's diff: its files and their unified patch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDiff {
+    /// The scope shown; "Last Turn" names the request it found.
+    pub scope: ReviewScope,
+    pub files: Vec<ReviewFile>,
+    pub insertions: u32,
+    pub deletions: u32,
+    /// The unified text patch of every file, in `files`' order.
+    pub patch: String,
+    /// The patch carries whole files, so unchanged lines can be expanded.
+    pub full_files: bool,
+    /// The branch's latest commits, newest first.
+    pub commits: Vec<ReviewCommit>,
+    /// The branch compared ("Branch") and the one it left.
+    pub branch: Option<String>,
+    pub base: Option<String>,
+}
+
 /// Why something entered the orchestrator's context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

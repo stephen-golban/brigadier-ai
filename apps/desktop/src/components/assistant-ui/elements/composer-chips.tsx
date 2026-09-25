@@ -13,7 +13,7 @@ import {
 } from "@assistant-ui/react-lexical";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { mergeRegister } from "@lexical/utils";
-import { File, FileCode, FileDocument, FileImage, Globe } from "@openai/apps-sdk-ui/components/Icon";
+import { Globe } from "@openai/apps-sdk-ui/components/Icon";
 import {
   $createTextNode,
   $getSelection,
@@ -41,6 +41,7 @@ import {
   useState,
 } from "react";
 
+import { FileTypeIcon } from "@/components/assistant-ui/elements/file-type-icon";
 import { cn } from "@/lib/utils";
 
 /** A mention the app knows at a place in the text: its label (after `@`), kind and id. */
@@ -142,19 +143,8 @@ const MentionLookContext = createContext<MentionLook | null>(null);
 
 const CHIP_ICON = "size-icon-sm mr-0.5 inline-block align-text-bottom";
 
-/** A file's icon by its extension, as ChatGPT's mention shows a file-type icon. */
 function fileIcon(name: string): ReactNode {
-  const extension = name.includes(".") ? (name.split(".").pop()?.toLowerCase() ?? "") : "";
-  if (/^(png|jpe?g|gif|webp|svg|heic|bmp|ico)$/.test(extension)) {
-    return <FileImage aria-hidden className={CHIP_ICON} />;
-  }
-  if (/^(md|mdx|txt|rst|pdf|docx?|rtf)$/.test(extension)) {
-    return <FileDocument aria-hidden className={CHIP_ICON} />;
-  }
-  if (!extension || /^(json|ya?ml|toml|lock|ini|env|csv|xml|plist|cfg|conf)$/.test(extension)) {
-    return <File aria-hidden className={CHIP_ICON} />;
-  }
-  return <FileCode aria-hidden className={CHIP_ICON} />;
+  return <FileTypeIcon name={name} className={CHIP_ICON} />;
 }
 
 /** One chip, inline in the composer's text: ChatGPT's blue mention, mono code pill or link. */

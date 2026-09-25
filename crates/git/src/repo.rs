@@ -1,7 +1,7 @@
 use crate::{
-    Branch, Change, ChangeKind, CollidingPath, DiffStat, Environment, Error, Git, LandBlock,
-    LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RepoState, Result, RevertOutcome,
-    Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
+    Branch, Change, ChangeKind, CheckoutTrees, CollidingPath, CommitInfo, DiffStat, Environment,
+    Error, Git, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RepoState,
+    Result, RevertOutcome, Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
     command::{TempIndex, check, failure, valid_oid, valid_path},
     parse,
 };
@@ -807,23 +807,14 @@ impl Repo {
         message: &str,
     ) -> Result<RevertOutcome> {
         valid_oid(onto)?;
-        // Newest first, so each revert applies to the tree the one before it left.
-        let mut newest_first: Vec<Oid> = Vec::with_capacity(commits.len());
         for commit in commits {
             valid_oid(commit)?;
             if !self.ancestor(commit, onto)? {
                 return Err(Error::Invalid(format!("{} is not on the branch", commit.0)));
             }
-            let mut at = newest_first.len();
-            for (index, placed) in newest_first.iter().enumerate() {
-                if self.ancestor(placed, commit)? {
-                    at = index;
-                    break;
-                }
-            }
-            newest_first.insert(at, commit.clone());
         }
-        let commits = newest_first;
+        // Newest first, so each revert applies to the tree the one before it left.
+        let commits = self.newest_first(commits)?;
         let oldest = commits
             .last()
             .ok_or_else(|| Error::Invalid("no commits to revert".into()))?;
@@ -865,6 +856,189 @@ impl Repo {
         )?)?;
         let commit = self.commit_tree(&tree, &[onto], message, false)?;
         Ok(RevertOutcome::Ready { commit })
+    }
+
+    /// `commits` ordered newest first by ancestry.
+    fn newest_first(&self, commits: &[Oid]) -> Result<Vec<Oid>> {
+        let mut ordered: Vec<Oid> = Vec::with_capacity(commits.len());
+        for commit in commits {
+            valid_oid(commit)?;
+            let mut at = ordered.len();
+            for (index, placed) in ordered.iter().enumerate() {
+                if self.ancestor(placed, commit)? {
+                    at = index;
+                    break;
+                }
+            }
+            ordered.insert(at, commit.clone());
+        }
+        Ok(ordered)
+    }
+
+    /// Two commits whose diff is exactly what `commits` (in any order) changed: the parent of
+    /// the oldest, and an unreferenced commit replaying each of them onto it, so changes
+    /// that landed between them are left out. When a replay conflicts, the range from the
+    /// oldest's parent to the newest instead.
+    pub fn changes_of(&self, commits: &[Oid]) -> Result<(Oid, Oid)> {
+        let newest_first = self.newest_first(commits)?;
+        let (Some(oldest), Some(newest)) = (newest_first.last(), newest_first.first()) else {
+            return Err(Error::Invalid("no commits".into()));
+        };
+        let from = self.resolve(&format!("{}^", oldest.0))?;
+        let mut current = from.clone();
+        for commit in newest_first.iter().rev() {
+            let parent = self.resolve(&format!("{}^", commit.0))?;
+            current = match self.replay_tree(&parent, &current, commit)? {
+                TreeMerge::Ready(tree) => {
+                    self.commit_tree(&tree, &[&current], "Brigadier review step", true)?
+                }
+                TreeMerge::Conflicts(_) => return Ok((from, newest.clone())),
+            };
+        }
+        Ok((from, current))
+    }
+
+    /// The checkout's HEAD, index and files as trees, and its untracked files, for a review
+    /// of what is uncommitted, unstaged or staged. The real index and files stay untouched.
+    pub fn checkout_trees(&self) -> Result<CheckoutTrees> {
+        let head = self.status(false)?.head;
+        let head_tree = match &head {
+            Some(head) => parse::oid(&self.cmd(
+                &["rev-parse", "--verify", &format!("{}^{{tree}}", head.0)],
+                true,
+            )?)?,
+            None => self.empty_tree()?,
+        };
+        let (_, files) = self.capture()?;
+        let temp = TempIndex::new()?;
+        let index = self.git_path("index")?;
+        if index.exists() {
+            fs::copy(index, &temp.path)?;
+        } else {
+            self.index_cmd(&temp, &["read-tree", "--empty"])?;
+        }
+        self.index_cmd(&temp, &["update-index", "--no-split-index"])?;
+        let staged = parse::oid(&self.index_cmd(&temp, &["write-tree"])?)?;
+        let listed = self.cmd(&["ls-files", "--others", "--exclude-standard", "-z"], true)?;
+        let untracked = String::from_utf8_lossy(&listed)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect();
+        Ok(CheckoutTrees {
+            head,
+            head_tree,
+            staged,
+            files,
+            untracked,
+        })
+    }
+
+    /// The id of the empty tree in this repository's hash.
+    pub fn empty_tree(&self) -> Result<Oid> {
+        parse::oid(&self.git.checked(
+            Some(&self.root),
+            &["hash-object", "-t", "tree", "--stdin"],
+            true,
+            &[],
+            Some(&[]),
+        )?)
+    }
+
+    /// The unified text patch between two commits or trees, as a review shows it: `context`
+    /// lines around each change (a large number gives whole files), whitespace changes left
+    /// out on request. Binary files are only named; text that isn't UTF-8 is shown lossily.
+    pub fn review_patch(
+        &self,
+        from: &Oid,
+        to: &Oid,
+        context: u32,
+        ignore_whitespace: bool,
+    ) -> Result<String> {
+        valid_oid(from)?;
+        valid_oid(to)?;
+        let context = format!("--unified={context}");
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--find-renames",
+            &context,
+        ];
+        if ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
+        args.extend([from.0.as_str(), to.0.as_str(), "--"]);
+        Ok(String::from_utf8_lossy(&self.cmd(&args, true)?).into_owned())
+    }
+
+    /// What changed between two commits or trees, path by path; `untracked` marks the paths
+    /// git doesn't track yet.
+    pub fn changes(
+        &self,
+        from: &Oid,
+        to: &Oid,
+        untracked: &BTreeSet<String>,
+    ) -> Result<Vec<Change>> {
+        self.tree_changes(from, to, untracked)
+    }
+
+    /// The latest `limit` commits of `tip`'s history, newest first.
+    pub fn log(&self, tip: &Oid, limit: usize) -> Result<Vec<CommitInfo>> {
+        valid_oid(tip)?;
+        let count = format!("--max-count={limit}");
+        let out = self.cmd(
+            &[
+                "log",
+                "-z",
+                "--format=%H%x1f%ct%x1f%s",
+                &count,
+                &tip.0,
+                "--",
+            ],
+            true,
+        )?;
+        String::from_utf8_lossy(&out)
+            .split('\0')
+            .filter(|entry| !entry.trim().is_empty())
+            .map(|entry| {
+                let mut fields = entry.trim_start_matches('\n').splitn(3, '\u{1f}');
+                let (Some(commit), Some(at), Some(subject)) =
+                    (fields.next(), fields.next(), fields.next())
+                else {
+                    return Err(Error::Parse("invalid log entry".into()));
+                };
+                Ok(CommitInfo {
+                    commit: Oid(commit.to_owned()),
+                    subject: subject.to_owned(),
+                    at_ms: at
+                        .parse::<i64>()
+                        .map_err(|_| Error::Parse("invalid commit time".into()))?
+                        * 1000,
+                })
+            })
+            .collect()
+    }
+
+    /// The repository's default branch: the one `origin/HEAD` names, else `main` or `master`.
+    pub fn default_branch(&self) -> Result<Option<String>> {
+        let args = ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"];
+        let out = self.run(&args, true)?;
+        if out.status.success() {
+            let remote = parse::line(&out.stdout)?;
+            if let Some(name) = remote.strip_prefix("origin/")
+                && self.branch_tip(name)?.is_some()
+            {
+                return Ok(Some(name.to_owned()));
+            }
+        }
+        for name in ["main", "master"] {
+            if self.branch_tip(name)?.is_some() {
+                return Ok(Some(name.to_owned()));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn merge_tree(&self, left: &Oid, right: &Oid) -> Result<TreeMerge> {
