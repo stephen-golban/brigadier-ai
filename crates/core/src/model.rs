@@ -338,6 +338,42 @@ pub struct Conversation {
     pub forked_from: Option<ForkOrigin>,
 }
 
+/// Something a user message @-mentions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Mention {
+    /// A worker of the conversation.
+    Task { id: TaskId },
+    /// A file of the session's checkout, relative to its root.
+    File { path: String },
+    /// Another conversation: its recent messages go along as context.
+    Chat { id: ConversationId, title: String },
+}
+
+/// Also reads mentions stored before files and chats could be mentioned: a bare task id.
+impl<'de> Deserialize<'de> for Mention {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "camelCase")]
+        enum Tagged {
+            Task { id: TaskId },
+            File { path: String },
+            Chat { id: ConversationId, title: String },
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Tagged(Tagged),
+            Task(TaskId),
+        }
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Tagged(Tagged::Task { id }) | Stored::Task(id) => Mention::Task { id },
+            Stored::Tagged(Tagged::File { path }) => Mention::File { path },
+            Stored::Tagged(Tagged::Chat { id, title }) => Mention::Chat { id, title },
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageRole {
@@ -362,9 +398,9 @@ pub struct Message {
     pub created_at_ms: i64,
     #[serde(default)]
     pub attachments: Vec<AttachmentRef>,
-    /// Workers the message @-mentions.
+    /// What the message @-mentions: workers, files, other conversations.
     #[serde(default)]
-    pub mentions: Vec<TaskId>,
+    pub mentions: Vec<Mention>,
     /// For assistant messages: the model that wrote it (a Chat may fall back to another).
     #[serde(default)]
     pub model: Option<ModelChoice>,

@@ -10,7 +10,7 @@ use brigadier_providers::{ApprovalRequest, Decider, ProviderEvent, ProviderKind}
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use crate::model::{CardId, TaskId};
+pub use crate::model::{CardId, Mention, TaskId};
 use crate::model::{ConversationId, ModelChoice};
 
 /// A file the user attached, kept in the blob store.
@@ -505,7 +505,7 @@ pub struct QueuedMessage {
     pub id: String,
     pub text: String,
     pub attachments: Vec<AttachmentRef>,
-    pub mentions: Vec<TaskId>,
+    pub mentions: Vec<Mention>,
     pub queued_at_ms: i64,
     pub edited_at_ms: Option<i64>,
 }

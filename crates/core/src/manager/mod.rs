@@ -159,6 +159,30 @@ impl SessionManager {
         self.background.close();
     }
 
+    /// The files of a session's checkout (its worktree, or the user's checkout), for the
+    /// composer's @-mentions: at most [`MENTION_FILES`], and whether there were more. A Chat
+    /// has none.
+    pub async fn list_files(&self, id: &ConversationId) -> Result<(Vec<String>, bool)> {
+        let Some(Setup::Session {
+            repo, environment, ..
+        }) = self.core.conversation(id)?.setup
+        else {
+            return Ok((Vec::new(), false));
+        };
+        // A worktree that doesn't exist yet starts from the repository's files.
+        let path = match environment {
+            Environment::LocalCheckout { .. } => repo,
+            Environment::NewWorktree { path, .. } => path.unwrap_or(repo),
+        };
+        let git = self.git.clone();
+        blocking(move || {
+            git.open(Path::new(&path))
+                .and_then(|repo| repo.files(MENTION_FILES))
+                .map_err(git_error)
+        })
+        .await
+    }
+
     /// Branches and state of a repository, for the composer's pickers.
     pub async fn repo_info(&self, path: String) -> Result<RepoInfo> {
         let git = self.git.clone();
@@ -381,6 +405,9 @@ impl ToolHost for SessionManager {
         })
     }
 }
+
+/// Files of a session's checkout listed for @-mentions; a bigger checkout lists the first ones.
+const MENTION_FILES: usize = 20_000;
 
 /// Runs blocking work (git, file copies) off the async runtime.
 async fn blocking<T: Send + 'static>(

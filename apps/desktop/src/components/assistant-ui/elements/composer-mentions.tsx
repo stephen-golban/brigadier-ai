@@ -1,100 +1,138 @@
 import {
   ComposerPrimitive,
-  unstable_useMentionAdapter,
+  unstable_useTriggerPopoverScopeContext,
   type Unstable_DirectiveFormatter,
-  type Unstable_DirectiveSegment,
-  type Unstable_Mention,
+  type Unstable_TriggerItem,
 } from "@assistant-ui/react";
-import type { FC } from "react";
+import {
+  type ComponentProps,
+  type FC,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 
 import { floatingMenu, mono } from "@/components/assistant-ui/elements/surfaces";
 import { cn } from "@/lib/utils";
 
-/** A worker the composer can @-mention. */
-export type MentionTarget = { id: string; number: number; title: string; state: string };
-
-const MENTION = /@task-(\d+)\b/g;
-
-/** Mentions are plain `@task-N` text, so they read naturally in the message and the queue. */
-const taskFormatter: Unstable_DirectiveFormatter = {
-  serialize: (item) => `@${item.label}`,
-  parse(text) {
-    const segments: Unstable_DirectiveSegment[] = [];
-    let last = 0;
-    for (const match of text.matchAll(MENTION)) {
-      if (match.index > last) segments.push({ kind: "text", text: text.slice(last, match.index) });
-      const label = match[0].slice(1);
-      segments.push({ kind: "mention", type: "task", label, id: label });
-      last = match.index + match[0].length;
-    }
-    if (last < text.length) segments.push({ kind: "text", text: text.slice(last) });
-    return segments;
-  },
+/** One row of the `@` menu. `item.label` is what the mention leaves in the text, after `@`. */
+export type MentionOption = {
+  item: Unstable_TriggerItem;
+  icon: ReactNode;
+  /** The row's name, when it differs from the label (a file's name for its path). */
+  name?: string | undefined;
+  /** Grey text after the name (a worker's title, a file's folder). */
+  detail?: string | undefined;
+  /** Grey text at the row's end (a worker's state). */
+  trailing?: string | undefined;
 };
 
-/** The task ids a message mentions, from its `@task-N` text. */
-export function mentionedTasks(text: string, targets: readonly MentionTarget[]): string[] {
-  const ids = new Set<string>();
-  for (const match of text.matchAll(MENTION)) {
-    const target = targets.find((entry) => entry.number === Number(match[1]));
-    if (target) ids.add(target.id);
-  }
-  return [...ids];
-}
+/** assistant-ui's trigger adapter (its type lives in @assistant-ui/core). */
+type TriggerAdapter = NonNullable<
+  ComponentProps<typeof ComposerPrimitive.Unstable_TriggerPopover>["adapter"]
+>;
+
+/** A mention is plain `@label` text in the message, so it reads naturally everywhere. */
+const formatter: Unstable_DirectiveFormatter = {
+  serialize: (item) => `@${item.label}`,
+  parse: (text) => [{ kind: "text", text }],
+};
 
 /**
- * The Mentions element (assistant-ui's composer trigger popover), on Brigadier's tokens: `@`
- * lists the conversation's workers and inserts `@task-N`. Render it inside
+ * The Mentions element (assistant-ui's composer trigger popover) as ChatGPT's `@` menu: one
+ * list above the composer mixing what can be mentioned, icon, name and grey detail per row,
+ * the first row highlighted, filtered as you type. `search` returns the rows for a query;
+ * `onInserted` hears each mention put in the text. Render it inside
  * `ComposerPrimitive.Unstable_TriggerPopoverRoot`, next to the composer.
  */
-export const ComposerMentions: FC<{ targets: readonly MentionTarget[] }> = ({ targets }) => {
-  const items: Unstable_Mention[] = targets.map((target) => ({
-    id: target.id,
-    type: "task",
-    label: `task-${target.number}`,
-    description: target.title,
-    metadata: { state: target.state },
-  }));
-  const mention = unstable_useMentionAdapter({
-    items,
-    includeModelContextTools: false,
-    formatter: taskFormatter,
-  });
+export const ComposerMentions: FC<{
+  search: (query: string) => readonly MentionOption[];
+  onInserted: (item: Unstable_TriggerItem) => void;
+  /** A grey line under the rows for this query ("Type to search for files"), if any. */
+  hint?: (query: string) => string | null;
+}> = ({ search, onInserted, hint }) => {
+  // The adapter hands assistant-ui the items; the rows' icons and details are looked up here.
+  const shown = useRef(new Map<string, MentionOption>());
+  const adapter = useMemo<TriggerAdapter>(
+    () => ({
+      categories: () => [],
+      categoryItems: () => [],
+      search(query) {
+        const options = search(query);
+        shown.current = new Map(options.map((option) => [option.item.id, option]));
+        return options.map((option) => option.item);
+      },
+    }),
+    [search],
+  );
   return (
-    <ComposerPrimitive.Unstable_TriggerPopover char="@" adapter={mention.adapter}>
+    <ComposerPrimitive.Unstable_TriggerPopover char="@" adapter={adapter}>
       <ComposerPrimitive.Unstable_TriggerPopover.Directive
-        formatter={mention.directive.formatter}
-        onInserted={mention.directive.onInserted}
+        formatter={formatter}
+        onInserted={onInserted}
       />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(matches) => (
-          <div
-            data-slot="composer-mentions"
-            className={cn(floatingMenu, "absolute start-0 bottom-full z-20 mb-2 w-full max-w-sm")}
-          >
-            <p className="text-muted-foreground px-2 py-1 text-xs">Mention a worker</p>
-            {matches.map((item, index) => (
-              <ComposerPrimitive.Unstable_TriggerPopoverItem
-                key={item.id}
-                item={item}
-                index={index}
-                className="data-highlighted:bg-accent hover:bg-accent rounded-control flex w-full items-center gap-2.5 px-2 py-1.5 text-start text-sm outline-none"
-              >
-                <span className={cn(mono, "text-muted-foreground shrink-0")}>@{item.label}</span>
-                <span className="min-w-0 flex-1 truncate">{item.description}</span>
-                <span className={cn(mono, "text-muted-foreground shrink-0")}>
-                  {typeof item.metadata?.state === "string" ? item.metadata.state : ""}
-                </span>
-              </ComposerPrimitive.Unstable_TriggerPopoverItem>
-            ))}
-            {matches.length === 0 && (
-              <p className="text-muted-foreground px-2 py-1.5 text-sm">
-                {targets.length === 0 ? "No workers in this conversation yet." : "No matching worker."}
-              </p>
-            )}
-          </div>
+          <MentionList hint={hint}>
+            {matches.map((item, index) => {
+              const option = shown.current.get(item.id);
+              return (
+                <ComposerPrimitive.Unstable_TriggerPopoverItem
+                  key={item.id}
+                  item={item}
+                  index={index}
+                  className="data-highlighted:bg-accent hover:bg-accent rounded-control flex h-row-sm w-full shrink-0 items-center gap-2 px-2 text-start text-sm outline-none"
+                >
+                  <span className="text-muted-foreground flex size-icon-md shrink-0 items-center justify-center [&_svg]:size-icon-sm">
+                    {option?.icon}
+                  </span>
+                  <span className="shrink-0">{option?.name ?? item.label}</span>
+                  <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                    {option?.detail}
+                  </span>
+                  {option?.trailing && (
+                    <span className={cn(mono, "text-muted-foreground shrink-0")}>
+                      {option.trailing}
+                    </span>
+                  )}
+                </ComposerPrimitive.Unstable_TriggerPopoverItem>
+              );
+            })}
+          </MentionList>
         )}
       </ComposerPrimitive.Unstable_TriggerPopoverItems>
     </ComposerPrimitive.Unstable_TriggerPopover>
   );
 };
+
+/** The menu's scrolling panel: keeps the highlighted row in view, ends with the hint. */
+function MentionList({
+  hint,
+  children,
+}: {
+  hint: ((query: string) => string | null) | undefined;
+  children: ReactNode[];
+}) {
+  const list = useRef<HTMLDivElement>(null);
+  const { highlightedIndex, query } = unstable_useTriggerPopoverScopeContext();
+  useEffect(() => {
+    if (highlightedIndex < 0) return;
+    list.current?.querySelector("[data-highlighted]")?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex]);
+  const note = hint?.(query) ?? (children.length === 0 ? "No results" : null);
+  return (
+    <div
+      ref={list}
+      data-slot="composer-mentions"
+      aria-label="Mentions"
+      className={cn(
+        floatingMenu,
+        "absolute start-0 bottom-full z-20 mb-2 flex max-h-command-list w-full flex-col overflow-y-auto",
+      )}
+    >
+      {children}
+      {note && <p className="text-muted-foreground px-2 py-1 text-sm">{note}</p>}
+    </div>
+  );
+}

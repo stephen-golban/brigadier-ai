@@ -462,6 +462,31 @@ impl Repo {
         parse::worktrees(&self.cmd(&["worktree", "list", "--porcelain", "-z"], true)?)
     }
 
+    /// The checkout's files, tracked and untracked but not ignored, relative to its root and
+    /// sorted: at most `limit`, and whether there were more.
+    pub fn files(&self, limit: usize) -> Result<(Vec<String>, bool)> {
+        let out = self.cmd(
+            &[
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            true,
+        )?;
+        let mut files: Vec<String> = out
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect();
+        files.sort();
+        files.dedup();
+        let truncated = files.len() > limit;
+        files.truncate(limit);
+        Ok((files, truncated))
+    }
+
     /// Whether a repo-relative file is ignored (tracked files are not ignored).
     pub fn is_ignored(&self, path: &str) -> Result<bool> {
         valid_path(path)?;
