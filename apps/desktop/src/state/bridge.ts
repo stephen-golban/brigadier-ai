@@ -1,10 +1,16 @@
 import { subscribe } from "@/ipc/client";
 import type { BridgeEvent, EventEnvelope } from "@/ipc/generated";
 import { markApplied, noteFlush, setSamplingPaused } from "@/lib/perf";
-import { loadCatalog, loadConversation, openOrchestratorLog } from "@/state/actions";
+import {
+  loadCatalog,
+  loadConversation,
+  openConversation,
+  openOrchestratorLog,
+} from "@/state/actions";
 import { applyActivityEvents, loadActivity } from "@/state/activity";
 import { applyBoardEvents, sideBoardIds, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
+import { startMenuBar } from "@/state/menuBar";
 import { emitTerminalOutput } from "@/state/terminals";
 
 let queued: EventEnvelope[] = [];
@@ -88,9 +94,13 @@ function onBridgeEvent(message: BridgeEvent) {
       setSamplingPaused(!message.visible);
       useApp.setState({ windowVisible: message.visible });
       break;
+    case "openConversation":
+      openConversation(message.conversationId);
+      break;
   }
 }
 
-export function startBridge(): Promise<void> {
-  return subscribe(onBridgeEvent);
+export async function startBridge(): Promise<void> {
+  await subscribe(onBridgeEvent);
+  startMenuBar();
 }

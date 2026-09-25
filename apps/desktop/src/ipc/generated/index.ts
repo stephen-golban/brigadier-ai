@@ -133,6 +133,7 @@ export type { ReviewVerdict } from "./ReviewVerdict";
 export type { Role } from "./Role";
 export type { Route } from "./Route";
 export type { RunState } from "./RunState";
+export type { RunningChat } from "./RunningChat";
 export type { RuntimeMetrics } from "./RuntimeMetrics";
 export type { SendOutcome } from "./SendOutcome";
 export type { ServerFrame } from "./ServerFrame";

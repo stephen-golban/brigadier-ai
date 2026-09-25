@@ -42,6 +42,18 @@ pub enum BridgeEvent {
     WindowVisibility {
         visible: bool,
     },
+    /// A conversation picked in the menu-bar item's "Running" list: open it.
+    OpenConversation {
+        conversation_id: String,
+    },
+}
+
+/// A conversation the menu-bar item lists under "Running".
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningChat {
+    pub id: String,
+    pub title: String,
 }
 
 /// What the side panel's Browser tab hears about its page, over the channel it opened it with.

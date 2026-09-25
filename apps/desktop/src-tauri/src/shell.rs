@@ -7,15 +7,20 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
-use brigadier_ipc::app::BridgeEvent;
+use brigadier_ipc::app::{BridgeEvent, RunningChat};
 use tauri::image::Image;
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 use crate::AppState;
 
 pub const MAIN_WINDOW: &str = "main";
+const TRAY: &str = "brigadier";
+/// Menu ids of the "Running" list's items: this, then the conversation's id.
+const RUNNING_ITEM: &str = "running:";
+/// Longest title the "Running" list shows before cutting it with "…".
+const RUNNING_TITLE_CHARS: usize = 48;
 /// Longest the app waits for the daemon to acknowledge a quit. Covers the daemon's bounded
 /// ending of CLI sessions (exit grace, process-group reap, last events stored) before its
 /// store drains; the daemon finishes quitting on its own if this runs out.
@@ -35,15 +40,43 @@ pub fn exit_code() -> i32 {
     EXIT_CODE.load(Ordering::Acquire)
 }
 
-pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
+/// The menu-bar item's menu: open, the conversations running now (ChatGPT's "Running"), quit.
+fn tray_menu(app: &AppHandle, running: &[RunningChat]) -> tauri::Result<Menu<tauri::Wry>> {
     let open_item = MenuItemBuilder::with_id("open", "Open Brigadier").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Brigadier").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .item(&open_item)
-        .separator()
-        .item(&quit_item)
-        .build()?;
-    TrayIconBuilder::with_id("brigadier")
+    let mut menu = MenuBuilder::new(app).item(&open_item).separator();
+    if !running.is_empty() {
+        let heading = MenuItemBuilder::with_id("running", "Running")
+            .enabled(false)
+            .build(app)?;
+        menu = menu.item(&heading);
+        for chat in running {
+            let title = if chat.title.chars().count() > RUNNING_TITLE_CHARS {
+                let cut: String = chat.title.chars().take(RUNNING_TITLE_CHARS - 1).collect();
+                format!("{}…", cut.trim_end())
+            } else {
+                chat.title.clone()
+            };
+            let item =
+                MenuItemBuilder::with_id(format!("{RUNNING_ITEM}{}", chat.id), title).build(app)?;
+            menu = menu.item(&item);
+        }
+        menu = menu.separator();
+    }
+    menu.item(&quit_item).build()
+}
+
+/// Lists `running` under "Running" in the menu-bar item's menu.
+pub fn set_running(app: &AppHandle, running: &[RunningChat]) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(TRAY) else {
+        return Ok(());
+    };
+    tray.set_menu(Some(tray_menu(app, running)?))
+}
+
+pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
+    let menu = tray_menu(app, &[])?;
+    TrayIconBuilder::with_id(TRAY)
         .icon(Image::from_bytes(include_bytes!("../icons/tray.png"))?)
         .icon_as_template(true)
         .tooltip("Brigadier")
@@ -52,7 +85,16 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
             "quit" => quit(app, 0),
-            _ => {}
+            id => {
+                if let Some(conversation_id) = id.strip_prefix(RUNNING_ITEM) {
+                    show_main(app);
+                    if let Some(state) = app.try_state::<AppState>() {
+                        state.bridge.emit(BridgeEvent::OpenConversation {
+                            conversation_id: conversation_id.to_owned(),
+                        });
+                    }
+                }
+            }
         })
         .build(app)?;
     IN_MENU_BAR.store(true, Ordering::Release);
