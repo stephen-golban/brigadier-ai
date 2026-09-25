@@ -11,7 +11,7 @@ use ts_rs::TS;
 use crate::board::{self, Board};
 use crate::model::{
     Catalog, Conversation, ConversationId, ConversationKind, ConversationView, DomainEvent,
-    EnvironmentKind, Lifecycle, Message, MessagePage, MessageRole, ModelChoice,
+    EnvironmentKind, ForkOrigin, Lifecycle, Message, MessagePage, MessageRole, ModelChoice,
     OrchestratorLogEntry, OrchestratorPage, Project, ProjectId, ProjectPatch, ProjectRepo,
     RawEntry, Settings, Setup, WorkerPage, streams,
 };
@@ -192,6 +192,7 @@ impl Core {
         project_id: Option<ProjectId>,
         title: Option<String>,
         setup: Option<Setup>,
+        forked_from: Option<ForkOrigin>,
     ) -> Result<Conversation> {
         match (&setup, kind) {
             (Some(Setup::Session { .. }), ConversationKind::Chat)
@@ -249,6 +250,7 @@ impl Core {
             updated_at_ms: now,
             setup,
             lifecycle: Lifecycle::Active,
+            forked_from,
         };
         events.insert(
             0,

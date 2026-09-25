@@ -409,6 +409,13 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                     .await?,
             ),
         },
+        Request::ForkConversation {
+            conversation_id,
+            message_id,
+            place,
+        } => Response::ForkConversation {
+            conversation: Box::new(sessions.fork(conversation_id, message_id, place).await?),
+        },
         Request::UpdateSetup { id, setup } => Response::UpdateSetup {
             conversation: Box::new(core.set_setup(id, setup).await?),
         },

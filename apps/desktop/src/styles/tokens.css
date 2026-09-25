@@ -170,6 +170,7 @@
   --color-warning-foreground: var(--warning-foreground);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
+  --color-link: var(--link);
   --color-full-access: var(--full-access);
   --color-full-access-foreground: var(--full-access-foreground);
   --color-border: var(--border);
@@ -229,6 +230,8 @@
   --full-access-foreground: oklch(0.215 0.003 var(--tint));
   --success: oklch(0.765 0.15 155);
   --success-foreground: oklch(0.215 0.003 var(--tint));
+  /* Blue: links inside the thread ("Continued from chat"), as ChatGPT colours them. */
+  --link: oklch(0.7 0.15 255);
   --border: oklch(0.985 0.002 var(--tint) / 10%);
   --input: oklch(0.985 0.002 var(--tint) / 15%);
   --ring: oklch(0.556 0.004 var(--tint));

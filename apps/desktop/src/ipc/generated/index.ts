@@ -46,6 +46,8 @@ export type { FileChange } from "./FileChange";
 export type { FileChangeKind } from "./FileChangeKind";
 export type { FileStat } from "./FileStat";
 export type { Fixture } from "./Fixture";
+export type { ForkOrigin } from "./ForkOrigin";
+export type { ForkPlace } from "./ForkPlace";
 export type { InjectionKind } from "./InjectionKind";
 export type { IpcError } from "./IpcError";
 export type { ItemStatus } from "./ItemStatus";

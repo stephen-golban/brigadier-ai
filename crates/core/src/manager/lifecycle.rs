@@ -277,6 +277,7 @@ impl SessionManager {
                     base,
                     branch,
                     path: Some(_),
+                    mut start,
                 },
             permission,
             orchestrator,
@@ -299,12 +300,18 @@ impl SessionManager {
                         && repo.is_merged(&branch, &base).map_err(git_error)?
                     {
                         repo.delete_branch_at(&branch, &tip).map_err(git_error)?;
+                        return Ok(true);
                     }
-                    Ok(())
+                    Ok(false)
                 })
                 .await;
-                if let Err(err) = deleted {
-                    tracing::warn!(conversation = %id, error = %err, "could not delete the merged session branch");
+                match deleted {
+                    // Its work is in the base now: a fork's branch starts there again too.
+                    Ok(true) => start = None,
+                    Ok(false) => {}
+                    Err(err) => {
+                        tracing::warn!(conversation = %id, error = %err, "could not delete the merged session branch");
+                    }
                 }
             }
             let _ = self
@@ -317,6 +324,7 @@ impl SessionManager {
                             base,
                             branch,
                             path: None,
+                            start,
                         },
                         permission,
                         orchestrator,

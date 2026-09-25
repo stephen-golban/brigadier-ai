@@ -816,7 +816,12 @@ impl SessionManager {
     ) -> Result<String> {
         match environment {
             Environment::LocalCheckout { branch } => Ok(branch.clone()),
-            Environment::NewWorktree { base, branch, path } => {
+            Environment::NewWorktree {
+                base,
+                branch,
+                path,
+                start,
+            } => {
                 if path.is_some() {
                     return Ok(branch.clone());
                 }
@@ -849,12 +854,13 @@ impl SessionManager {
                         },
                     )
                     .await?;
-                let (git, repo_path, path, base_name, name) = (
+                let (git, repo_path, path, base_name, name, from) = (
                     self.git.clone(),
                     repo.to_owned(),
                     worktree.clone(),
                     base.clone(),
                     branch.clone(),
+                    start.clone(),
                 );
                 blocking(move || {
                     let repo = git.open(&repo_path).map_err(git_error)?;
@@ -866,7 +872,11 @@ impl SessionManager {
                         Some(_) => WorktreeSpec::Branch { name },
                         None => WorktreeSpec::NewBranch {
                             name,
-                            start: repo.branch_commit(&base_name).map_err(git_error)?,
+                            start: match &from {
+                                Some(commit) => repo.resolve(commit),
+                                None => repo.branch_commit(&base_name),
+                            }
+                            .map_err(git_error)?,
                         },
                     };
                     repo.add_worktree(&path, spec)
@@ -891,6 +901,7 @@ impl SessionManager {
                                     base: base.clone(),
                                     branch: branch.clone(),
                                     path: Some(worktree.to_string_lossy().into_owned()),
+                                    start: start.clone(),
                                 },
                                 permission,
                                 orchestrator,

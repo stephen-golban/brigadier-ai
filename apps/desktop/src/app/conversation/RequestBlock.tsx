@@ -3,10 +3,17 @@ import {
   MessagePrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { Check, ChevronRight, Copy, Regenerate } from "@openai/apps-sdk-ui/components/Icon";
+import {
+  Branch,
+  Check,
+  ChevronRight,
+  Copy,
+  Regenerate,
+} from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
 
 import { WorkerStepRow } from "@/app/conversation/Agents";
+import { ForkMenu } from "@/app/conversation/ForkMenu";
 import {
   type BlockCard,
   type BlockState,
@@ -29,7 +36,9 @@ import type { ModelChoice } from "@/ipc/generated";
 import { formatDuration, formatSentAt } from "@/lib/format";
 import { modelName, sameModel, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
+import { openConversation } from "@/state/actions";
 import { useBoard } from "@/state/board";
+import { selectedConversation, useApp } from "@/state/store";
 
 const CardBody = lazy(() => import("@/app/conversation/cards/CardBody"));
 
@@ -365,8 +374,14 @@ export const RequestBlock: FC = () => {
       )}
       <MessageError />
       {!live && last >= 0 && (
-        <AnswerActions session={meta.session} rework={meta.rework} atMs={meta.endedAtMs} />
+        <AnswerActions
+          session={meta.session}
+          rework={meta.rework}
+          atMs={meta.endedAtMs}
+          answerId={meta.answerId}
+        />
       )}
+      <ContinuedFrom answerId={meta.answerId} />
     </MessagePrimitive.Root>
   );
 };
@@ -394,7 +409,9 @@ const AnswerActions: FC<{
   session: boolean;
   rework: boolean;
   atMs: number | null;
-}> = ({ session, rework, atMs }) => {
+  answerId: string | null;
+}> = ({ session, rework, atMs, answerId }) => {
+  const conversation = useApp(selectedConversation);
   const answer = useAuiState((s) => {
     const parts = s.message.parts;
     const part = parts[parts.length - 1];
@@ -434,11 +451,42 @@ const AnswerActions: FC<{
         </ActionBarPrimitive.Reload>
       )}
       {!session && <BranchPicker />}
+      {conversation && answerId && (
+        <ForkMenu conversationId={conversation.id} kind={conversation.kind} messageId={answerId} />
+      )}
       {atMs !== null && (
         <span className="ps-1 text-xs tabular-nums opacity-0 transition-opacity group-hover/answer:opacity-100 group-focus-within/answer:opacity-100">
           {formatSentAt(atMs, now)}
         </span>
       )}
     </ActionBarPrimitive.Root>
+  );
+};
+
+/** "⑂ Continued from chat" under the answer a fork was made from: back to where it came from. */
+const ContinuedFrom: FC<{ answerId: string | null }> = ({ answerId }) => {
+  const origin = useApp((s) => selectedConversation(s)?.forkedFrom ?? null);
+  const source = useApp((s) => (origin ? s.conversations[origin.conversationId] : undefined));
+  if (!origin || !answerId || origin.messageId !== answerId) return null;
+  return (
+    <div className="text-muted-foreground flex items-center gap-3 py-2 text-sm">
+      <span className="bg-border h-px flex-1" />
+      {source ? (
+        <button
+          type="button"
+          onClick={() => openConversation(source.id)}
+          className="text-link hover:text-link/80 flex items-center gap-1.5"
+        >
+          <Branch className="size-icon-sm" />
+          Continued from chat
+        </button>
+      ) : (
+        <span className="flex items-center gap-1.5">
+          <Branch className="size-icon-sm" />
+          Continued from chat
+        </span>
+      )}
+      <span className="bg-border h-px flex-1" />
+    </div>
   );
 };
