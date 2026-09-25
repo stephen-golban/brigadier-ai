@@ -558,6 +558,12 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             let (files, truncated) = sessions.list_files(&conversation_id).await?;
             Response::ListFiles { files, truncated }
         }
+        Request::ReadFile {
+            conversation_id,
+            path,
+        } => Response::ReadFile {
+            file: sessions.read_file(&conversation_id, path).await?,
+        },
         Request::RateMessage {
             conversation_id,
             subject,

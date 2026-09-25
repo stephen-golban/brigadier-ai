@@ -58,6 +58,7 @@ import {
   type AttachmentReader,
   AttachmentReaderContext,
 } from "@/components/assistant-ui/elements/attachment-tile";
+import { OpenFileContext } from "@/components/assistant-ui/markdown-text";
 import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import type {
@@ -687,6 +688,23 @@ export function ConversationView({ selection }: { selection: Selection }) {
   );
 
   const fullscreen = sidePanel.state.open && sidePanel.state.fullscreen;
+  // A file link in an answer opens in the Files tab when it is one of the session's files.
+  const checkout =
+    setup?.type === "session"
+      ? setup.environment.type === "newWorktree"
+        ? (setup.environment.path ?? setup.repo)
+        : setup.repo
+      : null;
+  const { openFile } = sidePanel;
+  const openFileAt = useCallback(
+    (path: string, line: number | null) => {
+      const prefix = checkout ? `${checkout.replace(/\/$/, "")}/` : null;
+      if (!prefix || !path.startsWith(prefix)) return false;
+      openFile({ path: path.slice(prefix.length), line });
+      return true;
+    },
+    [checkout, openFile],
+  );
   return (
     <ViewContext.Provider value={{ selection, conversation }}>
       <ComposerTargetContext.Provider value={target}>
@@ -695,42 +713,44 @@ export function ConversationView({ selection }: { selection: Selection }) {
             <StatusCardContext.Provider value={statusCard}>
               <AssistantRuntimeProvider runtime={runtime}>
                 <AttachmentReaderContext.Provider value={reader}>
-                  <div className="flex h-full">
-                    <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
-                      <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
-                        {conversation && (
-                          <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
-                        )}
-                        {conversation?.kind === "session" && <PinnedSummaryToggle />}
-                        {!sidePanel.state.open && <SidePanelToggle />}
-                      </TopBar>
-                      {error && (
-                        <p
-                          role="alert"
-                          className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
-                        >
-                          <span className="min-w-0 flex-1">{error}</span>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label="Dismiss"
-                            onClick={() => setError(null)}
+                  <OpenFileContext.Provider value={openFileAt}>
+                    <div className="flex h-full">
+                      <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
+                        <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
+                          {conversation && (
+                            <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
+                          )}
+                          {conversation?.kind === "session" && <PinnedSummaryToggle />}
+                          {!sidePanel.state.open && <SidePanelToggle />}
+                        </TopBar>
+                        {error && (
+                          <p
+                            role="alert"
+                            className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
                           >
-                            <X />
-                          </Button>
-                        </p>
-                      )}
-                      <div className="relative min-h-0 flex-1">
-                        {conversation && <PinnedSummary conversation={conversation} />}
-                        <Thread
-                          components={THREAD_COMPONENTS}
-                          // ChatGPT's one placeholder, in every conversation.
-                          placeholder="Do anything"
-                        />
+                            <span className="min-w-0 flex-1">{error}</span>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label="Dismiss"
+                              onClick={() => setError(null)}
+                            >
+                              <X />
+                            </Button>
+                          </p>
+                        )}
+                        <div className="relative min-h-0 flex-1">
+                          {conversation && <PinnedSummary conversation={conversation} />}
+                          <Thread
+                            components={THREAD_COMPONENTS}
+                            // ChatGPT's one placeholder, in every conversation.
+                            placeholder="Do anything"
+                          />
+                        </div>
                       </div>
+                      <SidePanel conversationId={conversationId} />
                     </div>
-                    <SidePanel conversationId={conversationId} />
-                  </div>
+                  </OpenFileContext.Provider>
                   {conversation && (
                     <RenameDialog
                       conversation={conversation}

@@ -874,6 +874,20 @@ pub struct ReviewDiff {
     pub base: Option<String>,
 }
 
+/// A file of a session's checkout, as the Files tab shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutFile {
+    /// Relative to the checkout's root.
+    pub path: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// Its text; absent for a binary file.
+    pub text: Option<String>,
+    /// Only the file's start was read.
+    pub truncated: bool,
+}
+
 /// Why something entered the orchestrator's context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

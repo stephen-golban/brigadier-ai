@@ -146,9 +146,11 @@ function fileRank(path: string, query: string): number {
   return lower.includes(query) ? 2 : 3;
 }
 
-/** The session checkout's files, fetched again when a worker lands something. */
-function useFiles(conversation: Conversation): { files: string[]; truncated: boolean } | null {
-  const id = conversation.kind === "session" ? conversation.id : null;
+/** A session checkout's files, fetched again when a worker lands something; null until then. */
+export function useCheckoutFiles(
+  conversation: Conversation | null,
+): { files: string[]; truncated: boolean } | null {
+  const id = conversation?.kind === "session" ? conversation.id : null;
   const landed = useBoard((s) =>
     s.board?.conversationId === id && s.board
       ? Object.values(s.board.tasks).filter((task) => task.landed !== null).length
@@ -182,7 +184,7 @@ export const Mentions: FC<{
   conversation: Conversation;
   targets: readonly MentionTarget[];
 }> = ({ conversation, targets }) => {
-  const files = useFiles(conversation);
+  const files = useCheckoutFiles(conversation);
   const chats = useApp(
     useShallow((s) =>
       Object.values(s.conversations)

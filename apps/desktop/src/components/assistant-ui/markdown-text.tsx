@@ -4,7 +4,16 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, type ReactNode, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  type FC,
+  memo,
+  type ReactNode,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { TextMessagePartProps } from "@assistant-ui/react";
 import { Check, Copy, ExpandLg } from "@openai/apps-sdk-ui/components/Icon";
 
@@ -86,7 +95,7 @@ function failed(error: unknown): void {
 }
 
 /** The root of the open session's checkout, for resolving file links. */
-function useCheckoutRoot(): string | null {
+export function useCheckoutRoot(): string | null {
   return useApp((s) => {
     const setup = selectedConversation(s)?.setup;
     if (setup?.type !== "session") return null;
@@ -112,11 +121,21 @@ function fileTarget(href: string, root: string | null): { path: string; line: nu
 }
 
 /**
+ * Shows a file (absolute path) at a line in the open session's Files tab; false when it isn't
+ * one of the session's files.
+ */
+export const OpenFileContext = createContext<(path: string, line: number | null) => boolean>(
+  () => false,
+);
+
+/**
  * ChatGPT's file-link chip: the file's type icon and its name in link blue, "(line 36)"
- * after it, the absolute path on hover. A click shows the file in Finder.
+ * after it, the absolute path on hover. A click opens the file in the Files tab, or shows it
+ * in Finder when it isn't the session's.
  */
 const FileChip: FC<{ href: string; children: ReactNode }> = ({ href, children }) => {
   const root = useCheckoutRoot();
+  const openFile = useContext(OpenFileContext);
   const { path, line } = fileTarget(href, root);
   return (
     <Tooltip>
@@ -126,7 +145,7 @@ const FileChip: FC<{ href: string; children: ReactNode }> = ({ href, children })
           data-slot="file-chip"
           onClick={(event) => {
             event.preventDefault();
-            revealPath(path).catch(failed);
+            if (!openFile(path, line)) revealPath(path).catch(failed);
           }}
           className="aui-md-file text-link hover:text-link/80 cursor-pointer no-underline"
         >
