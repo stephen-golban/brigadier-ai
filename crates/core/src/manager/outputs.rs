@@ -343,9 +343,13 @@ fn collect(
                 }
             } else if !places.data.iter().any(|root| path.starts_with(root))
                 && places.lost.iter().any(|root| path.starts_with(root))
-                && std::fs::metadata(&path)
-                    .and_then(|meta| meta.modified())
-                    .is_ok_and(|modified| modified >= places.since)
+                && std::fs::metadata(&path).is_ok_and(|meta| {
+                    // A folder mentioned ("/tmp") is not a file it made.
+                    meta.is_file()
+                        && meta
+                            .modified()
+                            .is_ok_and(|modified| modified >= places.since)
+                })
             {
                 problems.push(format!(
                     "your report points to `{mention}`, which is outside your worktree and scratch folder: it is not kept, and nobody can read it after the task ends. Move it into your outputs folder and mention that path instead."
