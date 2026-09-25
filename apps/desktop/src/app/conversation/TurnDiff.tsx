@@ -1,24 +1,18 @@
-import { ArrowRotateCcw, ArrowRotateCw } from "@openai/apps-sdk-ui/components/Icon";
-import { type FC, useState } from "react";
+import { ArrowRotateCcw, ArrowRotateCw, ArrowUpRight } from "@openai/apps-sdk-ui/components/Icon";
+import { type FC, useContext, useState } from "react";
 
 import { isFinal } from "@/app/conversation/blocks";
 import { useRequestDiff } from "@/app/conversation/ComposerCapsule";
+import { SidePanelContext } from "@/app/conversation/SidePanel";
+import { DiffGlyph } from "@/components/assistant-ui/elements/diff-glyph";
 import { paper } from "@/components/assistant-ui/elements/surfaces";
 import { Button } from "@/components/ui/button";
 import { request } from "@/ipc/client";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
 import { selectedConversation, useApp } from "@/state/store";
+import { setReviewScope } from "@/state/review";
 import { toast } from "@/state/toasts";
-
-/** ChatGPT's diff glyph: a square with a plus over a minus. */
-function DiffGlyph({ className }: { className?: string }) {
-  return (
-    <svg aria-hidden viewBox="0 0 20 20" fill="currentColor" fillRule="evenodd" className={className}>
-      <path d="M6.5 3h7A3.5 3.5 0 0 1 17 6.5v7a3.5 3.5 0 0 1-3.5 3.5h-7A3.5 3.5 0 0 1 3 13.5v-7A3.5 3.5 0 0 1 6.5 3Zm0 1.5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2ZM10 6a.75.75 0 0 1 .75.75V8H12a.75.75 0 0 1 0 1.5h-1.25v1.25a.75.75 0 0 1-1.5 0V9.5H8A.75.75 0 0 1 8 8h1.25V6.75A.75.75 0 0 1 10 6Zm-2 6.25h4a.75.75 0 0 1 0 1.5H8a.75.75 0 0 1 0-1.5Z" />
-    </svg>
-  );
-}
 
 const Counts: FC<{ insertions: number; deletions: number; className?: string }> = ({
   insertions,
@@ -47,7 +41,13 @@ export const TurnDiff: FC<{ requestId: string }> = ({ requestId }) => {
     ),
   );
   const [busy, setBusy] = useState(false);
+  const { openTab } = useContext(SidePanelContext);
   if (!diff || !conversationId) return null;
+
+  const review = () => {
+    setReviewScope(conversationId, { type: "lastTurn", requestId });
+    openTab("review");
+  };
 
   const files = diff.files.length;
   const toggle = () => {
@@ -65,16 +65,31 @@ export const TurnDiff: FC<{ requestId: string }> = ({ requestId }) => {
 
   return (
     <div data-slot="turn-diff" className={cn(paper, "rounded-xl overflow-hidden")}>
-      <div className="flex items-center gap-3 p-2">
-        <span className="bg-foreground/5 text-muted-foreground rounded-control flex size-control-lg shrink-0 items-center justify-center">
-          <DiffGlyph className="size-icon-md" />
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-foreground text-sm">
-            Edited {files} {files === 1 ? "file" : "files"}
+      <div className="group/diff flex items-center gap-3 p-2">
+        <button
+          type="button"
+          aria-label="Review changed files"
+          onClick={review}
+          className="flex min-w-0 flex-1 items-center gap-3 text-start"
+        >
+          <span className="bg-foreground/5 text-muted-foreground rounded-control flex size-control-lg shrink-0 items-center justify-center">
+            <DiffGlyph className="size-icon-md" />
           </span>
-          <Counts insertions={diff.insertions} deletions={diff.deletions} className="text-xs" />
-        </div>
+          <span className="flex min-w-0 flex-col">
+            <span className="text-foreground text-sm">
+              Edited {files} {files === 1 ? "file" : "files"}
+            </span>
+            <Counts
+              insertions={diff.insertions}
+              deletions={diff.deletions}
+              className="text-xs group-hover/diff:hidden"
+            />
+            <span className="text-muted-foreground hidden items-center gap-0.5 text-xs group-hover/diff:flex">
+              Review changes
+              <ArrowUpRight className="size-icon-xs" />
+            </span>
+          </span>
+        </button>
         <Button
           variant="ghost"
           size="sm"
@@ -84,6 +99,9 @@ export const TurnDiff: FC<{ requestId: string }> = ({ requestId }) => {
         >
           {reverted ? "Reapply" : "Undo"}
           {reverted ? <ArrowRotateCw className="size-icon-sm" /> : <ArrowRotateCcw className="size-icon-sm" />}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={review} className="border-border border font-normal">
+          Review
         </Button>
       </div>
       <ul>

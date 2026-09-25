@@ -25,6 +25,7 @@ mod lifecycle;
 mod outputs;
 mod prompts;
 mod requests;
+mod review;
 mod secrets;
 mod tools;
 mod undo;

@@ -10,7 +10,9 @@ import {
   createContext,
   type FC,
   type ReactNode,
+  lazy,
   type RefObject,
+  Suspense,
   useCallback,
   useContext,
   useMemo,
@@ -19,10 +21,15 @@ import {
 } from "react";
 
 import { type AgentsPanelState, WORKERS_LABEL, WorkersTab } from "@/app/conversation/Agents";
+import { DiffGlyph } from "@/components/assistant-ui/elements/diff-glyph";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
+
+const ReviewTab = lazy(() =>
+  import("@/app/conversation/ReviewTab").then((module) => ({ default: module.ReviewTab })),
+);
 
 /**
  * ChatGPT's right side panel: a strip of tabs ("Subagents" there, Workers here) with "+" to
@@ -31,10 +38,11 @@ import { cn } from "@/lib/utils";
  */
 
 /** The kinds of tab the side panel opens. */
-export type SideTab = "workers";
+export type SideTab = "workers" | "review";
 
 const TABS: Record<SideTab, { title: string; icon: ReactNode }> = {
   workers: { title: WORKERS_LABEL, icon: <User /> },
+  review: { title: "Review", icon: <DiffGlyph /> },
 };
 
 type PanelState = {
@@ -78,7 +86,7 @@ export function useSidePanel(session: boolean): {
 } {
   const [state, setState] = useState<PanelState>(CLOSED);
   const [worker, setWorker] = useState<string | null>(null);
-  const available = useMemo<SideTab[]>(() => (session ? ["workers"] : []), [session]);
+  const available = useMemo<SideTab[]>(() => (session ? ["workers", "review"] : []), [session]);
 
   const openTab = useCallback((tab: SideTab) => {
     setState((current) => ({
@@ -337,6 +345,10 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
       <div className="flex min-h-0 flex-1 flex-col">
         {state.active === "workers" && conversationId ? (
           <WorkersTab conversationId={conversationId} />
+        ) : state.active === "review" && conversationId ? (
+          <Suspense fallback={null}>
+            <ReviewTab conversationId={conversationId} />
+          </Suspense>
         ) : (
           <NewTabPage />
         )}

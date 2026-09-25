@@ -625,6 +625,16 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 .await?;
             Response::UndoChanges
         }
+        Request::GetReviewDiff {
+            conversation_id,
+            scope,
+            whole_files,
+            ignore_whitespace,
+        } => Response::GetReviewDiff {
+            review: sessions
+                .review_diff(&conversation_id, scope, whole_files, ignore_whitespace)
+                .await?,
+        },
         Request::AnswerCard {
             conversation_id,
             card_id,

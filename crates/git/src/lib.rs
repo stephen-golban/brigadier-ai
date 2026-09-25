@@ -368,6 +368,33 @@ pub enum RevertOutcome {
     },
 }
 
+/// A checkout as it stands, for a review of its uncommitted changes. Nothing was written to
+/// its index or files to get it.
+#[derive(Debug, Clone)]
+pub struct CheckoutTrees {
+    /// The checked-out commit; absent in an unborn repository.
+    pub head: Option<Oid>,
+    /// The tree of HEAD, or the empty tree in an unborn repository.
+    pub head_tree: Oid,
+    /// The tree of the index (what is staged).
+    pub staged: Oid,
+    /// The tree of the files (HEAD plus every non-ignored change).
+    pub files: Oid,
+    /// Files git does not track yet.
+    pub untracked: Vec<String>,
+}
+
+/// One commit of a branch's history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitInfo {
+    /// Its id.
+    pub commit: Oid,
+    /// The first line of its message.
+    pub subject: String,
+    /// When it was committed, in ms since the Unix epoch.
+    pub at_ms: i64,
+}
+
 /// Per-path and aggregate line statistics.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiffStat {

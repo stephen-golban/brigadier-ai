@@ -12,7 +12,8 @@ use brigadier_core::{
     ConversationKind, ConversationStatus, ConversationView, DiffStat, ForkPlace, Mention, Message,
     MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch,
     ProvidersView, QueuedMessage, Rating, RawApprovals, RawPage, RawSession, RawSessionId,
-    RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId, WorkerPage,
+    RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, Settings, Setup, SetupRequest, TaskId,
+    WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -228,6 +229,14 @@ pub enum Request {
         conversation_id: ConversationId,
         request_id: String,
         reapply: bool,
+    },
+    /// A session's changes in the Review tab's scope: whole files unless `whole_files` is
+    /// off, whitespace changes left out with `ignore_whitespace`.
+    GetReviewDiff {
+        conversation_id: ConversationId,
+        scope: ReviewScope,
+        whole_files: bool,
+        ignore_whitespace: bool,
     },
     /// Answers an approval card.
     AnswerCard {
@@ -504,6 +513,9 @@ pub enum Response {
     },
     PinDraftAttachments,
     UndoChanges,
+    GetReviewDiff {
+        review: ReviewDiff,
+    },
     AnswerCard,
     AnswerQuestion,
     DecidePlan,
