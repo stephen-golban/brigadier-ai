@@ -506,7 +506,7 @@ impl SessionManager {
         self.store_plan(&plan).await?;
         let text = if approve {
             format!(
-                "[decision] The user approved the plan \"{}\". Go ahead.",
+                "[decision] The user approved the plan \"{}\". Go ahead, and pass each step's number as `step` when you delegate it.",
                 plan.title
             )
         } else {

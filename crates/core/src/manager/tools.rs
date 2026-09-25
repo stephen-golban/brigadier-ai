@@ -69,6 +69,9 @@ impl SessionManager {
                 {
                     return Err(Error::Invalid("the subject task has nothing to review yet".into()));
                 }
+                if let Some(step) = args.step {
+                    self.plan_step(id, step).await?;
+                }
                 let pin = pin(args.provider.as_deref(), args.model, args.effort)?;
                 let attachments = self.find_attachments(id, &args.attachments).await?;
                 let avoid = subject
@@ -81,6 +84,12 @@ impl SessionManager {
                 let task = self
                     .create_task(id, args.title, args.kind, args.spec, pin, avoid, subject, attachments)
                     .await?;
+                if let Some(step) = args.step {
+                    // A task that redoes a step takes it over.
+                    let (mut plan, index) = self.plan_step(id, step).await?;
+                    plan.steps[index].task_id = Some(task.id.clone());
+                    self.store_plan(&plan).await?;
+                }
                 Ok(format!(
                     "Started task-{} ({:?}) on {}: {}. Its report arrives later as a message; don't wait for it. \
                      The user sees the worker live, so don't announce it: if nothing else is \
@@ -265,6 +274,29 @@ impl SessionManager {
         }
     }
 
+    /// The latest approved plan and the index of its step `number` (from 1).
+    async fn plan_step(&self, id: &ConversationId, number: u32) -> Result<(Plan, usize)> {
+        let board = self.core.board(id).await?;
+        let plan = board
+            .plans
+            .values()
+            .filter(|plan| matches!(plan.state, PlanState::Approved { .. }))
+            .max_by_key(|plan| plan.created_at_ms)
+            .cloned()
+            .ok_or_else(|| Error::Invalid("`step` needs an approved plan; there is none".into()))?;
+        let index = (number as usize)
+            .checked_sub(1)
+            .filter(|index| *index < plan.steps.len())
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "the plan \"{}\" has steps 1 to {}; there is no step {number}",
+                    plan.title,
+                    plan.steps.len()
+                ))
+            })?;
+        Ok((plan, index))
+    }
+
     /// Under "Ask for approval", write tasks wait for an approved plan, and for the user's
     /// decision on a newer plan still open.
     async fn check_plan_gate(&self, id: &ConversationId) -> Result<()> {
@@ -353,7 +385,7 @@ impl SessionManager {
                 };
                 plan.decided_at_ms = Some(now_ms());
                 self.store_plan(&plan).await?;
-                Ok("Approved on the user's behalf. Go ahead.".into())
+                Ok("Approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.".into())
             }
             (_, true) => {
                 self.store_plan(&plan).await?;

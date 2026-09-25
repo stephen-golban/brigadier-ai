@@ -110,6 +110,10 @@ pub struct DelegateTask {
     /// Ids of the user's attachments the worker should get as files.
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// For a task that carries out a step of the approved plan: that step's number (1 is the
+    /// first step). The user follows the plan's progress by it.
+    #[serde(default)]
+    pub step: Option<u32>,
 }
 
 /// `message_worker`: answer a worker's blocking question, or steer a running worker.

@@ -965,7 +965,7 @@ impl SessionManager {
         }
         let text = if approved {
             format!(
-                "[decision] The plan \"{}\" was reviewed by task-{} ({}) and approved on the user's behalf. Go ahead.\n{summary}",
+                "[decision] The plan \"{}\" was reviewed by task-{} ({}) and approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.\n{summary}",
                 plan.title,
                 review.number,
                 super::workers::route_label(review)
