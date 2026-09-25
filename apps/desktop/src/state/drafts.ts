@@ -1,5 +1,5 @@
 import { request } from "@/ipc/client";
-import type { AttachmentRef } from "@/ipc/generated";
+import type { AttachmentRef, Mention } from "@/ipc/generated";
 
 /**
  * What the composer holds but hasn't sent, per conversation (and one for a new chat), as
@@ -7,7 +7,15 @@ import type { AttachmentRef } from "@/ipc/generated";
  * after a restart too. The text lives in the webview's storage; the attachments' blobs are
  * pinned in the daemon so collection keeps them until the draft is sent or discarded.
  */
-export type Draft = { text: string; attachments: AttachmentRef[]; atMs: number };
+export type Draft = {
+  text: string;
+  attachments: AttachmentRef[];
+  /** The files and conversations it @-mentions, each where its `@name` starts in the text. */
+  mentions?: DraftMention[];
+  atMs: number;
+};
+
+export type DraftMention = { at: number; name: string; mention: Mention };
 
 /** The draft scope of a new chat (a conversation's is its id). */
 export const NEW_CHAT_SCOPE = "new";
@@ -47,14 +55,19 @@ export function loadDraft(scope: string): Draft | null {
 }
 
 /** Keeps what the composer holds now; an empty composer discards the draft. */
-export function saveDraft(scope: string, text: string, attachments: AttachmentRef[]): void {
+export function saveDraft(
+  scope: string,
+  text: string,
+  attachments: AttachmentRef[],
+  mentions: DraftMention[],
+): void {
   const drafts = readAll();
   const before = drafts[scope];
   if (text.trim() === "" && attachments.length === 0) {
     if (!before) return;
     delete drafts[scope];
   } else {
-    drafts[scope] = { text, attachments, atMs: Date.now() };
+    drafts[scope] = { text, attachments, mentions, atMs: Date.now() };
   }
   const oldest = Object.entries(drafts)
     .toSorted(([, a], [, b]) => b.atMs - a.atMs)

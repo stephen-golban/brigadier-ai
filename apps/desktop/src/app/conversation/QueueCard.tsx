@@ -65,6 +65,7 @@ export function usePullQueued(): ((index: number) => Promise<void>) | null {
       if (!target || !conversationId || !item || !composer.getState().isEmpty) return;
       await deleteQueued(conversationId, item.id);
       target.queue.pulled.set(conversationId, at, item.mentions);
+      target.mentions.recall(item.mentions);
       composer.setText(item.text);
       for (const ref of item.attachments) {
         await composer.addAttachment(target.queue.attachments.adopt(ref));

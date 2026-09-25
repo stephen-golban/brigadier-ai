@@ -34,7 +34,10 @@ type TriggerAdapter = NonNullable<
   ComponentProps<typeof ComposerPrimitive.Unstable_TriggerPopover>["adapter"]
 >;
 
-/** A mention is plain `@label` text in the message, so it reads naturally everywhere. */
+/**
+ * A mention is plain `@label` text in the message, so it reads naturally everywhere; the
+ * composer input's own formatter turns saved text back into chips.
+ */
 const formatter: Unstable_DirectiveFormatter = {
   serialize: (item) => `@${item.label}`,
   parse: (text) => [{ kind: "text", text }],
@@ -43,16 +46,15 @@ const formatter: Unstable_DirectiveFormatter = {
 /**
  * The Mentions element (assistant-ui's composer trigger popover) as ChatGPT's `@` menu: one
  * list above the composer mixing what can be mentioned, icon, name and grey detail per row,
- * the first row highlighted, filtered as you type. `search` returns the rows for a query;
- * `onInserted` hears each mention put in the text. Render it inside
+ * the first row highlighted, filtered as you type. `search` returns the rows for a query; the
+ * composer input hears each pick (it becomes a chip there). Render it inside
  * `ComposerPrimitive.Unstable_TriggerPopoverRoot`, next to the composer.
  */
 export const ComposerMentions: FC<{
   search: (query: string) => readonly MentionOption[];
-  onInserted: (item: Unstable_TriggerItem) => void;
   /** A grey line under the rows for this query ("Type to search for files"), if any. */
   hint?: (query: string) => string | null;
-}> = ({ search, onInserted, hint }) => {
+}> = ({ search, hint }) => {
   // The adapter hands assistant-ui the items; the rows' icons and details are looked up here.
   const shown = useRef(new Map<string, MentionOption>());
   const adapter = useMemo<TriggerAdapter>(
@@ -69,10 +71,7 @@ export const ComposerMentions: FC<{
   );
   return (
     <ComposerPrimitive.Unstable_TriggerPopover char="@" adapter={adapter}>
-      <ComposerPrimitive.Unstable_TriggerPopover.Directive
-        formatter={formatter}
-        onInserted={onInserted}
-      />
+      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={formatter} />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(matches) => (
           <MentionList hint={hint}>

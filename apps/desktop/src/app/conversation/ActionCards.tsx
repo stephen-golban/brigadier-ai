@@ -94,9 +94,14 @@ export function usePendingActions(conversation: Conversation | null): PendingAct
   });
 }
 
-/** Keys typed into a text field are the field's, not the card's. */
+/** Keys typed into a text field (the composer's is contenteditable) are the field's, not the card's. */
 function typing(event: KeyboardEvent): boolean {
-  return event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+  const { target } = event;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
 }
 
 /** The card for one pending decision; `message` is the card's one-line message field. */

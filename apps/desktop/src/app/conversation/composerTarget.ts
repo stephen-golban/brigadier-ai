@@ -23,6 +23,12 @@ export class PulledSlot {
   }
 }
 
+/**
+ * The composer's editable element (the Lexical input's contenteditable, not its scrolling
+ * wrapper), for focusing and blurring it.
+ */
+export const COMPOSER_EDITABLE = "[data-slot=composer-input] .aui-lexical-input";
+
 /** What the queue card needs from the view: the pulled slot and the attachment store. */
 export type QueueControls = { pulled: PulledSlot; attachments: BlobAttachmentAdapter };
 
