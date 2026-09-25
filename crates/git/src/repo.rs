@@ -1,7 +1,7 @@
 use crate::{
     Branch, Change, ChangeKind, CheckoutTrees, CollidingPath, CommitInfo, DiffStat, Environment,
-    Error, Git, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RepoState,
-    Result, RevertOutcome, Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
+    Error, Git, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RemoteState,
+    RepoState, Result, RevertOutcome, Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
     command::{TempIndex, check, failure, valid_oid, valid_path},
     parse,
 };
@@ -1039,6 +1039,98 @@ impl Repo {
             }
         }
         Ok(None)
+    }
+
+    /// The user's commit of the checkout's changes on its current branch: what is staged, or
+    /// with `include_unstaged` every non-ignored change. Runs the repository's hooks as
+    /// `git commit` does, under the landing lock so no landing moves the branch meanwhile.
+    pub fn commit_changes(&self, message: &str, include_unstaged: bool) -> Result<Oid> {
+        let lock = self.landing_lock();
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(what) = self.busy()? {
+            return Err(Error::Invalid(format!("the checkout is busy ({what})")));
+        }
+        if include_unstaged {
+            self.cmd(&["add", "-A", "--", "."], false)?;
+        }
+        self.git.checked(
+            Some(&self.root),
+            &["commit", "--quiet", "--file=-"],
+            false,
+            &[],
+            Some(message.as_bytes()),
+        )?;
+        self.resolve("HEAD")
+    }
+
+    /// Where `branch` pushes and how many of its commits are not pushed yet.
+    pub fn remote_state(&self, branch: &str) -> Result<RemoteState> {
+        self.validate_branch(branch)?;
+        let config = |key: String| -> Result<Option<String>> {
+            let args = ["config", "--get", key.as_str()];
+            let out = self.run(&args, true)?;
+            Ok(match out.status.code() {
+                Some(0) => Some(parse::line(&out.stdout)?),
+                _ => None,
+            })
+        };
+        let upstream_remote = config(format!("branch.{branch}.remote"))?;
+        let upstream = match &upstream_remote {
+            Some(_) => {
+                let spec = format!("{branch}@{{upstream}}");
+                // `validate_branch` keeps it from reading as an option, and rev-parse would
+                // echo an `--end-of-options` back with the name.
+                let args = ["rev-parse", "--abbrev-ref", spec.as_str()];
+                let out = self.run(&args, true)?;
+                out.status
+                    .success()
+                    .then(|| parse::line(&out.stdout))
+                    .transpose()?
+            }
+            None => None,
+        };
+        let remote = match upstream_remote {
+            Some(remote) => Some(remote),
+            None => config("remote.origin.url".into())?.map(|_| "origin".to_owned()),
+        };
+        let tip = format!("refs/heads/{branch}");
+        let ahead = match (&remote, &upstream) {
+            (_, Some(upstream)) => parse::line(&self.cmd(
+                &["rev-list", "--count", &format!("{upstream}..{tip}"), "--"],
+                true,
+            )?)?,
+            (Some(_), None) => parse::line(&self.cmd(
+                &["rev-list", "--count", &tip, "--not", "--remotes", "--"],
+                true,
+            )?)?,
+            (None, None) => "0".to_owned(),
+        };
+        Ok(RemoteState {
+            remote,
+            upstream,
+            ahead: ahead
+                .parse()
+                .map_err(|_| Error::Parse("invalid commit count".into()))?,
+        })
+    }
+
+    /// Pushes `branch` to its upstream, or to `origin` as its new upstream. Never forces, and
+    /// git asks nothing on a terminal.
+    pub fn push(&self, branch: &str) -> Result<()> {
+        let state = self.remote_state(branch)?;
+        let remote = state
+            .remote
+            .ok_or_else(|| Error::Invalid("the repository has no remote to push to".into()))?;
+        let refspec = format!("refs/heads/{branch}");
+        let mut args = vec!["push", "--porcelain"];
+        if state.upstream.is_none() {
+            args.push("--set-upstream");
+        }
+        args.extend([remote.as_str(), refspec.as_str()]);
+        let env: Environment = vec![("GIT_TERMINAL_PROMPT".into(), "0".into())];
+        self.git
+            .checked(Some(&self.root), &args, false, &env, None)?;
+        Ok(())
     }
 
     pub(crate) fn merge_tree(&self, left: &Oid, right: &Oid) -> Result<TreeMerge> {

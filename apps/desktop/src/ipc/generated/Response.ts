@@ -2,6 +2,7 @@
 import type { ArtifactText } from "./ArtifactText";
 import type { AttachmentRef } from "./AttachmentRef";
 import type { Catalog } from "./Catalog";
+import type { CommitOutcome } from "./CommitOutcome";
 import type { Conversation } from "./Conversation";
 import type { ConversationActivity } from "./ConversationActivity";
 import type { ConversationStatus } from "./ConversationStatus";
@@ -9,6 +10,7 @@ import type { ConversationView } from "./ConversationView";
 import type { Diagnostics } from "./Diagnostics";
 import type { DiffStat } from "./DiffStat";
 import type { EventEnvelope } from "./EventEnvelope";
+import type { GitState } from "./GitState";
 import type { Message } from "./Message";
 import type { MessagePage } from "./MessagePage";
 import type { MessageQueue } from "./MessageQueue";
@@ -40,7 +42,7 @@ truncated: boolean, } | { "method": "rateMessage" } | { "method": "getSessionDif
 /**
  * Absent for Chats and local-checkout sessions.
  */
-stat: DiffStat | null, } | { "method": "createConversation", conversation: Conversation, } | { "method": "forkConversation", conversation: Conversation, } | { "method": "updateSetup", conversation: Conversation, } | { "method": "getConversation", view: ConversationView, } | { "method": "sendMessage", outcome: SendOutcome, } | { "method": "editQueued", queue: MessageQueue, } | { "method": "deleteQueued", queue: MessageQueue, } | { "method": "moveQueued", queue: MessageQueue, } | { "method": "steerQueued" } | { "method": "resumeQueue", queue: MessageQueue, } | { "method": "interrupt" } | { "method": "resume" } | { "method": "compact" } | { "method": "getConversationStatus", status: ConversationStatus, } | { "method": "editMessage" } | { "method": "regenerate" } | { "method": "switchBranch" } | { "method": "addAttachment", attachment: AttachmentRef, } | { "method": "readAttachment", data: string, } | { "method": "pinDraftAttachments" } | { "method": "undoChanges" } | { "method": "getReviewDiff", review: ReviewDiff, } | { "method": "answerCard" } | { "method": "answerQuestion" } | { "method": "decidePlan" } | { "method": "stopTask" } | { "method": "pauseTask" } | { "method": "resumeTask" } | { "method": "restoreKeptWork", outcome: RestoreOutcome, } | { "method": "listWorkerEvents", page: WorkerPage, } | { "method": "listOrchestratorLog", page: OrchestratorPage, } | { "method": "readArtifact", text: ArtifactText, } | { "method": "saveArtifact" } | { "method": "openArtifact", 
+stat: DiffStat | null, } | { "method": "createConversation", conversation: Conversation, } | { "method": "forkConversation", conversation: Conversation, } | { "method": "updateSetup", conversation: Conversation, } | { "method": "getConversation", view: ConversationView, } | { "method": "sendMessage", outcome: SendOutcome, } | { "method": "editQueued", queue: MessageQueue, } | { "method": "deleteQueued", queue: MessageQueue, } | { "method": "moveQueued", queue: MessageQueue, } | { "method": "steerQueued" } | { "method": "resumeQueue", queue: MessageQueue, } | { "method": "interrupt" } | { "method": "resume" } | { "method": "compact" } | { "method": "getConversationStatus", status: ConversationStatus, } | { "method": "editMessage" } | { "method": "regenerate" } | { "method": "switchBranch" } | { "method": "addAttachment", attachment: AttachmentRef, } | { "method": "readAttachment", data: string, } | { "method": "pinDraftAttachments" } | { "method": "undoChanges" } | { "method": "getReviewDiff", review: ReviewDiff, } | { "method": "getGitState", state: GitState, } | { "method": "commitChanges", outcome: CommitOutcome, } | { "method": "pushChanges", branch: string, } | { "method": "answerCard" } | { "method": "answerQuestion" } | { "method": "decidePlan" } | { "method": "stopTask" } | { "method": "pauseTask" } | { "method": "resumeTask" } | { "method": "restoreKeptWork", outcome: RestoreOutcome, } | { "method": "listWorkerEvents", page: WorkerPage, } | { "method": "listOrchestratorLog", page: OrchestratorPage, } | { "method": "readArtifact", text: ArtifactText, } | { "method": "saveArtifact" } | { "method": "openArtifact", 
 /**
  * The copy to open.
  */

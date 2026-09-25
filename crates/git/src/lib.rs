@@ -384,6 +384,17 @@ pub struct CheckoutTrees {
     pub untracked: Vec<String>,
 }
 
+/// Where a branch pushes, and how far it is ahead.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteState {
+    /// The remote it pushes to: its upstream's, else `origin` when there is one.
+    pub remote: Option<String>,
+    /// Its upstream (`origin/main`), once it has one.
+    pub upstream: Option<String>,
+    /// Commits not pushed yet: ahead of its upstream, or on no remote branch at all.
+    pub ahead: u32,
+}
+
 /// One commit of a branch's history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommitInfo {
