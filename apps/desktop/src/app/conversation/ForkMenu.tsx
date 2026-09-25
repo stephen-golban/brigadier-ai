@@ -65,26 +65,30 @@ export const ForkMenu: FC<{ conversationId: string; kind: ConversationKind; mess
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>
-        <DropdownMenuContent side="bottom" align="start" className="w-sm p-2">
-          <DropdownMenuLabel className="text-foreground px-2 pt-1 pb-2 font-sans text-base font-semibold tracking-normal normal-case">
-            Fork chat from here
-          </DropdownMenuLabel>
-          {PLACES.map(({ place, title, detail }) => (
-            <DropdownMenuItem
-              key={place}
-              className="items-start gap-3 py-2"
-              onSelect={() => fork(place)}
-            >
-              <BranchAlt className="mt-0.5" />
-              <span className="flex flex-col gap-0.5">
-                <span>{title}</span>
-                <span className="text-muted-foreground text-xs">{detail}</span>
-              </span>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
+        <ForkPlaces side="bottom" onPick={fork} />
       </DropdownMenu>
       {error}
     </>
   );
 };
+
+/** The fork menu's content: where a session's fork works. */
+export const ForkPlaces: FC<{ side: "top" | "bottom"; onPick: (place: ForkPlace) => void }> = ({
+  side,
+  onPick,
+}) => (
+  <DropdownMenuContent side={side} align="start" className="w-sm p-2">
+    <DropdownMenuLabel className="text-foreground px-2 pt-1 pb-2 font-sans text-base font-semibold tracking-normal normal-case">
+      Fork chat from here
+    </DropdownMenuLabel>
+    {PLACES.map(({ place, title, detail }) => (
+      <DropdownMenuItem key={place} className="items-start gap-3 py-2" onSelect={() => onPick(place)}>
+        <BranchAlt className="mt-0.5" />
+        <span className="flex flex-col gap-0.5">
+          <span>{title}</span>
+          <span className="text-muted-foreground text-xs">{detail}</span>
+        </span>
+      </DropdownMenuItem>
+    ))}
+  </DropdownMenuContent>
+);
