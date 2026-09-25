@@ -23,6 +23,8 @@ const V2_ROOTS: &[&str] = &[
     "ThreadForkParams",
     "ThreadForkResponse",
     "ThreadDeleteParams",
+    "ThreadArchiveParams",
+    "ThreadUnarchiveParams",
     "TurnStartParams",
     "TurnStartResponse",
     "TurnSteerParams",
