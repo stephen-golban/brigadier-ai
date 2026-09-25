@@ -8,12 +8,12 @@
 //! `method` tag, so TypeScript can pair them with `Extract<Response, { method: M }>`.
 
 use brigadier_core::{
-    AttachmentRef, CardId, Catalog, CommitOutcome, Conversation, ConversationActivity,
-    ConversationId, ConversationKind, ConversationStatus, ConversationView, DiffStat, ForkPlace,
-    GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
-    ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating, RawApprovals, RawPage,
-    RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, Settings, Setup,
-    SetupRequest, TaskId, WorkerPage,
+    AttachmentRef, CardId, Catalog, CheckoutFile, CommitOutcome, Conversation,
+    ConversationActivity, ConversationId, ConversationKind, ConversationStatus, ConversationView,
+    DiffStat, ForkPlace, GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage,
+    ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating,
+    RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
+    ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -95,6 +95,12 @@ pub enum Request {
     /// The files of a session's checkout, for the composer's @-mentions.
     ListFiles {
         conversation_id: ConversationId,
+    },
+    /// One file of a session's checkout, for the side panel's Files tab.
+    ReadFile {
+        conversation_id: ConversationId,
+        /// Relative to the checkout's root.
+        path: String,
     },
     /// Rates an answer ("Good response" / "Bad response").
     RateMessage {
@@ -478,6 +484,9 @@ pub enum Response {
         files: Vec<String>,
         /// Set when the checkout has more files than were listed.
         truncated: bool,
+    },
+    ReadFile {
+        file: CheckoutFile,
     },
     RateMessage,
     GetSessionDiff {

@@ -17,6 +17,7 @@
 mod branches;
 mod cards;
 mod conversation;
+mod files;
 mod fork;
 mod gate;
 mod git_actions;

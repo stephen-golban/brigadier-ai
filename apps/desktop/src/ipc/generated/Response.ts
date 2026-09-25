@@ -2,6 +2,7 @@
 import type { ArtifactText } from "./ArtifactText";
 import type { AttachmentRef } from "./AttachmentRef";
 import type { Catalog } from "./Catalog";
+import type { CheckoutFile } from "./CheckoutFile";
 import type { CommitOutcome } from "./CommitOutcome";
 import type { Conversation } from "./Conversation";
 import type { ConversationActivity } from "./ConversationActivity";
@@ -38,7 +39,7 @@ files: Array<string>,
 /**
  * Set when the checkout has more files than were listed.
  */
-truncated: boolean, } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
+truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
 /**
  * Absent for Chats and local-checkout sessions.
  */

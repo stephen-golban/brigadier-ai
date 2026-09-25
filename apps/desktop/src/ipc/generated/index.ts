@@ -21,6 +21,7 @@ export type { CardId } from "./CardId";
 export type { CardState } from "./CardState";
 export type { Catalog } from "./Catalog";
 export type { CheckStatus } from "./CheckStatus";
+export type { CheckoutFile } from "./CheckoutFile";
 export type { ClientFrame } from "./ClientFrame";
 export type { ClientInfo } from "./ClientInfo";
 export type { CommitOutcome } from "./CommitOutcome";

@@ -1,6 +1,7 @@
 import {
   CollapseLg,
   ExpandLg,
+  Folders,
   Plus,
   SidebarRight,
   User,
@@ -15,20 +16,27 @@ import {
   Suspense,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
 import { type AgentsPanelState, WORKERS_LABEL, WorkersTab } from "@/app/conversation/Agents";
+import type { FileTarget } from "@/app/conversation/FilesTab";
 import { DiffGlyph } from "@/components/assistant-ui/elements/diff-glyph";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Kbd } from "@/components/ui/kbd";
 import { useSidebar } from "@/components/ui/sidebar";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
+import { useApp } from "@/state/store";
 
 const ReviewTab = lazy(() =>
   import("@/app/conversation/ReviewTab").then((module) => ({ default: module.ReviewTab })),
+);
+const FilesTab = lazy(() =>
+  import("@/app/conversation/FilesTab").then((module) => ({ default: module.FilesTab })),
 );
 
 /**
@@ -38,12 +46,31 @@ const ReviewTab = lazy(() =>
  */
 
 /** The kinds of tab the side panel opens. */
-export type SideTab = "workers" | "review";
+export type SideTab = "workers" | "review" | "files";
 
-const TABS: Record<SideTab, { title: string; icon: ReactNode }> = {
-  workers: { title: WORKERS_LABEL, icon: <User /> },
-  review: { title: "Review", icon: <DiffGlyph /> },
+/** Each tab's title, icon and ChatGPT's shortcut (macOS keys; Ctrl for ⌘ elsewhere). */
+const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | null }> = {
+  workers: { title: WORKERS_LABEL, icon: <User />, keys: null },
+  review: { title: "Review", icon: <DiffGlyph />, keys: "⌃⇧G" },
+  files: { title: "Files", icon: <Folders />, keys: "⌘P" },
 };
+
+/** Which tab a key press opens: ChatGPT's ⌃⇧G and ⌘P (Ctrl+P off macOS). */
+function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
+  const command = mac ? event.metaKey : event.ctrlKey;
+  if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyG") {
+    return "review";
+  }
+  if (command && !event.shiftKey && !event.altKey && event.code === "KeyP") return "files";
+  return null;
+}
+
+/** A shortcut as this platform writes it. */
+export function shortcutLabel(keys: string, mac: boolean): string {
+  return mac
+    ? keys
+    : keys.replace("⌃", "Ctrl+").replace("⌥", "Alt+").replace("⇧", "Shift+").replace("⌘", "Ctrl+");
+}
 
 type PanelState = {
   open: boolean;
@@ -57,6 +84,10 @@ const CLOSED: PanelState = { open: false, tabs: [], active: "new", fullscreen: f
 
 export type SidePanelApi = {
   state: PanelState;
+  /** The file the Files tab shows; null for its tree. */
+  file: FileTarget | null;
+  /** Shows a file in the Files tab (null: back to the tree). */
+  openFile: (file: FileTarget | null) => void;
   /** The tabs this conversation can open (a Chat has none yet). */
   available: readonly SideTab[];
   toggle: () => void;
@@ -68,6 +99,8 @@ export type SidePanelApi = {
 
 export const SidePanelContext = createContext<SidePanelApi>({
   state: CLOSED,
+  file: null,
+  openFile: () => {},
   available: [],
   toggle: () => {},
   openTab: () => {},
@@ -86,7 +119,12 @@ export function useSidePanel(session: boolean): {
 } {
   const [state, setState] = useState<PanelState>(CLOSED);
   const [worker, setWorker] = useState<string | null>(null);
-  const available = useMemo<SideTab[]>(() => (session ? ["workers", "review"] : []), [session]);
+  const [file, setFile] = useState<FileTarget | null>(null);
+  const mac = useApp((s) => s.info?.platform === "macos");
+  const available = useMemo<SideTab[]>(
+    () => (session ? ["workers", "review", "files"] : []),
+    [session],
+  );
 
   const openTab = useCallback((tab: SideTab) => {
     setState((current) => ({
@@ -105,9 +143,27 @@ export function useSidePanel(session: boolean): {
       return { ...current, tabs, active };
     });
   }, []);
+  // ChatGPT's tab shortcuts while this conversation is open.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const tab = tabForKey(event, mac);
+      if (!tab || !available.includes(tab)) return;
+      event.preventDefault();
+      if (tab === "files") setFile(null);
+      openTab(tab);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mac, available, openTab]);
+
   const panel = useMemo<SidePanelApi>(
     () => ({
       state,
+      file,
+      openFile: (next) => {
+        setFile(next);
+        openTab("files");
+      },
       available,
       toggle: () =>
         setState((current) =>
@@ -118,7 +174,7 @@ export function useSidePanel(session: boolean): {
       showNewTab: () => setState((current) => ({ ...current, open: true, active: "new" })),
       setFullscreen: (fullscreen) => setState((current) => ({ ...current, fullscreen })),
     }),
-    [state, available, openTab, closeTab],
+    [state, file, available, openTab, closeTab],
   );
 
   const workersOpen = state.open && state.tabs.includes("workers");
@@ -255,6 +311,7 @@ function TabChip({
 /** What a panel with no tab shows: the tabs this conversation can open. */
 function NewTabPage() {
   const { available, openTab } = useContext(SidePanelContext);
+  const mac = useApp((s) => s.info?.platform === "macos");
   if (available.length === 0) {
     return (
       <p className="text-muted-foreground m-auto p-4 text-sm">
@@ -272,7 +329,8 @@ function NewTabPage() {
             className="bg-muted/40 hover:bg-muted rounded-control h-control-lg flex w-full items-center gap-2 px-3 text-sm transition-colors [&_svg]:size-icon-sm"
           >
             {TABS[tab].icon}
-            {TABS[tab].title}
+            <span className="flex-1 text-start">{TABS[tab].title}</span>
+            {TABS[tab].keys && <Kbd>{shortcutLabel(TABS[tab].keys, mac)}</Kbd>}
           </button>
         </li>
       ))}
@@ -348,6 +406,10 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
         ) : state.active === "review" && conversationId ? (
           <Suspense fallback={null}>
             <ReviewTab conversationId={conversationId} />
+          </Suspense>
+        ) : state.active === "files" && conversationId ? (
+          <Suspense fallback={null}>
+            <FilesTab conversationId={conversationId} />
           </Suspense>
         ) : (
           <NewTabPage />

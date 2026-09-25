@@ -22,7 +22,11 @@ import type { TaskId } from "./TaskId";
 /**
  * Commands and queries.
  */
-export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, } | { "method": "rateMessage", conversationId: ConversationId, 
+export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, } | { "method": "readFile", conversationId: ConversationId, 
+/**
+ * Relative to the checkout's root.
+ */
+path: string, } | { "method": "rateMessage", conversationId: ConversationId, 
 /**
  * A message id, or `task:<id>` for a worker's report.
  */
