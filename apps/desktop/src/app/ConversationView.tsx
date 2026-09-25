@@ -23,9 +23,16 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { AgentsPanel, AgentsPanelContext, type AgentsPanelState } from "@/app/conversation/Agents";
+import { AgentsPanelContext } from "@/app/conversation/Agents";
 import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
-import { PinnedSummary } from "@/app/conversation/PinnedSummary";
+import { ChatActions, RenameDialog } from "@/app/conversation/ChatActions";
+import { PinnedSummary, PinnedSummaryToggle } from "@/app/conversation/PinnedSummary";
+import {
+  SidePanel,
+  SidePanelContext,
+  SidePanelToggle,
+  useSidePanel,
+} from "@/app/conversation/SidePanel";
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import {
   type Block,
@@ -44,6 +51,7 @@ import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { useAction } from "@/app/conversation/useAction";
 import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
+import { TopBar } from "@/app/TopBar";
 import { MessageAttachments } from "@/components/assistant-ui/elements/message-attachment";
 import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
@@ -473,8 +481,8 @@ export function ConversationView({ selection }: { selection: Selection }) {
     () => new Map(tree.nodes.map((node) => [node.id, node.head])),
     [tree.nodes],
   );
-  const [panel, setPanel] = useState<AgentsPanelState>(undefined);
-  const agents = useMemo(() => ({ panel, setPanel }), [panel]);
+  const { panel: sidePanel, agents } = useSidePanel(session);
+  const [renaming, setRenaming] = useState(false);
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
   const [mentions] = useState(() => new MentionMemory());
@@ -592,47 +600,64 @@ export function ConversationView({ selection }: { selection: Selection }) {
     [conversation, resolved, targets, mentions, running, onResume],
   );
 
+  const fullscreen = sidePanel.state.open && sidePanel.state.fullscreen;
   return (
     <ViewContext.Provider value={{ selection, conversation }}>
       <ComposerTargetContext.Provider value={target}>
-        <AgentsPanelContext.Provider value={agents}>
-          <StatusCardContext.Provider value={statusCard}>
-          <AssistantRuntimeProvider runtime={runtime}>
-            <div className="flex h-full">
-              <div className="flex h-full min-w-0 flex-1 flex-col">
-                {error && (
-                  <p
-                    role="alert"
-                    className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
-                  >
-                    <span className="min-w-0 flex-1">{error}</span>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="Dismiss"
-                      onClick={() => setError(null)}
-                    >
-                      <X />
-                    </Button>
-                  </p>
-                )}
-                <div className="relative min-h-0 flex-1">
-                  {conversation && <PinnedSummary conversation={conversation} />}
-                  <Thread
-                    components={THREAD_COMPONENTS}
-                    placeholder={
-                      resolved.kind === "session" || conversation?.kind === "session"
-                        ? "Describe what this session should do…  (@ mentions a worker or file)"
-                        : "Message Brigadier…"
-                    }
-                  />
+        <SidePanelContext.Provider value={sidePanel}>
+          <AgentsPanelContext.Provider value={agents}>
+            <StatusCardContext.Provider value={statusCard}>
+              <AssistantRuntimeProvider runtime={runtime}>
+                <div className="flex h-full">
+                  <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
+                    <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
+                      {conversation && (
+                        <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
+                      )}
+                      {conversation?.kind === "session" && <PinnedSummaryToggle />}
+                      {!sidePanel.state.open && <SidePanelToggle />}
+                    </TopBar>
+                    {error && (
+                      <p
+                        role="alert"
+                        className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
+                      >
+                        <span className="min-w-0 flex-1">{error}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Dismiss"
+                          onClick={() => setError(null)}
+                        >
+                          <X />
+                        </Button>
+                      </p>
+                    )}
+                    <div className="relative min-h-0 flex-1">
+                      {conversation && <PinnedSummary conversation={conversation} />}
+                      <Thread
+                        components={THREAD_COMPONENTS}
+                        placeholder={
+                          resolved.kind === "session" || conversation?.kind === "session"
+                            ? "Describe what this session should do…  (@ mentions a worker or file)"
+                            : "Message Brigadier…"
+                        }
+                      />
+                    </div>
+                  </div>
+                  <SidePanel conversationId={conversationId} />
                 </div>
-              </div>
-              {conversationId && <AgentsPanel conversationId={conversationId} />}
-            </div>
-          </AssistantRuntimeProvider>
-          </StatusCardContext.Provider>
-        </AgentsPanelContext.Provider>
+                {conversation && (
+                  <RenameDialog
+                    conversation={conversation}
+                    open={renaming}
+                    onOpenChange={setRenaming}
+                  />
+                )}
+              </AssistantRuntimeProvider>
+            </StatusCardContext.Provider>
+          </AgentsPanelContext.Provider>
+        </SidePanelContext.Provider>
       </ComposerTargetContext.Provider>
     </ViewContext.Provider>
   );

@@ -3,6 +3,7 @@ import type { ArtifactText } from "./ArtifactText";
 import type { AttachmentRef } from "./AttachmentRef";
 import type { Catalog } from "./Catalog";
 import type { Conversation } from "./Conversation";
+import type { ConversationActivity } from "./ConversationActivity";
 import type { ConversationStatus } from "./ConversationStatus";
 import type { ConversationView } from "./ConversationView";
 import type { Diagnostics } from "./Diagnostics";
@@ -26,7 +27,7 @@ import type { WorkerPage } from "./WorkerPage";
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "listFiles", 
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "getActivity", activity: Array<ConversationActivity>, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "listFiles", 
 /**
  * Paths relative to the checkout's root, tracked and untracked (not ignored).
  */

@@ -537,6 +537,21 @@ pub enum RunState {
     Failed,
 }
 
+/// What the sidebar shows about a conversation: whether it runs, and what waits for the user.
+/// The UI keeps it current from the same events as the board.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationActivity {
+    pub conversation_id: ConversationId,
+    pub run: RunState,
+    /// Its tasks that are not over, with their state.
+    pub tasks: Vec<(TaskId, TaskState)>,
+    /// Approvals and plans waiting for the user's decision.
+    pub approvals: Vec<CardId>,
+    /// Questions not answered yet.
+    pub questions: Vec<CardId>,
+}
+
 // ----- worker steps -----------------------------------------------------------------------
 
 /// A turn in a worker's life, as the thread tells it ("task-2 finished").

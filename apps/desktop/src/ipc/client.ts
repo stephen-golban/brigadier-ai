@@ -101,3 +101,12 @@ export async function openArtifact(id: string, fileName: string): Promise<void> 
     throw isIpcError(error) ? new RequestError(error) : error;
   }
 }
+
+/** Opens a folder in the system file manager, or with the app named `app` (macOS). */
+export async function openFolder(path: string, app?: string): Promise<void> {
+  try {
+    await invoke("open_folder", { path, with: app ?? null });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}

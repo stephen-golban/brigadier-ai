@@ -1,11 +1,13 @@
-import { Branch } from "@openai/apps-sdk-ui/components/Icon";
+import { Branch, Tasks } from "@openai/apps-sdk-ui/components/Icon";
 import { type ReactNode, useContext, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanelContext, WORKERS_LABEL, WorkerGlyphs } from "@/app/conversation/Agents";
 import { isFinal, isWorking } from "@/app/conversation/blocks";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import type { Conversation, DiffStat, Plan, Task } from "@/ipc/generated";
-import { getSessionDiff } from "@/state/actions";
+import { cn } from "@/lib/utils";
+import { getSessionDiff, setPinnedSummary } from "@/state/actions";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
@@ -143,5 +145,21 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
         </Section>
       )}
     </aside>
+  );
+}
+
+/** The header button that shows or hides the pinned summary. */
+export function PinnedSummaryToggle() {
+  const shown = useApp((s) => s.pinnedSummary);
+  return (
+    <TooltipIconButton
+      tooltip="Toggle pinned summary"
+      size="icon-md"
+      aria-pressed={shown}
+      className={cn(shown && "bg-muted")}
+      onClick={() => setPinnedSummary(!shown)}
+    >
+      <Tasks />
+    </TooltipIconButton>
   );
 }

@@ -13,7 +13,7 @@ import {
 import type { ConversationKind, ForkPlace } from "@/ipc/generated";
 import { forkConversation } from "@/state/actions";
 
-const PLACES: readonly { place: ForkPlace; title: string; detail: string }[] = [
+export const FORK_PLACES: readonly { place: ForkPlace; title: string; detail: string }[] = [
   {
     place: "workspace",
     title: "Fork in this workspace",
@@ -81,7 +81,7 @@ export const ForkPlaces: FC<{ side: "top" | "bottom"; onPick: (place: ForkPlace)
     <DropdownMenuLabel className="text-foreground px-2 pt-1 pb-2 font-sans text-base font-semibold tracking-normal normal-case">
       Fork chat from here
     </DropdownMenuLabel>
-    {PLACES.map(({ place, title, detail }) => (
+    {FORK_PLACES.map(({ place, title, detail }) => (
       <DropdownMenuItem key={place} className="items-start gap-3 py-2" onSelect={() => onPick(place)}>
         <BranchAlt className="mt-0.5" />
         <span className="flex flex-col gap-0.5">

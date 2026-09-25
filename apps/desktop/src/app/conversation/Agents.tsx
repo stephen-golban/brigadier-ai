@@ -9,16 +9,13 @@ import {
   Snowflake,
   SparklesFilled,
   StarFilled,
-  X,
 } from "@openai/apps-sdk-ui/components/Icon";
 import {
   createContext,
   memo,
   type ReactNode,
-  type RefObject,
   useContext,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -31,7 +28,6 @@ import { useNow } from "@/hooks/use-now";
 import type { Task, WorkerStepKind } from "@/ipc/generated";
 import { formatAgo, formatDuration } from "@/lib/format";
 import { modelName, useModelGroups } from "@/lib/setup";
-import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
 
@@ -43,7 +39,7 @@ export const WORKERS_LABEL = "Workers";
  * side panel listing them all, where one opens to show its live transcript, commands and diff.
  */
 
-/** Which worker the agents panel shows: `null` for the list, `undefined` when it is closed. */
+/** Which worker the Workers tab shows: `null` for the list, `undefined` when the tab is closed. */
 export type AgentsPanelState = string | null | undefined;
 
 export const AgentsPanelContext = createContext<{
@@ -276,59 +272,6 @@ function MentionButton({ number }: { number: number }) {
   );
 }
 
-/** The panel's width once the user dragged it, kept while the app runs. */
-let draggedWidth: number | null = null;
-
-/** The panel's width: its token until the user drags the edge between it and the thread. */
-function usePanelWidth() {
-  const [width, setWidth] = useState(draggedWidth);
-  const resize = (next: number) => {
-    const min = tokenPx("--spacing-agents");
-    const max = Math.max(min, window.innerWidth * 0.6);
-    draggedWidth = Math.round(Math.min(max, Math.max(min, next)));
-    setWidth(draggedWidth);
-  };
-  return { width, resize };
-}
-
-function Splitter({
-  panel,
-  onResize,
-}: {
-  panel: RefObject<HTMLElement | null>;
-  onResize: (width: number) => void;
-}) {
-  const step = tokenPx("--spacing-row");
-  return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={`Resize the ${WORKERS_LABEL.toLowerCase()} panel`}
-      tabIndex={0}
-      className="hover:bg-border focus-visible:bg-ring absolute inset-y-0 -start-0.5 z-10 w-1 cursor-col-resize transition-colors"
-      onPointerDown={(event) => {
-        const element = panel.current;
-        if (!element) return;
-        event.preventDefault();
-        const start = event.clientX;
-        const from = element.getBoundingClientRect().width;
-        const move = (next: PointerEvent) => onResize(from + start - next.clientX);
-        const up = () => {
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", up);
-        };
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", up);
-      }}
-      onKeyDown={(event) => {
-        const width = panel.current?.getBoundingClientRect().width ?? 0;
-        if (event.key === "ArrowLeft") onResize(width + step);
-        else if (event.key === "ArrowRight") onResize(width - step);
-      }}
-    />
-  );
-}
-
 /** Active workers first, then the finished ones, each by number. */
 function useWorkerIds(conversationId: string): { active: string[]; finished: string[] } {
   const ids = useBoard(
@@ -356,7 +299,7 @@ function WorkerList({ conversationId }: { conversationId: string }) {
   const shown = held ?? lists;
   if (lists.active.length + lists.finished.length === 0) {
     return (
-      <p className="text-muted-foreground px-4 text-sm">
+      <p className="text-muted-foreground p-4 text-sm">
         No {WORKERS_LABEL.toLowerCase()} yet.
       </p>
     );
@@ -366,12 +309,14 @@ function WorkerList({ conversationId }: { conversationId: string }) {
   const joined = [...lists.active, ...lists.finished].filter((id) => !heldIds.has(id));
   return (
     <div
-      className="min-h-0 flex-1 overflow-y-auto px-2 pb-3"
+      className="min-h-0 flex-1 overflow-y-auto p-4"
       onPointerEnter={() => setHeld(lists)}
       onPointerLeave={() => setHeld(null)}
     >
-      <AgentSection title="Active" ids={[...shown.active, ...joined]} />
-      <AgentSection title="Done" ids={shown.finished} />
+      <div className="max-w-thread mx-auto flex w-full flex-col">
+        <AgentSection title="Active" ids={[...shown.active, ...joined]} />
+        <AgentSection title="Done" ids={shown.finished} />
+      </div>
     </div>
   );
 }
@@ -400,7 +345,6 @@ function WorkerDetail({ task }: { task: Task }) {
         <span className="text-muted-foreground shrink-0 text-xs" title={`task-${task.number}`}>
           {model}
         </span>
-        <CloseButton />
       </header>
       <div className="border-border flex shrink-0 flex-wrap items-center gap-1.5 border-b px-3 py-1.5">
         <span className="text-muted-foreground text-xs">task-{task.number}</span>
@@ -413,44 +357,10 @@ function WorkerDetail({ task }: { task: Task }) {
   );
 }
 
-function CloseButton() {
-  const { setPanel } = useContext(AgentsPanelContext);
-  return (
-    <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={() => setPanel(undefined)}>
-      <X />
-    </Button>
-  );
-}
-
-/** The side panel: every worker of the session, or one of them working. */
-export function AgentsPanel({ conversationId }: { conversationId: string }) {
+/** The Workers tab of the side panel: every worker of the session, or one of them working. */
+export function WorkersTab({ conversationId }: { conversationId: string }) {
   const { panel } = useContext(AgentsPanelContext);
   const selected = useBoard((s) => (panel ? s.board?.tasks[panel] : undefined));
-  const { width, resize } = usePanelWidth();
-  const ref = useRef<HTMLElement>(null);
-  if (panel === undefined) return null;
-  return (
-    <aside
-      ref={ref}
-      aria-label={WORKERS_LABEL}
-      className={cn(
-        "border-border bg-background animate-in fade-in slide-in-from-right-2 relative flex h-full shrink-0 flex-col border-s duration-200",
-        width === null && "w-agents",
-      )}
-      style={width === null ? undefined : { width }}
-    >
-      <Splitter panel={ref} onResize={resize} />
-      {selected ? (
-        <WorkerDetail task={selected} />
-      ) : (
-        <>
-          <header className="h-titlebar flex shrink-0 items-center gap-2 px-3">
-            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{WORKERS_LABEL}</h2>
-            <CloseButton />
-          </header>
-          <WorkerList conversationId={conversationId} />
-        </>
-      )}
-    </aside>
-  );
+  if (selected) return <WorkerDetail task={selected} />;
+  return <WorkerList conversationId={conversationId} />;
 }

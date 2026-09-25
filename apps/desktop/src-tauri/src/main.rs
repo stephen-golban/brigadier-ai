@@ -132,6 +132,18 @@ async fn open_artifact(
         .map_err(|err| internal(format!("could not open it: {err}")))
 }
 
+/// Opens a folder (a session's working directory) in the system file manager, or with the
+/// app named `with` ("Terminal" on macOS).
+#[tauri::command]
+fn open_folder(app: tauri::AppHandle, path: String, with: Option<String>) -> Result<(), IpcError> {
+    app.opener()
+        .open_path(path, with.as_deref())
+        .map_err(|err| IpcError {
+            code: brigadier_ipc::protocol::ErrorCode::Internal,
+            message: format!("could not open it: {err}"),
+        })
+}
+
 /// The webview painted its first interactive frame at `paint_ms` (ms since the Unix epoch).
 /// Returns cold start: process start to that paint.
 #[tauri::command]
@@ -257,7 +269,8 @@ fn main() {
             smoke_finish,
             pick_folder,
             save_artifact,
-            open_artifact
+            open_artifact,
+            open_folder
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {

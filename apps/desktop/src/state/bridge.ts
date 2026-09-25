@@ -2,6 +2,7 @@ import { subscribe } from "@/ipc/client";
 import type { BridgeEvent, EventEnvelope } from "@/ipc/generated";
 import { markApplied, noteFlush, setSamplingPaused } from "@/lib/perf";
 import { loadCatalog, loadConversation, openOrchestratorLog } from "@/state/actions";
+import { applyActivityEvents, loadActivity } from "@/state/activity";
 import { applyBoardEvents, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
 
@@ -17,6 +18,7 @@ function flush() {
   const started = performance.now();
   applyEvents(batch);
   applyBoardEvents(batch);
+  applyActivityEvents(batch);
   noteFlush(started, batch.map(({ event }) => event.type));
   for (const { atMs, event } of batch) {
     markApplied(atMs, event.type === "probe" ? event.burstId : null);
@@ -31,7 +33,7 @@ async function resync() {
   const openId = selection.type === "conversation" ? selection.id : null;
   const open = openId ? threads[openId] : undefined;
   useApp.setState({ threads: openId && open ? { [openId]: open } : {} });
-  await loadCatalog();
+  await Promise.all([loadCatalog(), loadActivity()]);
   const log = useBoard.getState().orchestrator;
   if (log) void openOrchestratorLog(log.conversationId);
   if (openId) await loadConversation(openId);
