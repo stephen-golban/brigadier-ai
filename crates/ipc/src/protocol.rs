@@ -212,6 +212,10 @@ pub enum Request {
         mime: String,
         data: String,
     },
+    /// A stored attachment's bytes, for previews: base64.
+    ReadAttachment {
+        id: String,
+    },
     /// Answers an approval card.
     AnswerCard {
         conversation_id: ConversationId,
@@ -481,6 +485,9 @@ pub enum Response {
     SwitchBranch,
     AddAttachment {
         attachment: AttachmentRef,
+    },
+    ReadAttachment {
+        data: String,
     },
     AnswerCard,
     AnswerQuestion,

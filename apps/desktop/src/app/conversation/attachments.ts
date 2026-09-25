@@ -41,7 +41,7 @@ export class BlobAttachmentAdapter implements AttachmentAdapter {
         status: {
           type: "incomplete",
           reason: "error",
-          message: `${file.name} is ${formatBytes(file.size)}; attachments are limited to ${formatBytes(MAX_BYTES)}.`,
+          message: `File is too large to upload (maximum ${formatBytes(MAX_BYTES)})`,
         },
       };
       return;
@@ -82,6 +82,11 @@ export class BlobAttachmentAdapter implements AttachmentAdapter {
     const id = crypto.randomUUID();
     this.refs.set(id, ref);
     return { id, type: kindOf(ref.mime), name: ref.name, contentType: ref.mime, content: [] };
+  }
+
+  /** The stored reference behind a composer attachment, once stored. */
+  refOf(id: string): AttachmentRef | undefined {
+    return this.refs.get(id);
   }
 
   /** The stored references for a sent message's attachments, in order. */

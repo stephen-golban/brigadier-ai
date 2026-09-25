@@ -400,6 +400,13 @@ export async function addAttachment(file: File): Promise<AttachmentRef> {
   return attachment;
 }
 
+/** A stored attachment's bytes, for previews. */
+export async function readAttachment(ref: AttachmentRef): Promise<Blob> {
+  const { data } = await request({ method: "readAttachment", id: ref.id });
+  const binary = atob(data);
+  return new Blob([Uint8Array.from(binary, (char) => char.charCodeAt(0))], { type: ref.mime });
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

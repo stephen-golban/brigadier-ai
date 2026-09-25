@@ -645,6 +645,15 @@ impl Core {
         })
     }
 
+    /// A stored attachment's bytes.
+    pub async fn read_attachment(&self, id: &str) -> Result<Vec<u8>> {
+        self.store
+            .blobs()
+            .get(id.parse::<brigadier_store::BlobHash>()?)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("attachment {id}")))
+    }
+
     /// Messages before `before` (a message `seq`), oldest first.
     pub async fn list_messages(
         &self,

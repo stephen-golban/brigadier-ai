@@ -2,6 +2,7 @@ import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { ArrowUp, PlayTriangle, Spin, Stop } from "@openai/apps-sdk-ui/components/Icon";
 import {
   type FC,
+  type ClipboardEvent,
   type KeyboardEvent,
   useContext,
   useEffect,
@@ -27,6 +28,10 @@ import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { PLAN_PLACEHOLDER, PlanChip, PlusMenu, usePlanMode } from "@/app/conversation/PlusMenu";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment";
+import {
+  PASTE_AS_ATTACHMENT_CHARS,
+  PASTED_TEXT_NAME,
+} from "@/components/assistant-ui/elements/attachment-tile";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
@@ -202,11 +207,20 @@ function ComposerInput({
       composer.send({ steer: queueEnabled });
     }
   };
+  // A long paste becomes a "Pasted text" attachment, as ChatGPT does; files are aui's.
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData("text/plain");
+    if (event.clipboardData.files.length > 0 || text.length < PASTE_AS_ATTACHMENT_CHARS) return;
+    event.preventDefault();
+    const file = new File([text], PASTED_TEXT_NAME, { type: "text/plain" });
+    void aui.composer().addAttachment(file);
+  };
   return (
     <ComposerPrimitive.Input
       placeholder={placeholder}
       data-scrolled={scrolled || undefined}
       onKeyDown={onKeyDown}
+      onPaste={onPaste}
       // Esc stops only on a second press (useEscToStop), as ChatGPT's does.
       cancelOnEscape={false}
       onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
