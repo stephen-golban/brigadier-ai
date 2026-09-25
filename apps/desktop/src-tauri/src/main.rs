@@ -144,6 +144,28 @@ fn open_folder(app: tauri::AppHandle, path: String, with: Option<String>) -> Res
         })
 }
 
+/// Opens a web link in the user's browser. Only http and https: the thread's links come from
+/// models and must not launch other handlers.
+#[tauri::command]
+fn open_url(app: tauri::AppHandle, url: String) -> Result<(), IpcError> {
+    let invalid = |message: String| IpcError {
+        code: brigadier_ipc::protocol::ErrorCode::Invalid,
+        message,
+    };
+    let scheme = url
+        .split_once(':')
+        .map(|(scheme, _)| scheme.to_ascii_lowercase());
+    if !matches!(scheme.as_deref(), Some("http" | "https")) {
+        return Err(invalid(format!("only web links open: {url}")));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| IpcError {
+            code: brigadier_ipc::protocol::ErrorCode::Internal,
+            message: format!("could not open it: {err}"),
+        })
+}
+
 /// The webview painted its first interactive frame at `paint_ms` (ms since the Unix epoch).
 /// Returns cold start: process start to that paint.
 #[tauri::command]
@@ -270,7 +292,8 @@ fn main() {
             pick_folder,
             save_artifact,
             open_artifact,
-            open_folder
+            open_folder,
+            open_url
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {
