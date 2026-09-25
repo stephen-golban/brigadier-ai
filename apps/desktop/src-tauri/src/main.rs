@@ -166,6 +166,17 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), IpcError> {
         })
 }
 
+/// Shows a file (a file link in an answer) selected in the system file manager.
+#[tauri::command]
+fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), IpcError> {
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|err| IpcError {
+            code: brigadier_ipc::protocol::ErrorCode::Internal,
+            message: format!("could not show it: {err}"),
+        })
+}
+
 /// The webview painted its first interactive frame at `paint_ms` (ms since the Unix epoch).
 /// Returns cold start: process start to that paint.
 #[tauri::command]
@@ -293,7 +304,8 @@ fn main() {
             save_artifact,
             open_artifact,
             open_folder,
-            open_url
+            open_url,
+            reveal_path
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {

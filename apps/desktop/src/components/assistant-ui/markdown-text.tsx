@@ -1,18 +1,24 @@
 import {
-  type CodeHeaderProps,
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useMemo, useState } from "react";
+import { type FC, memo, type ReactNode, useMemo, useRef, useState } from "react";
 import type { TextMessagePartProps } from "@assistant-ui/react";
-import { Check, Copy } from "@openai/apps-sdk-ui/components/Icon";
+import { Check, Copy, ExpandLg } from "@openai/apps-sdk-ui/components/Icon";
 
+import { CodeBlock, CodeHeader } from "@/components/assistant-ui/code-block";
+import { FileTypeIcon } from "@/components/assistant-ui/elements/file-type-icon";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { openUrl, revealPath } from "@/ipc/client";
 import { rehypeTailFade } from "@/lib/tail-fade";
 import { cn } from "@/lib/utils";
+import { selectedConversation, useApp } from "@/state/store";
+import { toast } from "@/state/toasts";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
@@ -21,6 +27,13 @@ type MarkdownTextProps = Partial<TextMessagePartProps> & {
 };
 
 const TAIL_FADE = [rehypeTailFade];
+
+/**
+ * Keeps file links like `notes.py:36`, which react-markdown's default would drop as an
+ * unknown scheme. Links never navigate the app (web links open in the browser, the rest are
+ * file chips), so only script-bearing schemes are removed.
+ */
+const keepLinks = (url: string) => (/^\s*(javascript|vbscript|data):/i.test(url) ? "" : url);
 
 const shallowEqual = (
   a: Record<string, unknown> | undefined,
@@ -59,6 +72,7 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, streaming }) => {
       remarkPlugins={[remarkGfm]}
       rehypePlugins={streaming ? TAIL_FADE : undefined}
       className="aui-md"
+      urlTransform={keepLinks}
       components={markdownComponents}
       defer
     />
@@ -67,26 +81,134 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, streaming }) => {
 
 export const MarkdownText = memo(MarkdownTextImpl);
 
-const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
-  const onCopy = () => {
-    if (!code || isCopied) return;
-    copyToClipboard(code);
-  };
+function failed(error: unknown): void {
+  toast(error instanceof Error ? error.message : String(error), { tone: "error" });
+}
 
+/** The root of the open session's checkout, for resolving file links. */
+function useCheckoutRoot(): string | null {
+  return useApp((s) => {
+    const setup = selectedConversation(s)?.setup;
+    if (setup?.type !== "session") return null;
+    return setup.environment.type === "newWorktree"
+      ? (setup.environment.path ?? setup.repo)
+      : setup.repo;
+  });
+}
+
+/** A link to a file: its absolute path and line, from `path`, `path:36`, `path#L36`, `file://…`. */
+function fileTarget(href: string, root: string | null): { path: string; line: number | null } {
+  let path = href.startsWith("file://") ? href.slice("file://".length) : href;
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Keep it as written.
+  }
+  const found = /(?::|#L)(\d+)(?:[-:]L?\d+)?$/.exec(path);
+  const line = found ? Number(found[1]) : null;
+  if (found) path = path.slice(0, found.index);
+  if (!path.startsWith("/") && root) path = `${root.replace(/\/$/, "")}/${path.replace(/^\.\//, "")}`;
+  return { path, line };
+}
+
+/**
+ * ChatGPT's file-link chip: the file's type icon and its name in link blue, "(line 36)"
+ * after it, the absolute path on hover. A click shows the file in Finder.
+ */
+const FileChip: FC<{ href: string; children: ReactNode }> = ({ href, children }) => {
+  const root = useCheckoutRoot();
+  const { path, line } = fileTarget(href, root);
   return (
-    <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1 text-xs">
-      <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
-        {language}
-      </span>
-      <TooltipIconButton tooltip="Copy" size="icon-xs" onClick={onCopy}>
-        {!isCopied && (
-          <Copy className="animate-in zoom-in-75 fade-in duration-150" />
-        )}
-        {isCopied && (
-          <Check className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
-        )}
-      </TooltipIconButton>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <a
+          href={href}
+          data-slot="file-chip"
+          onClick={(event) => {
+            event.preventDefault();
+            revealPath(path).catch(failed);
+          }}
+          className="aui-md-file text-link hover:text-link/80 cursor-pointer no-underline"
+        >
+          <FileTypeIcon name={path} className="me-0.5 inline-block size-icon-sm align-text-bottom" />
+          {children}
+          {line !== null && <span className="text-muted-foreground"> (line {line})</span>}
+        </a>
+      </TooltipTrigger>
+      <TooltipContent side="top">{path}</TooltipContent>
+    </Tooltip>
+  );
+};
+
+/** Web links open in the browser; anything else that isn't a page is a file. */
+const Link: FC<React.ComponentProps<"a">> = ({ className, href, children, ...props }) => {
+  if (href && !/^(https?:|mailto:|#)/i.test(href)) {
+    return <FileChip href={href}>{children}</FileChip>;
+  }
+  return (
+    <a
+      {...props}
+      href={href}
+      onClick={(event) => {
+        event.preventDefault();
+        if (href && /^https?:/i.test(href)) openUrl(href).catch(failed);
+      }}
+      className={cn(
+        "aui-md-a text-link hover:text-link/80 underline-offset-2 hover:underline",
+        className,
+      )}
+    >
+      {children}
+    </a>
+  );
+};
+
+const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
+
+/** A table's text as a Markdown table, for "Copy table". */
+function tableMarkdown(table: HTMLTableElement): string {
+  const rows = [...table.rows].map((row) =>
+    [...row.cells].map((cell) => (cell.textContent ?? "").trim().replaceAll("|", "\\|")),
+  );
+  const [head, ...body] = rows;
+  if (!head) return "";
+  return [line(head), line(head.map(() => "---")), ...body.map(line)].join("\n");
+}
+
+/** ChatGPT's table: rules between rows, no outer border; on hover "Expand table" and "Copy table". */
+const Table: FC<React.ComponentProps<"table">> = ({ className, ...props }) => {
+  const ref = useRef<HTMLTableElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const table = (
+    <table
+      className={cn("aui-md-table w-full border-collapse text-sm", className)}
+      {...props}
+    />
+  );
+  return (
+    <div className="aui-md-table-wrapper group/table relative my-3 first:mt-0 last:mb-0">
+      <div className="overflow-x-auto">
+        <table ref={ref} className={cn("aui-md-table w-full border-collapse text-sm", className)} {...props} />
+      </div>
+      <div className="bg-background/80 rounded-control absolute end-0 -top-1 flex opacity-0 transition-opacity group-hover/table:opacity-100 focus-within:opacity-100">
+        <TooltipIconButton tooltip="Expand table" size="icon-xs" onClick={() => setExpanded(true)}>
+          <ExpandLg />
+        </TooltipIconButton>
+        <TooltipIconButton
+          tooltip={isCopied ? "Copied" : "Copy table"}
+          size="icon-xs"
+          onClick={() => ref.current && copyToClipboard(tableMarkdown(ref.current))}
+        >
+          {isCopied ? <Check /> : <Copy />}
+        </TooltipIconButton>
+      </div>
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent className="max-h-9/10 w-9/10 max-w-none overflow-auto">
+          <DialogTitle className="sr-only">Table</DialogTitle>
+          {table}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -155,15 +277,7 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  a: Link,
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(
@@ -197,21 +311,11 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  table: ({ className, ...props }) => (
-    <div className="aui-md-table-wrapper my-3 overflow-x-auto">
-      <table
-        className={cn(
-          "aui-md-table w-full border-separate border-spacing-0",
-          className,
-        )}
-        {...props}
-      />
-    </div>
-  ),
+  table: Table,
   th: ({ className, ...props }) => (
     <th
       className={cn(
-        "aui-md-th bg-muted px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
+        "aui-md-th border-border border-b px-3 py-2 text-start font-semibold [[align=center]]:text-center [[align=right]]:text-right",
         className,
       )}
       {...props}
@@ -220,7 +324,7 @@ const defaultComponents = memoizeMarkdownComponents({
   td: ({ className, ...props }) => (
     <td
       className={cn(
-        "aui-md-td border-muted-foreground/20 border-s border-b px-3 py-1.5 text-start last:border-e [[align=center]]:text-center [[align=right]]:text-right",
+        "aui-md-td px-3 py-2 text-start align-top [[align=center]]:text-center [[align=right]]:text-right",
         className,
       )}
       {...props}
@@ -228,10 +332,7 @@ const defaultComponents = memoizeMarkdownComponents({
   ),
   tr: ({ className, ...props }) => (
     <tr
-      className={cn(
-        "aui-md-tr m-0 border-b p-0 first:border-t [&:last-child>td:first-child]:rounded-es-lg [&:last-child>td:last-child]:rounded-ee-lg",
-        className,
-      )}
+      className={cn("aui-md-tr border-border/60 border-b last:border-b-0", className)}
       {...props}
     />
   ),
@@ -273,4 +374,5 @@ const defaultComponents = memoizeMarkdownComponents({
     );
   },
   CodeHeader,
+  SyntaxHighlighter: CodeBlock,
 });
