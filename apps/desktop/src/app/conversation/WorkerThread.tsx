@@ -5,6 +5,7 @@ import {
   Copy,
   EditPencil,
   Folder,
+  Globe,
   Reply,
   Search,
   ShieldCheck,
@@ -21,7 +22,7 @@ import {
   useState,
 } from "react";
 
-import { isWorking } from "@/app/conversation/blocks";
+import { isFinal, isWorking } from "@/app/conversation/blocks";
 import { TASK_STATE_LABELS, TaskDetails } from "@/app/conversation/cards/TaskCardView";
 import { useAction } from "@/app/conversation/useAction";
 import { RateItem, RateMenu } from "@/components/assistant-ui/rate-menu";
@@ -57,11 +58,9 @@ import { useBoard } from "@/state/board";
 
 const NO_ENTRIES: RawEntry[] = [];
 
-const FINAL: ReadonlySet<Task["state"]> = new Set(["landed", "done", "rejected", "stopped", "failed"]);
-
 /** Milliseconds a task has worked: until now while it is active, until its last update after. */
 export function useTaskElapsed(task: Task): number {
-  const final = FINAL.has(task.state);
+  const final = isFinal(task);
   const now = useNow(final ? null : 1000);
   return Math.max(0, (final ? task.updatedAtMs : now) - task.createdAtMs);
 }
@@ -129,7 +128,7 @@ function actionDetail(item: ActionItem): ReactNode {
 /** One action as a grey line; a command or tool call opens to what it ran. */
 function ActionRow({ item }: { item: ActionItem }) {
   const activity = activityOf(item);
-  const Icon = ICONS[activity.kind];
+  const Icon = activity.web ? Globe : ICONS[activity.kind];
   const running = item.status === "inProgress";
   const label = (
     <>
@@ -161,7 +160,10 @@ function ActionRun({ items }: { items: readonly ActionItem[] }) {
   const activities = items.map(activityOf);
   const counts = new Map<ActivityKind, number>();
   for (const activity of activities) counts.set(activity.kind, (counts.get(activity.kind) ?? 0) + 1);
-  const [dominant] = [...counts].toSorted((a, b) => b[1] - a[1])[0] ?? ["run"];
+  // Edits win the icon, as in ChatGPT; otherwise the most frequent kind does.
+  const [dominant] = counts.has("edit")
+    ? ["edit" as const]
+    : ([...counts].toSorted((a, b) => b[1] - a[1])[0] ?? ["run" as const]);
   const Icon = ICONS[dominant];
   return (
     <Collapsible>
@@ -385,7 +387,7 @@ export function WorkerThread({ task, model }: { task: Task; model: string }) {
             />
           ))}
         {now && <div className="shimmer truncate text-sm motion-reduce:animate-none">{now}</div>}
-        {!working && !task.report && !FINAL.has(task.state) && (
+        {!working && !task.report && !isFinal(task) && (
           <p className="text-muted-foreground text-sm">{TASK_STATE_LABELS[task.state]}</p>
         )}
         <Answer task={task} />

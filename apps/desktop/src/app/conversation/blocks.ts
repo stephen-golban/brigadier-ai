@@ -83,6 +83,13 @@ const WORKING: ReadonlySet<Task["state"]> = new Set([
   "reviewing",
 ]);
 
+const FINAL: ReadonlySet<Task["state"]> = new Set(["landed", "done", "rejected", "stopped", "failed"]);
+
+/** Whether a task is over: its worker is gone and it will not run again. */
+export function isFinal(task: Task): boolean {
+  return FINAL.has(task.state);
+}
+
 /** A worker whose card stays in view: it failed, or it waits for the user. */
 function keepTask(task: Task): boolean {
   return (
