@@ -20,6 +20,7 @@ import {
   Copy,
   DotsHorizontal,
   EditPencil,
+  Paperclip,
   Stop,
 } from "@openai/apps-sdk-ui/components/Icon";
 import {
@@ -44,7 +45,8 @@ import { cn } from "@/lib/utils";
 /**
  * Optional overrides: `AssistantMessage`, `Welcome` and `Composer` replace whole sections;
  * `BeforeMessages` renders above the message list (e.g. a "load earlier" control);
- * `MessageFooter` renders under each user or assistant message (attachments);
+ * `MessageFooter` renders under each assistant message; `UserAttachments` above a user
+ * message's text (its files, as ChatGPT shows them);
  * `AboveComposer` renders between the messages and the composer (queue, notices).
  */
 export type ThreadComponents = {
@@ -52,6 +54,7 @@ export type ThreadComponents = {
   Welcome?: ComponentType | undefined;
   BeforeMessages?: ComponentType | undefined;
   MessageFooter?: ComponentType | undefined;
+  UserAttachments?: ComponentType | undefined;
   AboveComposer?: ComponentType | undefined;
   /** Floats centred just above the composer, over the thread (ChatGPT's capsule). */
   Capsule?: ComponentType | undefined;
@@ -123,6 +126,20 @@ export const Thread: FC<ThreadProps> = ({
   );
 };
 
+/** ChatGPT's "Drop to attach", over the thread while files are dragged onto it. */
+const DropOverlay: FC = () => (
+  <div
+    aria-hidden
+    data-slot="drop-overlay"
+    className="bg-background/80 pointer-events-none absolute inset-0 z-30 hidden p-3 backdrop-blur-sm group-data-[dragging=true]/drop:flex"
+  >
+    <div className="border-border rounded-dialog animate-in fade-in-0 flex flex-1 flex-col items-center justify-center gap-2 border-2 border-dashed duration-150">
+      <Paperclip className="text-muted-foreground size-icon-lg" />
+      <p className="text-lg">Drop to attach</p>
+    </div>
+  </div>
+);
+
 const ThreadRoot: FC<{
   isEmpty: boolean;
   autoFocus: boolean;
@@ -138,47 +155,50 @@ const ThreadRoot: FC<{
 
   return (
     <ThreadPrimitive.Root className="aui-root aui-thread-root bg-background @container flex h-full flex-col">
-      <ThreadPrimitive.Viewport
-        turnAnchor="top"
-        data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
-      >
-        <div
-          className={cn(
-            "max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4",
-            isEmpty && "justify-center",
-          )}
+      <ComposerPrimitive.AttachmentDropzone className="group/drop relative flex min-h-0 flex-1 flex-col">
+        <ThreadPrimitive.Viewport
+          turnAnchor="top"
+          data-slot="aui_thread-viewport"
+          className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
         >
-          <AuiIf condition={isNewChatView}>
-            <Welcome />
-          </AuiIf>
-          <AuiIf condition={isHistoryLoadingView}>
-            <ThreadHistorySkeleton />
-          </AuiIf>
-          {BeforeMessages && <BeforeMessages />}
-
           <div
-            data-slot="aui_message-group"
-            className="mb-14 flex flex-col gap-y-6 empty:hidden"
-          >
-            <ThreadPrimitive.Messages>
-              {() => <ThreadMessage />}
-            </ThreadPrimitive.Messages>
-          </div>
-
-          <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer group/footer bg-background flex flex-col gap-4 overflow-visible pb-4",
-              isEmpty ? "relative" : "rounded-t-thread sticky bottom-0 mt-auto",
+              "max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4",
+              isEmpty && "justify-center",
             )}
           >
-            <ThreadScrollToBottom />
-            {Capsule && <Capsule />}
-            {AboveComposer && <AboveComposer />}
-            <ComposerComponent autoFocus={autoFocus} placeholder={placeholder} />
-          </ThreadPrimitive.ViewportFooter>
-        </div>
-      </ThreadPrimitive.Viewport>
+            <AuiIf condition={isNewChatView}>
+              <Welcome />
+            </AuiIf>
+            <AuiIf condition={isHistoryLoadingView}>
+              <ThreadHistorySkeleton />
+            </AuiIf>
+            {BeforeMessages && <BeforeMessages />}
+
+            <div
+              data-slot="aui_message-group"
+              className="mb-14 flex flex-col gap-y-6 empty:hidden"
+            >
+              <ThreadPrimitive.Messages>
+                {() => <ThreadMessage />}
+              </ThreadPrimitive.Messages>
+            </div>
+
+            <ThreadPrimitive.ViewportFooter
+              className={cn(
+                "aui-thread-viewport-footer group/footer bg-background flex flex-col gap-4 overflow-visible pb-4",
+                isEmpty ? "relative" : "rounded-t-thread sticky bottom-0 mt-auto",
+              )}
+            >
+              <ThreadScrollToBottom />
+              {Capsule && <Capsule />}
+              {AboveComposer && <AboveComposer />}
+              <ComposerComponent autoFocus={autoFocus} placeholder={placeholder} />
+            </ThreadPrimitive.ViewportFooter>
+          </div>
+        </ThreadPrimitive.Viewport>
+        <DropOverlay />
+      </ComposerPrimitive.AttachmentDropzone>
     </ThreadPrimitive.Root>
   );
 };
@@ -362,6 +382,11 @@ const AssistantMessage: FC = () => {
   );
 };
 
+const UserAttachments: FC = () => {
+  const { UserAttachments: Attachments } = useContext(ThreadComponentsContext);
+  return Attachments ? <Attachments /> : null;
+};
+
 const MessageFooter: FC = () => {
   const { MessageFooter: Footer } = useContext(ThreadComponentsContext);
   return Footer ? <Footer /> : null;
@@ -403,8 +428,8 @@ const UserMessage: FC = () => {
     >
       <DaySeparator />
       <div className="aui-user-message-content-wrapper flex max-w-7/10 min-w-0 flex-col items-end gap-y-1">
+        <UserAttachments />
         <UserMessageText />
-        <MessageFooter />
         <div className="aui-user-action-bar-wrapper peer-empty:hidden opacity-0 transition-opacity group-hover/user:opacity-100 group-focus-within/user:opacity-100">
           <UserActionBar />
         </div>

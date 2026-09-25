@@ -1,21 +1,19 @@
-import { FileDocument, FileImage, Paperclip } from "@openai/apps-sdk-ui/components/Icon";
 import type { ComponentProps } from "react";
 
-import { field, mono } from "@/components/assistant-ui/elements/surfaces";
+import {
+  FileTile,
+  ImageTile,
+  isPastedText,
+  kindOf,
+} from "@/components/assistant-ui/elements/attachment-tile";
 import type { AttachmentRef } from "@/ipc/generated";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-function AttachmentIcon({ mime, className }: { mime: string; className?: string }) {
-  const Icon = mime.startsWith("image/")
-    ? FileImage
-    : mime.startsWith("text/") || mime === "application/pdf"
-      ? FileDocument
-      : Paperclip;
-  return <Icon aria-hidden className={cn("size-icon-sm shrink-0", className)} />;
-}
-
-/** The Message attachment element (assistant-ui), on Brigadier's tokens: one chip per file. */
+/**
+ * The Message attachment element (assistant-ui), as ChatGPT shows a sent message's files:
+ * images as thumbnails that open a preview, other files as cards with their kind and size.
+ */
 export function MessageAttachments({
   attachments,
   className,
@@ -26,20 +24,21 @@ export function MessageAttachments({
     <ul
       data-slot="message-attachments"
       aria-label="Attachments"
-      className={cn("flex flex-wrap gap-1.5", className)}
+      className={cn("flex flex-wrap items-end gap-2", className)}
       {...props}
     >
       {attachments.map((attachment) => (
-        <li
-          key={attachment.id}
-          title={attachment.name}
-          className={cn(field, "rounded-control flex max-w-xs items-center gap-2 px-2.5 py-1.5")}
-        >
-          <AttachmentIcon mime={attachment.mime} className="text-muted-foreground" />
-          <span className="min-w-0 truncate text-xs">{attachment.name}</span>
-          <span className={cn(mono, "text-muted-foreground shrink-0")}>
-            {formatBytes(attachment.bytes)}
-          </span>
+        <li key={attachment.id} className="flex">
+          {attachment.mime.startsWith("image/") ? (
+            <ImageTile source={{ ref: attachment }} name={attachment.name} />
+          ) : (
+            <FileTile
+              name={attachment.name}
+              mime={attachment.mime}
+              title={isPastedText(attachment.name, attachment.mime) ? "Pasted text" : undefined}
+              detail={`${kindOf(attachment.name, attachment.mime)} · ${formatBytes(attachment.bytes)}`}
+            />
+          )}
         </li>
       ))}
     </ul>
@@ -54,4 +53,3 @@ export function attachmentSummary(attachments: readonly AttachmentRef[]): string
   return `${noun} · ${formatBytes(bytes)}`;
 }
 
-export { AttachmentIcon };

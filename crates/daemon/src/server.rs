@@ -495,6 +495,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 attachment: core.add_attachment(name, mime, bytes).await?,
             }
         }
+        Request::ReadAttachment { id } => Response::ReadAttachment {
+            data: BASE64.encode(core.read_attachment(&id).await?),
+        },
         Request::ListWorkerEvents {
             task_id,
             before,

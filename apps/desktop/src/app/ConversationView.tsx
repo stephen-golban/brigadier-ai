@@ -54,6 +54,10 @@ import { useAction } from "@/app/conversation/useAction";
 import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
 import { TopBar } from "@/app/TopBar";
 import { MessageAttachments } from "@/components/assistant-ui/elements/message-attachment";
+import {
+  type AttachmentReader,
+  AttachmentReaderContext,
+} from "@/components/assistant-ui/elements/attachment-tile";
 import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import type {
@@ -73,6 +77,7 @@ import {
   loadEarlier,
   loadFullText,
   rateMessage,
+  readAttachment,
   moveQueued,
   regenerate,
   restore,
@@ -493,6 +498,10 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const [renaming, setRenaming] = useState(false);
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
+  const [reader] = useState<AttachmentReader>(() => ({
+    read: readAttachment,
+    composerRef: (id) => attachments.refOf(id),
+  }));
   const [mentions] = useState(() => new MentionMemory());
   const [pulled] = useState(() => new PulledSlot());
   const draftTarget = resolved.target;
@@ -678,49 +687,51 @@ export function ConversationView({ selection }: { selection: Selection }) {
           <AgentsPanelContext.Provider value={agents}>
             <StatusCardContext.Provider value={statusCard}>
               <AssistantRuntimeProvider runtime={runtime}>
-                <div className="flex h-full">
-                  <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
-                    <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
-                      {conversation && (
-                        <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
-                      )}
-                      {conversation?.kind === "session" && <PinnedSummaryToggle />}
-                      {!sidePanel.state.open && <SidePanelToggle />}
-                    </TopBar>
-                    {error && (
-                      <p
-                        role="alert"
-                        className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
-                      >
-                        <span className="min-w-0 flex-1">{error}</span>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label="Dismiss"
-                          onClick={() => setError(null)}
+                <AttachmentReaderContext.Provider value={reader}>
+                  <div className="flex h-full">
+                    <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
+                      <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
+                        {conversation && (
+                          <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
+                        )}
+                        {conversation?.kind === "session" && <PinnedSummaryToggle />}
+                        {!sidePanel.state.open && <SidePanelToggle />}
+                      </TopBar>
+                      {error && (
+                        <p
+                          role="alert"
+                          className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
                         >
-                          <X />
-                        </Button>
-                      </p>
-                    )}
-                    <div className="relative min-h-0 flex-1">
-                      {conversation && <PinnedSummary conversation={conversation} />}
-                      <Thread
-                        components={THREAD_COMPONENTS}
-                        // ChatGPT's one placeholder, in every conversation.
-                        placeholder="Do anything"
-                      />
+                          <span className="min-w-0 flex-1">{error}</span>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Dismiss"
+                            onClick={() => setError(null)}
+                          >
+                            <X />
+                          </Button>
+                        </p>
+                      )}
+                      <div className="relative min-h-0 flex-1">
+                        {conversation && <PinnedSummary conversation={conversation} />}
+                        <Thread
+                          components={THREAD_COMPONENTS}
+                          // ChatGPT's one placeholder, in every conversation.
+                          placeholder="Do anything"
+                        />
+                      </div>
                     </div>
+                    <SidePanel conversationId={conversationId} />
                   </div>
-                  <SidePanel conversationId={conversationId} />
-                </div>
-                {conversation && (
-                  <RenameDialog
-                    conversation={conversation}
-                    open={renaming}
-                    onOpenChange={setRenaming}
-                  />
-                )}
+                  {conversation && (
+                    <RenameDialog
+                      conversation={conversation}
+                      open={renaming}
+                      onOpenChange={setRenaming}
+                    />
+                  )}
+                </AttachmentReaderContext.Provider>
               </AssistantRuntimeProvider>
             </StatusCardContext.Provider>
           </AgentsPanelContext.Provider>
@@ -777,8 +788,8 @@ const LoadEarlier: FC = () => {
   );
 };
 
-/** Under a user message: its attachments. */
-const MessageFooter: FC = () => {
+/** Above a user message's text: its attachments. */
+const UserAttachments: FC = () => {
   const role = useAuiState((s) => s.message.role);
   const custom = useAuiState((s) => s.message.metadata.custom) as Custom;
   if (role !== "user" || !custom.attachments || custom.attachments.length === 0) return null;
@@ -865,7 +876,7 @@ const THREAD_COMPONENTS: ThreadComponents = {
   AssistantMessage: RequestBlock,
   Welcome,
   BeforeMessages: LoadEarlier,
-  MessageFooter,
+  UserAttachments,
   AboveComposer,
   Capsule: ComposerCapsule,
   Composer: ConversationComposer,

@@ -27,6 +27,7 @@
  *               min-h-composer                composer input minimum height
  *               max-h-composer-max            composer input maximum height (then it scrolls)
  *               max-h-queue-max               the queue card's maximum height (then it scrolls)
+ *               size-attachment-thumb, w-attachment-card  an image attachment, a file attachment
  *               mx-rail-inset, -mb-rail-tuck  the composer rail: its side inset, the tuck under the card
  *               message-contain               skip rendering off-screen messages
  *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
@@ -108,6 +109,9 @@
   --spacing-composer-max: 25dvh;
   /* The queue card on the rail grows to this, then scrolls. */
   --spacing-queue-max: 30dvh;
+  /* Attachments: an image thumbnail's side, a file card's width. */
+  --spacing-attachment-thumb: 7.625rem;
+  --spacing-attachment-card: 14rem;
   /* The composer rail: inset from the card's sides, tucked under its top edge. */
   --spacing-rail-inset: 0.8125rem;
   --spacing-rail-tuck: 0.25rem;
@@ -314,6 +318,8 @@
   --spacing-kbd: 0.9375rem;
   --spacing-menu: 7rem;
   --spacing-composer: 2.25rem;
+  --spacing-attachment-thumb: 6.5rem;
+  --spacing-attachment-card: 12.5rem;
   --spacing-rail-inset: 0.625rem;
   --spacing-rail-tuck: 0.1875rem;
   --spacing-sidebar: 14rem;
