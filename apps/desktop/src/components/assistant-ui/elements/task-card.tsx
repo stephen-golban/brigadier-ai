@@ -51,6 +51,8 @@ export function TaskStateIcon({
 /**
  * A worker's card: a header row that expands the body, an actions row, and a result row.
  * The body renders only while open, so closed cards cost nothing but their header.
+ * `standalone` is the card on its own (a side panel names the worker): no toggle, the state,
+ * badges and activity in a plain row, and the body always shown.
  */
 export function TaskCard({
   label,
@@ -63,6 +65,7 @@ export function TaskCard({
   result,
   open,
   onOpenChange,
+  standalone = false,
   children,
   className,
   ...props
@@ -78,8 +81,45 @@ export function TaskCard({
   result?: ReactNode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  standalone?: boolean;
   children?: ReactNode;
 }) {
+  if (standalone) {
+    return (
+      <div data-slot="task-card" data-state={state} className={cn("flex w-full flex-col gap-3", className)} {...props}>
+        <div className="flex flex-col gap-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <TaskStateIcon state={state} />
+            <span className="sr-only">{stateLabel}</span>
+            {badges}
+            {meta !== undefined && (
+              <span className={cn(mono, "text-muted-foreground truncate")}>{meta}</span>
+            )}
+          </span>
+          {activity && (
+            <span className={cn(mono, "text-muted-foreground truncate")} data-slot="task-card-activity">
+              {activity}
+            </span>
+          )}
+        </div>
+        {actions && (
+          <div data-slot="task-card-actions" className="flex flex-wrap items-center gap-2">
+            {actions}
+          </div>
+        )}
+        {result && (
+          <div data-slot="task-card-result" className="text-muted-foreground text-xs">
+            {result}
+          </div>
+        )}
+        {children && (
+          <div data-slot="task-card-body" className="flex flex-col gap-3">
+            {children}
+          </div>
+        )}
+      </div>
+    );
+  }
   return (
     <div
       data-slot="task-card"

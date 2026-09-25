@@ -21,6 +21,9 @@ import {
   lazy,
   Suspense,
   useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
   type ComponentType,
   type FC,
 } from "react";
@@ -33,15 +36,13 @@ import { cn } from "@/lib/utils";
 /**
  * Optional overrides: `AssistantMessage`, `Welcome` and `Composer` replace whole sections;
  * `BeforeMessages` renders above the message list (e.g. a "load earlier" control);
- * `Card` renders messages whose metadata carries a card (worker, approval, plan…);
- * `MessageFooter` renders under each user or assistant message (attachments, model);
+ * `MessageFooter` renders under each user or assistant message (attachments);
  * `AboveComposer` renders between the messages and the composer (queue, notices).
  */
 export type ThreadComponents = {
   AssistantMessage?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   BeforeMessages?: ComponentType | undefined;
-  Card?: ComponentType | undefined;
   MessageFooter?: ComponentType | undefined;
   AboveComposer?: ComponentType | undefined;
   Composer?: ComponentType<ComposerProps> | undefined;
@@ -171,12 +172,10 @@ const ThreadRoot: FC<{
 };
 
 const ThreadMessage: FC = () => {
-  const { AssistantMessage: AssistantMessageComponent = AssistantMessage, Card } =
+  const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
-  const isCard = useAuiState((s) => s.message.metadata.custom["card"] !== undefined);
 
-  if (isCard && Card) return <Card />;
   if (role === "user") return <UserMessage />;
   if (role === "system") return <SystemMessage />;
   return <AssistantMessageComponent />;
@@ -279,7 +278,7 @@ const ComposerAction: FC = () => {
   );
 };
 
-const MessageError: FC = () => {
+export const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/5 text-destructive mt-2 rounded-md border p-3 text-sm">
@@ -296,7 +295,7 @@ const MarkdownText = lazy(() =>
   })),
 );
 
-const MessageText: FC<TextMessagePartProps> = (props) => (
+export const MessageText: FC<TextMessagePartProps> = (props) => (
   <Suspense fallback={<p className="whitespace-pre-wrap">{props.text}</p>}>
     <MarkdownText {...props} />
   </Suspense>
@@ -364,30 +363,66 @@ const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
-      className="fade-in slide-in-from-bottom-1 animate-in message-contain flex flex-col items-end gap-y-2 px-2 duration-150"
+      className="group/user fade-in slide-in-from-bottom-1 animate-in message-contain flex flex-col items-end gap-y-1 px-2 duration-150"
       data-role="user"
     >
-      <div className="aui-user-message-content-wrapper relative max-w-4/5 min-w-0">
-        <div className="aui-user-message-content peer bg-muted text-foreground rounded-thread px-4 py-2 whitespace-pre-wrap wrap-break-word empty:hidden">
-          <MessagePrimitive.Parts />
-        </div>
-        <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
+      <div className="aui-user-message-content-wrapper flex max-w-7/10 min-w-0 flex-col items-end gap-y-1">
+        <UserMessageText />
+        <MessageFooter />
+        <div className="aui-user-action-bar-wrapper peer-empty:hidden opacity-0 transition-opacity group-hover/user:opacity-100 group-focus-within/user:opacity-100">
           <UserActionBar />
         </div>
       </div>
-
-      <MessageFooter />
     </MessagePrimitive.Root>
+  );
+};
+
+/** The user's text in its bubble; a long message is clipped until "Show more". */
+const UserMessageText: FC = () => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  const hasText = useAuiState((s) =>
+    s.message.parts.some((part) => part.type === "text" && part.text !== ""),
+  );
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const measure = () => setClipped(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  // Files only: an empty bubble hides itself (and the action bar beside it).
+  if (!hasText) return <div className="aui-user-message-content peer empty:hidden" />;
+  return (
+    <div className="aui-user-message-content peer bg-muted text-foreground rounded-thread flex flex-col px-4 py-2 empty:hidden">
+      <div
+        ref={ref}
+        className={cn(
+          "whitespace-pre-wrap wrap-break-word",
+          !expanded && "max-h-user-message overflow-hidden",
+        )}
+      >
+        <MessagePrimitive.Parts />
+      </div>
+      {(clipped || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="text-muted-foreground hover:text-foreground self-start pt-1 text-xs"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
   );
 };
 
 const UserActionBar: FC = () => {
   return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning
-      autohide="not-last"
-      className="aui-user-action-bar-root text-muted-foreground flex flex-col items-end"
-    >
+    <ActionBarPrimitive.Root className="aui-user-action-bar-root text-muted-foreground flex items-center gap-1">
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton tooltip="Copy" className="aui-user-action-copy">
           <CopyIcon />

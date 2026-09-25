@@ -24,8 +24,39 @@
       height: 0;
     }
   }
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: -100% 0;
+    }
+  }
   --animate-collapsible-down: collapsible-down 150ms ease-out;
+  --animate-shimmer: shimmer 2s linear infinite;
   --animate-collapsible-up: collapsible-up 150ms ease-out;
+}
+
+/* Live text: a highlight sweeps across muted text ("Working for 12s"). */
+@utility shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-muted-foreground) 35%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-shimmer);
+}
+
+/* A reply that finished while its request still works: no streaming dot after it. */
+@utility no-stream-dot {
+  & .aui-md::after,
+  & .aui-md *::after {
+    content: none;
+  }
 }
 
 /* Lets the browser skip layout and paint for messages scrolled out of view. */
