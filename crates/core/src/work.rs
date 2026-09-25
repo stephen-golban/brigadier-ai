@@ -537,6 +537,76 @@ pub enum RunState {
     Failed,
 }
 
+// ----- worker steps -----------------------------------------------------------------------
+
+/// A turn in a worker's life, as the thread tells it ("task-2 finished").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkerStepKind {
+    Started,
+    /// Its change waits for the user's approval, or for a landing the user can unblock.
+    Waiting,
+    /// The user interrupted it.
+    Paused,
+    /// Working again after waiting, a pause or its report.
+    Resumed,
+    /// It reported (or ended without anything to land).
+    Finished,
+    Landed,
+    /// The orchestrator or a review turned it down.
+    Rejected,
+    Stopped,
+    Failed,
+}
+
+impl WorkerStepKind {
+    /// The step a task takes when its state goes from `was` (absent: it was just created) to
+    /// `now`, if the thread shows one.
+    pub fn between(was: Option<TaskState>, now: TaskState) -> Option<Self> {
+        use TaskState as S;
+        let waiting = |state: S| matches!(state, S::AwaitingApproval | S::ReadyToLand);
+        // A review of its commit is not the worker working again.
+        let working = |state: S| matches!(state, S::Queued | S::Starting | S::Running | S::Blocked);
+        let Some(was) = was else {
+            return Some(Self::Started);
+        };
+        if was == now {
+            return None;
+        }
+        match now {
+            S::Landed => Some(Self::Landed),
+            S::Rejected => Some(Self::Rejected),
+            S::Stopped => Some(Self::Stopped),
+            S::Failed => Some(Self::Failed),
+            // Back from a review, the reviewer's own row tells it.
+            S::Reported | S::Done if !matches!(was, S::Reported | S::Done | S::Reviewing) => {
+                Some(Self::Finished)
+            }
+            S::Paused => Some(Self::Paused),
+            _ if waiting(now) && !waiting(was) => Some(Self::Waiting),
+            _ if working(now) && (waiting(was) || matches!(was, S::Paused | S::Reported)) => {
+                Some(Self::Resumed)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// One step of a worker, where it happened in the conversation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerStep {
+    pub task_id: TaskId,
+    /// The user request the task belongs to.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    pub kind: WorkerStepKind,
+    pub at_ms: i64,
+    /// Where it happened in the conversation's stream (set when the board reads it).
+    #[serde(default)]
+    pub position: i64,
+}
+
 // ----- user requests ----------------------------------------------------------------------
 
 /// Where a user's request stands.

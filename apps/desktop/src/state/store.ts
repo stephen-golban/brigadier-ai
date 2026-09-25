@@ -123,6 +123,8 @@ export type AppState = {
   expandedProjects: Record<string, boolean>;
   windowVisible: boolean;
   coldStartMs: number | null;
+  /** The summary card pinned at the top right of a session's thread is shown. */
+  pinnedSummary: boolean;
   inspector: {
     open: boolean;
     tab: InspectorTab;
@@ -155,6 +157,7 @@ export const useApp = create<AppState>()(() => ({
   expandedProjects: {},
   windowVisible: true,
   coldStartMs: null,
+  pinnedSummary: true,
   inspector: {
     open: false,
     tab: "events",
@@ -407,6 +410,7 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "runStateChanged":
     case "requestUpdated":
     case "branchSwitched":
+    case "workerStepped":
     case "conversationNotice":
     case "taskUpdated":
     case "approvalUpdated":

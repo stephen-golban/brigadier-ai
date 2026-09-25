@@ -819,6 +819,7 @@ impl Core {
             run: board.run,
             run_request: board.run_request.clone(),
             head: board.head.as_ref().map(|(head, _)| head.clone()),
+            worker_steps: board.worker_steps.clone(),
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),
         })

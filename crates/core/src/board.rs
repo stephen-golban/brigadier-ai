@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::model::{DomainEvent, MessageRole, Notice, StreamingMessage};
 use crate::work::{
-    Approval, CardId, MessageQueue, Plan, Question, RunState, Task, TaskId, UserRequest,
+    Approval, CardId, MessageQueue, Plan, Question, RunState, Task, TaskId, UserRequest, WorkerStep,
 };
 
 /// Notices kept per conversation.
@@ -21,6 +21,7 @@ pub(crate) const KINDS: &[&str] = &[
     "plan.updated",
     "queue.changed",
     "request.updated",
+    "worker.step",
     "conversation.branch",
 ];
 
@@ -31,6 +32,8 @@ pub(crate) struct Board {
     pub(crate) questions: HashMap<CardId, Question>,
     pub(crate) plans: HashMap<CardId, Plan>,
     pub(crate) requests: HashMap<String, UserRequest>,
+    /// Every worker step, in stream order.
+    pub(crate) worker_steps: Vec<WorkerStep>,
     pub(crate) queue: MessageQueue,
     pub(crate) run: RunState,
     /// The request the running turn serves.
@@ -94,6 +97,11 @@ impl Board {
             }
             DomainEvent::RequestUpdated { request } => {
                 self.requests.insert(request.id.clone(), request.clone());
+            }
+            DomainEvent::WorkerStepped { step } => {
+                let mut step = step.clone();
+                step.position = stream_seq;
+                self.worker_steps.push(step);
             }
             DomainEvent::BranchSwitched { head, .. } => {
                 self.head = Some((head.clone(), stream_seq));

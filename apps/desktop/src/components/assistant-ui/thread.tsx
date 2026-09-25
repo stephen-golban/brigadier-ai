@@ -6,6 +6,7 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
+  TextMessagePartProvider,
   type TextMessagePartProps,
   ThreadPrimitive,
   useAuiState,
@@ -305,6 +306,18 @@ export const MessageText: FC<TextMessagePartProps> = (props) => (
   <Suspense fallback={<p className="whitespace-pre-wrap">{props.text}</p>}>
     <MarkdownText {...props} />
   </Suspense>
+);
+
+/** Markdown outside a thread message, such as a worker's replies in its panel. */
+export const MarkdownBlock: FC<{ text: string; streaming?: boolean }> = ({
+  text,
+  streaming = false,
+}) => (
+  <TextMessagePartProvider text={text} isRunning={streaming}>
+    <Suspense fallback={<p className="whitespace-pre-wrap">{text}</p>}>
+      <MarkdownText streaming={streaming} />
+    </Suspense>
+  </TextMessagePartProvider>
 );
 
 /** Text that is still streaming: its newest words fade in. */

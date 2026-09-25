@@ -6,7 +6,7 @@ use brigadier_providers::{
 
 use crate::work::{
     Approval, AttachmentRef, MessageQueue, OrchestratorEntry, Plan, Question, RunState, Task,
-    UserRequest,
+    UserRequest, WorkerStep,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -433,6 +433,8 @@ pub struct ConversationView {
     pub plans: Vec<Plan>,
     /// Every request of the conversation, oldest first.
     pub requests: Vec<UserRequest>,
+    /// Every worker step, in the order they happened.
+    pub worker_steps: Vec<WorkerStep>,
     pub queue: MessageQueue,
     pub run: RunState,
     /// The request the running turn serves.
@@ -712,6 +714,10 @@ pub enum DomainEvent {
     RequestUpdated {
         request: UserRequest,
     },
+    /// A worker started, finished, waits for the user, and so on.
+    WorkerStepped {
+        step: WorkerStep,
+    },
     /// The thread now shows the branch that ends at `head`; new messages continue it.
     BranchSwitched {
         conversation_id: ConversationId,
@@ -780,6 +786,7 @@ impl DomainEvent {
             Self::MessageDelta { .. } => "message.delta",
             Self::RunStateChanged { .. } => "conversation.run",
             Self::RequestUpdated { .. } => "request.updated",
+            Self::WorkerStepped { .. } => "worker.step",
             Self::BranchSwitched { .. } => "conversation.branch",
             Self::ConversationNotice { .. } => "conversation.notice",
             Self::TaskUpdated { .. } => "task.updated",

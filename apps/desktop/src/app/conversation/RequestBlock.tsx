@@ -6,8 +6,14 @@ import {
 import { Check, ChevronRight, Copy, Regenerate } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
 
-import { AgentChips } from "@/app/conversation/Agents";
-import { type BlockCard, type BlockState, isLive, isWorking } from "@/app/conversation/blocks";
+import { WorkerStepRow } from "@/app/conversation/Agents";
+import {
+  type BlockCard,
+  type BlockState,
+  type BlockStep,
+  isLive,
+  isWorking,
+} from "@/app/conversation/blocks";
 import {
   BranchPicker,
   MessageError,
@@ -31,7 +37,8 @@ export type BlockMeta = {
   /** Per text part, in order: the reply's position (infinite while it streams) and model. */
   texts: { position: number; model: ModelChoice | null }[];
   cards: BlockCard[];
-  tasks: string[];
+  /** The workers' steps, in order. */
+  steps: BlockStep[];
   state: BlockState;
   startedAtMs: number;
   endedAtMs: number | null;
@@ -122,7 +129,41 @@ const WorkHeader: FC<{
 
 type Entry =
   | { kind: "text"; index: number; position: number }
-  | { kind: "card"; card: BlockCard; position: number };
+  | { kind: "card"; card: BlockCard; position: number }
+  | { kind: "steps"; step: BlockStep["kind"]; taskIds: string[]; position: number };
+
+/** The block's replies, cards and worker steps in order; adjacent steps of a kind share a row. */
+function blockSequence(meta: BlockMeta): Entry[] {
+  const entries: Entry[] = [
+    ...meta.texts.map((text, index) => ({ kind: "text" as const, index, position: text.position })),
+    ...meta.cards.map((card) => ({ kind: "card" as const, card, position: card.position })),
+    ...meta.steps.map((step) => ({
+      kind: "steps" as const,
+      step: step.kind,
+      taskIds: [step.taskId],
+      position: step.position,
+    })),
+  ].toSorted((a, b) => a.position - b.position);
+  const merged: Entry[] = [];
+  for (const entry of entries) {
+    const previous = merged.at(-1);
+    if (entry.kind === "steps" && previous?.kind === "steps" && previous.step === entry.step) {
+      for (const id of entry.taskIds) if (!previous.taskIds.includes(id)) previous.taskIds.push(id);
+    } else merged.push(entry);
+  }
+  return merged;
+}
+
+function entryKey(entry: Entry): string {
+  switch (entry.kind) {
+    case "text":
+      return `text:${entry.index}`;
+    case "card":
+      return `${entry.card.type}:${entry.card.id}`;
+    case "steps":
+      return `steps:${entry.position}`;
+  }
+}
 
 function CardEntry({ card }: { card: BlockCard }) {
   return (
@@ -141,6 +182,25 @@ const ReplyText: FC<{ index: number; streaming: boolean }> = ({ index, streaming
     components={{ Text: streaming ? StreamingMessageText : MessageText }}
   />
 );
+
+/** A reply, card or row of worker steps in the block's work. */
+const SequenceEntry: FC<{ entry: Entry; streaming: boolean }> = ({ entry, streaming }) => {
+  switch (entry.kind) {
+    case "text":
+      return (
+        <div
+          data-slot="aui_assistant-message-content"
+          className="text-foreground leading-relaxed wrap-break-word"
+        >
+          <ReplyText index={entry.index} streaming={streaming} />
+        </div>
+      );
+    case "card":
+      return <CardEntry card={entry.card} />;
+    case "steps":
+      return <WorkerStepRow kind={entry.step} taskIds={entry.taskIds} />;
+  }
+};
 
 /** The last line of a working block: what happens right now ("Thinking", "Delegating…"). */
 const ActivityRow: FC<{ requestId: string }> = ({ requestId }) => {
@@ -183,15 +243,12 @@ export const RequestBlock: FC = () => {
   const done = meta.state === "done";
   const last = meta.texts.length - 1;
   const answer = done && last >= 0 ? last : null;
-  const sequence: Entry[] = [
-    ...meta.texts.map((text, index) => ({ kind: "text" as const, index, position: text.position })),
-    ...meta.cards.map((card) => ({ kind: "card" as const, card, position: card.position })),
-  ].toSorted((a, b) => a.position - b.position);
+  const sequence = blockSequence(meta);
   const folded = sequence.filter((entry) =>
-    entry.kind === "text" ? entry.index !== answer : !entry.card.keep,
+    entry.kind === "text" ? entry.index !== answer : entry.kind === "steps" || !entry.card.keep,
   );
   const kept = meta.cards.filter((card) => card.keep);
-  const foldable = done && (folded.length > 0 || meta.tasks.length > 0);
+  const foldable = done && folded.length > 0;
   const header =
     foldable ||
     meta.state === "stopped" ||
@@ -212,16 +269,9 @@ export const RequestBlock: FC = () => {
         <>
           {open && foldable && (
             <div data-slot="request-fold" className="flex flex-col gap-3">
-              {meta.tasks.length > 0 && <AgentChips taskIds={meta.tasks} />}
-              {folded.map((entry) =>
-                entry.kind === "text" ? (
-                  <div key={`text:${entry.index}`} className="leading-relaxed wrap-break-word">
-                    <ReplyText index={entry.index} streaming={false} />
-                  </div>
-                ) : (
-                  <CardEntry key={`${entry.card.type}:${entry.card.id}`} card={entry.card} />
-                ),
-              )}
+              {folded.map((entry) => (
+                <SequenceEntry key={entryKey(entry)} entry={entry} streaming={false} />
+              ))}
             </div>
           )}
           {kept.map((card) => (
@@ -238,23 +288,16 @@ export const RequestBlock: FC = () => {
         </>
       ) : (
         <div data-slot="request-work" className="flex flex-col gap-3">
-          {meta.tasks.length > 0 && <AgentChips taskIds={meta.tasks} />}
-          {sequence.map((entry) =>
-            entry.kind === "text" ? (
-              <div
-                key={`text:${entry.index}`}
-                data-slot="aui_assistant-message-content"
-                className="text-foreground leading-relaxed wrap-break-word"
-              >
-                <ReplyText
-                  index={entry.index}
-                  streaming={meta.texts[entry.index]?.position === Number.POSITIVE_INFINITY}
-                />
-              </div>
-            ) : (
-              <CardEntry key={`${entry.card.type}:${entry.card.id}`} card={entry.card} />
-            ),
-          )}
+          {sequence.map((entry) => (
+            <SequenceEntry
+              key={entryKey(entry)}
+              entry={entry}
+              streaming={
+                entry.kind === "text" &&
+                meta.texts[entry.index]?.position === Number.POSITIVE_INFINITY
+              }
+            />
+          ))}
           {meta.state === "working" && <ActivityRow requestId={meta.requestId} />}
         </div>
       )}

@@ -88,15 +88,47 @@ export const TaskCardView = memo(function TaskCardView({
   const activity = useBoard((s) => s.board?.activity[taskId]);
   const [open, setOpen] = useState(standalone);
   const groups = useModelGroups();
-  const action = useAction();
   if (!task) return null;
 
   const choice = task.route.choice;
   const model = `${modelName(groups, choice)}${choice.effort ? ` · ${choice.effort}` : ""}`;
   const working = task.state === "running" || task.state === "starting";
-  const codex = choice.provider === "codex";
+  const actions = ACTIVE.has(task.state) && <TaskActions task={task} />;
 
-  const actions = ACTIVE.has(task.state) && (
+  return (
+    <TaskCard
+      data-task={`task-${task.number}`}
+      label={task.title}
+      state={CARD_STATES[task.state]}
+      stateLabel={TASK_STATE_LABELS[task.state]}
+      badges={
+        <>
+          <Badge variant="outline">{task.kind}</Badge>
+          <Badge variant={task.state === "failed" ? "destructive" : "secondary"}>
+            {TASK_STATE_LABELS[task.state]}
+          </Badge>
+        </>
+      }
+      meta={`task-${task.number} · ${model}`}
+      activity={working ? activity : undefined}
+      actions={actions || undefined}
+      result={taskResult(task)}
+      open={open}
+      onOpenChange={setOpen}
+      standalone={standalone}
+    >
+      <TaskDetails task={task} model={model} />
+    </TaskCard>
+  );
+});
+
+/** Pause or resume a worker, or stop it, while it is active. */
+export function TaskActions({ task }: { task: Task }) {
+  const action = useAction();
+  if (!ACTIVE.has(task.state)) return null;
+  const working = task.state === "running" || task.state === "starting";
+  const codex = task.route.choice.provider === "codex";
+  return (
     <>
       {task.state === "paused" ? (
         <Button
@@ -142,33 +174,7 @@ export const TaskCardView = memo(function TaskCardView({
       )}
     </>
   );
-
-  return (
-    <TaskCard
-      data-task={`task-${task.number}`}
-      label={task.title}
-      state={CARD_STATES[task.state]}
-      stateLabel={TASK_STATE_LABELS[task.state]}
-      badges={
-        <>
-          <Badge variant="outline">{task.kind}</Badge>
-          <Badge variant={task.state === "failed" ? "destructive" : "secondary"}>
-            {TASK_STATE_LABELS[task.state]}
-          </Badge>
-        </>
-      }
-      meta={`task-${task.number} · ${model}`}
-      activity={working ? activity : undefined}
-      actions={actions || undefined}
-      result={taskResult(task)}
-      open={open}
-      onOpenChange={setOpen}
-      standalone={standalone}
-    >
-      <TaskDetails task={task} model={model} />
-    </TaskCard>
-  );
-});
+}
 
 /** The one-line outcome under the card: why it waits, what it reported, where it landed. */
 function taskResult(task: Task): ReactNode {
@@ -346,7 +352,20 @@ function KeptPatch({
   );
 }
 
-function TaskDetails({ task, model }: { task: Task; model: string }) {
+/**
+ * What a worker set out to do and produced: model, workspace, report, outputs, commit, review.
+ * Under its thread in the workers panel (`inThread`), the thread already shows the model, the
+ * report's summary and the transcript.
+ */
+export function TaskDetails({
+  task,
+  model,
+  inThread = false,
+}: {
+  task: Task;
+  model: string;
+  inThread?: boolean;
+}) {
   const [artifact, setArtifact] = useState<ArtifactRef | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const subjectNumber = useBoard((s) =>
@@ -360,9 +379,11 @@ function TaskDetails({ task, model }: { task: Task; model: string }) {
   return (
     <>
       <Section title="Model">
-        <p className="text-sm">
-          {PROVIDER_LABELS[task.route.choice.provider]} · {model}
-        </p>
+        {!inThread && (
+          <p className="text-sm">
+            {PROVIDER_LABELS[task.route.choice.provider]} · {model}
+          </p>
+        )}
         <p className="text-muted-foreground text-xs">Why this model: {task.route.reason}</p>
       </Section>
 
@@ -388,9 +409,11 @@ function TaskDetails({ task, model }: { task: Task; model: string }) {
 
       {report ? (
         <>
-          <Section title="Report">
-            <p className="text-sm whitespace-pre-wrap">{report.summary}</p>
-          </Section>
+          {!inThread && (
+            <Section title="Report">
+              <p className="text-sm whitespace-pre-wrap">{report.summary}</p>
+            </Section>
+          )}
           <Section title="Changes">
             <Lines items={report.changes} />
           </Section>
@@ -419,7 +442,7 @@ function TaskDetails({ task, model }: { task: Task; model: string }) {
           )}
         </>
       ) : (
-        <p className="text-muted-foreground text-xs">No report yet.</p>
+        !inThread && <p className="text-muted-foreground text-xs">No report yet.</p>
       )}
 
       {task.outputs.length > 0 && (
@@ -500,18 +523,20 @@ function TaskDetails({ task, model }: { task: Task; model: string }) {
         </Section>
       )}
 
-      <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
-        <CollapsibleTrigger asChild>
-          <Button size="xs" variant="ghost" className="self-start">
-            {transcriptOpen ? "Hide live transcript" : "Show live transcript"}
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-1.5">
-          {transcriptOpen && (
-            <WorkerTranscript conversationId={task.conversationId} taskId={task.id} />
-          )}
-        </CollapsibleContent>
-      </Collapsible>
+      {!inThread && (
+        <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
+          <CollapsibleTrigger asChild>
+            <Button size="xs" variant="ghost" className="self-start">
+              {transcriptOpen ? "Hide live transcript" : "Show live transcript"}
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-1.5">
+            {transcriptOpen && (
+              <WorkerTranscript conversationId={task.conversationId} taskId={task.id} />
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
 
       <ArtifactDialog artifact={artifact} onOpenChange={(next) => !next && setArtifact(null)} />
     </>

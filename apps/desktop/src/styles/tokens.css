@@ -10,7 +10,8 @@
  *               bg-muted, text-muted-foreground, bg-accent, text-destructive, text-warning,
  *               text-success, text-full-access (Full access permission pill), border-border,
  *               bg-input, ring-ring, bg-code-surface,
- *               bg-sidebar(-accent|-primary|…), chart-1…5. Opacity modifiers (bg-muted/40) are fine.
+ *               bg-sidebar(-accent|-primary|…), chart-1…5, text-glyph-1…8 (a worker's glyph).
+ *               Opacity modifiers (bg-muted/40) are fine.
  *   Spacing     the numeric scale (p-2, gap-1.5, mt-3 …) multiplies --spacing, which density sets.
  *   Controls    h-control-{xs,sm,md,lg}       heights of buttons, inputs, menu rows, toggles
  *               px-button-{xs,sm,md,lg}       horizontal padding of text buttons
@@ -18,6 +19,7 @@
  *               size-icon-{xs,sm,md,lg}       icon glyphs (apps-sdk-ui icons are 1em/currentColor)
  *               h-pill, px-pill               badges and status pills
  *               h-row, h-row-sm               list rows (sidebar items, event rows)
+ *               max-h-action-list             a worker's expanded run of actions (9 rows)
  *               h-kbd, min-w-kbd              keyboard hints
  *               min-w-menu                    popover / dropdown minimum width
  *               min-h-composer                composer input minimum height
@@ -88,6 +90,8 @@
   --spacing-pill-x: 0.5rem;
   --spacing-row: 2rem;
   --spacing-row-sm: 1.75rem;
+  /* A worker's expanded run of actions shows this many rows, then scrolls. */
+  --spacing-action-list: calc(var(--spacing-row-sm) * 9);
   --spacing-kbd: 1.125rem;
   --spacing-menu: 8rem;
   --spacing-composer: 2.5rem;
@@ -176,6 +180,14 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-glyph-1: var(--glyph-1);
+  --color-glyph-2: var(--glyph-2);
+  --color-glyph-3: var(--glyph-3);
+  --color-glyph-4: var(--glyph-4);
+  --color-glyph-5: var(--glyph-5);
+  --color-glyph-6: var(--glyph-6);
+  --color-glyph-7: var(--glyph-7);
+  --color-glyph-8: var(--glyph-8);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -225,6 +237,15 @@
   --chart-3: oklch(0.56 0.09 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
+  /* Workers' glyphs: one hue each, told apart at a glance in rows, the panel and the card. */
+  --glyph-1: oklch(0.72 0.16 300);
+  --glyph-2: oklch(0.74 0.12 190);
+  --glyph-3: oklch(0.72 0.17 350);
+  --glyph-4: oklch(0.76 0.16 145);
+  --glyph-5: oklch(0.8 0.15 80);
+  --glyph-6: oklch(0.7 0.15 250);
+  --glyph-7: oklch(0.72 0.16 30);
+  --glyph-8: oklch(0.82 0.15 115);
   --sidebar: oklch(0.195 0.003 var(--tint));
   --sidebar-foreground: oklch(0.985 0.002 var(--tint));
   --sidebar-primary: oklch(0.488 0.243 264.376);

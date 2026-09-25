@@ -23,6 +23,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanel, AgentsPanelContext, type AgentsPanelState } from "@/app/conversation/Agents";
+import { PinnedSummary } from "@/app/conversation/PinnedSummary";
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import {
   type Block,
@@ -158,6 +159,7 @@ function signature(block: Block, picked: ModelChoice | null, session: boolean, r
     block.texts.map((text) => [text.messageId, text.position, text.model]),
     block.cards,
     block.tasks,
+    block.steps,
     picked,
     session,
   ]);
@@ -211,7 +213,7 @@ function useItems(
         const meta: BlockMeta = {
           texts: block.texts.map((text) => ({ position: text.position, model: text.model })),
           cards: block.cards,
-          tasks: block.tasks,
+          steps: block.steps,
           state: block.state,
           startedAtMs: block.startedAtMs,
           endedAtMs: block.endedAtMs,
@@ -263,6 +265,7 @@ const EMPTY_DIGEST: BoardDigest & { head: string | null } = {
   questions: {},
   plans: {},
   requests: {},
+  workerSteps: [],
   runRequest: null,
   streaming: null,
   head: null,
@@ -345,6 +348,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
             questions: s.board.questions,
             plans: s.board.plans,
             requests: s.board.requests,
+            workerSteps: s.board.workerSteps,
             runRequest: s.board.runRequest,
             streaming: s.board.streaming,
             head: s.board.head,
@@ -523,7 +527,8 @@ export function ConversationView({ selection }: { selection: Selection }) {
                     </Button>
                   </p>
                 )}
-                <div className="min-h-0 flex-1">
+                <div className="relative min-h-0 flex-1">
+                  {conversation && <PinnedSummary conversation={conversation} />}
                   <Thread
                     components={THREAD_COMPONENTS}
                     placeholder={
