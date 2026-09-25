@@ -454,9 +454,13 @@ export function PermissionPicker({
 export function ConversationModelPicker({
   conversation,
   groups,
+  open,
+  onOpenChange,
 }: {
   conversation: Conversation;
   groups: ModelGroup[];
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const settings = useApp((s) => s.settings);
   const project = useApp((s) =>
@@ -484,6 +488,8 @@ export function ConversationModelPicker({
         groups={groups}
         value={current}
         disabled={fixed || action.busy}
+        open={open}
+        onOpenChange={onOpenChange}
         label={conversation.kind === "session" ? "Orchestrator model" : "Model"}
         onChange={(choice) =>
           action.run(() =>

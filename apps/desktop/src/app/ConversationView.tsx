@@ -58,10 +58,8 @@ import type {
   Rating,
   UserRequest,
 } from "@/ipc/generated";
-import { useCanCompact } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import {
-  compact,
   editMessage,
   interrupt,
   loadEarlier,
@@ -483,7 +481,6 @@ export function ConversationView({ selection }: { selection: Selection }) {
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
   const draftTarget = resolved.target;
-  const compactable = useCanCompact(conversation?.setup);
   // The conversation whose `/status` card shows (none once another one opens).
   const [statusFor, setStatusFor] = useState<string | null>(null);
   const statusCard = useMemo(
@@ -499,18 +496,6 @@ export function ConversationView({ selection }: { selection: Selection }) {
       const refs = attachments.refsOf(message.attachments ?? []);
       if (!text && refs.length === 0) return;
       setError(null);
-      // ChatGPT's `/status`: a card above the composer, nothing sent.
-      if (conversationId && text === "/status" && refs.length === 0) {
-        setStatusFor(conversationId);
-        return;
-      }
-      // ChatGPT's `/compact`: no bubble, the thread shows the compaction itself.
-      if (compactable && conversationId && text === "/compact" && refs.length === 0) {
-        compact(conversationId).catch((cause: unknown) => {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        });
-        return;
-      }
       send(
         { text, attachments: refs, mentions: mentionedTasks(text, targets) },
         draftTarget ?? undefined,
@@ -518,7 +503,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
         setError(cause instanceof Error ? cause.message : String(cause));
       });
     },
-    [attachments, targets, draftTarget, compactable, conversationId],
+    [attachments, targets, draftTarget],
   );
 
   // assistant-ui's queue surface over the daemon's queue: sending goes through it so the

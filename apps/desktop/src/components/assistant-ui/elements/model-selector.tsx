@@ -78,6 +78,8 @@ export function ModelSelector({
   label = "Model",
   disabled,
   className,
+  open: shown,
+  onOpenChange,
 }: {
   groups: readonly ModelGroup[];
   value: ModelChoice;
@@ -85,8 +87,13 @@ export function ModelSelector({
   label?: string | undefined;
   disabled?: boolean | undefined;
   className?: string | undefined;
+  /** Opens the picker from elsewhere (the composer's `/model`); uncontrolled when absent. */
+  open?: boolean | undefined;
+  onOpenChange?: ((open: boolean) => void) | undefined;
 }) {
-  const [open, setOpen] = useState(false);
+  const [own, setOwn] = useState(false);
+  const open = shown ?? own;
+  const setOpen = onOpenChange ?? setOwn;
   const [listing, setListing] = useState(false);
   const current = findModel(groups, value);
   const effort = effortFor(current, value.effort);

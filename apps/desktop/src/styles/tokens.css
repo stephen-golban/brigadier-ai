@@ -20,6 +20,7 @@
  *               h-pill, px-pill               badges and status pills
  *               h-row, h-row-sm               list rows (sidebar items, event rows)
  *               max-h-action-list             a worker's expanded run of actions (9 rows)
+ *               max-h-command-list            the composer's / menu (10 rows and a half, then scrolls)
  *               h-kbd, min-w-kbd              keyboard hints
  *               min-w-menu                    popover / dropdown minimum width
  *               min-h-composer                composer input minimum height
@@ -92,6 +93,8 @@
   --spacing-row-sm: 1.75rem;
   /* A worker's expanded run of actions shows this many rows, then scrolls. */
   --spacing-action-list: calc(var(--spacing-row-sm) * 9);
+  /* The composer's / menu shows ten rows and half of the next, so it reads as scrollable. */
+  --spacing-command-list: calc(var(--spacing-row-sm) * 10.5);
   --spacing-kbd: 1.125rem;
   --spacing-menu: 8rem;
   --spacing-composer: 2.5rem;

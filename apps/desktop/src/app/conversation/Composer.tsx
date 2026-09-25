@@ -1,6 +1,6 @@
 import { AuiIf, ComposerPrimitive } from "@assistant-ui/react";
 import { ArrowUp, PlayTriangle, Stop } from "@openai/apps-sdk-ui/components/Icon";
-import { createContext, type FC, useContext } from "react";
+import { createContext, type FC, useContext, useState } from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import {
@@ -13,6 +13,7 @@ import {
   ProjectPicker,
   ProjectSettingsButton,
 } from "@/app/conversation/SetupPickers";
+import { SlashCommands } from "@/app/conversation/SlashCommands";
 import {
   ComposerAddAttachment,
   ComposerAttachments,
@@ -43,12 +44,13 @@ export const ComposerTargetContext = createContext<ComposerTarget | null>(null);
 
 /**
  * The composer (assistant-ui composer elements, BB parity): attachments, @-mentions of
- * workers, and the setup pickers. A draft picks its project (or none, for a Chat),
+ * workers, ChatGPT's `/` commands, and the setup pickers. A draft picks its project (or none, for a Chat),
  * environment, branch, permission level and model; a started session can still change its
  * model, effort and permission level, a Chat its model.
  */
 export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder }) => {
   const target = useContext(ComposerTargetContext);
+  const [modelOpen, setModelOpen] = useState(false);
   if (!target) return null;
   const { conversation, resolved, targets } = target;
   const archived = conversation?.lifecycle === "archived";
@@ -57,6 +59,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <div className="relative w-full">
         {conversation?.kind === "session" && <ComposerMentions targets={targets} />}
+        <SlashCommands conversation={conversation} onOpenModel={() => setModelOpen(true)} />
         <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-1.5">
           <div
             data-slot="aui_composer-shell"
@@ -85,13 +88,20 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
               </div>
               {conversation && <ComposerContextRing />}
               {conversation ? (
-                <ConversationModelPicker conversation={conversation} groups={resolved.groups} />
+                <ConversationModelPicker
+                  conversation={conversation}
+                  groups={resolved.groups}
+                  open={modelOpen}
+                  onOpenChange={setModelOpen}
+                />
               ) : (
                 <ModelSelector
                   groups={resolved.groups}
                   value={resolved.model}
                   label={resolved.kind === "session" ? "Orchestrator model" : "Model"}
                   onChange={(model) => updateDraft(resolved.project?.id ?? null, { model })}
+                  open={modelOpen}
+                  onOpenChange={setModelOpen}
                 />
               )}
               <SendControls running={target.running} onResume={target.onResume} />
