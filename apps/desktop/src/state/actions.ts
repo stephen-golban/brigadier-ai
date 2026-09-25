@@ -10,6 +10,7 @@ import type {
   ForkPlace,
   Mention,
   MessageQueue,
+  QueuedMessage,
   Project,
   ProjectPatch,
   ProviderKind,
@@ -281,12 +282,23 @@ export type DraftTarget =
   | { kind: "session"; projectId: string; setup: SetupRequest | null };
 
 /**
+ * Where a message sent while a turn runs goes: the queueing setting decides (`auto`), or the
+ * user picked the other one for this message (⌘Enter).
+ */
+export type SendLane = "auto" | "steer" | "queue";
+
+/**
  * Sends a user message from the current view. A draft first becomes a real chat or session
  * with the composer's setup; the message shows immediately and is replaced by the daemon's
  * copy once committed. While a turn runs the daemon queues it, unless queueing is off, in
- * which case it steers the running turn.
+ * which case it steers the running turn. `queueIndex` puts a message that waits back in its
+ * old slot (a queued message pulled out to edit, or a deleted one restored).
  */
-export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<void> {
+export async function send(
+  outgoing: Outgoing,
+  draft?: DraftTarget,
+  { lane = "auto", queueIndex = null }: { lane?: SendLane; queueIndex?: number | null } = {},
+): Promise<void> {
   const { selection, settings } = useApp.getState();
   let conversationId: string;
   if (selection.type === "conversation") {
@@ -315,9 +327,13 @@ export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<voi
   const running =
     board?.conversationId === conversationId &&
     (board.run === "running" || board.run === "starting");
-  const steer = running && !settings.queueEnabled;
-  // A message sent while a turn runs is queued; it shows in the queue, not the thread.
-  const localId = running ? null : crypto.randomUUID();
+  const steer = lane === "steer" || (lane === "auto" && running && !settings.queueEnabled);
+  const queue = board?.conversationId === conversationId ? board.queue : null;
+  // Asked to queue with no slot: last.
+  const slot = steer ? null : (queueIndex ?? (lane === "queue" ? (queue?.items.length ?? 0) : null));
+  // A message that waits shows in the queue, not the thread; a steered one arrives as an event.
+  const waits = running || (slot !== null && !!queue?.paused);
+  const localId = waits ? null : crypto.randomUUID();
   if (localId) {
     useApp.setState((state) => ({
       pending: [
@@ -332,7 +348,6 @@ export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<voi
       ],
     }));
   }
-  const queueBefore = board?.conversationId === conversationId ? board.queue : null;
   try {
     const { outcome } = await request({
       method: "sendMessage",
@@ -341,6 +356,7 @@ export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<voi
       attachments: outgoing.attachments,
       mentions: outgoing.mentions,
       steer,
+      queueIndex: slot,
     });
     if (outcome.type === "sent") {
       updateThread(conversationId, (thread) => ({
@@ -350,11 +366,12 @@ export async function send(outgoing: Outgoing, draft?: DraftTarget): Promise<voi
     } else {
       // Shown before its queue event arrives. If the queue changed meanwhile, the events are
       // newer than this answer (the item may already be sent or deleted) and bring it anyway.
-      updateBoard(conversationId, (current) =>
-        current.queue !== queueBefore
-          ? current
-          : { ...current, queue: { ...current.queue, items: [...current.queue.items, outcome.item] } },
-      );
+      updateBoard(conversationId, (current) => {
+        if (current.queue !== queue) return current;
+        const items = [...current.queue.items];
+        items.splice(slot ?? items.length, 0, outcome.item);
+        return { ...current, queue: { ...current.queue, items } };
+      });
     }
   } finally {
     if (localId) {
@@ -447,6 +464,39 @@ export async function moveQueued(
 }
 
 /** Sends a queued message into the running turn now. */
+/**
+ * Puts a deleted queued message back in its slot (the delete toast's Undo). If nothing runs
+ * or waits any more, it is sent instead, as a queued message would have been.
+ */
+export async function restoreQueued(
+  conversationId: string,
+  item: QueuedMessage,
+  index: number,
+): Promise<void> {
+  const { outcome } = await request({
+    method: "sendMessage",
+    conversationId,
+    text: item.text,
+    attachments: item.attachments,
+    mentions: item.mentions,
+    steer: false,
+    queueIndex: index,
+  });
+  if (outcome.type === "sent") {
+    updateThread(conversationId, (thread) => ({
+      ...thread,
+      items: mergeMessages(thread.items, [outcome.message]),
+    }));
+  } else {
+    updateBoard(conversationId, (board) => {
+      if (board.queue.items.some((entry) => entry.id === outcome.item.id)) return board;
+      const items = [...board.queue.items];
+      items.splice(index, 0, outcome.item);
+      return { ...board, queue: { ...board.queue, items } };
+    });
+  }
+}
+
 export async function steerQueued(conversationId: string, itemId: string): Promise<void> {
   await request({ method: "steerQueued", conversationId, itemId });
 }

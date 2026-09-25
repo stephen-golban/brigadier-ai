@@ -431,9 +431,17 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             attachments,
             mentions,
             steer,
+            queue_index,
         } => Response::SendMessage {
             outcome: match sessions
-                .send_message(conversation_id, text, attachments, mentions, steer)
+                .send_message(
+                    conversation_id,
+                    text,
+                    attachments,
+                    mentions,
+                    steer,
+                    queue_index,
+                )
                 .await?
             {
                 brigadier_core::manager::SendOutcome::Sent(message) => SendOutcome::Sent {

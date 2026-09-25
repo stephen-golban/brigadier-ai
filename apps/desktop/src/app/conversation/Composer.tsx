@@ -1,6 +1,13 @@
-import { AuiIf, ComposerPrimitive } from "@assistant-ui/react";
+import { AuiIf, ComposerPrimitive, useAui } from "@assistant-ui/react";
 import { ArrowUp, PlayTriangle, Stop } from "@openai/apps-sdk-ui/components/Icon";
-import { createContext, type FC, useContext, useEffect, useRef, useState } from "react";
+import {
+  type FC,
+  type KeyboardEvent,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import { BranchPopover, ProjectCombobox, WorkInMenu } from "@/app/conversation/RailPickers";
@@ -10,9 +17,11 @@ import {
   PermissionPicker,
   ProjectSettingsButton,
 } from "@/app/conversation/SetupPickers";
-import { type MentionMemory, Mentions, type MentionTarget } from "@/app/conversation/Mentions";
+import { Mentions } from "@/app/conversation/Mentions";
 import { SlashCommands } from "@/app/conversation/SlashCommands";
 import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
+import { type ComposerTarget, ComposerTargetContext } from "@/app/conversation/composerTarget";
+import { QueueCard, usePullQueued } from "@/app/conversation/QueueCard";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 import {
@@ -23,23 +32,9 @@ import { ModelSelector } from "@/components/assistant-ui/elements/model-selector
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import type { Conversation } from "@/ipc/generated";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
-/** What the composer is attached to: a draft being set up, or a started conversation. */
-export type ComposerTarget = {
-  conversation: Conversation | null;
-  resolved: ResolvedDraft;
-  targets: readonly MentionTarget[];
-  /** The files and conversations the `@` menu put in the text. */
-  mentions: MentionMemory;
-  running: boolean;
-  /** Set while the latest request is stopped: continues it (the ▶ send button). */
-  onResume: (() => void) | null;
-};
-
-export const ComposerTargetContext = createContext<ComposerTarget | null>(null);
 
 /**
  * The composer (assistant-ui composer elements, BB parity): attachments, @-mentions of
@@ -69,6 +64,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
           {conversation && statusCard.open && (
             <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
           )}
+          {conversation && !archived && <QueueCard conversationId={conversation.id} />}
           {conversation?.kind === "session" && !archived && (
             <BackgroundWorkers conversationId={conversation.id} />
           )}
@@ -83,6 +79,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
             <ComposerInput
               placeholder={archived ? "Restore this conversation to continue it." : placeholder}
               autoFocus={autoFocus}
+              running={target.running}
             />
             <div className="flex items-center gap-1">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
@@ -130,14 +127,45 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
 
 /**
  * The text field: grows with its text up to a quarter of the window, then scrolls, the top
- * line fading under the edge once scrolled.
+ * line fading under the edge once scrolled. ↑ in an empty field edits the last queued message;
+ * ⌘Enter while the model works does the opposite of the queueing setting, for this message.
  */
-function ComposerInput({ placeholder, autoFocus }: { placeholder: string; autoFocus: boolean }) {
+function ComposerInput({
+  placeholder,
+  autoFocus,
+  running,
+}: {
+  placeholder: string;
+  autoFocus: boolean;
+  running: boolean;
+}) {
   const [scrolled, setScrolled] = useState(false);
+  const aui = useAui();
+  const pull = usePullQueued();
+  const queueEnabled = useApp((s) => s.settings.queueEnabled);
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    const composer = aui.composer();
+    if (event.key === "ArrowUp" && pull && composer.getState().isEmpty) {
+      event.preventDefault();
+      void pull(-1);
+    } else if (
+      event.key === "Enter" &&
+      event.metaKey &&
+      !event.shiftKey &&
+      running &&
+      composer.getState().canSend
+    ) {
+      event.preventDefault();
+      // Queueing on: this one steers; off: this one queues.
+      composer.send({ steer: queueEnabled });
+    }
+  };
   return (
     <ComposerPrimitive.Input
       placeholder={placeholder}
       data-scrolled={scrolled || undefined}
+      onKeyDown={onKeyDown}
       onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
       className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 min-h-composer max-h-composer-max data-scrolled:mask-fade-top w-full resize-none bg-transparent px-2 py-2.5 text-base outline-none"
       rows={1}

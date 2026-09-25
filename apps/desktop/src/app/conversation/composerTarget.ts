@@ -1,0 +1,43 @@
+import { createContext } from "react";
+
+import type { BlobAttachmentAdapter } from "@/app/conversation/attachments";
+import type { ResolvedDraft } from "@/app/conversation/draftSetup";
+import type { MentionMemory, MentionTarget } from "@/app/conversation/Mentions";
+import type { Conversation, Mention } from "@/ipc/generated";
+
+/**
+ * A queued message pulled into the composer to edit (ChatGPT's "Edit message"): the slot it
+ * goes back to when sent, and its mentions. Taken by the next send in that conversation.
+ */
+export class PulledSlot {
+  private slot: { conversationId: string; index: number; mentions: Mention[] } | null = null;
+
+  set(conversationId: string, index: number, mentions: Mention[]): void {
+    this.slot = { conversationId, index, mentions };
+  }
+
+  take(conversationId: string | null): { index: number; mentions: Mention[] } | null {
+    const slot = this.slot;
+    this.slot = null;
+    return slot && slot.conversationId === conversationId ? slot : null;
+  }
+}
+
+/** What the queue card needs from the view: the pulled slot and the attachment store. */
+export type QueueControls = { pulled: PulledSlot; attachments: BlobAttachmentAdapter };
+
+/** What the composer is attached to: a draft being set up, or a started conversation. */
+export type ComposerTarget = {
+  conversation: Conversation | null;
+  resolved: ResolvedDraft;
+  targets: readonly MentionTarget[];
+  /** The files and conversations the `@` menu put in the text. */
+  mentions: MentionMemory;
+  running: boolean;
+  /** Set while the latest request is stopped: continues it (the ▶ send button). */
+  onResume: (() => void) | null;
+  /** For pulling a queued message into the composer to edit. */
+  queue: QueueControls;
+};
+
+export const ComposerTargetContext = createContext<ComposerTarget | null>(null);

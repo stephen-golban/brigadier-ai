@@ -1054,13 +1054,14 @@ impl Core {
         Ok(self.board(id).await?.next_task_number())
     }
 
-    /// Queues a message while a turn runs.
+    /// Queues a message while a turn runs: last, or at `index` (clamped to the queue).
     pub async fn enqueue(
         &self,
         id: &ConversationId,
         text: String,
         attachments: Vec<AttachmentRef>,
         mentions: Vec<Mention>,
+        index: Option<u32>,
     ) -> Result<QueuedMessage> {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err(Error::Invalid("message is empty".into()));
@@ -1081,7 +1082,10 @@ impl Core {
                     "at most {MAX_QUEUED} messages can wait in the queue"
                 )));
             }
-            queue.items.push(queued);
+            let at = index.map_or(queue.items.len(), |index| {
+                (index as usize).min(queue.items.len())
+            });
+            queue.items.insert(at, queued);
             Ok(())
         })
         .await?;
