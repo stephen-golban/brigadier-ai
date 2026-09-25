@@ -110,7 +110,10 @@ export const PlusMenu: FC = () => {
   const chats = useApp(
     useShallow((s) =>
       Object.values(s.conversations)
-        .filter((other) => other.id !== conversationId && other.lifecycle !== "archived")
+        .filter(
+          (other) =>
+            other.id !== conversationId && other.lifecycle !== "archived" && !other.sideOf,
+        )
         .toSorted((a, b) => b.updatedAtMs - a.updatedAtMs)
         .slice(0, CHAT_ROWS),
     ),

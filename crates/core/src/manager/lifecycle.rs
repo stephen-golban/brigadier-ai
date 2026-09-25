@@ -230,6 +230,7 @@ impl SessionManager {
     /// artifacts and branches.
     pub async fn archive(&self, id: ConversationId) -> Result<Conversation> {
         let conversation = self.core.conversation(&id)?;
+        self.delete_side_chats(&id).await;
         self.wind_down(&conversation).await;
         self.core.set_lifecycle(id, Lifecycle::Archived).await
     }
@@ -393,6 +394,7 @@ impl SessionManager {
     /// `brigadier/` session branch) go only if asked; the user's own branches never do.
     pub async fn delete(&self, id: ConversationId, delete_branches: bool) -> Result<()> {
         let conversation = self.core.conversation(&id)?;
+        self.delete_side_chats(&id).await;
         self.wind_down(&conversation).await;
         let tasks = self.core.tasks(&id).await.unwrap_or_default();
         if delete_branches

@@ -4,13 +4,13 @@ import { type FC, useContext, useState } from "react";
 import { isFinal } from "@/app/conversation/blocks";
 import { useRequestDiff } from "@/app/conversation/ComposerCapsule";
 import { SidePanelContext } from "@/app/conversation/SidePanel";
+import { useViewConversation } from "@/app/conversation/viewContext";
 import { DiffGlyph } from "@/components/assistant-ui/elements/diff-glyph";
 import { paper } from "@/components/assistant-ui/elements/surfaces";
 import { Button } from "@/components/ui/button";
 import { request } from "@/ipc/client";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
-import { selectedConversation, useApp } from "@/state/store";
 import { setReviewScope } from "@/state/review";
 import { toast } from "@/state/toasts";
 
@@ -31,7 +31,7 @@ const Counts: FC<{ insertions: number; deletions: number; className?: string }> 
  * counts in both states; a request that landed nothing has no card.
  */
 export const TurnDiff: FC<{ requestId: string }> = ({ requestId }) => {
-  const conversationId = useApp((s) => selectedConversation(s)?.id ?? null);
+  const conversationId = useViewConversation()?.id ?? null;
   const diff = useRequestDiff(requestId);
   const reverted = useBoard((s) => s.board?.requests[requestId]?.undo?.reverted ?? false);
   // Undo waits for the request's workers: one still at work may land more.

@@ -25,6 +25,7 @@ import { useComposerDraft } from "@/app/conversation/composerDraft";
 import type { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { PLAN_PLACEHOLDER, PlanChip, PlusMenu, usePlanMode } from "@/app/conversation/PlusMenu";
+import { ViewContext } from "@/app/conversation/viewContext";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
@@ -281,10 +282,15 @@ const ESC_WINDOW_MS = 2000;
  */
 function useEscToStop(canCancel: boolean): boolean {
   const aui = useAui();
+  const { embedded } = useContext(ViewContext);
   const [armedAt, setArmedAt] = useState<number | null>(null);
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      // A side chat's Esc is its own; the conversation beside it takes the rest.
+      const inSideChat =
+        event.target instanceof Element && event.target.closest("[data-embedded-view]") !== null;
+      if (inSideChat !== embedded) return;
       // Menus, dialogs and the composer's own popovers take their Esc first.
       if (document.querySelector("[role=dialog], [role=menu], [role=listbox], [data-slot=composer-commands], [data-slot=composer-mentions]")) return;
       const active = document.activeElement;
@@ -300,7 +306,7 @@ function useEscToStop(canCancel: boolean): boolean {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [aui, canCancel, armedAt]);
+  }, [aui, canCancel, armedAt, embedded]);
   useEffect(() => {
     if (armedAt === null) return;
     const timer = setTimeout(() => setArmedAt(null), ESC_WINDOW_MS);

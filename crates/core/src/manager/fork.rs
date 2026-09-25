@@ -25,7 +25,7 @@ use crate::model::{
     Conversation, ConversationId, DomainEvent, Environment, ForkOrigin, ForkPlace, Lifecycle,
     MessageRole, Setup, streams,
 };
-use crate::sessions::{ROOT, branch_of, decode};
+use crate::sessions::{Origin, ROOT, branch_of, decode};
 use crate::work::{RequestState, TaskId};
 use crate::{Error, Result};
 
@@ -123,10 +123,13 @@ impl SessionManager {
                 conversation.project_id.clone(),
                 Some(title),
                 setup,
-                Some(ForkOrigin {
-                    conversation_id: source.clone(),
-                    message_id: message_id.clone(),
-                }),
+                Origin {
+                    forked_from: Some(ForkOrigin {
+                        conversation_id: source.clone(),
+                        message_id: message_id.clone(),
+                    }),
+                    side_of: None,
+                },
             )
             .await?;
 

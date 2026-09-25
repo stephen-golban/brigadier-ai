@@ -353,6 +353,10 @@ pub struct Conversation {
     /// Set for a fork: where it continues from ("Continued from chat").
     #[serde(default)]
     pub forked_from: Option<ForkOrigin>,
+    /// Set for a side chat: the conversation it sits beside, whose latest messages go along
+    /// with each of its turns. Side chats are temporary and left out of the sidebar.
+    #[serde(default)]
+    pub side_of: Option<ConversationId>,
 }
 
 /// Something a user message @-mentions.

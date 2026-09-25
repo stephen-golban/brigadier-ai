@@ -27,6 +27,7 @@ import {
   isWorking,
 } from "@/app/conversation/blocks";
 import { TurnDiff } from "@/app/conversation/TurnDiff";
+import { useViewConversation } from "@/app/conversation/viewContext";
 import {
   BranchPicker,
   MessageError,
@@ -43,7 +44,7 @@ import { modelName, sameModel, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { openConversation } from "@/state/actions";
 import { useBoard } from "@/state/board";
-import { selectedConversation, useApp } from "@/state/store";
+import { useApp } from "@/state/store";
 
 const CardBody = lazy(() => import("@/app/conversation/cards/CardBody"));
 
@@ -488,7 +489,7 @@ const AnswerActions: FC<{
   atMs: number | null;
   answerId: string | null;
 }> = ({ session, rework, atMs, answerId }) => {
-  const conversation = useApp(selectedConversation);
+  const conversation = useViewConversation();
   const answer = useAuiState((s) => {
     const parts = s.message.parts;
     const part = parts[parts.length - 1];
@@ -542,7 +543,7 @@ const AnswerActions: FC<{
 
 /** "⑂ Continued from chat" under the answer a fork was made from: back to where it came from. */
 const ContinuedFrom: FC<{ answerId: string | null }> = ({ answerId }) => {
-  const origin = useApp((s) => selectedConversation(s)?.forkedFrom ?? null);
+  const origin = useViewConversation()?.forkedFrom ?? null;
   const source = useApp((s) => (origin ? s.conversations[origin.conversationId] : undefined));
   if (!origin || !answerId || origin.messageId !== answerId) return null;
   return (

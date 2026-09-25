@@ -98,8 +98,9 @@ function useSections(): Sections {
   const conversations = useApp((s) => s.conversations);
   return useMemo(() => {
     // Archived conversations live in the Archived view only.
+    // Side chats are temporary, shown only beside their conversation.
     const all = Object.values(conversations).filter(
-      (conversation) => conversation.lifecycle !== "archived",
+      (conversation) => conversation.lifecycle !== "archived" && !conversation.sideOf,
     );
     const pinned = all
       .filter((conversation) => conversation.pinnedAtMs !== null)

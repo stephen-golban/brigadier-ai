@@ -37,7 +37,11 @@ function useResults(query: string): Result[] {
     // Archived conversations are listed in the Archived view only.
     const conversationResults: Result[] = Object.values(conversations)
       .filter(
-        (conversation) => conversation.lifecycle !== "archived" && matches(conversation.title),
+        (conversation) =>
+          conversation.lifecycle !== "archived" &&
+          // Side chats are temporary, shown only beside their conversation.
+          !conversation.sideOf &&
+          matches(conversation.title),
       )
       .toSorted((a, b) => b.updatedAtMs - a.updatedAtMs)
       .map((conversation) => ({

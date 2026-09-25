@@ -29,6 +29,7 @@ mod prompts;
 mod requests;
 mod review;
 mod secrets;
+mod side_chat;
 mod tools;
 mod undo;
 mod workers;
@@ -47,6 +48,7 @@ use crate::model::{
     ProjectId, Rating, RepoInfo, Setup, SetupRequest,
 };
 use crate::runtime::{Runtime, Spawner};
+use crate::sessions::Origin;
 use crate::tools::{GateAnswer, Grants, Role, ToolCall, ToolHost, ToolReply};
 use crate::work::{DiffStat, TaskId};
 use crate::{Core, Error, Result};
@@ -287,7 +289,7 @@ impl SessionManager {
         let id = ConversationId::generate();
         let setup = setup.map(|request| Setup::from_request(request, &id));
         self.core
-            .create_conversation(id, kind, project_id, title, setup, None)
+            .create_conversation(id, kind, project_id, title, setup, Origin::default())
             .await
     }
 

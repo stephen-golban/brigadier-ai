@@ -29,4 +29,9 @@ setup: Setup | null, lifecycle: Lifecycle,
 /**
  * Set for a fork: where it continues from ("Continued from chat").
  */
-forkedFrom: ForkOrigin | null, };
+forkedFrom: ForkOrigin | null, 
+/**
+ * Set for a side chat: the conversation it sits beside, whose latest messages go along
+ * with each of its turns. Side chats are temporary and left out of the sidebar.
+ */
+sideOf: ConversationId | null, };

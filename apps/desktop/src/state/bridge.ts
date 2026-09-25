@@ -3,7 +3,7 @@ import type { BridgeEvent, EventEnvelope } from "@/ipc/generated";
 import { markApplied, noteFlush, setSamplingPaused } from "@/lib/perf";
 import { loadCatalog, loadConversation, openOrchestratorLog } from "@/state/actions";
 import { applyActivityEvents, loadActivity } from "@/state/activity";
-import { applyBoardEvents, useBoard } from "@/state/board";
+import { applyBoardEvents, sideBoardIds, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
 import { emitTerminalOutput } from "@/state/terminals";
 
@@ -27,17 +27,22 @@ function flush() {
 }
 
 /** Reloads everything the UI holds: used after (re)connecting and after missing events.
- * Threads other than the open one may be stale, so they are dropped and reload when opened.
- * The open conversation's board and the Inspector's orchestrator log are read again. */
+ * Threads other than the shown ones may be stale, so they are dropped and reload when opened.
+ * The shown conversations' boards and the Inspector's orchestrator log are read again. */
 async function resync() {
   const { selection, threads } = useApp.getState();
   const openId = selection.type === "conversation" ? selection.id : null;
-  const open = openId ? threads[openId] : undefined;
-  useApp.setState({ threads: openId && open ? { [openId]: open } : {} });
+  // The open conversation and the side chat beside it keep their threads.
+  const shown = [...(openId ? [openId] : []), ...sideBoardIds()];
+  useApp.setState({
+    threads: Object.fromEntries(
+      shown.flatMap((id) => (threads[id] ? [[id, threads[id]] as const] : [])),
+    ),
+  });
   await Promise.all([loadCatalog(), loadActivity()]);
   const log = useBoard.getState().orchestrator;
   if (log) void openOrchestratorLog(log.conversationId);
-  if (openId) await loadConversation(openId);
+  await Promise.all(shown.map((id) => loadConversation(id)));
 }
 
 function onBridgeEvent(message: BridgeEvent) {

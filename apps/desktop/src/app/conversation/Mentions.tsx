@@ -188,7 +188,10 @@ export const Mentions: FC<{
   const chats = useApp(
     useShallow((s) =>
       Object.values(s.conversations)
-        .filter((other) => other.id !== conversation.id && other.lifecycle !== "archived")
+        .filter(
+          (other) =>
+            other.id !== conversation.id && other.lifecycle !== "archived" && !other.sideOf,
+        )
         .toSorted((a, b) => b.updatedAtMs - a.updatedAtMs),
     ),
   );
