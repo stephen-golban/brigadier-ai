@@ -1,5 +1,5 @@
-import { AuiIf, ComposerPrimitive, useAui } from "@assistant-ui/react";
-import { ArrowUp, PlayTriangle, Stop } from "@openai/apps-sdk-ui/components/Icon";
+import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
+import { ArrowUp, PlayTriangle, Spin, Stop } from "@openai/apps-sdk-ui/components/Icon";
 import {
   type FC,
   type KeyboardEvent,
@@ -201,6 +201,8 @@ function ComposerInput({
       placeholder={placeholder}
       data-scrolled={scrolled || undefined}
       onKeyDown={onKeyDown}
+      // Esc stops only on a second press (useEscToStop), as ChatGPT's does.
+      cancelOnEscape={false}
       onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
       className={cn(
         "aui-composer-input caret-primary placeholder:text-muted-foreground/60 w-full resize-none bg-transparent text-base outline-none",
@@ -267,6 +269,61 @@ function UtilityBar({ resolved }: { resolved: ResolvedDraft }) {
   );
 }
 
+/** A second Esc within this long stops the model (the first one arms the button). */
+const ESC_WINDOW_MS = 2000;
+
+/**
+ * ChatGPT's two-press stop: the first Esc outside menus and cards arms the send button
+ * (it reads "Esc"), a second within two seconds stops the model. Esc in the composer also
+ * leaves the field, keeping the text.
+ */
+function useEscToStop(canCancel: boolean): boolean {
+  const aui = useAui();
+  const [armedAt, setArmedAt] = useState<number | null>(null);
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      // Menus, dialogs and the composer's own popovers take their Esc first.
+      if (document.querySelector("[role=dialog], [role=menu], [role=listbox], [data-slot=composer-commands], [data-slot=composer-mentions]")) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLTextAreaElement && active.classList.contains("aui-composer-input")) active.blur();
+      if (!canCancel) return;
+      const now = event.timeStamp;
+      if (armedAt !== null && now - armedAt < ESC_WINDOW_MS) {
+        setArmedAt(null);
+        aui.composer().cancel();
+      } else {
+        setArmedAt(now);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [aui, canCancel, armedAt]);
+  useEffect(() => {
+    if (armedAt === null) return;
+    const timer = setTimeout(() => setArmedAt(null), ESC_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [armedAt]);
+  return armedAt !== null && canCancel;
+}
+
+type SendState = "starting" | "armed" | "stop" | "steer" | "queue" | "resume" | "send";
+
+const SEND_TIPS: Record<SendState, string> = {
+  starting: "Starting your task…",
+  armed: "Press Esc again to stop",
+  stop: "Stop",
+  steer: "Steer",
+  queue: "Queue",
+  resume: "Resume",
+  send: "Send message",
+};
+
+/**
+ * ChatGPT's one send button, which changes with the state: ↑ to send (its tip "Steer" or
+ * "Queue" while the model works), ■ to stop, "Esc" once armed, ▶ to resume a stopped
+ * request, and a grey spinner while the conversation's model starts.
+ */
 function SendControls({
   running,
   onResume,
@@ -274,69 +331,66 @@ function SendControls({
   running: boolean;
   onResume: (() => void) | null;
 }) {
+  const target = useContext(ComposerTargetContext);
+  const conversationId = target?.conversation?.id ?? null;
   const queueEnabled = useApp((s) => s.settings.queueEnabled);
-  const sendTip = running ? (queueEnabled ? "Queue" : "Steer") : "Send message";
-  // One button, as ChatGPT's: ■ while the model works and nothing is typed, ↑ to send (or
-  // steer, or queue), ▶ to resume a stopped request.
+  const starting = useBoard(
+    (s) => !!conversationId && s.board?.conversationId === conversationId && s.board.run === "starting",
+  );
+  const empty = useAuiState((s) => s.composer.isEmpty);
+  const canCancel = useAuiState((s) => s.composer.canCancel);
+  const armed = useEscToStop(canCancel);
+  const state: SendState =
+    armed
+      ? "armed"
+      : canCancel && empty
+        ? starting
+          ? "starting"
+          : "stop"
+        : running && !empty
+          ? queueEnabled
+            ? "queue"
+            : "steer"
+          : !running && empty && onResume
+            ? "resume"
+            : "send";
+  const button = (
+    <TooltipIconButton
+      tooltip={SEND_TIPS[state]}
+      side="bottom"
+      type="button"
+      variant={state === "starting" ? "secondary" : "default"}
+      size="icon-md"
+      data-state={state}
+      className={cn("aui-composer-send rounded-capsule", state === "armed" && "w-auto px-2 text-xs")}
+      onClick={state === "resume" ? (onResume ?? undefined) : undefined}
+    >
+      {/* Keyed by state, so each glyph eases in as the button changes. */}
+      <span key={state} className="animate-in fade-in zoom-in-75 flex items-center duration-200 motion-reduce:animate-none">
+        {state === "starting" ? (
+          <Spin className="size-icon-sm animate-spin motion-reduce:animate-none" />
+        ) : state === "armed" ? (
+          "Esc"
+        ) : state === "stop" ? (
+          <Stop className="size-icon-sm" />
+        ) : state === "resume" ? (
+          <PlayTriangle />
+        ) : (
+          <ArrowUp />
+        )}
+      </span>
+    </TooltipIconButton>
+  );
   return (
     <div className="flex shrink-0 items-center gap-1">
-      <AuiIf condition={(s) => s.composer.canCancel && s.composer.isEmpty}>
-        <ComposerPrimitive.Cancel asChild>
-          <TooltipIconButton
-            tooltip="Stop"
-            side="bottom"
-            variant="default"
-            size="icon-md"
-            className="rounded-capsule"
-          >
-            <Stop className="size-icon-sm" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Cancel>
-      </AuiIf>
-      {running ? (
-        <AuiIf condition={(s) => !s.composer.isEmpty}>
-          <SendButton tooltip={sendTip} />
-        </AuiIf>
-      ) : onResume ? (
-        <>
-          <AuiIf condition={(s) => s.composer.isEmpty}>
-            <TooltipIconButton
-              tooltip="Resume"
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon-md"
-              className="rounded-capsule"
-              onClick={onResume}
-            >
-              <PlayTriangle />
-            </TooltipIconButton>
-          </AuiIf>
-          <AuiIf condition={(s) => !s.composer.isEmpty}>
-            <SendButton tooltip={sendTip} />
-          </AuiIf>
-        </>
+      {state === "resume" ? (
+        button
+      ) : state === "starting" || state === "armed" || state === "stop" ? (
+        <ComposerPrimitive.Cancel asChild>{button}</ComposerPrimitive.Cancel>
       ) : (
-        <SendButton tooltip={sendTip} />
+        <ComposerPrimitive.Send asChild>{button}</ComposerPrimitive.Send>
       )}
     </div>
-  );
-}
-
-function SendButton({ tooltip }: { tooltip: string }) {
-  return (
-    <ComposerPrimitive.Send asChild>
-      <TooltipIconButton
-        tooltip={tooltip}
-        side="bottom"
-        type="button"
-        variant="default"
-        size="icon-md"
-        className="aui-composer-send rounded-capsule"
-      >
-        <ArrowUp />
-      </TooltipIconButton>
-    </ComposerPrimitive.Send>
   );
 }
 
