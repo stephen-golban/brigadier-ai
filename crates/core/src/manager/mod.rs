@@ -17,6 +17,7 @@
 mod branches;
 mod cards;
 mod conversation;
+mod fork;
 mod gate;
 mod instructions;
 mod landing;
@@ -258,7 +259,7 @@ impl SessionManager {
         let id = ConversationId::generate();
         let setup = setup.map(|request| Setup::from_request(request, &id));
         self.core
-            .create_conversation(id, kind, project_id, title, setup)
+            .create_conversation(id, kind, project_id, title, setup, None)
             .await
     }
 

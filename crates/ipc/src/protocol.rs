@@ -9,10 +9,10 @@
 
 use brigadier_core::{
     AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
-    ConversationView, DiffStat, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst,
-    Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating, RawApprovals, RawPage,
-    RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId,
-    WorkerPage,
+    ConversationView, DiffStat, ForkPlace, Message, MessagePage, MessageQueue, OrchestratorPage,
+    ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating,
+    RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup,
+    SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,13 @@ pub enum Request {
         project_id: Option<ProjectId>,
         title: Option<String>,
         setup: Option<SetupRequest>,
+    },
+    /// "Fork chat from here": a new conversation with the thread up to the answer
+    /// `message_id`; a session's fork works from the commit current then, in `place`.
+    ForkConversation {
+        conversation_id: ConversationId,
+        message_id: String,
+        place: ForkPlace,
     },
     /// Changes the model, effort or permission level (a session's repository and environment
     /// cannot change once set).
@@ -408,6 +415,9 @@ pub enum Response {
         stat: Option<DiffStat>,
     },
     CreateConversation {
+        conversation: Box<Conversation>,
+    },
+    ForkConversation {
         conversation: Box<Conversation>,
     },
     UpdateSetup {

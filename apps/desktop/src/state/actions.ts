@@ -6,6 +6,7 @@ import type {
   Conversation,
   Density,
   DiffStat,
+  ForkPlace,
   MessageQueue,
   Project,
   ProjectPatch,
@@ -223,6 +224,22 @@ function storeConversation(conversation: Conversation): void {
   useApp.setState((state) => ({
     conversations: { ...state.conversations, [conversation.id]: conversation },
   }));
+}
+
+/** "Fork chat from here": opens a new conversation with the thread up to that answer. */
+export async function forkConversation(
+  conversationId: string,
+  messageId: string,
+  place: ForkPlace,
+): Promise<void> {
+  const { conversation } = await request({
+    method: "forkConversation",
+    conversationId,
+    messageId,
+    place,
+  });
+  storeConversation(conversation);
+  openConversation(conversation.id);
 }
 
 export async function renameConversation(id: string, title: string): Promise<void> {

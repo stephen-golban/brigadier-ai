@@ -7,4 +7,8 @@ export type Environment = { "type": "localCheckout", branch: string, } | { "type
 /**
  * The session worktree, in Brigadier's data directory. Absent until it is created.
  */
-path: string | null, };
+path: string | null, 
+/**
+ * The commit the session branch starts from (a fork's point). Absent: `base`'s tip.
+ */
+start: string | null, };

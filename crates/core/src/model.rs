@@ -172,7 +172,29 @@ pub enum Environment {
         branch: String,
         /// The session worktree, in Brigadier's data directory. Absent until it is created.
         path: Option<String>,
+        /// The commit the session branch starts from (a fork's point). Absent: `base`'s tip.
+        #[serde(default)]
+        start: Option<String>,
     },
+}
+
+/// Where a forked session works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ForkPlace {
+    /// In the user's checkout, on a new branch from the fork's point.
+    Workspace,
+    /// In a worktree of its own, on a new branch from the fork's point.
+    NewWorktree,
+}
+
+/// The conversation and answer a fork continues from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkOrigin {
+    pub conversation_id: ConversationId,
+    /// The answer it was forked from: the last message it copied.
+    pub message_id: String,
 }
 
 /// What a new conversation is set up with, from the composer.
@@ -248,6 +270,7 @@ impl Setup {
                             .filter(|branch| !branch.trim().is_empty())
                             .unwrap_or_else(|| format!("brigadier/{}/session", id.short())),
                         path: None,
+                        start: None,
                     },
                 },
                 permission,
@@ -310,6 +333,9 @@ pub struct Conversation {
     pub setup: Option<Setup>,
     #[serde(default)]
     pub lifecycle: Lifecycle,
+    /// Set for a fork: where it continues from ("Continued from chat").
+    #[serde(default)]
+    pub forked_from: Option<ForkOrigin>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
