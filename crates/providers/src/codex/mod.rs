@@ -589,6 +589,7 @@ async fn open_thread(
     let sandbox = thread_sandbox(&spec.access);
     let approval = Some(approval_policy(&spec.access));
     let instructions = spec.append_system_prompt.clone();
+    let service_tier = spec.fast.then(|| FAST_TIER.to_owned());
     let (thread, model) = match &spec.origin {
         Origin::New => {
             let started: p::ThreadStartResponse = rpc
@@ -601,6 +602,7 @@ async fn open_thread(
                         approval_policy: approval,
                         developer_instructions: instructions,
                         config: Some(config),
+                        service_tier: service_tier.clone(),
                         ..Default::default()
                     },
                 )
@@ -622,6 +624,7 @@ async fn open_thread(
                         developer_instructions: instructions,
                         config: Some(config),
                         exclude_turns: Some(true),
+                        service_tier: service_tier.clone(),
                         ..Default::default()
                     },
                 )
@@ -642,6 +645,7 @@ async fn open_thread(
                         developer_instructions: instructions,
                         config: Some(config),
                         exclude_turns: Some(true),
+                        service_tier: service_tier.clone(),
                         ..Default::default()
                     },
                 )
@@ -925,8 +929,17 @@ fn sandbox_policy(access: &Access) -> p::SandboxPolicy {
     }
 }
 
+/// Codex's fast service tier ("Fast"), as `model/list` names it.
+const FAST_TIER: &str = "priority";
+
 fn model_info(model: p::Model) -> ModelInfo {
+    let fast = model
+        .service_tiers
+        .iter()
+        .find(|tier| tier.id == FAST_TIER)
+        .map(|tier| tier.description.clone());
     ModelInfo {
+        fast,
         id: model.model,
         display_name: model.display_name,
         description: model.description,

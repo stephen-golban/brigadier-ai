@@ -88,6 +88,9 @@ pub(crate) struct Envelope {
 pub(crate) struct Cli {
     pub provider: ProviderKind,
     pub model: ModelChoice,
+    /// The conversation's own model choice it was started for (none for a task, or a Chat on
+    /// the default model): a different one in the setup means the user changed it since.
+    pub chosen: Option<ModelChoice>,
     pub session: Arc<dyn ProviderSession>,
     /// The cleanup-ledger owner (`orch:…`, `chat:…`, `task:…`).
     pub owner: String,
@@ -678,6 +681,7 @@ impl SessionManager {
     }
 
     async fn next_turn(self: Arc<Self>, conv: Arc<ConvLive>) {
+        self.retire_changed_cli(&conv).await;
         let (users, envelopes, request, user_notes) = {
             let mut state = conv.state.lock().await;
             if state.busy || state.closing || state.held || self.admit().is_err() {
@@ -824,6 +828,33 @@ impl SessionManager {
         self.settle_requests(&conv.id).await;
     }
 
+    /// The user changed the model, effort or Fast since the CLI started: close it while nothing
+    /// runs, so the next turn resumes the conversation on the new choice, as ChatGPT's picker
+    /// takes effect on the next message.
+    async fn retire_changed_cli(&self, conv: &Arc<ConvLive>) {
+        let Ok(conversation) = self.core.conversation(&conv.id) else {
+            return;
+        };
+        let wanted = setup_choice(&conversation);
+        let cli = {
+            let mut state = conv.state.lock().await;
+            let changed = state
+                .cli
+                .as_ref()
+                .is_some_and(|cli| cli.chosen.is_some() && cli.chosen != wanted);
+            if !changed || state.busy || state.closing {
+                return;
+            }
+            state.closing = true;
+            state.cli.take()
+        };
+        if let Some(cli) = cli {
+            cli.session.close().await;
+            cli.ended.cancelled().await;
+        }
+        conv.state.lock().await.closing = false;
+    }
+
     /// The conversation's live CLI session, started (or resumed) when there is none.
     async fn ensure_cli(&self, conv: &Arc<ConvLive>) -> Result<Arc<Cli>> {
         if let Some(cli) = conv.state.lock().await.cli.clone() {
@@ -874,6 +905,7 @@ impl SessionManager {
                         provider: ProviderKind::Claude,
                         model: None,
                         effort: None,
+                        fast: None,
                     });
                 (fallback.unwrap_or(model), prompts::chat(), Vec::new())
             }
@@ -889,6 +921,7 @@ impl SessionManager {
             cwd: dir.clone(),
             model: choice.model.clone(),
             effort: choice.effort.clone(),
+            fast: choice.fast == Some(true),
             origin: match &resume {
                 Some(native_id) => Origin::Resume {
                     native_id: native_id.clone(),
@@ -952,6 +985,7 @@ impl SessionManager {
         let cli = Arc::new(Cli {
             provider: choice.provider,
             model: choice,
+            chosen: setup_choice(&conversation),
             session,
             owner,
             ended: CancellationToken::new(),
@@ -986,6 +1020,7 @@ impl SessionManager {
                     provider: ProviderKind::Claude,
                     model: None,
                     effort: choice.effort.clone(),
+                    fast: None,
                 }
             }
         }
@@ -1570,6 +1605,7 @@ impl SessionManager {
             provider: next.provider,
             model: next.model.clone(),
             effort: next.effort.clone(),
+            fast: None,
         };
         self.notice(
             &conv.id,
@@ -1966,5 +2002,14 @@ fn web_step(tool: &str, input: Option<&str>) -> Option<OrchestratorStepKind> {
         }),
         "WebFetch" => field("url").map(|url| OrchestratorStepKind::ReadPage { url }),
         _ => None,
+    }
+}
+
+/// The model a conversation's setup picks: a session's orchestrator, a Chat's model.
+fn setup_choice(conversation: &crate::model::Conversation) -> Option<ModelChoice> {
+    match &conversation.setup {
+        Some(Setup::Session { orchestrator, .. }) => Some(orchestrator.clone()),
+        Some(Setup::Chat { model }) => Some(model.clone()),
+        None => None,
     }
 }

@@ -1,6 +1,7 @@
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   Archive,
+  Bolt,
   BranchAlt,
   ChatCompose,
   Document,
@@ -23,6 +24,7 @@ import {
   ComposerCommands,
 } from "@/components/assistant-ui/elements/composer-commands";
 import { DropdownMenu, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { findModel, type ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import type { Conversation } from "@/ipc/generated";
 import { useCanCompact } from "@/lib/setup";
 import {
@@ -63,8 +65,10 @@ export function useLatestAnswer(): string | null {
  */
 export const SlashCommands: FC<{
   conversation: Conversation | null;
+  /** The providers' models, for the Fast command of a model with a fast tier. */
+  groups: readonly ModelGroup[];
   onOpenModel: () => void;
-}> = ({ conversation, onOpenModel }) => {
+}> = ({ conversation, groups, onOpenModel }) => {
   const aui = useAui();
   const status = useContext(StatusCardContext);
   const compactable = useCanCompact(conversation?.setup);
@@ -160,6 +164,26 @@ export const SlashCommands: FC<{
       });
     }
     const { setup } = conversation;
+    const choice =
+      setup?.type === "session" ? setup.orchestrator : setup?.type === "chat" ? setup.model : null;
+    const fastTier = choice ? findModel(groups, choice)?.fast : null;
+    if (setup && choice && fastTier) {
+      const fast = choice.fast === true;
+      const next = { ...choice, fast: !fast };
+      list.push({
+        id: "fast",
+        label: "Fast",
+        description: fast ? "Turn off fast mode" : fastTier,
+        icon: <Bolt />,
+        run: () =>
+          run(() =>
+            updateSetup(
+              id,
+              setup.type === "session" ? { ...setup, orchestrator: next } : { ...setup, model: next },
+            ),
+          ),
+      });
+    }
     if (setup?.type === "session") {
       list.push({
         id: "plan",
@@ -183,7 +207,7 @@ export const SlashCommands: FC<{
       });
     }
     return list.toSorted((a, b) => a.label.localeCompare(b.label));
-  }, [conversation, answer, compactable, share, onOpenModel, status, run, aui]);
+  }, [conversation, groups, answer, compactable, share, onOpenModel, status, run, aui]);
 
   return (
     <>

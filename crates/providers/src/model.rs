@@ -85,6 +85,10 @@ pub struct ModelInfo {
     pub is_default: bool,
     /// Input kinds the model accepts (`text`, `image`).
     pub input_modalities: Vec<String>,
+    /// What its fast service tier offers ("1.5x speed, increased usage"), when it has one
+    /// (Codex's `priority` tier).
+    #[serde(default)]
+    pub fast: Option<String>,
 }
 
 /// A provider's model list with its provenance, as cached on disk.
@@ -592,6 +596,8 @@ pub struct SessionSpec {
     pub cwd: PathBuf,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Runs on the model's fast service tier, where it has one (see [`ModelInfo::fast`]).
+    pub fast: bool,
     pub origin: Origin,
     pub access: Access,
     /// Appended to the CLI's own system prompt.

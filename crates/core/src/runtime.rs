@@ -1082,6 +1082,7 @@ fn spec_for(session: &RawSession, origin: Origin, record_to: Option<PathBuf>) ->
         cwd: PathBuf::from(session.cwd.clone().unwrap_or_default()),
         model: session.model.clone(),
         effort: session.effort.clone(),
+        fast: false,
         origin,
         access: session.access.clone(),
         append_system_prompt: None,
