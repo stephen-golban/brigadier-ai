@@ -19,4 +19,9 @@ orchestrator: ModelChoice | null, environment: EnvironmentKind | null,
  * Gitignored env files (paths relative to the repository root) copied into every worker
  * worktree. Their values are redacted everywhere Brigadier shows or stores text.
  */
-secretFiles: Array<string>, };
+secretFiles: Array<string>, 
+/**
+ * What "Create branch for this session" puts before the name it suggests. Absent:
+ * `brigadier/`.
+ */
+branchPrefix: string | null, };

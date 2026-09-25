@@ -9,7 +9,8 @@
  *   Colors      bg-background, text-foreground, bg-card, bg-popover, bg-primary, bg-secondary,
  *               bg-muted, text-muted-foreground, bg-accent, text-destructive, text-warning,
  *               text-success, text-full-access (Full access permission pill), border-border,
- *               bg-input, ring-ring, bg-code-surface,
+ *               bg-input, ring-ring, bg-code-surface, bg-composer (the composer card),
+ *               bg-rail (rail cards), bg-rail-controls (the rail's utility bar),
  *               bg-sidebar(-accent|-primary|…), chart-1…5, text-glyph-1…8 (a worker's glyph).
  *               Opacity modifiers (bg-muted/40) are fine.
  *   Spacing     the numeric scale (p-2, gap-1.5, mt-3 …) multiplies --spacing, which density sets.
@@ -24,19 +25,23 @@
  *               h-kbd, min-w-kbd              keyboard hints
  *               min-w-menu                    popover / dropdown minimum width
  *               min-h-composer                composer input minimum height
+ *               max-h-composer-max            composer input maximum height (then it scrolls)
+ *               mx-rail-inset, -mb-rail-tuck  the composer rail: its side inset, the tuck under the card
  *               message-contain               skip rendering off-screen messages
  *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
  *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
- *               max-w-thread, max-w-{xs,sm,md,lg} readable column / surface widths
+ *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
- *               rounded-dialog, rounded-thread (message bubbles, composer), rounded-capsule,
+ *               rounded-dialog, rounded-thread (message bubbles), rounded-composer (the composer
+ *               card), rounded-rail (the rail's top corners), rounded-capsule,
  *               rounded-document, plus rounded-{xs,sm,md,lg,xl,2xl}
  *   Type        text-{2xs,xs,sm,base,lg,xl,2xl} (UI roles, each with its line height),
  *               text-code (code blocks), text-code-inline (inline code, em-relative)
  *   Fonts       font-sans, font-display, font-mono (system stacks, no downloads)
+ *   Shadows     shadow-hairline (the composer card's inner edge)
  *
  * Density: <html data-density="normal|compact">. Every size and spacing token below is
  * redefined for compact, so switching the attribute tightens the whole app at once.
@@ -97,7 +102,12 @@
   --spacing-command-list: calc(var(--spacing-row-sm) * 10.5);
   --spacing-kbd: 1.125rem;
   --spacing-menu: 8rem;
-  --spacing-composer: 2.5rem;
+  --spacing-composer: 2.75rem;
+  /* The composer grows with its text up to a quarter of the window, then scrolls. */
+  --spacing-composer-max: 25dvh;
+  /* The composer rail: inset from the card's sides, tucked under its top edge. */
+  --spacing-rail-inset: 0.8125rem;
+  --spacing-rail-tuck: 0.25rem;
   --spacing-sidebar: 16rem;
   --spacing-sidebar-icon: 3rem;
   /* Window chrome: top bars, room for the macOS traffic lights, the Inspector panel. */
@@ -110,6 +120,7 @@
   /* Placeholder height for off-screen messages skipped by content-visibility. */
   --message-intrinsic-size: 12rem;
 
+  --container-2xs: 14rem;
   --container-xs: 20rem;
   --container-sm: 24rem;
   --container-md: 28rem;
@@ -127,6 +138,8 @@
   --radius-surface: 0.625rem;
   --radius-dialog: 0.75rem;
   --radius-thread: 1rem;
+  --radius-composer: 1.375rem;
+  --radius-rail: 1.25rem;
   --radius-capsule: 9999px;
 
   --text-2xs: 0.6875rem;
@@ -147,6 +160,8 @@
   --text-code--line-height: 1.25rem;
   --text-code-inline: 0.85em;
 
+  --shadow-hairline: inset 0 0 1px 0 oklch(1 0 0 / 20%);
+
   --tracking-hero: -0.015em;
   --tracking-section: -0.01em;
 }
@@ -157,6 +172,9 @@
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-code-surface: var(--code-surface);
+  --color-composer: var(--composer);
+  --color-rail: var(--rail);
+  --color-rail-controls: var(--rail-controls);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
@@ -211,6 +229,11 @@
   --background: oklch(0.17 0.003 var(--tint));
   --foreground: oklch(0.985 0.002 var(--tint));
   --code-surface: color-mix(in oklab, var(--foreground) 4%, var(--background));
+  /* ChatGPT's composer: a lifted card; the rail a darker tab behind it (utility bar) or a
+     dim card (queue, status). */
+  --composer: color-mix(in oklab, var(--foreground) 12%, var(--background));
+  --rail: color-mix(in oklab, var(--foreground) 6%, var(--background));
+  --rail-controls: color-mix(in oklab, var(--foreground) 3%, var(--background));
   --card: oklch(0.215 0.003 var(--tint));
   --card-foreground: oklch(0.985 0.002 var(--tint));
   --popover: oklch(0.215 0.003 var(--tint));
@@ -287,7 +310,9 @@
   --spacing-row-sm: 1.375rem;
   --spacing-kbd: 0.9375rem;
   --spacing-menu: 7rem;
-  --spacing-composer: 2rem;
+  --spacing-composer: 2.25rem;
+  --spacing-rail-inset: 0.625rem;
+  --spacing-rail-tuck: 0.1875rem;
   --spacing-sidebar: 14rem;
   --spacing-sidebar-icon: 2.5rem;
   --spacing-titlebar: 2.5rem;
@@ -308,6 +333,8 @@
   --radius-surface: 0.5rem;
   --radius-dialog: 0.625rem;
   --radius-thread: 0.75rem;
+  --radius-composer: 1.125rem;
+  --radius-rail: 1rem;
 
   --text-2xs: 0.625rem;
   --text-2xs--line-height: 0.875rem;
