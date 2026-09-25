@@ -509,6 +509,8 @@ impl SessionManager {
         };
         let prompt = prompts::worker(task, &repo_note, &native, &extra);
 
+        // Without the shims the worker's outward commands would run unasked.
+        self.sync_gate().await?;
         let access = self.worker_access(task, &workspace, &cwd);
         let worker_grant = self.grants.issue(
             &owner,
@@ -1534,6 +1536,9 @@ impl SessionManager {
         text: String,
     ) -> Result<String> {
         let live = self.task_live(task);
+        // A program the user installed (or removed) meanwhile, e.g. after the worker said it
+        // was missing.
+        self.sync_gate().await?;
         let mut state = live.state.lock().await;
         if let Some(waiter) = state.question.take() {
             let _ = waiter.send(text);

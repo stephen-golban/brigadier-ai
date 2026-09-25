@@ -16,6 +16,7 @@
 
 mod cards;
 mod conversation;
+mod gate;
 mod instructions;
 mod landing;
 mod lifecycle;
@@ -53,7 +54,8 @@ use self::workers::TaskLive;
 pub struct ManagerConfig {
     /// The running `brigadierd`: CLIs start `brigadierd mcp` as their Brigadier MCP server.
     pub daemon_exe: PathBuf,
-    /// The outward-command gate's shims, put first on every worker's PATH.
+    /// The outward-command gate's shim folder, put first on every worker's PATH. The daemon
+    /// creates it empty; the manager keeps it to the gated programs the user has.
     pub gate_dir: Option<PathBuf>,
 }
 

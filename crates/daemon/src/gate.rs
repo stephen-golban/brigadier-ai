@@ -1,9 +1,11 @@
 //! The outward-command gate (PLAN.md §5: actions that affect the outside world always ask).
 //!
-//! At start the daemon fills `<data>/gate/bin/` with one symlink per program in
-//! `policy::ALWAYS_ASK` (`git`, `gh`, `npm`, …), all pointing at the running `brigadierd`.
-//! Workers get that directory first on their PATH, and their gate grant in `policy::GATE_ENV`
-//! (`BRIGADIER_GATE`). When a worker runs `git …`, this binary starts under the name `git`
+//! At start the daemon creates `<data>/gate/bin/` empty. The session manager fills it with one
+//! symlink to the running `brigadierd` for each program in `policy::ALWAYS_ASK` (`git`, `gh`,
+//! `npm`, …) that exists on the user's login PATH, and only those, so a missing program still
+//! looks missing (`brigadier_core::manager`'s gate module). Workers get that directory first on
+//! their PATH, and their gate grant in `policy::GATE_ENV` (`BRIGADIER_GATE`). When a worker
+//! runs `git …`, this binary starts under the name `git`
 //! ([`shim_program`]) and, before any runtime, logging or store exists ([`run_shim`]):
 //!
 //! 1. finds the real `git` on PATH, skipping every entry that resolves back to this binary;
@@ -36,21 +38,18 @@ pub fn gate_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("gate").join("bin")
 }
 
-/// (Re)creates the gate shims for `data_dir`, pointing at the running executable, and returns
-/// their directory. Called once at daemon start, under the instance lock.
+/// Creates the gate's shim directory for `data_dir` empty (dropping shims of an earlier
+/// daemon, which may point at another executable) and returns it. Called once at daemon
+/// start, under the instance lock; the session manager adds the shims.
 #[cfg(unix)]
 pub fn install(data_dir: &Path) -> std::io::Result<PathBuf> {
     let dir = gate_dir(data_dir);
-    let exe = std::fs::canonicalize(std::env::current_exe()?)?;
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(err),
     }
     std::fs::create_dir_all(&dir)?;
-    for program in brigadier_providers::policy::gate_programs() {
-        std::os::unix::fs::symlink(&exe, dir.join(program))?;
-    }
     Ok(dir)
 }
 
@@ -98,8 +97,9 @@ mod shim {
     pub fn run(program: &str) -> ExitCode {
         let args: Vec<OsString> = std::env::args_os().collect();
         let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+        // Removed since the shims were last brought up to date: as missing as it is.
         let Some(real) = find_real(program, this.as_deref()) else {
-            eprintln!("{program}: command not found (Brigadier's gate found no {program} on PATH)");
+            eprintln!("{program}: command not found");
             return ExitCode::from(EXIT_NOT_FOUND);
         };
         let argv: Vec<String> = args
