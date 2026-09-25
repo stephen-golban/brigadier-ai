@@ -51,11 +51,27 @@
   animation: var(--animate-shimmer);
 }
 
-/* A reply that finished while its request still works: no streaming dot after it. */
-@utility no-stream-dot {
-  & .aui-md::after,
-  & .aui-md *::after {
-    content: none;
+/* The newest words of a streaming reply, dimmest last; they brighten as more arrive. */
+@layer components {
+  .aui-tail {
+    transition: opacity 200ms ease-out;
+  }
+  .aui-tail-1 {
+    opacity: 0.25;
+  }
+  .aui-tail-2 {
+    opacity: 0.45;
+  }
+  .aui-tail-3 {
+    opacity: 0.65;
+  }
+  .aui-tail-4 {
+    opacity: 0.85;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .aui-tail {
+      transition: none;
+    }
   }
 }
 

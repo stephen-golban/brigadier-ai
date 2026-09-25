@@ -46,3 +46,10 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 export function formatDateTime(epochMs: number): string {
   return dateTimeFormat.format(epochMs);
 }
+
+const shortTimeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
+
+/** A time of day as the thread shows it ("4:08 PM"). */
+export function formatTime(epochMs: number): string {
+  return shortTimeFormat.format(epochMs);
+}

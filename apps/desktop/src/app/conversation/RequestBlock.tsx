@@ -7,16 +7,22 @@ import { Check, ChevronRight, Copy, Regenerate } from "@openai/apps-sdk-ui/compo
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
 
 import { AgentChips } from "@/app/conversation/Agents";
-import { type BlockCard, type BlockState, isLive } from "@/app/conversation/blocks";
-import { BranchPicker, MessageError, MessageText } from "@/components/assistant-ui/thread";
+import { type BlockCard, type BlockState, isLive, isWorking } from "@/app/conversation/blocks";
+import {
+  BranchPicker,
+  MessageError,
+  MessageText,
+  StreamingMessageText,
+} from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { mono } from "@/components/assistant-ui/elements/surfaces";
 import { Badge } from "@/components/ui/badge";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import type { ModelChoice } from "@/ipc/generated";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, formatTime } from "@/lib/format";
 import { modelName, sameModel, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
+import { useBoard } from "@/state/board";
 
 const CardBody = lazy(() => import("@/app/conversation/cards/CardBody"));
 
@@ -35,6 +41,8 @@ export type BlockMeta = {
   session: boolean;
   /** The request can be answered again now. */
   rework: boolean;
+  /** The request this block answers (the id of its user message). */
+  requestId: string;
 };
 
 /** Seconds since `from`, ticking while `live`. */
@@ -126,10 +134,45 @@ function CardEntry({ card }: { card: BlockCard }) {
   );
 }
 
+/** One reply of the block; text that still streams fades in word by word. */
+const ReplyText: FC<{ index: number; streaming: boolean }> = ({ index, streaming }) => (
+  <MessagePrimitive.PartByIndex
+    index={index}
+    components={{ Text: streaming ? StreamingMessageText : MessageText }}
+  />
+);
+
+/** The last line of a working block: what happens right now ("Thinking", "Delegating…"). */
+const ActivityRow: FC<{ requestId: string }> = ({ requestId }) => {
+  const label = useBoard((s) => {
+    const board = s.board;
+    if (!board) return null;
+    const turn = board.runRequest === requestId && (board.run === "running" || board.run === "starting");
+    if (turn) {
+      if (board.doing) return board.doing;
+      // Streaming text shows itself.
+      return board.streaming?.text ? null : "Thinking";
+    }
+    const working = Object.values(board.tasks)
+      .filter((task) => task.requestId === requestId && isWorking(task))
+      .toSorted((a, b) => a.number - b.number);
+    const [first] = working;
+    if (working.length === 1 && first) return `Waiting for task-${first.number} · ${first.title}`;
+    return working.length > 1 ? `Waiting for ${working.length} workers` : null;
+  });
+  if (!label) return null;
+  return (
+    <div data-slot="request-activity" className="shimmer truncate text-sm motion-reduce:animate-none">
+      {label}
+    </div>
+  );
+};
+
 /**
- * One request's answer: a header that folds the work (earlier replies, workers, routine
- * cards), the cards that matter (decisions, failures, what needs the user), then the answer.
- * While the request works, its workers show as chips and its latest reply stays in view.
+ * One request's answer, as ChatGPT shows a turn. While the request works (and after it was
+ * stopped or failed) its work shows in place, in order: replies, workers and cards, then what
+ * happens right now. Once it is done, everything before the answer folds into "Worked for
+ * 3m 4s"; the cards that matter (decisions, failures, what needs the user) stay in view.
  */
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
@@ -137,25 +180,23 @@ export const RequestBlock: FC = () => {
   if (!meta) return null;
 
   const live = isLive(meta.state);
+  const done = meta.state === "done";
   const last = meta.texts.length - 1;
-  // Live, the latest reply shows under the work; done, the last reply is the answer.
-  const shown = last >= 0 ? last : null;
-  const folded: Entry[] = [
-    ...meta.texts
-      .map((text, index) => ({ kind: "text" as const, index, position: text.position }))
-      .filter((entry) => entry.index !== shown),
-    ...meta.cards
-      .filter((card) => !card.keep)
-      .map((card) => ({ kind: "card" as const, card, position: card.position })),
+  const answer = done && last >= 0 ? last : null;
+  const sequence: Entry[] = [
+    ...meta.texts.map((text, index) => ({ kind: "text" as const, index, position: text.position })),
+    ...meta.cards.map((card) => ({ kind: "card" as const, card, position: card.position })),
   ].toSorted((a, b) => a.position - b.position);
+  const folded = sequence.filter((entry) =>
+    entry.kind === "text" ? entry.index !== answer : !entry.card.keep,
+  );
   const kept = meta.cards.filter((card) => card.keep);
-  const chipsInFold = !live && meta.tasks.length > 0;
-  const foldable = folded.length > 0 || chipsInFold;
+  const foldable = done && (folded.length > 0 || meta.tasks.length > 0);
   const header =
     foldable ||
     meta.state === "stopped" ||
     meta.state === "failed" ||
-    (live && (meta.session || shown === null));
+    (live && (meta.session || meta.texts.length === 0));
 
   return (
     <MessagePrimitive.Root
@@ -167,42 +208,63 @@ export const RequestBlock: FC = () => {
       {header && (
         <WorkHeader meta={meta} open={open} foldable={foldable} onToggle={() => setOpen(!open)} />
       )}
-      {live && meta.tasks.length > 0 && <AgentChips taskIds={meta.tasks} />}
-      {open && foldable && (
-        <div data-slot="request-fold" className="flex flex-col gap-3">
-          {chipsInFold && <AgentChips taskIds={meta.tasks} />}
-          {folded.map((entry) =>
+      {done ? (
+        <>
+          {open && foldable && (
+            <div data-slot="request-fold" className="flex flex-col gap-3">
+              {meta.tasks.length > 0 && <AgentChips taskIds={meta.tasks} />}
+              {folded.map((entry) =>
+                entry.kind === "text" ? (
+                  <div key={`text:${entry.index}`} className="leading-relaxed wrap-break-word">
+                    <ReplyText index={entry.index} streaming={false} />
+                  </div>
+                ) : (
+                  <CardEntry key={`${entry.card.type}:${entry.card.id}`} card={entry.card} />
+                ),
+              )}
+            </div>
+          )}
+          {kept.map((card) => (
+            <CardEntry key={`${card.type}:${card.id}`} card={card} />
+          ))}
+          {answer !== null && (
+            <div
+              data-slot="aui_assistant-message-content"
+              className="text-foreground leading-relaxed wrap-break-word"
+            >
+              <ReplyText index={answer} streaming={false} />
+            </div>
+          )}
+        </>
+      ) : (
+        <div data-slot="request-work" className="flex flex-col gap-3">
+          {meta.tasks.length > 0 && <AgentChips taskIds={meta.tasks} />}
+          {sequence.map((entry) =>
             entry.kind === "text" ? (
-              <div key={`text:${entry.index}`} className="no-stream-dot leading-relaxed wrap-break-word">
-                <MessagePrimitive.PartByIndex index={entry.index} components={{ Text: MessageText }} />
+              <div
+                key={`text:${entry.index}`}
+                data-slot="aui_assistant-message-content"
+                className="text-foreground leading-relaxed wrap-break-word"
+              >
+                <ReplyText
+                  index={entry.index}
+                  streaming={meta.texts[entry.index]?.position === Number.POSITIVE_INFINITY}
+                />
               </div>
             ) : (
               <CardEntry key={`${entry.card.type}:${entry.card.id}`} card={entry.card} />
             ),
           )}
-        </div>
-      )}
-      {kept.map((card) => (
-        <CardEntry key={`${card.type}:${card.id}`} card={card} />
-      ))}
-      {shown !== null && (
-        <div
-          data-slot="aui_assistant-message-content"
-          className={cn(
-            "text-foreground leading-relaxed wrap-break-word",
-            // Only text that is still streaming ends in the streaming dot.
-            meta.texts[shown]?.position !== Number.POSITIVE_INFINITY && "no-stream-dot",
-          )}
-        >
-          <MessagePrimitive.PartByIndex index={shown} components={{ Text: MessageText }} />
+          {meta.state === "working" && <ActivityRow requestId={meta.requestId} />}
         </div>
       )}
       <MessageError />
-      {shown !== null && !live && (
+      {!live && last >= 0 && (
         <AnswerActions
-          model={meta.texts[shown]?.model ?? null}
+          model={meta.texts[last]?.model ?? null}
           picked={meta.picked}
           rework={meta.rework}
+          atMs={meta.endedAtMs}
         />
       )}
     </MessagePrimitive.Root>
@@ -213,11 +275,12 @@ export const RequestBlock: FC = () => {
  * Under the answer: copy it, ask for another answer, move between answers, and which model
  * wrote it (flagged when it was a fallback).
  */
-const AnswerActions: FC<{ model: ModelChoice | null; picked: ModelChoice | null; rework: boolean }> = ({
-  model,
-  picked,
-  rework,
-}) => {
+const AnswerActions: FC<{
+  model: ModelChoice | null;
+  picked: ModelChoice | null;
+  rework: boolean;
+  atMs: number | null;
+}> = ({ model, picked, rework, atMs }) => {
   const answer = useAuiState((s) => {
     const parts = s.message.parts;
     const part = parts[parts.length - 1];
@@ -257,6 +320,7 @@ const AnswerActions: FC<{ model: ModelChoice | null; picked: ModelChoice | null;
           )}
         </span>
       )}
+      {atMs !== null && <span className="ps-1 text-xs tabular-nums">{formatTime(atMs)}</span>}
     </ActionBarPrimitive.Root>
   );
 };

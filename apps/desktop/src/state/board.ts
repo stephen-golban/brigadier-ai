@@ -53,6 +53,8 @@ export type Board = {
   runRequest: string | null;
   /** The last message of the branch the thread shows. */
   head: string | null;
+  /** What the orchestrator (or a Chat's model) is doing right now, in a few words. */
+  doing: string | null;
   streaming: StreamingMessage | null;
   notices: Notice[];
   /** What each worker is doing right now, in a few words (from its live events). */
@@ -92,6 +94,7 @@ export function emptyBoard(conversationId: string): Board {
     runError: null,
     runRequest: null,
     head: null,
+    doing: null,
     streaming: null,
     notices: [],
     activity: {},
@@ -158,6 +161,7 @@ export function boardFromView(
     runError: keep?.runError ?? null,
     runRequest: view.runRequest,
     head: view.head,
+    doing: keep?.doing ?? null,
     streaming: view.streaming,
     notices: view.notices.slice(-NOTICES),
     activity: keep?.activity ?? {},
@@ -253,9 +257,15 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
           : { messageId: event.messageId, text: event.text, requestId: board.runRequest };
       return { ...board, streaming };
     }
+    case "orchestratorLogged": {
+      if (event.entry.type !== "provider") return board;
+      const doing = doingOf(event.entry.event, board.doing);
+      return doing === board.doing ? board : { ...board, doing };
+    }
     case "runStateChanged":
       return {
         ...board,
+        doing: event.state === "running" || event.state === "starting" ? board.doing : null,
         run: event.state,
         runError: event.error,
         runRequest: event.requestId,
@@ -301,6 +311,43 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
   }
 }
 
+/** What a Brigadier tool call or CLI tool of the orchestrator is doing, by tool name. */
+const TOOL_DOING: Readonly<Record<string, string>> = {
+  delegate_task: "Delegating to a worker",
+  message_worker: "Messaging a worker",
+  stop_worker: "Stopping a worker",
+  ask_user: "Asking you",
+  read_report: "Reading a report",
+  read_artifact: "Reading a report",
+  query_brain: "Checking the project notes",
+  propose_plan: "Writing a plan",
+  request_approval: "Asking for your approval",
+  accept_task: "Accepting a worker's change",
+  finish_session: "Finishing the session",
+  list_tasks: "Checking on the workers",
+  WebSearch: "Searching the web",
+  WebFetch: "Reading a web page",
+};
+
+/** The orchestrator's current activity after one of its provider events. */
+function doingOf(event: ProviderEvent, current: string | null): string | null {
+  switch (event.type) {
+    case "toolCall": {
+      if (event.status !== "inProgress") return null;
+      // MCP tools arrive namespaced (`mcp__brigadier__delegate_task`, `brigadier.delegate_task`).
+      const name = event.name.split(/__|\./).at(-1) ?? event.name;
+      return TOOL_DOING[name] ?? "Using a tool";
+    }
+    case "reasoning":
+    case "message":
+    case "turnCompleted":
+    case "exited":
+      return null;
+    default:
+      return current;
+  }
+}
+
 function applyToLog(log: OrchestratorLog, envelope: EventEnvelope): OrchestratorLog {
   const { event, streamSeq, atMs } = envelope;
   if (event.type !== "orchestratorLogged") return log;
@@ -331,11 +378,14 @@ export function applyBoardEvents(envelopes: readonly EventEnvelope[]): void {
   const { board, orchestrator } = useBoard.getState();
   if (!board && !orchestrator) return;
   const conversationStream = board ? `conversation:${board.conversationId}` : null;
+  const boardLogStream = board ? `orch:${board.conversationId}` : null;
   const orchestratorStream = orchestrator ? `orch:${orchestrator.conversationId}` : null;
   let nextBoard = board;
   let nextLog = orchestrator;
   for (const envelope of envelopes) {
     const { stream } = envelope;
+    // The open conversation's own log says what its model is doing right now.
+    if (nextBoard && stream === boardLogStream) nextBoard = applyToBoard(nextBoard, envelope);
     if (nextBoard && stream === conversationStream) {
       nextBoard = applyToBoard(nextBoard, envelope);
     } else if (
