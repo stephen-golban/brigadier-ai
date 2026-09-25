@@ -387,7 +387,7 @@ impl Default for Settings {
             default_permission: PermissionLevel::default(),
             default_orchestrator: None,
             default_chat_model: None,
-            queue_enabled: true,
+            queue_enabled: false,
             hibernate_after_minutes: 30,
         }
     }

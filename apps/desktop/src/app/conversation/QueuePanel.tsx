@@ -30,7 +30,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Toggle } from "@/components/ui/toggle";
 import type { AttachmentRef, QueuedMessage } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
@@ -38,11 +37,9 @@ import {
   editQueued,
   moveQueued,
   resumeQueue,
-  setQueueEnabled,
   steerQueued,
 } from "@/state/actions";
 import { useBoard } from "@/state/board";
-import { useApp } from "@/state/store";
 
 /** Where a dragged item would land, from the pointer's height over the rows' midpoints. */
 function dropIndex(list: HTMLElement, y: number, dragged: number): number {
@@ -59,22 +56,19 @@ function dropIndex(list: HTMLElement, y: number, dragged: number): number {
 type Drag = { id: string; from: number; to: number };
 
 /**
- * The message queue above the composer: the running turn, then what waits for it. Queued
+ * The message queue above the composer: what waits for the running turn. Queued
  * messages can be steered into the running turn, edited, deleted and dragged into another
  * order. After an interrupt the queue pauses until resumed.
  */
 export const QueuePanel = memo(function QueuePanel({
   conversationId,
-  runningLabel,
   targets,
 }: {
   conversationId: string;
-  runningLabel: string;
   targets: readonly MentionTarget[];
 }) {
   const queue = useBoard((s) => s.board?.queue);
   const run = useBoard((s) => s.board?.run ?? "idle");
-  const queueEnabled = useApp((s) => s.settings.queueEnabled);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const listRef = useRef<HTMLOListElement>(null);
@@ -82,7 +76,7 @@ export const QueuePanel = memo(function QueuePanel({
 
   const running = run === "running" || run === "starting";
   const items = queue?.items ?? [];
-  if (!queue || (!running && items.length === 0 && !queue.paused)) return null;
+  if (!queue || (items.length === 0 && !queue.paused)) return null;
 
   // While dragging, rows show in the order they would drop in.
   const shown = drag
@@ -130,27 +124,7 @@ export const QueuePanel = memo(function QueuePanel({
             Resume
           </Button>
         </MessageQueueRunning>
-      ) : (
-        running && (
-          <MessageQueueRunning active label={runningLabel}>
-            <Toggle
-              size="sm"
-              variant="outline"
-              pressed={queueEnabled}
-              onPressedChange={(pressed) => action.run(() => setQueueEnabled(pressed))}
-              aria-label="Queue messages while a turn runs"
-              title={
-                queueEnabled
-                  ? "New messages wait until this turn ends"
-                  : "New messages steer the running turn"
-              }
-              className="text-xs"
-            >
-              {queueEnabled ? "Queueing on" : "Queueing off"}
-            </Toggle>
-          </MessageQueueRunning>
-        )
-      )}
+      ) : null}
 
       {items.length > 0 && (
         <MessageQueueHeader
@@ -201,7 +175,7 @@ export const QueuePanel = memo(function QueuePanel({
                 )}
               </span>
               <TooltipIconButton
-                tooltip="Steer: send into the running turn now"
+                tooltip="Steer"
                 size="icon-sm"
                 disabled={action.busy || queue.paused || !running}
                 onClick={() => action.run(() => steerQueued(conversationId, item.id))}

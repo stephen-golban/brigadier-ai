@@ -644,6 +644,13 @@ pub struct UserRequest {
     pub started_at_ms: i64,
     /// When it last stopped working; absent while it works.
     pub ended_at_ms: Option<i64>,
+    /// The request whose running turn its message was steered into: the thread shows it
+    /// inside that request's block.
+    #[serde(default)]
+    pub steered_into: Option<String>,
+    /// The reply that was streaming when it was steered in: its bubble shows after it.
+    #[serde(default)]
+    pub steered_after: Option<String>,
 }
 
 /// Why something entered the orchestrator's context.

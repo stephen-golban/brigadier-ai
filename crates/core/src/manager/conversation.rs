@@ -114,6 +114,9 @@ struct ConvState {
     withdrawn: HashSet<TaskId>,
     /// The user messages the running turn carries (resent after a Chat fallback).
     in_turn: Vec<Message>,
+    /// Replies that were streaming when a message was steered in, and the request they
+    /// answer (the one before the steer).
+    replying_for: HashMap<String, String>,
     /// The next CLI session starts fresh and must be given the transcript so far.
     reseed: bool,
     /// A Chat that hit a usage limit continues on this model (the saved choice is untouched).
@@ -330,16 +333,18 @@ impl SessionManager {
                     }
                     None => false,
                 };
+                let mut into = None;
                 if steered {
                     self.log_user_injection(&conv, &message).await;
                     // The rest of the turn answers the new message: its own request.
-                    state.request.clone_from(&message.request_id);
+                    into = std::mem::replace(&mut state.request, message.request_id.clone());
                     state.in_turn.push(message.clone());
                 } else {
                     // The turn is still starting (or just ended): the next turn carries it.
                     state.pending.push(message.clone());
                 }
                 drop(state);
+                self.note_steered(&conv, &message, into).await;
                 self.settle_requests(&id).await;
                 return Ok(SendOutcome::Sent(message));
             }
@@ -377,9 +382,10 @@ impl SessionManager {
         };
         if steered {
             self.log_user_injection(&conv, &message).await;
-            state.request.clone_from(&message.request_id);
-            state.in_turn.push(message);
+            let into = std::mem::replace(&mut state.request, message.request_id.clone());
+            state.in_turn.push(message.clone());
             drop(state);
+            self.note_steered(&conv, &message, into).await;
             self.settle_requests(&id).await;
             return Ok(());
         }
@@ -387,6 +393,33 @@ impl SessionManager {
         drop(state);
         self.kick(&conv);
         Ok(())
+    }
+
+    /// A message steered into the turn of request `into`: its request says so, and after
+    /// which reply, so the thread shows it inside that request's block where it was sent. The
+    /// reply streaming right now still answers `into`.
+    async fn note_steered(&self, conv: &ConvLive, message: &Message, into: Option<String>) {
+        let (Some(request), Some(into)) = (&message.request_id, into) else {
+            return;
+        };
+        let streaming = match self.core.board(&conv.id).await {
+            Ok(board) => board.streaming.map(|streaming| streaming.message_id),
+            Err(_) => None,
+        };
+        if let Some(reply) = &streaming {
+            conv.state
+                .lock()
+                .await
+                .replying_for
+                .insert(reply.clone(), into.clone());
+        }
+        if let Err(err) = self
+            .core
+            .mark_steered(&conv.id, request, &into, streaming)
+            .await
+        {
+            tracing::warn!(conversation = %conv.id, error = %err, "could not mark a steered request");
+        }
     }
 
     /// Unpauses the queue and sends its next message if nothing runs.
@@ -1084,7 +1117,13 @@ impl SessionManager {
                 role: ProviderRole::Assistant,
                 text,
             } => {
-                let request = conv.state.lock().await.request.clone();
+                let request = {
+                    let mut state = conv.state.lock().await;
+                    state
+                        .replying_for
+                        .remove(item_id)
+                        .or_else(|| state.request.clone())
+                };
                 if let Err(err) = self
                     .core
                     .append_assistant_message(
@@ -1165,6 +1204,7 @@ impl SessionManager {
             let mut state = conv.state.lock().await;
             state.busy = false;
             state.last_activity_ms = now_ms();
+            state.replying_for.clear();
             let ended = match status {
                 TurnStatus::Interrupted => Some(RequestState::Stopped),
                 TurnStatus::Failed => Some(RequestState::Failed {

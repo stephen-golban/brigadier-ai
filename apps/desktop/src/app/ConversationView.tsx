@@ -174,6 +174,8 @@ function signature(
     block.cards,
     block.tasks,
     block.steps,
+    block.steers.map((steer) => [steer.message.id, steer.text]),
+    block.requestIds,
     picked,
     session,
   ]);
@@ -199,7 +201,11 @@ function useItems(
       seen.add(node.id);
       const { block } = node;
       const entry = cache.get(node.id);
-      const rework = block.user?.kind === "message" && canRework(block.key);
+      // A block that joined steered requests answers the last of them, not its own message.
+      const rework =
+        block.user?.kind === "message" &&
+        canRework(block.key) &&
+        (node.kind === "user" || block.steers.length === 0);
       if (node.kind === "user") {
         if (
           entry?.item.kind !== "user" ||
@@ -231,6 +237,11 @@ function useItems(
           texts: block.texts.map((text) => ({ position: text.position, model: text.model })),
           cards: block.cards,
           steps: block.steps,
+          steers: block.steers.map((steer) => ({
+            position: steer.position,
+            text: steer.text,
+            atMs: steer.message.createdAtMs,
+          })),
           state: block.state,
           startedAtMs: block.startedAtMs,
           endedAtMs: block.endedAtMs,
@@ -238,6 +249,7 @@ function useItems(
           session,
           rework,
           requestId: block.key,
+          requestIds: block.requestIds,
           answerId,
         };
         cache.set(node.id, {
@@ -734,9 +746,6 @@ const AboveComposer: FC = () => {
       ) : (
         <QueuePanel
           conversationId={conversation.id}
-          runningLabel={
-            conversation.kind === "session" ? "The orchestrator is working…" : "Writing a reply…"
-          }
           targets={target?.targets ?? []}
         />
       )}

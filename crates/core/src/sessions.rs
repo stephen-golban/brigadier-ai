@@ -445,6 +445,8 @@ impl Core {
                         state: RequestState::Working,
                         started_at_ms: message.created_at_ms,
                         ended_at_ms: None,
+                        steered_into: None,
+                        steered_after: None,
                     },
                 },
             ),
@@ -927,6 +929,39 @@ impl Core {
         request.state = RequestState::Working;
         request.started_at_ms = now_ms();
         request.ended_at_ms = None;
+        let event = DomainEvent::RequestUpdated { request };
+        let stored = self
+            .record(vec![(streams::conversation(id), event.clone())])
+            .await?;
+        if let Some(board) = boards.get_mut(id) {
+            board.apply(&event, stored[0]);
+        }
+        Ok(())
+    }
+
+    /// Records that a request's message was steered into `into`'s running turn, while
+    /// `after` was streaming.
+    pub(crate) async fn mark_steered(
+        &self,
+        id: &ConversationId,
+        request_id: &str,
+        into: &str,
+        after: Option<String>,
+    ) -> Result<()> {
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        let Some(mut request) = boards
+            .get(id)
+            .and_then(|board| board.requests.get(request_id))
+            .cloned()
+        else {
+            return Err(Error::NotFound(format!("request {request_id}")));
+        };
+        request.steered_into = Some(into.to_owned());
+        request.steered_after = after;
         let event = DomainEvent::RequestUpdated { request };
         let stored = self
             .record(vec![(streams::conversation(id), event.clone())])

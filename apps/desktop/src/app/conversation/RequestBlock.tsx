@@ -40,6 +40,8 @@ export type BlockMeta = {
   cards: BlockCard[];
   /** The workers' steps, in order. */
   steps: BlockStep[];
+  /** Messages the user steered into the turn, shown as bubbles in the work. */
+  steers: { position: number; text: string; atMs: number }[];
   state: BlockState;
   startedAtMs: number;
   endedAtMs: number | null;
@@ -51,6 +53,8 @@ export type BlockMeta = {
   rework: boolean;
   /** The request this block answers (the id of its user message). */
   requestId: string;
+  /** It and the requests steered into it. */
+  requestIds: string[];
   /** The message the user rates: the block's last reply. */
   answerId: string | null;
 };
@@ -141,6 +145,7 @@ const WorkHeader: FC<{
 type Entry =
   | { kind: "text"; index: number; position: number }
   | { kind: "card"; card: BlockCard; position: number }
+  | { kind: "steer"; text: string; atMs: number; position: number }
   | { kind: "steps"; step: BlockStep["kind"]; taskIds: string[]; position: number };
 
 /** The block's replies, cards and worker steps in order; adjacent steps of a kind share a row. */
@@ -148,6 +153,7 @@ function blockSequence(meta: BlockMeta): Entry[] {
   const entries: Entry[] = [
     ...meta.texts.map((text, index) => ({ kind: "text" as const, index, position: text.position })),
     ...meta.cards.map((card) => ({ kind: "card" as const, card, position: card.position })),
+    ...meta.steers.map((steer) => ({ kind: "steer" as const, ...steer })),
     ...meta.steps.map((step) => ({
       kind: "steps" as const,
       step: step.kind,
@@ -171,6 +177,8 @@ function entryKey(entry: Entry): string {
       return `text:${entry.index}`;
     case "card":
       return `${entry.card.type}:${entry.card.id}`;
+    case "steer":
+      return `steer:${entry.position}`;
     case "steps":
       return `steps:${entry.position}`;
   }
@@ -208,24 +216,51 @@ const SequenceEntry: FC<{ entry: Entry; streaming: boolean }> = ({ entry, stream
       );
     case "card":
       return <CardEntry card={entry.card} />;
+    case "steer":
+      return <SteerBubble text={entry.text} atMs={entry.atMs} />;
     case "steps":
       return <WorkerStepRow kind={entry.step} taskIds={entry.taskIds} />;
   }
 };
 
+/** A follow-up the user sent while the block worked: their bubble, inside the block. */
+const SteerBubble: FC<{ text: string; atMs: number }> = ({ text, atMs }) => {
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const now = useNow(60_000);
+  return (
+    <div
+      data-slot="request-steer"
+      className="group/steer flex max-w-7/10 min-w-0 flex-col items-end gap-y-1 self-end"
+    >
+      <div className="bg-muted text-foreground rounded-thread px-4 py-2 whitespace-pre-wrap wrap-break-word">
+        {text}
+      </div>
+      <div className="text-muted-foreground flex items-center gap-1 opacity-0 transition-opacity group-hover/steer:opacity-100 group-focus-within/steer:opacity-100">
+        <span className="pe-1 text-xs tabular-nums">{formatSentAt(atMs, now)}</span>
+        <TooltipIconButton tooltip={isCopied ? "Copied" : "Copy"} onClick={() => copyToClipboard(text)}>
+          {isCopied ? <Check /> : <Copy />}
+        </TooltipIconButton>
+      </div>
+    </div>
+  );
+};
+
 /** The last line of a working block: what happens right now ("Thinking", "Delegating…"). */
-const ActivityRow: FC<{ requestId: string }> = ({ requestId }) => {
+const ActivityRow: FC<{ requestIds: string[] }> = ({ requestIds }) => {
   const label = useBoard((s) => {
     const board = s.board;
     if (!board) return null;
-    const turn = board.runRequest === requestId && (board.run === "running" || board.run === "starting");
+    const turn =
+      board.runRequest !== null &&
+      requestIds.includes(board.runRequest) &&
+      (board.run === "running" || board.run === "starting");
     if (turn) {
       if (board.doing) return board.doing;
       // Streaming text shows itself.
       return board.streaming?.text ? null : "Thinking";
     }
     const working = Object.values(board.tasks)
-      .filter((task) => task.requestId === requestId && isWorking(task))
+      .filter((task) => task.requestId !== null && requestIds.includes(task.requestId) && isWorking(task))
       .toSorted((a, b) => a.number - b.number);
     const [first] = working;
     if (working.length === 1 && first) return `Waiting for task-${first.number} · ${first.title}`;
@@ -248,10 +283,10 @@ const ActivityRow: FC<{ requestId: string }> = ({ requestId }) => {
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
   const [open, setOpen] = useState(false);
-  const requestId = meta?.requestId;
+  const requestIds = meta?.requestIds;
   const workersActive = useBoard((s) =>
     Object.values(s.board?.tasks ?? {}).some(
-      (task) => task.requestId === requestId && !isFinal(task),
+      (task) => task.requestId !== null && !!requestIds?.includes(task.requestId) && !isFinal(task),
     ),
   );
   if (!meta) return null;
@@ -269,7 +304,9 @@ export const RequestBlock: FC = () => {
   const answer = done && last >= 0 ? last : null;
   const sequence = blockSequence(meta);
   const folded = sequence.filter((entry) =>
-    entry.kind === "text" ? entry.index !== answer : entry.kind === "steps" || !entry.card.keep,
+    entry.kind === "text"
+      ? entry.index !== answer
+      : entry.kind === "steps" || entry.kind === "steer" || !entry.card.keep,
   );
   const kept = meta.cards.filter((card) => card.keep);
   const foldable = done && folded.length > 0;
@@ -277,7 +314,7 @@ export const RequestBlock: FC = () => {
     foldable ||
     meta.state === "stopped" ||
     meta.state === "failed" ||
-    (live && (meta.session || meta.texts.length === 0));
+    (live && (meta.session || meta.texts.length === 0 || meta.steers.length > 0));
 
   return (
     <MessagePrimitive.Root
@@ -323,7 +360,7 @@ export const RequestBlock: FC = () => {
               }
             />
           ))}
-          {meta.state === "working" && <ActivityRow requestId={meta.requestId} />}
+          {meta.state === "working" && <ActivityRow requestIds={meta.requestIds} />}
         </div>
       )}
       <MessageError />
