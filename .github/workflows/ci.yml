@@ -146,22 +146,73 @@ jobs:
               "${{ matrix.app }}" --smoke
             fi
           }
-          # The first launch of a freshly built binary on a fresh runner also pays one-time OS
-          # work (malware scan, loader and webview caches) that a user pays once after
-          # installing. Warm the OS up with a throwaway launch; its report is printed, never
-          # judged.
-          echo "::group::Warm-up launch (not judged)"
-          BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-warmup" \
-            BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/warmup-report.json" smoke || true
-          echo "::endgroup::"
+          # The release build just used every core. On macOS wait for the host to settle before
+          # each launch, with a cap so a persistently busy runner still runs and reports the
+          # unchanged budgets. loadavg is normalized by the runner's actual CPU count.
+          wait_for_idle() {
+            if [ "$RUNNER_OS" != "macOS" ]; then return; fi
+            local elapsed=0 load
+            while true; do
+              load="$(node -p 'require("node:os").loadavg()[0] / require("node:os").cpus().length')"
+              if awk -v load="$load" 'BEGIN { exit !(load < 0.75) }'; then
+                echo "macOS 1-minute load/core $load (< 0.75) after ${elapsed}s"
+                return
+              fi
+              if [ "$elapsed" -ge 120 ]; then
+                echo "macOS 1-minute load/core $load still >= 0.75 after ${elapsed}s; running with diagnostics"
+                return
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+          }
+          diagnostics() {
+            echo "Runner snapshot before $1: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              # $_ is PowerShell's current process, not a shell variable.
+              # shellcheck disable=SC2016
+              powershell.exe -NoProfile -Command 'Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Where-Object { $_.Name -ne "_Total" -and $_.Name -ne "Idle" } | Sort-Object PercentProcessorTime -Descending | Select-Object -First 12 Name,IDProcess,PercentProcessorTime,WorkingSetPrivate | Format-Table -AutoSize' || true
+            elif [ "$RUNNER_OS" = "macOS" ]; then
+              uptime
+              ps -Ao pid,ppid,%cpu,%mem,comm -r | head -n 16 || true
+            else
+              uptime
+              ps -Ao pid,ppid,%cpu,%mem,comm --sort=-%cpu | head -n 16 || true
+            fi
+          }
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # GitHub's disposable macOS VM permits sudo. Stop Spotlight indexing during the
+            # timed launches; a failure is visible but does not bypass smoke validation.
+            sudo -n mdutil -a -i off || echo "Spotlight indexing could not be disabled"
+          fi
+          # Two throwaway launches prime loader and webview caches, including WebView2 on
+          # Windows. Each uses a fresh data directory and prints its own smoke report.
+          for warmup in 1 2; do
+            echo "::group::Warm-up launch $warmup (not judged)"
+            wait_for_idle
+            diagnostics "warm-up $warmup"
+            if BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-warmup-$warmup" \
+              BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/warmup-report-$warmup.json" smoke; then
+              echo "Warm-up $warmup completed"
+            else
+              echo "Warm-up $warmup exited nonzero; judged launches will still run"
+            fi
+            echo "::endgroup::"
+          done
           # Then three cold starts, each with a fresh data directory. On shared runners the
           # window and webview creation before the page loads swings by seconds between
           # identical launches, so cold start is judged by the median of the three against the
           # same limit; every other check is judged on the first launch, as the app judged it.
           for launch in 1 2 3; do
             echo "::group::Judged launch $launch"
-            BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-smoke-$launch" \
-              BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/smoke-launch-$launch.json" smoke || true
+            wait_for_idle
+            diagnostics "judged launch $launch"
+            if BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-smoke-$launch" \
+              BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/smoke-launch-$launch.json" smoke; then
+              echo "Judged launch $launch completed"
+            else
+              echo "Judged launch $launch exited nonzero; its report will still be judged"
+            fi
             echo "::endgroup::"
           done
           node apps/desktop/scripts/judge-smoke.mjs "$RUNNER_TEMP/smoke-report.json" \
