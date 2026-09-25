@@ -529,6 +529,14 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
         },
+        Request::RateMessage {
+            conversation_id,
+            subject,
+            rating,
+        } => {
+            sessions.rate(&conversation_id, subject, rating).await?;
+            Response::RateMessage
+        }
         Request::GetSessionDiff { id } => Response::GetSessionDiff {
             stat: sessions.session_diff_stat(&id).await?,
         },

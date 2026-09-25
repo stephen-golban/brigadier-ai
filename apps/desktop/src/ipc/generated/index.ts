@@ -90,6 +90,7 @@ export type { QuestionKind } from "./QuestionKind";
 export type { QueuedMessage } from "./QueuedMessage";
 export type { QuotaSnapshot } from "./QuotaSnapshot";
 export type { QuotaWindow } from "./QuotaWindow";
+export type { Rating } from "./Rating";
 export type { RawApprovals } from "./RawApprovals";
 export type { RawEntry } from "./RawEntry";
 export type { RawPage } from "./RawPage";

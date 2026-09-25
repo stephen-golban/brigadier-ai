@@ -1,5 +1,7 @@
 //! Domain model. These types are the wire contract too: they are exported to TypeScript.
 
+use std::collections::HashMap;
+
 use brigadier_providers::{
     Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
 };
@@ -191,6 +193,14 @@ pub enum SetupRequest {
     Chat {
         model: ModelChoice,
     },
+}
+
+/// What the user thought of an answer ("Good response" / "Bad response").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum Rating {
+    Good,
+    Bad,
 }
 
 /// How a conversation is set up.
@@ -442,6 +452,8 @@ pub struct ConversationView {
     /// The last message of the branch the thread shows (the newest message until the user
     /// edits, regenerates or switches branches).
     pub head: Option<String>,
+    /// The user's ratings of answers, by subject (see `DomainEvent::MessageRated`).
+    pub ratings: HashMap<String, Rating>,
     pub streaming: Option<StreamingMessage>,
     /// The latest notices (environment problems, fallbacks), newest last.
     pub notices: Vec<Notice>,
@@ -718,6 +730,12 @@ pub enum DomainEvent {
     WorkerStepped {
         step: WorkerStep,
     },
+    /// The user rated an answer. Ratings stay on this machine.
+    MessageRated {
+        /// The answer: a message id, or `task:<id>` for a worker's report.
+        subject: String,
+        rating: Rating,
+    },
     /// The thread now shows the branch that ends at `head`; new messages continue it.
     BranchSwitched {
         conversation_id: ConversationId,
@@ -787,6 +805,7 @@ impl DomainEvent {
             Self::RunStateChanged { .. } => "conversation.run",
             Self::RequestUpdated { .. } => "request.updated",
             Self::WorkerStepped { .. } => "worker.step",
+            Self::MessageRated { .. } => "message.rated",
             Self::BranchSwitched { .. } => "conversation.branch",
             Self::ConversationNotice { .. } => "conversation.notice",
             Self::TaskUpdated { .. } => "task.updated",

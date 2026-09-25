@@ -25,7 +25,7 @@ import type { WorkerPage } from "./WorkerPage";
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "getSessionDiff", 
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
 /**
  * Absent for Chats and local-checkout sessions.
  */

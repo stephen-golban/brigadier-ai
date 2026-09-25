@@ -23,6 +23,8 @@ import {
 
 import { isWorking } from "@/app/conversation/blocks";
 import { TASK_STATE_LABELS, TaskDetails } from "@/app/conversation/cards/TaskCardView";
+import { useAction } from "@/app/conversation/useAction";
+import { RateItem, RateMenu } from "@/components/assistant-ui/rate-menu";
 import { MarkdownBlock } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -39,11 +41,11 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useNow } from "@/hooks/use-now";
-import type { RawEntry, Task } from "@/ipc/generated";
+import type { Rating, RawEntry, Task } from "@/ipc/generated";
 import { formatDuration, formatSentAt } from "@/lib/format";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
-import { loadEarlierWorkerEntries, openWorkerTranscript } from "@/state/actions";
+import { loadEarlierWorkerEntries, openWorkerTranscript, rateMessage } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
 /**
@@ -249,12 +251,17 @@ function header(task: Task, elapsed: number): string {
   }
 }
 
-/** The report as the thread's answer, with copy; when it came shows on hover. */
+/** The report as the thread's answer, with copy and rate; when it came shows on hover. */
 function Answer({ task }: { task: Task }) {
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   const now = useNow(60_000);
+  const subject = `task:${task.id}`;
+  const rated = useBoard((s) => s.board?.ratings[subject] ?? null);
+  const action = useAction();
   const summary = task.report?.summary;
   if (!summary) return null;
+  const rate = (rating: Rating) =>
+    action.run(() => rateMessage(task.conversationId, subject, rating));
   return (
     <div className="group/answer flex flex-col gap-2">
       <div className="text-foreground leading-relaxed wrap-break-word">
@@ -267,9 +274,18 @@ function Answer({ task }: { task: Task }) {
         >
           {isCopied ? <Check /> : <Copy />}
         </TooltipIconButton>
+        <RateMenu rated={rated}>
+          <RateItem rating="good" onSelect={() => rate("good")} />
+          <RateItem rating="bad" onSelect={() => rate("bad")} />
+        </RateMenu>
         <span className="ps-1 text-xs tabular-nums opacity-0 transition-opacity group-hover/answer:opacity-100">
           {formatSentAt(task.updatedAtMs, now)}
         </span>
+        {action.error && (
+          <span role="alert" className="text-destructive ps-1 text-xs">
+            {action.error}
+          </span>
+        )}
       </div>
     </div>
   );
