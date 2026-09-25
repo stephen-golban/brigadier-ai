@@ -12,6 +12,8 @@ export type ReviewOptions = {
   split: boolean;
   /** The file list beside the diffs is hidden. */
   hideFiles: boolean;
+  /** Markdown files show rendered, not as a diff ("Enable rich preview"). */
+  richPreview: boolean;
 };
 
 type ReviewState = {
@@ -30,6 +32,7 @@ export const useReview = create<ReviewState>(() => ({
     wrap: false,
     split: false,
     hideFiles: false,
+    richPreview: false,
   },
 }));
 

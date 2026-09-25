@@ -30,7 +30,7 @@ import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { request, revealPath } from "@/ipc/client";
 import type { CheckoutFile } from "@/ipc/generated";
 import { formatBytes } from "@/lib/format";
-import { highlight, type Token } from "@/lib/highlight";
+import { HIGHLIGHT_CHARS, highlight, languageOf, type Token } from "@/lib/highlight";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
@@ -47,8 +47,6 @@ export type FileTarget = { path: string; line: number | null };
 
 /** Search results listed at once; typing more narrows them. */
 const RESULTS = 100;
-/** Files larger than this show without colours, which would take too long to work out. */
-const HIGHLIGHT_CHARS = 300_000;
 
 /** The folders open in each session's tree, kept while the app runs. */
 const openFolders = new Map<string, Set<string>>();
@@ -280,14 +278,6 @@ const TreeRow = memo(function TreeRow({
     </li>
   );
 });
-
-/** The grammar for a file: its extension, or its name for the ones known without one. */
-function languageOf(path: string): string {
-  const name = baseName(path).toLowerCase();
-  if (name === "dockerfile" || name === "makefile") return name;
-  const dot = name.lastIndexOf(".");
-  return dot < 0 ? "" : name.slice(dot + 1);
-}
 
 function useFile(conversationId: string, path: string) {
   const [state, setState] = useState<{ file: CheckoutFile | null; error: string | null }>({

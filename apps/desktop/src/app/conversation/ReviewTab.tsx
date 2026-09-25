@@ -8,6 +8,9 @@ import {
   Compare,
   Copy,
   DotsHorizontal,
+  ExternalLink,
+  FolderOpen,
+  Folders,
   JumpToCaption,
   Plus,
   Reload,
@@ -16,9 +19,11 @@ import {
   Text,
 } from "@openai/apps-sdk-ui/components/Icon";
 import {
+  createContext,
   type FC,
   Fragment,
   type ReactNode,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -26,7 +31,10 @@ import {
 } from "react";
 
 import { COMPOSER_EDITABLE } from "@/app/conversation/composerTarget";
+import { SidePanelContext } from "@/app/conversation/SidePanel";
 import { FileTypeIcon } from "@/components/assistant-ui/elements/file-type-icon";
+import { useCheckoutRoot } from "@/components/assistant-ui/markdown-text";
+import { MarkdownBlock } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,12 +51,14 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useNow } from "@/hooks/use-now";
-import { request } from "@/ipc/client";
+import { openFolder, request, revealPath } from "@/ipc/client";
 import type { ReviewDiff, ReviewFile, ReviewScope } from "@/ipc/generated";
 import { formatSentAt } from "@/lib/format";
+import { HIGHLIGHT_CHARS, highlight, languageOf, type Token } from "@/lib/highlight";
 import { changedSpan, type DiffLine, type DiffRow, type PatchFile, parsePatch } from "@/lib/patch";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
+import { useApp } from "@/state/store";
 import {
   LATEST_TURN,
   type ReviewOptions,
@@ -193,6 +203,8 @@ export function ReviewTab({ conversationId }: { conversationId: string }) {
     requestAnimationFrame(() => sections.current.get(path)?.scrollIntoView({ block: "start" }));
   };
   const allCollapsed = files.length > 0 && files.every((file) => collapsed.has(file.path));
+  const whole = review?.fullFiles ?? false;
+  const reviewContext = useMemo(() => ({ conversationId, whole }), [conversationId, whole]);
 
   return (
     <div data-slot="review-tab" className="flex min-h-0 flex-1 flex-col">
@@ -244,35 +256,37 @@ export function ReviewTab({ conversationId }: { conversationId: string }) {
         </ToggleButton>
       </div>
       <div className="flex min-h-0 flex-1">
-        <div data-slot="review-diffs" className="min-w-0 flex-1 overflow-auto">
-          {error ? (
-            <p className="text-destructive p-4 text-sm">{error}</p>
-          ) : review && review.files.length === 0 ? (
-            <p className="text-muted-foreground p-4 text-sm">No changes</p>
-          ) : (
-            review?.files.map((file, index) => (
-              <FileSection
-                key={file.path}
-                file={file}
-                patch={files[index]}
-                options={options}
-                collapsed={collapsed.has(file.path)}
-                onToggle={() =>
-                  setCollapsed((current) => {
-                    const next = new Set(current);
-                    if (next.has(file.path)) next.delete(file.path);
-                    else next.add(file.path);
-                    return next;
-                  })
-                }
-                sectionRef={(element) => {
-                  if (element) sections.current.set(file.path, element);
-                  else sections.current.delete(file.path);
-                }}
-              />
-            ))
-          )}
-        </div>
+        <ReviewContext.Provider value={reviewContext}>
+          <div data-slot="review-diffs" className="min-w-0 flex-1 overflow-auto">
+            {error ? (
+              <p className="text-destructive p-4 text-sm">{error}</p>
+            ) : review && review.files.length === 0 ? (
+              <p className="text-muted-foreground p-4 text-sm">No changes</p>
+            ) : (
+              review?.files.map((file, index) => (
+                <FileSection
+                  key={file.path}
+                  file={file}
+                  patch={files[index]}
+                  options={options}
+                  collapsed={collapsed.has(file.path)}
+                  onToggle={() =>
+                    setCollapsed((current) => {
+                      const next = new Set(current);
+                      if (next.has(file.path)) next.delete(file.path);
+                      else next.add(file.path);
+                      return next;
+                    })
+                  }
+                  sectionRef={(element) => {
+                    if (element) sections.current.set(file.path, element);
+                    else sections.current.delete(file.path);
+                  }}
+                />
+              ))
+            )}
+          </div>
+        </ReviewContext.Provider>
         {!options.hideFiles && review && review.files.length > 0 && (
           <FileList files={review.files} onJump={jump} />
         )}
@@ -399,6 +413,12 @@ const OptionsMenu: FC<{ options: ReviewOptions; review: ReviewDiff | null }> = (
         onCheckedChange={(checked) => setReviewOption("ignoreWhitespace", checked)}
       >
         Hide white space
+      </DropdownMenuCheckboxItem>
+      <DropdownMenuCheckboxItem
+        checked={options.richPreview}
+        onCheckedChange={(checked) => setReviewOption("richPreview", checked)}
+      >
+        Enable rich preview
       </DropdownMenuCheckboxItem>
       <DropdownMenuSeparator />
       <DropdownMenuItem
@@ -596,6 +616,7 @@ const FileSection: FC<{
           >
             {isCopied ? <Check /> : <Copy />}
           </TooltipIconButton>
+          <OpenInMenu file={file} />
           <TooltipIconButton
             tooltip="Toggle file diff"
             size="icon-xs"
@@ -606,8 +627,113 @@ const FileSection: FC<{
           </TooltipIconButton>
         </span>
       </header>
-      {!collapsed && <FileBody file={file} patch={patch} options={options} />}
+      {!collapsed &&
+        (options.richPreview && MARKDOWN.has(languageOf(file.path)) && file.status !== "deleted" ? (
+          <RichPreview file={file} patch={patch} />
+        ) : (
+          <FileBody file={file} patch={patch} options={options} />
+        ))}
     </section>
+  );
+};
+
+/** File types "Enable rich preview" shows rendered instead of as a diff. */
+const MARKDOWN = new Set(["md", "markdown", "mdx"]);
+
+/** The file's new text, when the patch holds all of it (whole files loaded). */
+function newText(patch: PatchFile | undefined, whole: boolean): string | null {
+  if (!patch || !whole) return null;
+  const lines: string[] = [];
+  for (const row of patch.rows) {
+    if (row.kind === "gap") {
+      if (!row.lines) return null;
+      lines.push(...row.lines.map((line) => line.text));
+    } else if (row.kind !== "del") lines.push(row.text);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * "Enable rich preview": a Markdown file rendered as it reads after the change. The text
+ * comes from the diff when it holds the whole file, else from the checkout.
+ */
+const RichPreview: FC<{ file: ReviewFile; patch: PatchFile | undefined }> = ({ file, patch }) => {
+  const { conversationId, whole } = useContext(ReviewContext);
+  const fromPatch = newText(patch, whole);
+  const [read, setRead] = useState<{ text: string | null; error: string | null }>({
+    text: null,
+    error: null,
+  });
+  useEffect(() => {
+    if (fromPatch !== null) return;
+    let live = true;
+    request({ method: "readFile", conversationId, path: file.path })
+      .then(({ file: found }) => live && setRead({ text: found.text ?? "", error: null }))
+      .catch((cause: unknown) => {
+        if (live) setRead({ text: null, error: cause instanceof Error ? cause.message : String(cause) });
+      });
+    return () => {
+      live = false;
+    };
+  }, [conversationId, file.path, fromPatch]);
+  const text = fromPatch ?? read.text;
+  if (read.error) return <p className="text-destructive px-3 py-2 text-sm">{read.error}</p>;
+  if (text === null) return null;
+  return (
+    <div data-slot="review-preview" className="px-4 py-3 text-sm">
+      <MarkdownBlock text={text} />
+    </div>
+  );
+};
+
+/** What a file's diff needs from its tab: whose checkout, and whether whole files loaded. */
+const ReviewContext = createContext<{ conversationId: string; whole: boolean }>({
+  conversationId: "",
+  whole: false,
+});
+
+function failed(cause: unknown) {
+  toast(cause instanceof Error ? cause.message : String(cause), { tone: "error" });
+}
+
+/** A changed file's "Open in" menu: the Files tab, its default app, or the file manager. */
+const OpenInMenu: FC<{ file: ReviewFile }> = ({ file }) => {
+  const { openFile, available } = useContext(SidePanelContext);
+  const root = useCheckoutRoot();
+  const mac = useApp((s) => s.info?.platform === "macos");
+  const gone = file.status === "deleted";
+  const absolute = root ? `${root.replace(/\/$/, "")}/${file.path}` : null;
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <TooltipIconButton tooltip="Open in" size="icon-xs" disabled={gone}>
+          <ExternalLink />
+        </TooltipIconButton>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          disabled={!available.includes("files")}
+          onSelect={() => openFile({ path: file.path, line: null })}
+        >
+          <Folders />
+          Files tab
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!absolute}
+          onSelect={() => absolute && openFolder(absolute).catch(failed)}
+        >
+          <ExternalLink />
+          Default app
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!absolute}
+          onSelect={() => absolute && revealPath(absolute).catch(failed)}
+        >
+          <FolderOpen />
+          {mac ? "Finder" : "File manager"}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 };
 
@@ -618,6 +744,7 @@ const FileBody: FC<{ file: ReviewFile; patch: PatchFile | undefined; options: Re
 }) => {
   const [opened, setOpened] = useState<ReadonlySet<number>>(new Set());
   const [commenting, setCommenting] = useState<string | null>(null);
+  const tokens = useSideTokens(file.path, patch);
   if (!patch || file.binary || patch.binary) {
     return (
       <p className="text-muted-foreground px-3 py-2 text-sm">
@@ -635,46 +762,136 @@ const FileBody: FC<{ file: ReviewFile; patch: PatchFile | undefined; options: Re
   const open = (id: number) => setOpened((current) => new Set(current).add(id));
   const pairs = options.wordDiffs ? pairChanges(rows) : new Map<DiffLine, DiffLine>();
   return (
-    <div
-      className={cn(
-        "font-mono text-xs leading-5",
-        // Split sides share the width equally, so their lines wrap.
-        options.wrap || options.split
-          ? "whitespace-pre-wrap break-all"
-          : "w-max min-w-full whitespace-pre",
-      )}
-    >
-      {options.split ? (
-        <SplitRows
-          rows={rows}
-          pairs={pairs}
-          onOpen={open}
-        />
-      ) : (
-        rows.map((row, index) =>
-          row.kind === "gap" ? (
-            <GapRow key={`gap:${row.id}`} row={row} onOpen={open} />
-          ) : (
-            <Fragment key={`${row.kind}:${row.old}:${row.new}:${index}`}>
-              <LineRow
-                line={row}
-                partner={pairs.get(row) ?? null}
-                onComment={() => setCommenting(lineKey(row))}
-              />
-              {commenting === lineKey(row) && (
-                <CommentBox
-                  path={file.path}
+    <TokensContext.Provider value={tokens}>
+      <div
+        className={cn(
+          "font-mono text-xs leading-5",
+          // Split sides share the width equally, so their lines wrap.
+          options.wrap || options.split
+            ? "whitespace-pre-wrap break-all"
+            : "w-max min-w-full whitespace-pre",
+        )}
+      >
+        {options.split ? (
+          <SplitRows
+            rows={rows}
+            pairs={pairs}
+            onOpen={open}
+          />
+        ) : (
+          rows.map((row, index) =>
+            row.kind === "gap" ? (
+              <GapRow key={`gap:${row.id}`} row={row} onOpen={open} />
+            ) : (
+              <Fragment key={`${row.kind}:${row.old}:${row.new}:${index}`}>
+                <LineRow
                   line={row}
-                  onClose={() => setCommenting(null)}
+                  partner={pairs.get(row) ?? null}
+                  onComment={() => setCommenting(lineKey(row))}
                 />
-              )}
-            </Fragment>
-          ),
-        )
-      )}
-    </div>
+                {commenting === lineKey(row) && (
+                  <CommentBox
+                    path={file.path}
+                    line={row}
+                    onClose={() => setCommenting(null)}
+                  />
+                )}
+              </Fragment>
+            ),
+          )
+        )}
+      </div>
+    </TokensContext.Provider>
   );
 };
+
+/** Each side's colours by line number: the old file's for deleted lines, the new one's else. */
+type SideTokens = { old: Map<number, Token[]>; new: Map<number, Token[]> };
+
+const TokensContext = createContext<SideTokens | null>(null);
+
+/** Colours both sides of a file's diff, from the lines the patch holds of each. */
+function useSideTokens(path: string, patch: PatchFile | undefined): SideTokens | null {
+  // Kept with the patch they colour, so a new patch shows plain until its colours come.
+  const [found, setFound] = useState<{ patch: PatchFile; tokens: SideTokens } | null>(null);
+  useEffect(() => {
+    if (!patch || patch.binary) return;
+    const language = languageOf(path);
+    const lines = patch.rows.flatMap((row) => (row.kind === "gap" ? (row.lines ?? []) : [row]));
+    const olds = lines.filter((line) => line.kind !== "add");
+    const news = lines.filter((line) => line.kind !== "del");
+    const beforeText = olds.map((line) => line.text).join("\n");
+    const afterText = news.map((line) => line.text).join("\n");
+    if (beforeText.length + afterText.length > HIGHLIGHT_CHARS) return;
+    let live = true;
+    Promise.all([highlight(beforeText, language), highlight(afterText, language)])
+      .then(([before, after]) => {
+        if (!live || !before || !after) return;
+        setFound({
+          patch,
+          tokens: { old: byNumber(olds, before, "old"), new: byNumber(news, after, "new") },
+        });
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [path, patch]);
+  return found && found.patch === patch ? found.tokens : null;
+}
+
+function byNumber(side: DiffLine[], tokens: Token[][], key: "old" | "new"): Map<number, Token[]> {
+  return new Map(side.map((line, index) => [line[key] ?? 0, tokens[index] ?? []]));
+}
+
+/** `text` in its colours, the part in `span` marked (word diffs). */
+function Coloured({
+  tokens,
+  span,
+  kind,
+}: {
+  tokens: Token[];
+  span: [number, number] | null;
+  kind: DiffLine["kind"];
+}) {
+  const parts: ReactNode[] = [];
+  let offset = 0;
+  tokens.forEach((token, index) => {
+    const start = offset;
+    const end = offset + token.content.length;
+    offset = end;
+    const style = token.color ? { color: token.color } : undefined;
+    const italic = cn(token.italic && "italic");
+    // A token is cut where the marked span starts and ends.
+    const cuts = [start, ...(span ?? []).filter((at) => at > start && at < end), end];
+    for (let piece = 0; piece < cuts.length - 1; piece += 1) {
+      const from = cuts[piece] as number;
+      const to = cuts[piece + 1] as number;
+      const text = token.content.slice(from - start, to - start);
+      const marked = span !== null && from >= span[0] && to <= span[1];
+      parts.push(
+        marked ? (
+          <mark
+            key={`${index}:${piece}`}
+            className={cn(
+              "rounded-xs",
+              italic,
+              kind === "add" ? "bg-success/30" : "bg-destructive/30",
+            )}
+            style={style}
+          >
+            {text}
+          </mark>
+        ) : (
+          <span key={`${index}:${piece}`} className={italic} style={style}>
+            {text}
+          </span>
+        ),
+      );
+    }
+  });
+  return <>{parts}</>;
+}
 
 function lineKey(line: DiffLine): string {
   return `${line.kind}:${line.old}:${line.new}`;
@@ -708,11 +925,22 @@ const TINT: Record<DiffLine["kind"], string> = {
 
 /** A line's text, with the part that differs from its partner marked (word diffs). */
 function LineText({ line, partner }: { line: DiffLine; partner: DiffLine | null }) {
-  if (!partner || line.kind === "context") return <>{line.text || " "}</>;
-  const span =
-    line.kind === "del"
-      ? changedSpan(line.text, partner.text).before
-      : changedSpan(partner.text, line.text).after;
+  const sides = useContext(TokensContext);
+  const tokens = sides?.[line.kind === "del" ? "old" : "new"].get(
+    (line.kind === "del" ? line.old : line.new) ?? 0,
+  );
+  const span: [number, number] | null =
+    !partner || line.kind === "context"
+      ? null
+      : line.kind === "del"
+        ? changedSpan(line.text, partner.text).before
+        : changedSpan(partner.text, line.text).after;
+  if (tokens && tokens.length > 0) {
+    return (
+      <Coloured tokens={tokens} span={span && span[0] < span[1] ? span : null} kind={line.kind} />
+    );
+  }
+  if (!span) return <>{line.text || " "}</>;
   const [start, end] = span;
   if (start >= end) return <>{line.text || " "}</>;
   return (
