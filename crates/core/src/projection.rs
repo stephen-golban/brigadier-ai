@@ -85,6 +85,7 @@ impl Projection {
             DomainEvent::RawSessionCreated { .. }
             | DomainEvent::MessageDelta { .. }
             | DomainEvent::RunStateChanged { .. }
+            | DomainEvent::RequestUpdated { .. }
             | DomainEvent::ConversationNotice { .. }
             | DomainEvent::TaskUpdated { .. }
             | DomainEvent::ApprovalUpdated { .. }

@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 
 use crate::model::{DomainEvent, MessageRole, Notice, StreamingMessage};
-use crate::work::{Approval, CardId, MessageQueue, Plan, Question, RunState, Task, TaskId};
+use crate::work::{
+    Approval, CardId, MessageQueue, Plan, Question, RunState, Task, TaskId, UserRequest,
+};
 
 /// Notices kept per conversation.
 const NOTICES_KEPT: usize = 20;
@@ -18,6 +20,7 @@ pub(crate) const KINDS: &[&str] = &[
     "question.updated",
     "plan.updated",
     "queue.changed",
+    "request.updated",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -26,8 +29,11 @@ pub(crate) struct Board {
     pub(crate) approvals: HashMap<CardId, Approval>,
     pub(crate) questions: HashMap<CardId, Question>,
     pub(crate) plans: HashMap<CardId, Plan>,
+    pub(crate) requests: HashMap<String, UserRequest>,
     pub(crate) queue: MessageQueue,
     pub(crate) run: RunState,
+    /// The request the running turn serves.
+    pub(crate) run_request: Option<String>,
     pub(crate) streaming: Option<StreamingMessage>,
     pub(crate) notices: Vec<Notice>,
 }
@@ -74,11 +80,17 @@ impl Board {
                 self.plans.insert(plan.id.clone(), plan);
             }
             DomainEvent::QueueChanged { queue, .. } => self.queue = queue.clone(),
-            DomainEvent::RunStateChanged { state, .. } => {
+            DomainEvent::RunStateChanged {
+                state, request_id, ..
+            } => {
                 self.run = *state;
+                self.run_request.clone_from(request_id);
                 if *state != RunState::Running {
                     self.streaming = None;
                 }
+            }
+            DomainEvent::RequestUpdated { request } => {
+                self.requests.insert(request.id.clone(), request.clone());
             }
             DomainEvent::ConversationNotice { notice, .. } => {
                 self.notices.push(notice.clone());
@@ -96,6 +108,7 @@ impl Board {
                     self.streaming = Some(StreamingMessage {
                         message_id: message_id.clone(),
                         text: text.clone(),
+                        request_id: self.run_request.clone(),
                     });
                 }
             },
@@ -137,6 +150,19 @@ impl Board {
         let mut questions: Vec<Question> = self.questions.values().cloned().collect();
         questions.sort_by_key(|question| question.position);
         questions
+    }
+
+    pub(crate) fn sorted_requests(&self) -> Vec<UserRequest> {
+        let mut requests: Vec<UserRequest> = self.requests.values().cloned().collect();
+        requests.sort_by(|a, b| a.started_at_ms.cmp(&b.started_at_ms).then(a.id.cmp(&b.id)));
+        requests
+    }
+
+    /// The newest request, which work without a request of its own is filed under.
+    pub(crate) fn latest_request(&self) -> Option<&UserRequest> {
+        self.requests
+            .values()
+            .max_by(|a, b| a.started_at_ms.cmp(&b.started_at_ms).then(a.id.cmp(&b.id)))
     }
 
     pub(crate) fn sorted_plans(&self) -> Vec<Plan> {

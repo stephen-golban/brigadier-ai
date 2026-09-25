@@ -890,7 +890,7 @@ impl SessionManager {
                 }
             };
             manager
-                .deliver(
+                .deliver_for(
                     &id,
                     Envelope {
                         kind: InjectionKind::Decision,
@@ -898,6 +898,7 @@ impl SessionManager {
                         task_id: None,
                         text,
                     },
+                    approval.request_id.clone(),
                 )
                 .await;
         });

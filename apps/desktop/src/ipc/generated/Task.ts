@@ -50,4 +50,8 @@ kept: KeptWork | null,
  * The files the worker left in its outputs folder, stored when it reported and again
  * when the task ended: deliverables the user saves from the task card.
  */
-outputs: Array<ArtifactRef>, createdAtMs: number, updatedAtMs: number, };
+outputs: Array<ArtifactRef>, 
+/**
+ * The user request it was delegated for.
+ */
+requestId: string | null, createdAtMs: number, updatedAtMs: number, };

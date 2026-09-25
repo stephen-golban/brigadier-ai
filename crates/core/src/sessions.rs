@@ -16,7 +16,9 @@ use crate::model::{
     RawEntry, Settings, Setup, WorkerPage, streams,
 };
 use crate::projection::Projection;
-use crate::work::{AttachmentRef, MessageQueue, QueuedMessage, Task, TaskId};
+use crate::work::{
+    AttachmentRef, MessageQueue, QueuedMessage, RequestState, Task, TaskId, UserRequest,
+};
 use crate::{Error, Result, now_ms};
 
 const MAX_NAME_CHARS: usize = 200;
@@ -24,6 +26,7 @@ const MAX_NAME_CHARS: usize = 200;
 const INLINE_TEXT_BYTES: usize = 64 * 1024;
 const PREVIEW_BYTES: usize = 4 * 1024;
 const TITLE_CHARS: usize = 60;
+const REQUEST_PREVIEW_CHARS: usize = 80;
 const NEW_SESSION_TITLE: &str = "New session";
 const NEW_CHAT_TITLE: &str = "New chat";
 /// Diagnostic probes kept on disk; older ones are trimmed as new ones arrive.
@@ -404,13 +407,30 @@ impl Core {
             .await?;
         message.attachments = attachments;
         message.mentions = mentions;
+        // Each user message starts a request of its own.
+        message.request_id = Some(message.id.clone());
 
-        let mut events = vec![(
-            streams::conversation(&id),
-            DomainEvent::MessageAppended {
-                message: message.clone(),
-            },
-        )];
+        let mut events = vec![
+            (
+                streams::conversation(&id),
+                DomainEvent::MessageAppended {
+                    message: message.clone(),
+                },
+            ),
+            (
+                streams::conversation(&id),
+                DomainEvent::RequestUpdated {
+                    request: UserRequest {
+                        id: message.id.clone(),
+                        conversation_id: id.clone(),
+                        preview: preview(&message.text),
+                        state: RequestState::Working,
+                        started_at_ms: message.created_at_ms,
+                        ended_at_ms: None,
+                    },
+                },
+            ),
+        ];
         let untitled = matches!(
             conversation.title.as_str(),
             NEW_SESSION_TITLE | NEW_CHAT_TITLE
@@ -433,7 +453,7 @@ impl Core {
                 },
             ));
         }
-        let stored = self.record(events).await?;
+        let stored = self.record_with_board(&id, events).await?;
         Ok(Message {
             seq: stored[0],
             ..message
@@ -447,12 +467,14 @@ impl Core {
         message_id: String,
         text: String,
         model: Option<ModelChoice>,
+        request_id: Option<String>,
     ) -> Result<Message> {
         self.conversation(&id)?;
         let mut message = self
             .new_message(&id, MessageRole::Assistant, message_id, text)
             .await?;
         message.model = model;
+        message.request_id = request_id;
         let stored = self
             .record_conversation(
                 &id,
@@ -495,6 +517,7 @@ impl Core {
             attachments: Vec::new(),
             mentions: Vec::new(),
             model: None,
+            request_id: None,
         })
     }
 
@@ -719,8 +742,10 @@ impl Core {
             approvals: board.sorted_approvals(),
             questions: board.sorted_questions(),
             plans: board.sorted_plans(),
+            requests: board.sorted_requests(),
             queue: board.queue.clone(),
             run: board.run,
+            run_request: board.run_request.clone(),
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),
         })
@@ -734,25 +759,75 @@ impl Core {
         events: Vec<DomainEvent>,
     ) -> Result<Vec<i64>> {
         let stream = streams::conversation(id);
+        self.record_with_board(
+            id,
+            events
+                .into_iter()
+                .map(|event| (stream.clone(), event))
+                .collect(),
+        )
+        .await
+    }
+
+    /// Appends events (to any streams) and applies those on the conversation's stream to its
+    /// board. Returns each event's stream sequence.
+    async fn record_with_board(
+        &self,
+        id: &ConversationId,
+        events: Vec<(String, DomainEvent)>,
+    ) -> Result<Vec<i64>> {
+        let stream = streams::conversation(id);
         let mut boards = self.boards.lock().await;
         if !boards.contains_key(id) {
             let board = self.load_board(id).await?;
             boards.insert(id.clone(), board);
         }
-        let stored = self
-            .record(
-                events
-                    .iter()
-                    .map(|event| (stream.clone(), event.clone()))
-                    .collect(),
-            )
-            .await?;
+        let stored = self.record(events.clone()).await?;
         if let Some(board) = boards.get_mut(id) {
-            for (event, stream_seq) in events.iter().zip(&stored) {
-                board.apply(event, *stream_seq);
+            for ((on, event), stream_seq) in events.iter().zip(&stored) {
+                if *on == stream {
+                    board.apply(event, *stream_seq);
+                }
             }
         }
         Ok(stored)
+    }
+
+    /// Records a request's new state, unless it already has it. Returns whether it changed.
+    pub(crate) async fn update_request(
+        &self,
+        id: &ConversationId,
+        request_id: &str,
+        state: RequestState,
+    ) -> Result<bool> {
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        let Some(mut request) = boards
+            .get(id)
+            .and_then(|board| board.requests.get(request_id))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if request.state == state {
+            return Ok(false);
+        }
+        request.ended_at_ms = match state {
+            RequestState::Working => None,
+            _ => Some(now_ms()),
+        };
+        request.state = state;
+        let event = DomainEvent::RequestUpdated { request };
+        let stored = self
+            .record(vec![(streams::conversation(id), event.clone())])
+            .await?;
+        if let Some(board) = boards.get_mut(id) {
+            board.apply(&event, stored[0]);
+        }
+        Ok(true)
     }
 
     /// A snapshot of a conversation's tasks.
@@ -953,6 +1028,7 @@ impl Core {
             crate::work::RunState::Hibernated => crate::work::RunState::Hibernated,
             _ => crate::work::RunState::Idle,
         };
+        board.run_request = None;
         board.streaming = None;
         Ok(board)
     }
@@ -1190,13 +1266,23 @@ fn title_from(text: &str) -> String {
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or(text);
-    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() <= TITLE_CHARS {
+    one_line(line, TITLE_CHARS)
+}
+
+/// A request's preview: the start of the user's message, on one line.
+fn preview(text: &str) -> String {
+    one_line(text, REQUEST_PREVIEW_CHARS)
+}
+
+/// `text` with its whitespace collapsed, cut to `chars` characters (with an ellipsis).
+fn one_line(text: &str, chars: usize) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= chars {
         line
     } else {
-        let mut title: String = line.chars().take(TITLE_CHARS - 1).collect();
-        title.push('…');
-        title
+        let mut cut: String = line.chars().take(chars - 1).collect();
+        cut.push('…');
+        cut
     }
 }
 

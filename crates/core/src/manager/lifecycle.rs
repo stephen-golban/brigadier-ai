@@ -121,6 +121,8 @@ impl SessionManager {
                 self.dispose_task(&task, TaskState::Stopped).await;
             }
             self.expire_stale_cards(&conversation.id).await;
+            // Nothing runs any more: what was working is over or waits for the user.
+            self.settle_requests(&conversation.id).await;
         }
     }
 

@@ -8,7 +8,11 @@ export type Question = { id: CardId, conversationId: ConversationId,
 /**
  * The task that waits for the answer, if any.
  */
-taskId: TaskId | null, position: number, kind: QuestionKind, text: string, 
+taskId: TaskId | null, 
+/**
+ * The user request it belongs to.
+ */
+requestId: string | null, position: number, kind: QuestionKind, text: string, 
 /**
  * Suggested answers; the user may also type one.
  */

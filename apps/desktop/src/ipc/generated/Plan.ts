@@ -4,7 +4,11 @@ import type { ConversationId } from "./ConversationId";
 import type { PlanState } from "./PlanState";
 import type { PlanStep } from "./PlanStep";
 
-export type Plan = { id: CardId, conversationId: ConversationId, position: number, title: string, steps: Array<PlanStep>, 
+export type Plan = { id: CardId, conversationId: ConversationId, 
+/**
+ * The user request it belongs to.
+ */
+requestId: string | null, position: number, title: string, steps: Array<PlanStep>, 
 /**
  * Big, risky or architectural, as the orchestrator judged it.
  */

@@ -267,6 +267,7 @@ impl SessionManager {
         let mut plan = Plan {
             id: CardId::generate(),
             conversation_id: id.clone(),
+            request_id: self.request_for(id, None).await,
             position: 0,
             title: args.title,
             steps: args

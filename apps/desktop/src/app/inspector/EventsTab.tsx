@@ -53,6 +53,8 @@ function summary(event: DomainEvent): string {
       return event.text.slice(0, 120).replace(/\s+/g, " ");
     case "runStateChanged":
       return event.error === null ? event.state : `${event.state}: ${event.error}`;
+    case "requestUpdated":
+      return `request ${event.request.state.type}`;
     case "conversationNotice":
       return event.notice.text;
     case "taskUpdated":

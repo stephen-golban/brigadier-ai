@@ -289,6 +289,9 @@ pub struct Task {
     /// when the task ended: deliverables the user saves from the task card.
     #[serde(default)]
     pub outputs: Vec<ArtifactRef>,
+    /// The user request it was delegated for.
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -389,6 +392,9 @@ pub struct Approval {
     pub id: CardId,
     pub conversation_id: ConversationId,
     pub task_id: Option<TaskId>,
+    /// The user request it belongs to.
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub position: i64,
     pub subject: ApprovalSubject,
     pub state: CardState,
@@ -416,6 +422,9 @@ pub struct Question {
     pub conversation_id: ConversationId,
     /// The task that waits for the answer, if any.
     pub task_id: Option<TaskId>,
+    /// The user request it belongs to.
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub position: i64,
     pub kind: QuestionKind,
     pub text: String,
@@ -474,6 +483,9 @@ pub enum PlanState {
 pub struct Plan {
     pub id: CardId,
     pub conversation_id: ConversationId,
+    /// The user request it belongs to.
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub position: i64,
     pub title: String,
     pub steps: Vec<PlanStep>,
@@ -523,6 +535,45 @@ pub enum RunState {
     /// Its CLI stopped; the next message resumes it.
     Hibernated,
     Failed,
+}
+
+// ----- user requests ----------------------------------------------------------------------
+
+/// Where a user's request stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RequestState {
+    /// The orchestrator (or a Chat's model) is on it, or a worker it started is.
+    Working,
+    /// Nothing runs: it waits for the user (a card, a paused worker, a landing on hold).
+    Waiting,
+    Done,
+    /// The user stopped the reply.
+    Stopped,
+    Failed {
+        error: String,
+    },
+}
+
+/// What one user message set in motion. The message starts it; the model's replies, the tasks
+/// delegated and the cards opened while serving it carry its id (`request_id`), so a thread
+/// shows one block per request whatever order things finished in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRequest {
+    /// The id of the user message that started it.
+    pub id: String,
+    pub conversation_id: ConversationId,
+    /// The start of the user's message, on one line.
+    pub preview: String,
+    pub state: RequestState,
+    pub started_at_ms: i64,
+    /// When it last stopped working; absent while it works.
+    pub ended_at_ms: Option<i64>,
 }
 
 /// Why something entered the orchestrator's context.

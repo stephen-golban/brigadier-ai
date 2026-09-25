@@ -9,13 +9,17 @@
 //!   questions, card outcomes and task failures ever enter the orchestrator's context;
 //!   worker progress never does. An envelope arriving while the orchestrator is idle starts
 //!   a turn.
-//! - When a turn ends, the next turn carries the next queued message (unless the queue is
-//!   paused) together with everything in the inbox.
+//! - Each turn serves one user request (see [`crate::work::UserRequest`]). When a turn ends,
+//!   the next one carries, in this order: user messages that could not be steered; else
+//!   every envelope of one request (a worker's question first); else the next queued
+//!   message (unless the queue is paused). So results reach the orchestrator before the
+//!   user's next queued message, and never mixed into another request's turn unlabelled.
 //!
 //! Every byte sent to the orchestrator is logged as a [`ContextInjection`] on `orch:<id>`,
 //! next to the CLI's own usage and context-size events, so the Inspector can show that its
 //! context grows only by messages and reports.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,8 +41,8 @@ use crate::model::{
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
-    AttachmentRef, ContextInjection, InjectionKind, OrchestratorEntry, QueuedMessage, RunState,
-    TaskId,
+    AttachmentRef, ContextInjection, InjectionKind, OrchestratorEntry, QueuedMessage, RequestState,
+    RunState, TaskId,
 };
 use crate::{Error, Result, now_ms};
 
@@ -52,6 +56,7 @@ const RESEED_MESSAGES: u32 = 40;
 const RESEED_BYTES: usize = 48_000;
 /// A Chat's text attachments up to this size go into the message itself.
 const CHAT_INLINE_MAX_BYTES: usize = 200_000;
+const ENDED_UNEXPECTEDLY: &str = "The CLI session ended unexpectedly.";
 
 /// Where a sent message went.
 #[derive(Debug, Clone)]
@@ -91,10 +96,16 @@ struct ConvState {
     busy: bool,
     /// The CLI is being closed on purpose (hibernate, archive, fallback).
     closing: bool,
-    /// Envelopes for the next turn.
-    inbox: Vec<Envelope>,
+    /// Envelopes for coming turns, each with the request it belongs to.
+    inbox: Vec<(Envelope, Option<String>)>,
     /// User messages already in the transcript that the next turn carries.
     pending: Vec<Message>,
+    /// The request the running turn serves.
+    request: Option<String>,
+    /// How the last turn for a request ended, when it was stopped or failed.
+    outcomes: HashMap<String, RequestState>,
+    /// The last error the running turn reported.
+    turn_error: Option<String>,
     /// The user messages the running turn carries (resent after a Chat fallback).
     in_turn: Vec<Message>,
     /// The next CLI session starts fresh and must be given the transcript so far.
@@ -156,6 +167,42 @@ impl ConvLive {
     pub async fn mark_reseed(&self) {
         self.state.lock().await.reseed = true;
     }
+
+    /// The request the running turn serves.
+    pub(super) async fn running_request(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.busy.then(|| state.request.clone()).flatten()
+    }
+
+    /// What the driver holds for each request right now.
+    pub(super) async fn request_activity(&self) -> RequestActivity {
+        let state = self.state.lock().await;
+        RequestActivity {
+            running: state.busy.then(|| state.request.clone()).flatten(),
+            carried: state
+                .inbox
+                .iter()
+                .filter_map(|(_, request)| request.clone())
+                .chain(
+                    state
+                        .pending
+                        .iter()
+                        .filter_map(|message| message.request_id.clone()),
+                )
+                .collect(),
+            outcomes: state.outcomes.clone(),
+        }
+    }
+}
+
+/// A conversation driver's part in its requests.
+pub(super) struct RequestActivity {
+    /// The request of the running turn.
+    pub running: Option<String>,
+    /// Requests with envelopes or user messages waiting for a turn.
+    pub carried: HashSet<String>,
+    /// How requests' last turns ended, when they were stopped or failed.
+    pub outcomes: HashMap<String, RequestState>,
 }
 
 impl SessionManager {
@@ -223,11 +270,15 @@ impl SessionManager {
                 };
                 if steered {
                     self.log_user_injection(&conv, &message).await;
+                    // The rest of the turn answers the new message: its own request.
+                    state.request.clone_from(&message.request_id);
                     state.in_turn.push(message.clone());
                 } else {
                     // The turn is still starting (or just ended): the next turn carries it.
                     state.pending.push(message.clone());
                 }
+                drop(state);
+                self.settle_requests(&id).await;
                 return Ok(SendOutcome::Sent(message));
             }
             let item = self.core.enqueue(&id, text, attachments, mentions).await?;
@@ -264,7 +315,10 @@ impl SessionManager {
         };
         if steered {
             self.log_user_injection(&conv, &message).await;
+            state.request.clone_from(&message.request_id);
             state.in_turn.push(message);
+            drop(state);
+            self.settle_requests(&id).await;
             return Ok(());
         }
         state.pending.push(message);
@@ -304,8 +358,20 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Queues an envelope for the orchestrator's next turn, starting one if it is idle.
+    /// Queues an envelope for the orchestrator, starting a turn if it is idle. It belongs to
+    /// its task's request (or the running turn's, or the newest).
     pub(crate) async fn deliver(&self, id: &ConversationId, envelope: Envelope) {
+        let request = self.request_for(id, envelope.task_id.as_ref()).await;
+        self.deliver_for(id, envelope, request).await;
+    }
+
+    /// Queues an envelope that belongs to `request`.
+    pub(crate) async fn deliver_for(
+        &self,
+        id: &ConversationId,
+        envelope: Envelope,
+        request: Option<String>,
+    ) {
         let Ok(conv) = self.conv(id) else {
             return;
         };
@@ -315,7 +381,9 @@ impl SessionManager {
         ) {
             return;
         }
-        conv.state.lock().await.inbox.push(envelope);
+        conv.state.lock().await.inbox.push((envelope, request));
+        // The request works again until the orchestrator has read it.
+        self.settle_requests(id).await;
         self.kick(&conv);
     }
 
@@ -327,13 +395,18 @@ impl SessionManager {
     }
 
     async fn next_turn(self: Arc<Self>, conv: Arc<ConvLive>) {
-        let (users, envelopes) = {
+        let (users, envelopes, request) = {
             let mut state = conv.state.lock().await;
             if state.busy || state.closing || self.admit().is_err() {
                 return;
             }
             let mut users = std::mem::take(&mut state.pending);
-            if users.is_empty() {
+            let envelopes = if users.is_empty() {
+                take_one_request(&mut state.inbox)
+            } else {
+                Vec::new()
+            };
+            if users.is_empty() && envelopes.is_empty() {
                 match self.core.pop_queued(&conv.id).await {
                     Ok(Some(item)) => match self
                         .core
@@ -356,16 +429,29 @@ impl SessionManager {
                     }
                 }
             }
-            let envelopes = std::mem::take(&mut state.inbox);
             if users.is_empty() && envelopes.is_empty() {
+                drop(state);
+                // Nothing left to say: the requests settle.
+                self.settle_requests(&conv.id).await;
                 return;
             }
+            let request = match users.last() {
+                Some(message) => message.request_id.clone(),
+                None => envelopes[0].1.clone(),
+            };
             state.busy = true;
             state.limit_hit = false;
+            state.turn_error = None;
+            state.request.clone_from(&request);
+            if let Some(request) = &request {
+                state.outcomes.remove(request);
+            }
             state.in_turn = users.clone();
-            (users, envelopes)
+            (users, envelopes, request)
         };
-        self.set_run(&conv.id, RunState::Starting, None).await;
+        self.settle_requests(&conv.id).await;
+        self.set_run_for(&conv.id, RunState::Starting, None, request.clone())
+            .await;
         let cli = match self.ensure_cli(&conv).await {
             Ok(cli) => cli,
             Err(err) => {
@@ -375,7 +461,10 @@ impl SessionManager {
             }
         };
         let reseed = std::mem::take(&mut conv.state.lock().await.reseed);
-        let mut input = self.turn_input(&conv, &users, &envelopes).await;
+        let notes = self
+            .request_notes(&conv.id, &envelopes, request.as_deref())
+            .await;
+        let mut input = self.turn_input(&conv, &users, &notes).await;
         if reseed {
             let transcript = self.reseed_text(&conv.id, &users).await;
             if !transcript.is_empty() {
@@ -393,17 +482,18 @@ impl SessionManager {
         for message in &users {
             self.log_user_injection(&conv, message).await;
         }
-        for envelope in &envelopes {
+        for ((envelope, _), note) in envelopes.iter().zip(&notes) {
             self.log_injection(
                 &conv.id,
                 envelope.kind,
                 envelope.label.clone(),
                 envelope.task_id.clone(),
-                envelope.text.len(),
+                note.len(),
             )
             .await;
         }
-        self.set_run(&conv.id, RunState::Running, None).await;
+        self.set_run_for(&conv.id, RunState::Running, None, request)
+            .await;
         if let Err(err) = cli.session.send(input).await {
             let message = format!("The CLI did not take the turn: {err}");
             self.fail_turn(&conv, users, envelopes, &message).await;
@@ -415,12 +505,20 @@ impl SessionManager {
         &self,
         conv: &Arc<ConvLive>,
         users: Vec<Message>,
-        envelopes: Vec<Envelope>,
+        envelopes: Vec<(Envelope, Option<String>)>,
         message: &str,
     ) {
         {
             let mut state = conv.state.lock().await;
             state.busy = false;
+            if let Some(request) = state.request.take() {
+                state.outcomes.insert(
+                    request,
+                    RequestState::Failed {
+                        error: message.to_owned(),
+                    },
+                );
+            }
             let mut pending = users;
             pending.append(&mut state.pending);
             state.pending = pending;
@@ -432,6 +530,7 @@ impl SessionManager {
             .await;
         self.set_run(&conv.id, RunState::Failed, Some(message.to_owned()))
             .await;
+        self.settle_requests(&conv.id).await;
     }
 
     /// The conversation's live CLI session, started (or resumed) when there is none.
@@ -634,14 +733,14 @@ impl SessionManager {
         .await
     }
 
-    /// The turn's input: user messages verbatim, then each envelope. Images go along as
-    /// images. Other attachments are named so the orchestrator can hand them to workers; a
-    /// Chat cannot open files, so it gets text files inline.
+    /// The turn's input: user messages verbatim, then Brigadier's notes (the envelopes).
+    /// Images go along as images. Other attachments are named so the orchestrator can hand
+    /// them to workers; a Chat cannot open files, so it gets text files inline.
     async fn turn_input(
         &self,
         conv: &Arc<ConvLive>,
         users: &[Message],
-        envelopes: &[Envelope],
+        notes: &[String],
     ) -> TurnInput {
         let mut parts = Vec::new();
         let mut files = Vec::new();
@@ -684,9 +783,7 @@ impl SessionManager {
             }
             parts.push(text);
         }
-        for envelope in envelopes {
-            parts.push(envelope.text.clone());
-        }
+        parts.extend(notes.iter().cloned());
         TurnInput {
             text: parts.join("\n\n"),
             files,
@@ -818,19 +915,27 @@ impl SessionManager {
             }
             let was_busy = state.busy;
             state.busy = false;
+            if let Some(request) = state.request.take()
+                && was_busy
+                && !state.closing
+            {
+                state.outcomes.insert(
+                    request,
+                    RequestState::Failed {
+                        error: ENDED_UNEXPECTEDLY.into(),
+                    },
+                );
+            }
             (was_busy, state.closing)
         };
         cli.ended.cancel();
         if was_busy && !closing {
-            self.set_run(
-                &conv.id,
-                RunState::Failed,
-                Some("The CLI session ended unexpectedly.".into()),
-            )
-            .await;
+            self.set_run(&conv.id, RunState::Failed, Some(ENDED_UNEXPECTEDLY.into()))
+                .await;
         } else if !closing {
             self.set_run(&conv.id, RunState::Idle, None).await;
         }
+        self.settle_requests(&conv.id).await;
     }
 
     async fn store_deltas(&self, id: &ConversationId, deltas: Vec<ProviderEvent>) {
@@ -865,6 +970,7 @@ impl SessionManager {
                 role: ProviderRole::Assistant,
                 text,
             } => {
+                let request = conv.state.lock().await.request.clone();
                 if let Err(err) = self
                     .core
                     .append_assistant_message(
@@ -872,6 +978,7 @@ impl SessionManager {
                         item_id.clone(),
                         text.clone(),
                         Some(cli.model.clone()),
+                        request,
                     )
                     .await
                 {
@@ -912,6 +1019,7 @@ impl SessionManager {
                     conv.state.lock().await.limit_hit = true;
                 }
                 if !error.will_retry {
+                    conv.state.lock().await.turn_error = Some(error.message.clone());
                     self.notice(
                         &conv.id,
                         brigadier_providers::NoticeLevel::Warning,
@@ -943,6 +1051,21 @@ impl SessionManager {
             let mut state = conv.state.lock().await;
             state.busy = false;
             state.last_activity_ms = now_ms();
+            let ended = match status {
+                TurnStatus::Interrupted => Some(RequestState::Stopped),
+                TurnStatus::Failed => Some(RequestState::Failed {
+                    error: state
+                        .turn_error
+                        .take()
+                        .unwrap_or_else(|| "The reply failed.".into()),
+                }),
+                _ => None,
+            };
+            if let Some(request) = state.request.take()
+                && let Some(ended) = ended
+            {
+                state.outcomes.insert(request, ended);
+            }
             (state.limit_hit, std::mem::take(&mut state.in_turn))
         };
         if limit_hit
@@ -956,6 +1079,7 @@ impl SessionManager {
             return;
         }
         self.set_run(&conv.id, RunState::Idle, None).await;
+        self.settle_requests(&conv.id).await;
         self.kick(conv);
     }
 
@@ -1149,6 +1273,17 @@ impl SessionManager {
         state: RunState,
         error: Option<String>,
     ) {
+        self.set_run_for(id, state, error, None).await;
+    }
+
+    /// Records the run state of a turn that serves `request`.
+    async fn set_run_for(
+        &self,
+        id: &ConversationId,
+        state: RunState,
+        error: Option<String>,
+        request: Option<String>,
+    ) {
         if let Err(err) = self
             .core
             .record_conversation(
@@ -1157,6 +1292,7 @@ impl SessionManager {
                     conversation_id: id.clone(),
                     state,
                     error,
+                    request_id: request,
                 }],
             )
             .await
@@ -1246,6 +1382,26 @@ impl SessionManager {
             tracing::debug!(conversation = %id, error = %err, "could not log the orchestrator");
         }
     }
+}
+
+/// Takes every envelope of one request from the inbox, in arrival order: the request of the
+/// first worker question (it blocks a worker), else of the oldest envelope.
+fn take_one_request(
+    inbox: &mut Vec<(Envelope, Option<String>)>,
+) -> Vec<(Envelope, Option<String>)> {
+    let Some(request) = inbox
+        .iter()
+        .find(|(envelope, _)| envelope.kind == InjectionKind::WorkerQuestion)
+        .or_else(|| inbox.first())
+        .map(|(_, request)| request.clone())
+    else {
+        return Vec::new();
+    };
+    let (taken, kept) = std::mem::take(inbox)
+        .into_iter()
+        .partition(|(_, of)| *of == request);
+    *inbox = kept;
+    taken
 }
 
 fn is_image(mime: &str) -> bool {

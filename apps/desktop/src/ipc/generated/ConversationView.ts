@@ -9,6 +9,7 @@ import type { Question } from "./Question";
 import type { RunState } from "./RunState";
 import type { StreamingMessage } from "./StreamingMessage";
 import type { Task } from "./Task";
+import type { UserRequest } from "./UserRequest";
 
 /**
  * Everything a conversation view shows, in one read. Live changes follow on the
@@ -18,7 +19,15 @@ export type ConversationView = { conversation: Conversation,
 /**
  * The newest page of messages.
  */
-messages: MessagePage, tasks: Array<Task>, approvals: Array<Approval>, questions: Array<Question>, plans: Array<Plan>, queue: MessageQueue, run: RunState, streaming: StreamingMessage | null, 
+messages: MessagePage, tasks: Array<Task>, approvals: Array<Approval>, questions: Array<Question>, plans: Array<Plan>, 
+/**
+ * Every request of the conversation, oldest first.
+ */
+requests: Array<UserRequest>, queue: MessageQueue, run: RunState, 
+/**
+ * The request the running turn serves.
+ */
+runRequest: string | null, streaming: StreamingMessage | null, 
 /**
  * The latest notices (environment problems, fallbacks), newest last.
  */
