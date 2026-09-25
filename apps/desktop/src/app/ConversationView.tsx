@@ -63,6 +63,7 @@ import { Button } from "@/components/ui/button";
 import type {
   AttachmentRef,
   Conversation,
+  Mention,
   ModelChoice,
   Notice,
   Rating,
@@ -108,6 +109,8 @@ type Custom = {
   block?: BlockMeta;
   /** The message can be edited now (see `canRework`). */
   rework?: boolean;
+  /** What a user message @-mentions, so ↑ recalls its chips. */
+  mentions?: Mention[];
 };
 
 /** An attachment-only message has no text part, so no empty bubble shows above its files. */
@@ -150,7 +153,11 @@ function convertMessage(item: Item): ThreadMessageLike {
       content: textContent(user?.text ?? ""),
       createdAt: new Date(message?.createdAtMs ?? block.startedAtMs),
       metadata: {
-        custom: { attachments: message?.attachments ?? [], rework: item.rework } satisfies Custom,
+        custom: {
+          attachments: message?.attachments ?? [],
+          rework: item.rework,
+          mentions: message?.mentions ?? [],
+        } satisfies Custom,
       },
     };
   }

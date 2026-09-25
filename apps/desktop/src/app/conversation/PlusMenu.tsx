@@ -4,7 +4,11 @@ import { type FC, type ReactNode, useCallback, useContext, useRef, useState } fr
 import { useShallow } from "zustand/react/shallow";
 
 import { WorkerGlyph } from "@/app/conversation/Agents";
-import { type ComposerTarget, ComposerTargetContext } from "@/app/conversation/composerTarget";
+import {
+  COMPOSER_EDITABLE,
+  type ComposerTarget,
+  ComposerTargetContext,
+} from "@/app/conversation/composerTarget";
 import { updateDraft } from "@/app/conversation/draftSetup";
 import { useAction } from "@/app/conversation/useAction";
 import { floatingMenu } from "@/components/assistant-ui/elements/surfaces";
@@ -169,7 +173,7 @@ export const PlusMenu: FC = () => {
           onCloseAutoFocus={(event) => {
             // Back to typing, as after picking from the `@` menu.
             event.preventDefault();
-            document.querySelector<HTMLTextAreaElement>("textarea.aui-composer-input")?.focus();
+            document.querySelector<HTMLElement>(COMPOSER_EDITABLE)?.focus();
           }}
         >
           <Section>Add</Section>

@@ -1,14 +1,6 @@
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { ArrowUp, PlayTriangle, Spin, Stop } from "@openai/apps-sdk-ui/components/Icon";
-import {
-  type FC,
-  type ClipboardEvent,
-  type KeyboardEvent,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FC, lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import { BranchPopover, ProjectCombobox, WorkInMenu } from "@/app/conversation/RailPickers";
@@ -18,22 +10,23 @@ import {
   PermissionPicker,
   ProjectSettingsButton,
 } from "@/app/conversation/SetupPickers";
-import { Mentions } from "@/app/conversation/Mentions";
+import type { ComposerInputProps } from "@/app/conversation/ComposerEditor";
+import { type MentionMemory, Mentions } from "@/app/conversation/Mentions";
 import { SlashCommands } from "@/app/conversation/SlashCommands";
 import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
-import { type ComposerTarget, ComposerTargetContext } from "@/app/conversation/composerTarget";
+import {
+  COMPOSER_EDITABLE,
+  type ComposerTarget,
+  ComposerTargetContext,
+} from "@/app/conversation/composerTarget";
 import { PendingActionCard, usePendingActions, WaitingReminder } from "@/app/conversation/ActionCards";
-import { QueueCard, usePullQueued } from "@/app/conversation/QueueCard";
-import { usePromptHistory, useComposerDraft } from "@/app/conversation/composerDraft";
+import { QueueCard } from "@/app/conversation/QueueCard";
+import { useComposerDraft } from "@/app/conversation/composerDraft";
 import type { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { PLAN_PLACEHOLDER, PlanChip, PlusMenu, usePlanMode } from "@/app/conversation/PlusMenu";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment";
-import {
-  PASTE_AS_ATTACHMENT_CHARS,
-  PASTED_TEXT_NAME,
-} from "@/components/assistant-ui/elements/attachment-tile";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
@@ -43,6 +36,8 @@ import { useBoard } from "@/state/board";
 import { NEW_CHAT_SCOPE } from "@/state/drafts";
 import { useApp } from "@/state/store";
 
+
+const ComposerEditor = lazy(() => import("@/app/conversation/ComposerEditor"));
 
 /**
  * The composer (assistant-ui composer elements, BB parity): attachments, @-mentions of
@@ -75,11 +70,12 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
         <ComposerDraft
           scope={conversation?.id ?? NEW_CHAT_SCOPE}
           attachments={target.queue.attachments}
+          memory={target.mentions}
         />
       )}
       <div data-slot="composer" className="group/composer relative w-full">
         {conversation && (
-          <Mentions conversation={conversation} targets={targets} memory={target.mentions} />
+          <Mentions conversation={conversation} targets={targets} />
         )}
         <SlashCommands
           conversation={conversation}
@@ -185,85 +181,42 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
 function ComposerDraft({
   scope,
   attachments,
+  memory,
 }: {
   scope: string;
   attachments: BlobAttachmentAdapter;
+  memory: MentionMemory;
 }) {
-  useComposerDraft(scope, attachments);
+  useComposerDraft(scope, attachments, memory);
   return null;
 }
 
 /**
- * The text field: grows with its text up to a quarter of the window, then scrolls, the top
- * line fading under the edge once scrolled. ↑ in an empty field edits the last queued message,
- * else walks back through the conversation's prompts (↓ forward); ⌘Enter while the model
- * works does the opposite of the queueing setting, for this message.
+ * The text field: assistant-ui's Lexical input with ChatGPT's chips (its own chunk, so it
+ * doesn't hold up the first paint), a plain field on the same composer text until it loads.
  */
-function ComposerInput({
-  placeholder,
-  autoFocus,
-  running,
-  line = false,
-}: {
-  placeholder: string;
-  autoFocus: boolean;
-  running: boolean;
-  /** One line (under an action card): it doesn't grow, it scrolls. */
-  line?: boolean;
-}) {
-  const [scrolled, setScrolled] = useState(false);
-  const aui = useAui();
-  const pull = usePullQueued();
-  const history = usePromptHistory();
-  const queueEnabled = useApp((s) => s.settings.queueEnabled);
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
-    const composer = aui.composer();
-    if (event.key === "ArrowUp" && pull && composer.getState().isEmpty) {
-      event.preventDefault();
-      void pull(-1);
-    } else if (history(event)) {
-      event.preventDefault();
-    } else if (
-      event.key === "Enter" &&
-      event.metaKey &&
-      !event.shiftKey &&
-      running &&
-      composer.getState().canSend
-    ) {
-      event.preventDefault();
-      // Queueing on: this one steers; off: this one queues.
-      composer.send({ steer: queueEnabled });
-    }
-  };
-  // A long paste becomes a "Pasted text" attachment, as ChatGPT does; files are aui's.
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const text = event.clipboardData.getData("text/plain");
-    if (event.clipboardData.files.length > 0 || text.length < PASTE_AS_ATTACHMENT_CHARS) return;
-    event.preventDefault();
-    const file = new File([text], PASTED_TEXT_NAME, { type: "text/plain" });
-    void aui.composer().addAttachment(file);
-  };
+function ComposerInput(props: ComposerInputProps) {
+  const { placeholder, autoFocus, line = false } = props;
   return (
-    <ComposerPrimitive.Input
-      placeholder={placeholder}
-      data-scrolled={scrolled || undefined}
-      onKeyDown={onKeyDown}
-      onPaste={onPaste}
-      // Esc stops only on a second press (useEscToStop), as ChatGPT's does.
-      cancelOnEscape={false}
-      onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
-      className={cn(
-        "aui-composer-input caret-primary placeholder:text-muted-foreground/60 w-full resize-none bg-transparent text-base outline-none",
-        line
-          ? "min-h-control-md max-h-control-md px-1 py-1.5 text-sm"
-          : "min-h-composer max-h-composer-max data-scrolled:mask-fade-top px-2 py-2.5",
-      )}
-      rows={1}
-      autoFocus={autoFocus}
-      enterKeyHint="send"
-      aria-label="Message input"
-    />
+    <Suspense
+      fallback={
+        <ComposerPrimitive.Input
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          cancelOnEscape={false}
+          rows={1}
+          aria-label="Message input"
+          className={cn(
+            "aui-composer-input caret-primary placeholder:text-muted-foreground/60 w-full resize-none bg-transparent outline-none",
+            line
+              ? "min-h-control-md max-h-control-md px-1 py-1.5 text-sm"
+              : "min-h-composer max-h-composer-max px-2 py-2.5 text-base",
+          )}
+        />
+      }
+    >
+      <ComposerEditor {...props} />
+    </Suspense>
   );
 }
 
@@ -335,7 +288,7 @@ function useEscToStop(canCancel: boolean): boolean {
       // Menus, dialogs and the composer's own popovers take their Esc first.
       if (document.querySelector("[role=dialog], [role=menu], [role=listbox], [data-slot=composer-commands], [data-slot=composer-mentions]")) return;
       const active = document.activeElement;
-      if (active instanceof HTMLTextAreaElement && active.classList.contains("aui-composer-input")) active.blur();
+      if (active instanceof HTMLElement && active.matches(COMPOSER_EDITABLE)) active.blur();
       if (!canCancel) return;
       const now = event.timeStamp;
       if (armedAt !== null && now - armedAt < ESC_WINDOW_MS) {

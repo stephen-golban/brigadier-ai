@@ -4,6 +4,7 @@ import { type FC, useCallback, useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { WorkerGlyph } from "@/app/conversation/Agents";
+import type { ChipMention } from "@/components/assistant-ui/elements/composer-chips";
 import {
   ComposerMentions,
   type MentionOption,
@@ -71,13 +72,47 @@ export function mentionsIn(
 /** The files and conversations the `@` menu put in the composer, by their `@name`. */
 export class MentionMemory {
   private readonly byLabel = new Map<string, Mention>();
+  /** The open session's workers, whose `@task-N` chips too. */
+  private workers: readonly MentionTarget[] = [];
+
+  setWorkers(workers: readonly MentionTarget[]): void {
+    this.workers = workers;
+  }
 
   record(mention: Mention, name: string): void {
     this.byLabel.set(name, mention);
   }
 
+  /** Remembers the files and conversations a message, queued item or draft mentions. */
+  recall(mentions: readonly Mention[]): void {
+    for (const mention of mentions) {
+      if (mention.type === "file") this.record(mention, mention.path);
+      else if (mention.type === "chat") this.record(mention, mention.title);
+    }
+  }
+
   known(): Iterable<Mention> {
     return this.byLabel.values();
+  }
+
+  /** Each remembered mention with its `@name`. */
+  entries(): Iterable<[string, Mention]> {
+    return this.byLabel.entries();
+  }
+
+  /**
+   * The mention whose name starts at `at` in `text` (just past an `@`): the longest remembered
+   * file or conversation, else a worker as `task-N`.
+   */
+  match(text: string, at: number): ChipMention | null {
+    let best: [string, Mention] | null = null;
+    for (const entry of this.byLabel) {
+      if (text.startsWith(entry[0], at) && entry[0].length > (best?.[0].length ?? 0)) best = entry;
+    }
+    if (best) return itemOf(best[1], best[0]);
+    const task = /^task-(\d+)/.exec(text.slice(at));
+    const target = task && this.workers.find((entry) => entry.number === Number(task[1]));
+    return target && task ? itemOf({ type: "task", id: target.id }, task[0]) : null;
   }
 }
 
@@ -85,6 +120,21 @@ export class MentionMemory {
 function itemOf(mention: Mention, name: string): Unstable_TriggerItem {
   const id = mention.type === "file" ? `file:${mention.path}` : `${mention.type}:${mention.id}`;
   return { id, type: mention.type, label: name };
+}
+
+/** The mention behind a menu item or chip (see `itemOf`). */
+export function mentionOf(item: { id: string; type: string; label: string }): Mention | null {
+  const rest = item.id.slice(item.id.indexOf(":") + 1);
+  switch (item.type) {
+    case "file":
+      return { type: "file", path: rest };
+    case "chat":
+      return { type: "chat", id: rest, title: item.label };
+    case "task":
+      return { type: "task", id: rest };
+    default:
+      return null;
+  }
 }
 
 /** How well a file's path matches: its name starting with the query first. */
@@ -131,8 +181,7 @@ function useFiles(conversation: Conversation): { files: string[]; truncated: boo
 export const Mentions: FC<{
   conversation: Conversation;
   targets: readonly MentionTarget[];
-  memory: MentionMemory;
-}> = ({ conversation, targets, memory }) => {
+}> = ({ conversation, targets }) => {
   const files = useFiles(conversation);
   const chats = useApp(
     useShallow((s) =>
@@ -141,16 +190,12 @@ export const Mentions: FC<{
         .toSorted((a, b) => b.updatedAtMs - a.updatedAtMs),
     ),
   );
-  const [known] = useState(() => new Map<string, Mention>());
-
   const search = useCallback(
     (query: string): MentionOption[] => {
       const lower = query.toLowerCase();
       const options: MentionOption[] = [];
       const add = (mention: Mention, name: string, option: Omit<MentionOption, "item">) => {
-        const item = itemOf(mention, name);
-        known.set(item.id, mention);
-        options.push({ item, ...option });
+        options.push({ item: itemOf(mention, name), ...option });
       };
       for (const target of targets) {
         const name = `task-${target.number}`;
@@ -182,15 +227,7 @@ export const Mentions: FC<{
       }
       return options;
     },
-    [targets, files, chats, known],
-  );
-
-  const onInserted = useCallback(
-    (item: Unstable_TriggerItem) => {
-      const mention = known.get(item.id);
-      if (mention) memory.record(mention, item.label);
-    },
-    [known, memory],
+    [targets, files, chats],
   );
 
   const hint = useMemo(
@@ -199,5 +236,5 @@ export const Mentions: FC<{
     [files],
   );
 
-  return <ComposerMentions search={search} onInserted={onInserted} hint={hint} />;
+  return <ComposerMentions search={search} hint={hint} />;
 };
