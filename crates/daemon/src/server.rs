@@ -625,6 +625,22 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 .await?;
             Response::UndoChanges
         }
+        Request::GetGitState { conversation_id } => Response::GetGitState {
+            state: sessions.git_state(&conversation_id).await?,
+        },
+        Request::CommitChanges {
+            conversation_id,
+            message,
+            include_unstaged,
+            push,
+        } => Response::CommitChanges {
+            outcome: sessions
+                .commit_changes(&conversation_id, message, include_unstaged, push)
+                .await?,
+        },
+        Request::PushChanges { conversation_id } => Response::PushChanges {
+            branch: sessions.push_changes(&conversation_id).await?,
+        },
         Request::GetReviewDiff {
             conversation_id,
             scope,

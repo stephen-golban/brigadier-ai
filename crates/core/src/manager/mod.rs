@@ -19,6 +19,7 @@ mod cards;
 mod conversation;
 mod fork;
 mod gate;
+mod git_actions;
 mod instructions;
 mod landing;
 mod lifecycle;

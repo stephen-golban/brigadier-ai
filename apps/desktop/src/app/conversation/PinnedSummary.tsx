@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanelContext, WORKERS_LABEL, WorkerGlyphs } from "@/app/conversation/Agents";
 import { isFinal, isWorking } from "@/app/conversation/blocks";
+import { GitActions } from "@/app/conversation/GitActions";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import type { Conversation, DiffStat, Plan, Task } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
@@ -105,18 +106,20 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
       className="bg-card border-border rounded-surface animate-in fade-in absolute end-3 top-3 z-10 flex w-xs flex-col gap-2 border p-3 duration-200"
     >
       {project && <h2 className="text-muted-foreground truncate text-xs">{project}</h2>}
-      <div className="flex min-w-0 items-center gap-2 text-sm">
-        <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
-        <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
-          {setup.environment.branch}
-        </span>
-        {diff && (diff.insertions > 0 || diff.deletions > 0) && (
-          <span className="shrink-0 text-xs tabular-nums">
-            <span className="text-success">+{diff.insertions}</span>{" "}
-            <span className="text-destructive">−{diff.deletions}</span>
+      <GitActions conversationId={conversation.id}>
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+          <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
+          <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
+            {setup.environment.branch}
           </span>
-        )}
-      </div>
+          {diff && (diff.insertions > 0 || diff.deletions > 0) && (
+            <span className="shrink-0 text-xs tabular-nums">
+              <span className="text-success">+{diff.insertions}</span>{" "}
+              <span className="text-destructive">−{diff.deletions}</span>
+            </span>
+          )}
+        </div>
+      </GitActions>
       {workers.length > 0 && (
         <Section title={WORKERS_LABEL}>
           <button

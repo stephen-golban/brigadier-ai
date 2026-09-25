@@ -770,6 +770,33 @@ pub struct RequestUndo {
     pub commits: Vec<String>,
 }
 
+/// A session checkout's state for the pinned card's Git actions and commit popover.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GitState {
+    /// The branch checked out; absent on a detached HEAD.
+    pub branch: Option<String>,
+    /// What is staged.
+    pub staged: DiffStat,
+    /// Everything not committed yet, untracked files included.
+    pub uncommitted: DiffStat,
+    /// The remote the branch pushes to, if any.
+    pub remote: Option<String>,
+    pub upstream: Option<String>,
+    /// Commits not pushed yet.
+    pub ahead: u32,
+}
+
+/// The user's commit, as made.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOutcome {
+    pub commit: String,
+    pub message: String,
+    pub branch: String,
+    pub pushed: bool,
+}
+
 /// What the side panel's Review tab compares (ChatGPT's scope picker).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(
