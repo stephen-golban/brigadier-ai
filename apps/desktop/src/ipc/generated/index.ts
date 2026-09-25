@@ -30,6 +30,7 @@ export type { ContextUsage } from "./ContextUsage";
 export type { Conversation } from "./Conversation";
 export type { ConversationId } from "./ConversationId";
 export type { ConversationKind } from "./ConversationKind";
+export type { ConversationStatus } from "./ConversationStatus";
 export type { ConversationView } from "./ConversationView";
 export type { DaemonInfo } from "./DaemonInfo";
 export type { DaemonMetrics } from "./DaemonMetrics";

@@ -566,6 +566,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             sessions.compact(conversation_id).await?;
             Response::Compact
         }
+        Request::GetConversationStatus { conversation_id } => Response::GetConversationStatus {
+            status: sessions.conversation_status(conversation_id).await?,
+        },
         Request::EditMessage {
             conversation_id,
             message_id,

@@ -467,6 +467,18 @@ pub struct ContextUsage {
     pub window_tokens: Option<i64>,
 }
 
+/// What `/status` shows for a conversation: its model's CLI session and the usage left.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationStatus {
+    /// The CLI serving the conversation's model (a session's orchestrator).
+    pub provider: ProviderKind,
+    /// Its own id for the session (Claude session, Codex thread); absent until it first ran.
+    pub native_id: Option<String>,
+    /// The provider's usage windows, as it last reported them.
+    pub quota: Option<QuotaSnapshot>,
+}
+
 /// Everything a conversation view shows, in one read. Live changes follow on the
 /// conversation's event stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
