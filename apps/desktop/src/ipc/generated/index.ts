@@ -98,6 +98,8 @@ export type { ProviderKind } from "./ProviderKind";
 export type { ProviderOverview } from "./ProviderOverview";
 export type { ProviderStatus } from "./ProviderStatus";
 export type { ProvidersView } from "./ProvidersView";
+export type { PullRequest } from "./PullRequest";
+export type { PullRequestState } from "./PullRequestState";
 export type { Question } from "./Question";
 export type { QuestionKind } from "./QuestionKind";
 export type { QueuedMessage } from "./QueuedMessage";
