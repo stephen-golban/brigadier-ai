@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::{DomainEvent, MessageRole, Notice, StreamingMessage};
+use crate::model::{DomainEvent, MessageRole, Notice, Rating, StreamingMessage};
 use crate::work::{
     Approval, CardId, MessageQueue, Plan, Question, RunState, Task, TaskId, UserRequest, WorkerStep,
 };
@@ -22,6 +22,7 @@ pub(crate) const KINDS: &[&str] = &[
     "queue.changed",
     "request.updated",
     "worker.step",
+    "message.rated",
     "conversation.branch",
 ];
 
@@ -34,6 +35,7 @@ pub(crate) struct Board {
     pub(crate) requests: HashMap<String, UserRequest>,
     /// Every worker step, in stream order.
     pub(crate) worker_steps: Vec<WorkerStep>,
+    pub(crate) ratings: HashMap<String, Rating>,
     pub(crate) queue: MessageQueue,
     pub(crate) run: RunState,
     /// The request the running turn serves.
@@ -102,6 +104,9 @@ impl Board {
                 let mut step = step.clone();
                 step.position = stream_seq;
                 self.worker_steps.push(step);
+            }
+            DomainEvent::MessageRated { subject, rating } => {
+                self.ratings.insert(subject.clone(), *rating);
             }
             DomainEvent::BranchSwitched { head, .. } => {
                 self.head = Some((head.clone(), stream_seq));

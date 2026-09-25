@@ -6,6 +6,7 @@ import type { MessageQueue } from "./MessageQueue";
 import type { Notice } from "./Notice";
 import type { Plan } from "./Plan";
 import type { Question } from "./Question";
+import type { Rating } from "./Rating";
 import type { RunState } from "./RunState";
 import type { StreamingMessage } from "./StreamingMessage";
 import type { Task } from "./Task";
@@ -37,7 +38,11 @@ runRequest: string | null,
  * The last message of the branch the thread shows (the newest message until the user
  * edits, regenerates or switches branches).
  */
-head: string | null, streaming: StreamingMessage | null, 
+head: string | null, 
+/**
+ * The user's ratings of answers, by subject (see `DomainEvent::MessageRated`).
+ */
+ratings: { [key in string]: Rating }, streaming: StreamingMessage | null, 
 /**
  * The latest notices (environment problems, fallbacks), newest last.
  */

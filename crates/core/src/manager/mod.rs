@@ -38,8 +38,8 @@ use brigadier_providers::{BoxFuture, ProviderKind};
 use tokio_util::task::TaskTracker;
 
 use crate::model::{
-    Conversation, ConversationId, ConversationKind, Environment, EnvironmentRequest, ProjectId,
-    RepoInfo, Setup, SetupRequest,
+    Conversation, ConversationId, ConversationKind, DomainEvent, Environment, EnvironmentRequest,
+    ProjectId, Rating, RepoInfo, Setup, SetupRequest,
 };
 use crate::runtime::{Runtime, Spawner};
 use crate::tools::{GateAnswer, Grants, Role, ToolCall, ToolHost, ToolReply};
@@ -216,6 +216,15 @@ impl SessionManager {
             Ok(Some(landing::diff_stat_of(&stat)))
         })
         .await
+    }
+
+    /// Keeps the user's rating of an answer. It stays on this machine.
+    pub async fn rate(&self, id: &ConversationId, subject: String, rating: Rating) -> Result<()> {
+        self.core.conversation(id)?;
+        self.core
+            .record_conversation(id, vec![DomainEvent::MessageRated { subject, rating }])
+            .await?;
+        Ok(())
     }
 
     /// Creates a session or Chat. A local-checkout session asked to start on a new branch gets

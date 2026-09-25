@@ -10,6 +10,7 @@ import type {
   Project,
   ProjectPatch,
   ProviderKind,
+  Rating,
   RawApprovals,
   RawSession,
   RepoInfo,
@@ -201,6 +202,15 @@ export async function updateProject(id: string, patch: ProjectPatch): Promise<Pr
 export async function getRepoInfo(path: string): Promise<RepoInfo> {
   const { repo } = await request({ method: "getRepoInfo", path });
   return repo;
+}
+
+/** Rates an answer: a message id, or `task:<id>` for a worker's report. */
+export async function rateMessage(
+  conversationId: string,
+  subject: string,
+  rating: Rating,
+): Promise<void> {
+  await request({ method: "rateMessage", conversationId, subject, rating });
 }
 
 /** What a worktree session's branch changed against its base; null for other conversations. */

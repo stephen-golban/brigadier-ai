@@ -10,7 +10,7 @@
 use brigadier_core::{
     AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
     ConversationView, DiffStat, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst,
-    Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, RawApprovals, RawPage,
+    Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating, RawApprovals, RawPage,
     RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId,
     WorkerPage,
 };
@@ -88,6 +88,13 @@ pub enum Request {
     /// Branches and state of a repository, for the composer's branch picker.
     GetRepoInfo {
         path: String,
+    },
+    /// Rates an answer ("Good response" / "Bad response").
+    RateMessage {
+        conversation_id: ConversationId,
+        /// A message id, or `task:<id>` for a worker's report.
+        subject: String,
+        rating: Rating,
     },
     /// What a worktree session's branch changed against its base (the pinned summary card).
     GetSessionDiff {
@@ -390,6 +397,7 @@ pub enum Response {
     GetRepoInfo {
         repo: RepoInfo,
     },
+    RateMessage,
     GetSessionDiff {
         /// Absent for Chats and local-checkout sessions.
         stat: Option<DiffStat>,

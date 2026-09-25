@@ -4,6 +4,7 @@ import {
   type ExternalStoreBranchChange,
   ExportedMessageRepository,
   type ExternalThreadQueueAdapter,
+  type FeedbackAdapter,
   type QueueItemState,
   type ThreadMessage,
   type ThreadMessageLike,
@@ -52,6 +53,7 @@ import type {
   Conversation,
   ModelChoice,
   Notice,
+  Rating,
   UserRequest,
 } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
@@ -60,6 +62,7 @@ import {
   interrupt,
   loadEarlier,
   loadFullText,
+  rateMessage,
   regenerate,
   restore,
   send,
@@ -75,7 +78,7 @@ import {
 
 type Item = { id: string; parentId: string | null } & (
   | { kind: "user"; block: Block; rework: boolean }
-  | { kind: "block"; block: Block; meta: BlockMeta; texts: string[] }
+  | { kind: "block"; block: Block; meta: BlockMeta; texts: string[]; rating: Rating | null }
 );
 
 /** Extra message data the footers read back from assistant-ui's message state. */
@@ -138,6 +141,9 @@ function convertMessage(item: Item): ThreadMessageLike {
     status: blockStatus(block),
     metadata: {
       custom: { block: item.meta } satisfies Custom,
+      ...(item.rating && {
+        submittedFeedback: { type: item.rating === "good" ? "positive" : "negative" },
+      }),
       timing: {
         streamStartTime: block.startedAtMs,
         ...(block.endedAtMs !== null && { totalStreamTime: block.endedAtMs - block.startedAtMs }),
@@ -149,9 +155,16 @@ function convertMessage(item: Item): ThreadMessageLike {
 }
 
 /** A block's shape without its text, to reuse the previous item while only text is unchanged. */
-function signature(block: Block, picked: ModelChoice | null, session: boolean, rework: boolean): string {
+function signature(
+  block: Block,
+  picked: ModelChoice | null,
+  session: boolean,
+  rework: boolean,
+  rating: Rating | null,
+): string {
   return JSON.stringify([
     rework,
+    rating,
     block.state,
     block.error,
     block.startedAtMs,
@@ -175,6 +188,7 @@ function useItems(
   picked: ModelChoice | null,
   session: boolean,
   canRework: (requestId: string) => boolean,
+  ratings: Partial<Record<string, Rating>>,
 ): Item[] {
   const [cache] = useState(() => new Map<string, { item: Item; sig: string; texts: string[] }>());
   return useMemo(() => {
@@ -201,7 +215,9 @@ function useItems(
         items.push((cache.get(node.id) as { item: Item }).item);
         continue;
       }
-      const sig = signature(block, picked, session, rework);
+      const answerId = block.texts.at(-1)?.messageId ?? null;
+      const rating = (answerId && ratings[answerId]) || null;
+      const sig = signature(block, picked, session, rework, rating);
       const texts = block.texts.map((text) => text.text);
       const changed =
         entry === undefined ||
@@ -221,9 +237,10 @@ function useItems(
           session,
           rework,
           requestId: block.key,
+          answerId,
         };
         cache.set(node.id, {
-          item: { id: node.id, parentId: node.parentId, kind: "block", block, meta, texts },
+          item: { id: node.id, parentId: node.parentId, kind: "block", block, meta, texts, rating },
           sig,
           texts,
         });
@@ -232,7 +249,7 @@ function useItems(
     }
     for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
     return items;
-  }, [nodes, picked, session, canRework, cache]);
+  }, [nodes, picked, session, canRework, ratings, cache]);
 }
 
 /** assistant-ui's form of each item, converted once per item. */
@@ -258,6 +275,7 @@ function textOf(message: AppendMessage): string {
 }
 
 const NO_PENDING: PendingMessage[] = [];
+const NO_RATINGS: Partial<Record<string, Rating>> = {};
 
 const EMPTY_DIGEST: BoardDigest & { head: string | null } = {
   tasks: {},
@@ -406,7 +424,10 @@ export function ConversationView({ selection }: { selection: Selection }) {
       session ? requestId === reworkable && !(running && runRequest === requestId) : !running,
     [session, reworkable, running, runRequest],
   );
-  const items = useItems(tree.nodes, picked, session, canRework);
+  const ratings = useBoard((s) =>
+    s.board?.conversationId === conversationId ? s.board.ratings : NO_RATINGS,
+  );
+  const items = useItems(tree.nodes, picked, session, canRework, ratings);
   const repository = useMemo<ExportedMessageRepository>(
     () => ({
       headId: tree.headId,
@@ -463,6 +484,19 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const fail = useCallback((cause: unknown) => {
     setError(cause instanceof Error ? cause.message : String(cause));
   }, []);
+  // "Good response" / "Bad response" on an answer: kept by the daemon, on this machine.
+  const feedback = useMemo<FeedbackAdapter>(
+    () => ({
+      submit: ({ message, type }) => {
+        const answerId = (message.metadata.custom as Custom).block?.answerId;
+        if (!conversationId || !answerId) return;
+        void rateMessage(conversationId, answerId, type === "positive" ? "good" : "bad").catch(
+          fail,
+        );
+      },
+    }),
+    [conversationId, fail],
+  );
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messageRepository: repository,
     // The daemon owns the messages; this only lets the branch picker switch (see below).
@@ -487,7 +521,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
     isDisabled: archived,
     isSendDisabled: conversation === null && resolved.problem !== null,
     queue,
-    adapters: { attachments },
+    adapters: { attachments, feedback },
     onNew: async (message) => submit(message),
     onCancel: async () => {
       if (!conversationId) return;

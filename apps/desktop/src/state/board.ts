@@ -15,6 +15,7 @@ import type {
   StreamingMessage,
   Task,
   UserRequest,
+  Rating,
   WorkerStep,
 } from "@/ipc/generated";
 
@@ -49,6 +50,8 @@ export type Board = {
   requests: Record<string, UserRequest>;
   /** Every worker step (started, finished, …), in stream order. */
   workerSteps: WorkerStep[];
+  /** The user's ratings of answers, by subject (a message id, or `task:<id>`). */
+  ratings: Partial<Record<string, Rating>>;
   queue: MessageQueue;
   run: RunState;
   runError: string | null;
@@ -93,6 +96,7 @@ export function emptyBoard(conversationId: string): Board {
     plans: {},
     requests: {},
     workerSteps: [],
+    ratings: {},
     queue: EMPTY_QUEUE,
     run: "idle",
     runError: null,
@@ -125,6 +129,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "messageAppended",
   "branchSwitched",
   "workerStepped",
+  "messageRated",
 ]);
 
 /** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
@@ -162,6 +167,7 @@ export function boardFromView(
     plans: byId(view.plans),
     requests: byId(view.requests),
     workerSteps: view.workerSteps,
+    ratings: view.ratings,
     queue: view.queue,
     run: view.run,
     runError: keep?.runError ?? null,
@@ -295,6 +301,8 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       return board.workerSteps.some((step) => step.position === streamSeq)
         ? board
         : { ...board, workerSteps: [...board.workerSteps, { ...event.step, position: streamSeq }] };
+    case "messageRated":
+      return { ...board, ratings: { ...board.ratings, [event.subject]: event.rating } };
     case "queueChanged":
       return { ...board, queue: event.queue };
     case "workerEvent": {

@@ -13,6 +13,7 @@ import type { Project } from "./Project";
 import type { ProviderEvent } from "./ProviderEvent";
 import type { ProviderOverview } from "./ProviderOverview";
 import type { Question } from "./Question";
+import type { Rating } from "./Rating";
 import type { RawSession } from "./RawSession";
 import type { RawSessionId } from "./RawSessionId";
 import type { RawState } from "./RawState";
@@ -31,4 +32,8 @@ export type DomainEvent = { "type": "projectCreated", project: Project, } | { "t
 /**
  * The request the turn serves.
  */
-requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, } | { "type": "workerStepped", step: WorkerStep, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "probe", burstId: string, index: number, count: number, };
+requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, } | { "type": "workerStepped", step: WorkerStep, } | { "type": "messageRated", 
+/**
+ * The answer: a message id, or `task:<id>` for a worker's report.
+ */
+subject: string, rating: Rating, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "probe", burstId: string, index: number, count: number, };

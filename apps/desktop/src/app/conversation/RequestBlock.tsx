@@ -20,6 +20,7 @@ import {
   MessageText,
   StreamingMessageText,
 } from "@/components/assistant-ui/thread";
+import { RateItem, RateMenu } from "@/components/assistant-ui/rate-menu";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useNow } from "@/hooks/use-now";
@@ -49,6 +50,8 @@ export type BlockMeta = {
   rework: boolean;
   /** The request this block answers (the id of its user message). */
   requestId: string;
+  /** The message the user rates: the block's last reply. */
+  answerId: string | null;
 };
 
 /** Seconds since `from`, ticking while `live`. */
@@ -324,7 +327,7 @@ const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }
 };
 
 /**
- * Under the answer, always shown: copy it and, in a Chat, ask for another answer and move
+ * Under the answer, always shown: copy it, rate it and, in a Chat, ask for another answer and move
  * between answers (a session's answers have neither, as in ChatGPT's Codex mode); when it
  * came shows on hover.
  */
@@ -337,6 +340,10 @@ const AnswerActions: FC<{
     const parts = s.message.parts;
     const part = parts[parts.length - 1];
     return part?.type === "text" ? part.text : "";
+  });
+  const rated = useAuiState((s) => {
+    const type = s.message.metadata.submittedFeedback?.type;
+    return type === "positive" ? "good" : type === "negative" ? "bad" : null;
   });
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   const now = useNow(60_000);
@@ -352,6 +359,14 @@ const AnswerActions: FC<{
           <Copy className="animate-in zoom-in-75 fade-in duration-150" />
         )}
       </TooltipIconButton>
+      <RateMenu rated={rated}>
+        <ActionBarPrimitive.FeedbackPositive asChild>
+          <RateItem rating="good" />
+        </ActionBarPrimitive.FeedbackPositive>
+        <ActionBarPrimitive.FeedbackNegative asChild>
+          <RateItem rating="bad" />
+        </ActionBarPrimitive.FeedbackNegative>
+      </RateMenu>
       {!session && rework && (
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton tooltip="Try again">
