@@ -9,6 +9,8 @@ import {
   ChevronRight,
   Copy,
   Regenerate,
+  SoundOnReadOutLoudSpeaker,
+  Stop,
   TextShorterConcise,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
@@ -43,6 +45,7 @@ import { formatDuration, formatSentAt } from "@/lib/format";
 import { modelName, sameModel, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { openConversation } from "@/state/actions";
+import { readAloud, stopReading, useReading } from "@/state/readAloud";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
@@ -521,6 +524,7 @@ const AnswerActions: FC<{
           <RateItem rating="bad" />
         </ActionBarPrimitive.FeedbackNegative>
       </RateMenu>
+      <ReadAloud text={answer} />
       {!session && rework && (
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton tooltip="Try again">
@@ -538,6 +542,22 @@ const AnswerActions: FC<{
         </span>
       )}
     </ActionBarPrimitive.Root>
+  );
+};
+
+/** "Read aloud": the answer in the system's voice; "Stop" while it reads. */
+const ReadAloud: FC<{ text: string }> = ({ text }) => {
+  const id = useAuiState((s) => s.message.id);
+  const reading = useReading(id);
+  if (!text) return null;
+  return reading ? (
+    <TooltipIconButton tooltip="Stop" onClick={stopReading}>
+      <Stop />
+    </TooltipIconButton>
+  ) : (
+    <TooltipIconButton tooltip="Read aloud" onClick={() => readAloud(id, text)}>
+      <SoundOnReadOutLoudSpeaker />
+    </TooltipIconButton>
   );
 };
 
