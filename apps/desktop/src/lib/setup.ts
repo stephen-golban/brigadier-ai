@@ -27,10 +27,9 @@ export const PERMISSION_LABELS: Record<PermissionLevel, string> = {
 };
 
 export const PERMISSION_DETAILS: Record<PermissionLevel, string> = {
-  askForApproval: "You approve every plan and every change. Sandboxed.",
-  approveForMe:
-    "Brigadier approves on your behalf and stops only for questions only you can answer. Sandboxed.",
-  fullAccess: "Approve for me without the OS sandbox.",
+  askForApproval: "Always ask to approve plans and land changes. Sandboxed.",
+  approveForMe: "Only ask what only you can answer. Sandboxed.",
+  fullAccess: "Approve for me, with workers outside the OS sandbox.",
 };
 
 /** Outward actions (push, deploy, publish, credentials) ask at every level. */

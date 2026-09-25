@@ -18,6 +18,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  DotsHorizontal,
   EditPencil,
   Stop,
 } from "@openai/apps-sdk-ui/components/Icon";
@@ -202,16 +203,19 @@ const SystemMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
+/** ↓ once scrolled up; while the model works below, ChatGPT's "•••" in its place. */
 const ThreadScrollToBottom: FC = () => {
+  const running = useAuiState((s) => s.thread.isRunning);
   return (
     <ThreadPrimitive.ScrollToBottom asChild>
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
         size="icon-lg"
+        data-running={running || undefined}
         className="aui-thread-scroll-to-bottom border-border bg-background hover:bg-accent rounded-capsule absolute -top-12 z-10 self-center disabled:invisible"
       >
-        <ArrowDown />
+        {running ? <DotsHorizontal className="animate-pulse motion-reduce:animate-none" /> : <ArrowDown />}
       </TooltipIconButton>
     </ThreadPrimitive.ScrollToBottom>
   );
