@@ -121,6 +121,22 @@ pub fn apply_session_env(spec: &mut SpawnSpec, env: &[(String, String)], path_pr
     }
 }
 
+/// Whether `version` (dotted numbers, as [`parse_version`] gives) is `minimum` or newer. A
+/// version that does not read as numbers is not.
+pub fn version_at_least(version: &str, minimum: &str) -> bool {
+    let parts = |text: &str| -> Option<Vec<u64>> {
+        text.split(['-', '+'])
+            .next()?
+            .split('.')
+            .map(|part| part.parse().ok())
+            .collect()
+    };
+    match (parts(version), parts(minimum)) {
+        (Some(version), Some(minimum)) => version >= minimum,
+        _ => false,
+    }
+}
+
 /// The first line of a CLI's `--version` output, trimmed to the version number
 /// (`2.1.281 (Claude Code)` → `2.1.281`, `codex-cli 0.156.1` → `0.156.1`).
 pub fn parse_version(output: &str) -> Option<String> {

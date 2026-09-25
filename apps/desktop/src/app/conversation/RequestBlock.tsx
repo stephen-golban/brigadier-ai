@@ -9,14 +9,16 @@ import {
   ChevronRight,
   Copy,
   Regenerate,
+  TextShorterConcise,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
 
 import { WorkerStepRow } from "@/app/conversation/Agents";
 import { ForkMenu } from "@/app/conversation/ForkMenu";
-import { OrchestratorSteps } from "@/app/conversation/OrchestratorSteps";
+import { OrchestratorSteps, STEP_ROW } from "@/app/conversation/OrchestratorSteps";
 import {
   type BlockCard,
+  type BlockCompaction,
   type BlockOrchestratorStep,
   type BlockState,
   type BlockStep,
@@ -55,6 +57,8 @@ export type BlockMeta = {
   orchestratorSteps: BlockOrchestratorStep[];
   /** Messages the user steered into the turn, shown as bubbles in the work. */
   steers: { position: number; text: string; atMs: number }[];
+  /** Compactions of a Chat's context in the turn, or after it. */
+  compactions: BlockCompaction[];
   state: BlockState;
   startedAtMs: number;
   endedAtMs: number | null;
@@ -160,6 +164,7 @@ type Entry =
   | { kind: "card"; card: BlockCard; position: number }
   | { kind: "steer"; text: string; atMs: number; position: number }
   | { kind: "orchestrator"; steps: BlockOrchestratorStep[]; position: number }
+  | { kind: "compaction"; compaction: BlockCompaction; position: number }
   | { kind: "steps"; step: BlockStep["kind"]; taskIds: string[]; position: number };
 
 /** The block's replies, cards and worker steps in order; adjacent steps of a kind share a row. */
@@ -168,6 +173,9 @@ function blockSequence(meta: BlockMeta): Entry[] {
     ...meta.texts.map((text, index) => ({ kind: "text" as const, index, position: text.position })),
     ...meta.cards.map((card) => ({ kind: "card" as const, card, position: card.position })),
     ...meta.steers.map((steer) => ({ kind: "steer" as const, ...steer })),
+    ...meta.compactions
+      .filter((compaction) => compaction.inTurn)
+      .map((compaction) => ({ kind: "compaction" as const, compaction, position: compaction.position })),
     ...meta.orchestratorSteps.map((step) => ({
       kind: "orchestrator" as const,
       steps: [step],
@@ -202,6 +210,8 @@ function entryKey(entry: Entry): string {
       return `steer:${entry.position}`;
     case "orchestrator":
       return `orchestrator:${entry.position}`;
+    case "compaction":
+      return `compaction:${entry.compaction.id}`;
     case "steps":
       return `steps:${entry.position}`;
   }
@@ -243,9 +253,53 @@ const SequenceEntry: FC<{ entry: Entry; streaming: boolean }> = ({ entry, stream
       return <SteerBubble text={entry.text} atMs={entry.atMs} />;
     case "orchestrator":
       return <OrchestratorSteps steps={entry.steps} />;
+    case "compaction":
+      return <CompactionRow compaction={entry.compaction} />;
     case "steps":
       return <WorkerStepRow kind={entry.step} taskIds={entry.taskIds} />;
   }
+};
+
+function compactionLabel({ automatic, state }: BlockCompaction): string {
+  switch (state) {
+    case "running":
+      return automatic ? "Context automatically compacting" : "Compacting context";
+    case "done":
+      return automatic ? "Context automatically compacted" : "Context compacted";
+    case "failed":
+      return "Couldn’t compact context";
+  }
+}
+
+/** ChatGPT's compaction line: "Compacting context" shimmers while it runs, then stays grey. */
+const CompactionRow: FC<{ compaction: BlockCompaction }> = ({ compaction }) => (
+  <div data-slot="compaction" data-state={compaction.state} className={STEP_ROW}>
+    <TextShorterConcise aria-hidden className="size-icon-md shrink-0" />
+    <span className={cn("min-w-0 truncate", compaction.state === "running" && "shimmer motion-reduce:animate-none")}>
+      {compactionLabel(compaction)}
+      {compaction.error && ` · ${compaction.error}`}
+    </span>
+  </div>
+);
+
+/**
+ * A compaction the user asked for between turns, after the answer it followed: while it runs
+ * a turn of its own ("Working for 5s" over the shimmering row), then only its row, with no
+ * header or actions, as ChatGPT shows it.
+ */
+const CompactionBlock: FC<{ compaction: BlockCompaction }> = ({ compaction }) => {
+  const live = compaction.state === "running";
+  const elapsed = useElapsed(compaction.startedAtMs, compaction.endedAtMs, live);
+  return (
+    <div data-slot="compaction-block" className="mt-4 flex flex-col gap-2">
+      {live && elapsed >= HEADER_AFTER_MS && (
+        <div className="border-border flex h-control-sm items-center border-b">
+          <span className="text-muted-foreground text-sm">{headerLabel("working", elapsed)}</span>
+        </div>
+      )}
+      <CompactionRow compaction={compaction} />
+    </div>
+  );
 };
 
 /** A follow-up the user sent while the block worked: their bubble, inside the block. */
@@ -398,6 +452,11 @@ export const RequestBlock: FC = () => {
         />
       )}
       <ContinuedFrom answerId={meta.answerId} />
+      {meta.compactions
+        .filter((compaction) => !compaction.inTurn)
+        .map((compaction) => (
+          <CompactionBlock key={compaction.id} compaction={compaction} />
+        ))}
     </MessagePrimitive.Root>
   );
 };

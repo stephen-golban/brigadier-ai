@@ -63,6 +63,10 @@ pub struct ProviderStatus {
     pub plan: Option<String>,
     /// What the user should do before this provider can be used. Absent when ready.
     pub guidance: Option<String>,
+    /// Its version can compact a session's context on request
+    /// ([`ProviderSession::compact`](crate::ProviderSession::compact)).
+    #[serde(default)]
+    pub compacts: bool,
 }
 
 /// A model a provider offers, as the CLI itself reports it.
@@ -373,6 +377,20 @@ pub enum ProviderEvent {
     ContextSize {
         used_tokens: i64,
         window_tokens: Option<i64>,
+    },
+    /// The CLI began compacting the conversation (summarizing it to free up context): asked
+    /// to ([`ProviderSession::compact`](crate::ProviderSession::compact)), or on its own
+    /// (`automatic`) as the context filled up.
+    CompactionStarted {
+        automatic: bool,
+    },
+    /// The compaction ended: the context before and after it, when the CLI says, or why it
+    /// failed.
+    CompactionEnded {
+        automatic: bool,
+        tokens_before: Option<i64>,
+        tokens_after: Option<i64>,
+        error: Option<String>,
     },
     RateLimits {
         quota: QuotaSnapshot,

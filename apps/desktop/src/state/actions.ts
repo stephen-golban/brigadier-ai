@@ -455,6 +455,11 @@ export async function resume(conversationId: string): Promise<void> {
   await request({ method: "resume", conversationId });
 }
 
+/** Compacts a Chat's context now, in a turn of its own, as ChatGPT's `/compact` does. */
+export async function compact(conversationId: string): Promise<void> {
+  await request({ method: "compact", conversationId });
+}
+
 /** Replaces a sent message: the edit starts a branch beside it and gets its own answer. */
 export async function editMessage(
   conversationId: string,

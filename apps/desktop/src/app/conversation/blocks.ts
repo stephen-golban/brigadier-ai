@@ -1,6 +1,8 @@
 import type { CardType } from "@/app/conversation/cards/CardBody";
 import type {
   Approval,
+  Compaction,
+  CompactionState,
   Message,
   ModelChoice,
   OrchestratorStep,
@@ -53,6 +55,22 @@ export type BlockOrchestratorStep = {
   position: number;
 };
 
+/**
+ * A Chat's model compacting its context ("Compacting context" → "Context compacted"): in the
+ * turn it happened in (`inTurn`, the model compacted on its own), or after the block it
+ * followed (the user asked for it between turns).
+ */
+export type BlockCompaction = {
+  id: string;
+  inTurn: boolean;
+  automatic: boolean;
+  state: CompactionState["type"];
+  error: string | null;
+  position: number;
+  startedAtMs: number;
+  endedAtMs: number | null;
+};
+
 /** A message the user steered into the block's running turn: a bubble inside the block. */
 export type BlockSteer = {
   message: Message;
@@ -76,6 +94,8 @@ export type Block = {
   orchestratorSteps: BlockOrchestratorStep[];
   /** Messages steered into its turn, whose requests it shows too. */
   steers: BlockSteer[];
+  /** Compactions in its turn, or after it. */
+  compactions: BlockCompaction[];
   /** The requests it shows: its own (the key), then the steered ones. */
   requestIds: string[];
   state: BlockState;
@@ -93,6 +113,7 @@ export type BoardDigest = {
   requests: Readonly<Record<string, UserRequest>>;
   workerSteps: readonly WorkerStep[];
   orchestratorSteps: readonly OrchestratorStep[];
+  compactions: Readonly<Record<string, Compaction>>;
   runRequest: string | null;
   streaming: Board["streaming"];
 };
@@ -158,11 +179,19 @@ type Placed =
       requestId: string | null;
       step: BlockOrchestratorStep;
       atMs: number;
+    }
+  | {
+      kind: "compaction";
+      position: number;
+      requestId: string | null;
+      after: string | null;
+      compaction: BlockCompaction;
+      atMs: number;
     };
 
 function createdAt(board: BoardDigest, item: Exclude<Placed, { kind: "message" }>): number {
   if (item.kind === "task") return board.tasks[item.id]?.createdAtMs ?? 0;
-  if (item.kind === "step" || item.kind === "orchestrator") return item.atMs;
+  if (item.kind === "step" || item.kind === "orchestrator" || item.kind === "compaction") return item.atMs;
   const { type, id } = item.card;
   const card =
     type === "task"
@@ -221,6 +250,25 @@ export function buildBlocks(
       requestId: step.requestId,
       step: { kind: step.kind, position: step.position },
       atMs: step.atMs,
+    });
+  }
+  for (const compaction of Object.values(board.compactions)) {
+    placed.push({
+      kind: "compaction",
+      position: compaction.position,
+      requestId: compaction.requestId,
+      after: compaction.after,
+      compaction: {
+        id: compaction.id,
+        inTurn: compaction.requestId !== null,
+        automatic: compaction.automatic,
+        state: compaction.state.type,
+        error: compaction.state.type === "failed" ? compaction.state.error : null,
+        position: compaction.position,
+        startedAtMs: compaction.startedAtMs,
+        endedAtMs: compaction.endedAtMs,
+      },
+      atMs: compaction.startedAtMs,
     });
   }
   // Workers from before steps were stored show the start they had.
@@ -284,6 +332,7 @@ export function buildBlocks(
         steps: [],
         orchestratorSteps: [],
         steers: [],
+        compactions: [],
         requestIds: [key],
         state: request?.state.type ?? "done",
         error: request?.state.type === "failed" ? request.state.error : null,
@@ -298,6 +347,8 @@ export function buildBlocks(
 
   // Items from before requests existed belong to the user message before them.
   let latest: string | null = null;
+  // The block each message of the branch shows in.
+  const blockOf = new Map<string, string>();
   for (const item of current) {
     // Anything older than the loaded page waits until that page loads.
     if (hasMore && item.position < oldest) continue;
@@ -306,6 +357,7 @@ export function buildBlocks(
       if (message.role === "user") {
         const key = message.requestId ?? message.id;
         latest = key;
+        blockOf.set(message.id, key);
         open(key, message.createdAtMs).user = { kind: "message", message, text: item.text };
         continue;
       }
@@ -313,6 +365,7 @@ export function buildBlocks(
       const key = message.requestId ?? latest ?? `orphan:${message.id}`;
       // A request whose message is on an older page, or on a branch not shown.
       if (message.requestId && !blocks.has(key)) continue;
+      blockOf.set(message.id, key);
       open(key, message.createdAtMs).texts.push({
         messageId: message.id,
         position: item.position,
@@ -321,13 +374,18 @@ export function buildBlocks(
       });
       continue;
     }
-    const key = item.requestId ?? latest;
+    // A compaction between turns follows the answer it came after, on that branch only.
+    const key =
+      item.kind === "compaction" && item.requestId === null && item.after !== null
+        ? (blockOf.get(item.after) ?? null)
+        : (item.requestId ?? latest);
     if (key === null) continue;
     if (item.requestId && !blocks.has(key)) continue;
     const block = open(key, 0);
     if (item.kind === "task") block.tasks.push(item.id);
     else if (item.kind === "step") block.steps.push(item.step);
     else if (item.kind === "orchestrator") block.orchestratorSteps.push(item.step);
+    else if (item.kind === "compaction") block.compactions.push(item.compaction);
     else block.cards.push(item.card);
   }
 
@@ -359,6 +417,7 @@ export function buildBlocks(
       steps: [],
       orchestratorSteps: [],
       steers: [],
+      compactions: [],
       requestIds: [entry.localId],
       state: "working",
       error: null,
@@ -395,6 +454,7 @@ function joinSteered(blocks: Block[], requests: BoardDigest["requests"]): Block[
       tasks: [...previous.tasks, ...block.tasks],
       steps: [...previous.steps, ...block.steps],
       orchestratorSteps: [...previous.orchestratorSteps, ...block.orchestratorSteps],
+      compactions: [...previous.compactions, ...block.compactions],
       steers: [
         ...previous.steers,
         {
@@ -432,6 +492,7 @@ export function blockShows(block: Block): boolean {
     block.cards.length > 0 ||
     block.tasks.length > 0 ||
     block.orchestratorSteps.length > 0 ||
+    block.compactions.length > 0 ||
     block.state !== "done"
   );
 }
@@ -590,6 +651,7 @@ const EMPTY_WORK: BoardDigest = {
   requests: {},
   workerSteps: [],
   orchestratorSteps: [],
+  compactions: {},
   runRequest: null,
   streaming: null,
 };

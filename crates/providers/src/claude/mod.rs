@@ -29,7 +29,7 @@ use brigadier_sandbox::Platform;
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::cli::{CliEnv, parse_version};
+use crate::cli::{CliEnv, parse_version, version_at_least};
 use crate::events::Events;
 use crate::model::*;
 use crate::process::{self, CliProcess};
@@ -45,6 +45,8 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
+/// The first version seen to run `/compact` sent as a stream-json message.
+const COMPACT_SINCE: &str = "2.1.282";
 
 pub struct Claude {
     platform: Arc<dyn Platform>,
@@ -399,6 +401,7 @@ impl Provider for Claude {
                 auth_method: None,
                 plan: None,
                 guidance: None,
+                compacts: false,
             };
             let Ok(binary) = self.binary() else {
                 status.guidance = Some(
@@ -409,6 +412,10 @@ impl Provider for Claude {
                 return status;
             };
             status.version = self.version().await;
+            status.compacts = status
+                .version
+                .as_deref()
+                .is_some_and(|version| version_at_least(version, COMPACT_SINCE));
             let spec = self
                 .env
                 .spec(binary)
@@ -645,8 +652,12 @@ impl Provider for Claude {
                 shared.clone(),
                 parser_rx,
             ));
+            let cli_version = self.version().await;
             let session = Arc::new(ClaudeSession {
                 native_id: native_id.clone(),
+                compacts: cli_version
+                    .as_deref()
+                    .is_some_and(|version| version_at_least(version, COMPACT_SINCE)),
                 process,
                 shared,
                 parser: parser_tx,
@@ -675,7 +686,7 @@ impl Provider for Claude {
                     native_id,
                     model,
                     cwd: Some(cwd.display().to_string()),
-                    cli_version: self.version().await,
+                    cli_version,
                 })
                 .await;
             Ok(Started { session, events })
@@ -748,6 +759,9 @@ impl Replayer for ClaudeReplayer {
             if sent["type"] == "control_request" && sent["request"]["subtype"] == "interrupt" {
                 self.parser.interrupt_requested();
             }
+            if sent["type"] == "user" && sent["message"]["content"][0]["text"] == "/compact" {
+                self.parser.compact_requested();
+            }
             let answered = sent["response"]["request_id"].as_str().unwrap_or_default();
             if sent["type"] != "control_response" || !self.asked.remove(answered) {
                 return Vec::new();
@@ -796,12 +810,15 @@ struct Shared {
 
 enum ParserCommand {
     Interrupting,
+    Compacting,
     WroteMessage,
     WriteFailed,
 }
 
 pub struct ClaudeSession {
     native_id: String,
+    /// The CLI's version takes `/compact` in stream-json.
+    compacts: bool,
     process: Arc<CliProcess>,
     shared: Arc<Shared>,
     parser: mpsc::UnboundedSender<ParserCommand>,
@@ -891,6 +908,28 @@ impl ProviderSession for ClaudeSession {
         Box::pin(self.write_message(input))
     }
 
+    fn can_compact(&self) -> bool {
+        self.compacts
+    }
+
+    fn compact(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if !self.compacts {
+                return Err(Error::Invalid(format!(
+                    "compacting needs Claude Code {COMPACT_SINCE} or newer"
+                )));
+            }
+            if self.shared.turn_active.load(Ordering::Acquire) {
+                return Err(Error::Invalid(
+                    "Claude is still answering; compact once it is done".into(),
+                ));
+            }
+            // Claude runs the slash command when it arrives as a message.
+            let _ = self.parser.send(ParserCommand::Compacting);
+            self.write_message(TurnInput::text("/compact")).await
+        })
+    }
+
     fn interrupt(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             if !self.shared.turn_active.load(Ordering::Acquire) {
@@ -950,6 +989,7 @@ async fn read_loop(
         while let Ok(command) = commands.try_recv() {
             match command {
                 ParserCommand::Interrupting => parser.interrupt_requested(),
+                ParserCommand::Compacting => parser.compact_requested(),
                 ParserCommand::WroteMessage => parser.wrote_message(),
                 ParserCommand::WriteFailed => parser.write_failed(),
             }

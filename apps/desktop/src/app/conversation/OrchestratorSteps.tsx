@@ -35,7 +35,9 @@ const PLURALS: Record<Kind, [one: string, many: string]> = {
   readPage: ["read a page", "read pages"],
 };
 
-const row = "text-muted-foreground flex min-h-row-sm min-w-0 items-center gap-2 text-sm";
+/** A grey line of the thread's work, as ChatGPT draws its tool rows. */
+export const STEP_ROW = "text-muted-foreground flex min-h-row-sm min-w-0 items-center gap-2 text-sm";
+const row = STEP_ROW;
 
 /** A worker's name in a row: it opens the worker in the panel. */
 const WorkerName: FC<{ taskId: string }> = ({ taskId }) => {

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use crate::model::{DomainEvent, MessageRole, Notice, Rating, StreamingMessage};
 use crate::work::{
-    Approval, CardId, MessageQueue, OrchestratorStep, Plan, Question, RunState, Task, TaskId,
-    UserRequest, WorkerStep,
+    Approval, CardId, Compaction, MessageQueue, OrchestratorStep, Plan, Question, RunState, Task,
+    TaskId, UserRequest, WorkerStep,
 };
 
 /// Notices kept per conversation.
@@ -24,6 +24,7 @@ pub(crate) const KINDS: &[&str] = &[
     "request.updated",
     "worker.step",
     "orchestrator.step",
+    "compaction.updated",
     "message.rated",
     "conversation.branch",
 ];
@@ -39,6 +40,7 @@ pub(crate) struct Board {
     pub(crate) worker_steps: Vec<WorkerStep>,
     /// Every orchestrator step, in stream order.
     pub(crate) orchestrator_steps: Vec<OrchestratorStep>,
+    pub(crate) compactions: HashMap<String, Compaction>,
     pub(crate) ratings: HashMap<String, Rating>,
     pub(crate) queue: MessageQueue,
     pub(crate) run: RunState,
@@ -113,6 +115,15 @@ impl Board {
                 let mut step = step.clone();
                 step.position = stream_seq;
                 self.orchestrator_steps.push(step);
+            }
+            DomainEvent::CompactionUpdated { compaction } => {
+                let position = self
+                    .compactions
+                    .get(&compaction.id)
+                    .map_or(stream_seq, |known| known.position);
+                let mut compaction = compaction.clone();
+                compaction.position = position;
+                self.compactions.insert(compaction.id.clone(), compaction);
             }
             DomainEvent::MessageRated { subject, rating } => {
                 self.ratings.insert(subject.clone(), *rating);
@@ -194,6 +205,12 @@ impl Board {
         self.requests
             .values()
             .max_by(|a, b| a.started_at_ms.cmp(&b.started_at_ms).then(a.id.cmp(&b.id)))
+    }
+
+    pub(crate) fn sorted_compactions(&self) -> Vec<Compaction> {
+        let mut compactions: Vec<Compaction> = self.compactions.values().cloned().collect();
+        compactions.sort_by_key(|compaction| compaction.position);
+        compactions
     }
 
     pub(crate) fn sorted_plans(&self) -> Vec<Plan> {

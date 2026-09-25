@@ -170,6 +170,10 @@ pub enum Request {
     Resume {
         conversation_id: ConversationId,
     },
+    /// Compacts a Chat's context now, in a turn of its own (ChatGPT's `/compact`).
+    Compact {
+        conversation_id: ConversationId,
+    },
     /// Replaces a sent message: the new text starts a branch beside it and is answered. In a
     /// session only the latest message, while nothing from it has landed.
     EditMessage {
@@ -444,6 +448,7 @@ pub enum Response {
     },
     Interrupt,
     Resume,
+    Compact,
     EditMessage,
     Regenerate,
     SwitchBranch,
