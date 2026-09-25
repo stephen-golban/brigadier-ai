@@ -81,7 +81,11 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
         {conversation && (
           <Mentions conversation={conversation} targets={targets} memory={target.mentions} />
         )}
-        <SlashCommands conversation={conversation} onOpenModel={() => setModelOpen(true)} />
+        <SlashCommands
+          conversation={conversation}
+          groups={resolved.groups}
+          onOpenModel={() => setModelOpen(true)}
+        />
         {/* Hidden, not unmounted, while the slash menu is open over it, as ChatGPT's is. */}
         <ComposerRail className="transition-[opacity,visibility] group-has-[[data-slot=composer-commands]]/composer:invisible group-has-[[data-slot=composer-commands]]/composer:opacity-0">
           {!conversation && <UtilityBar resolved={resolved} />}

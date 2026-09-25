@@ -19,4 +19,9 @@ efforts: Array<string>, defaultEffort: string | null, isDefault: boolean,
 /**
  * Input kinds the model accepts (`text`, `image`).
  */
-inputModalities: Array<string>, };
+inputModalities: Array<string>, 
+/**
+ * What its fast service tier offers ("1.5x speed, increased usage"), when it has one
+ * (Codex's `priority` tier).
+ */
+fast: string | null, };

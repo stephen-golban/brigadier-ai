@@ -742,6 +742,7 @@ fn model_info(model: &Value) -> Option<ModelInfo> {
             .unwrap_or_default(),
         default_effort: None,
         input_modalities: vec!["text".into(), "image".into()],
+        fast: None,
         id,
     })
 }

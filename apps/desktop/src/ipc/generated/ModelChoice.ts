@@ -8,4 +8,8 @@ export type ModelChoice = { provider: ProviderKind,
 /**
  * The CLI's model id. Absent: the CLI's own default.
  */
-model: string | null, effort: string | null, };
+model: string | null, effort: string | null, 
+/**
+ * On the model's fast service tier, where it has one (ChatGPT's "Fast").
+ */
+fast?: boolean, };

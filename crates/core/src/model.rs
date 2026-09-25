@@ -128,6 +128,10 @@ pub struct ModelChoice {
     /// The CLI's model id. Absent: the CLI's own default.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// On the model's fast service tier, where it has one (ChatGPT's "Fast").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fast: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

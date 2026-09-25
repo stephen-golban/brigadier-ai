@@ -355,6 +355,7 @@ impl SessionManager {
                     provider: choice.provider,
                     model: choice.model.clone(),
                     effort: choice.effort.clone(),
+                    fast: None,
                 },
                 reason,
             },
@@ -560,6 +561,7 @@ impl SessionManager {
             cwd: cwd.clone(),
             model: task.route.choice.model.clone(),
             effort: task.route.choice.effort.clone(),
+            fast: false,
             origin,
             access: access.clone(),
             append_system_prompt: Some(prompt),
@@ -588,6 +590,7 @@ impl SessionManager {
         let cli = Arc::new(Cli {
             provider,
             model: task.route.choice.clone(),
+            chosen: None,
             session,
             owner,
             ended: CancellationToken::new(),

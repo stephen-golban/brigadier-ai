@@ -1,4 +1,5 @@
 import {
+  Bolt,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -99,6 +100,7 @@ export function ModelSelector({
   const effort = effortFor(current, value.effort);
   const name = current?.displayName ?? value.model ?? "Default model";
   const models = listing || !current || current.efforts.length === 0;
+  const fast = value.fast === true && Boolean(current?.fast);
   return (
     <Popover
       open={open}
@@ -120,6 +122,7 @@ export function ModelSelector({
             <span className="truncate">Select effort</span>
           ) : (
             <>
+              {fast && <Bolt aria-label="Fast" className="text-foreground/80 shrink-0" />}
               <span className="text-foreground/80 truncate">{name}</span>
               {effort && <span className="shrink-0">{effortLabel(effort)}</span>}
             </>
@@ -134,7 +137,13 @@ export function ModelSelector({
             value={value}
             onBack={current && current.efforts.length > 0 ? () => setListing(false) : null}
             onPick={(model, provider) => {
-              onChange({ provider, model: model.id, effort: effortFor(model, value.effort) });
+              onChange({
+                provider,
+                model: model.id,
+                effort: effortFor(model, value.effort),
+                // Fast carries over to a model that has a fast tier too.
+                ...(model.fast && value.fast ? { fast: true } : {}),
+              });
               if (model.efforts.length > 0) setListing(false);
               else setOpen(false);
             }}
@@ -143,6 +152,8 @@ export function ModelSelector({
           <EffortPanel
             model={current}
             effort={effort}
+            fast={fast}
+            onFast={(on) => onChange({ ...value, fast: on })}
             onEffort={(next) => onChange({ ...value, effort: next })}
             onModels={() => setListing(true)}
           />
@@ -152,15 +163,22 @@ export function ModelSelector({
   );
 }
 
-/** The effort in use over the model's name, a reset, and the slider. */
+/**
+ * The effort in use over the model's name, ChatGPT's fast mode toggle (for a model with a
+ * fast tier), a reset, and the slider.
+ */
 function EffortPanel({
   model,
   effort,
+  fast,
+  onFast,
   onEffort,
   onModels,
 }: {
   model: ModelInfo;
   effort: string | null;
+  fast: boolean;
+  onFast: (on: boolean) => void;
   onEffort: (effort: string | null) => void;
   onModels: () => void;
 }) {
@@ -170,7 +188,20 @@ function EffortPanel({
   return (
     <div data-slot="model-selector-effort" className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <span aria-hidden className="size-icon-button-md" />
+        {model.fast ? (
+          <TooltipIconButton
+            tooltip={fast ? "Turn off fast mode" : `Enable fast mode: ${model.fast}`}
+            size="icon-md"
+            aria-pressed={fast}
+            data-slot="model-selector-fast"
+            className={cn(fast && "text-link")}
+            onClick={() => onFast(!fast)}
+          >
+            <Bolt />
+          </TooltipIconButton>
+        ) : (
+          <span aria-hidden className="size-icon-button-md" />
+        )}
         <button
           type="button"
           aria-label="Select model"
