@@ -82,6 +82,8 @@ pub struct Parser {
     limit: LimitState,
     quota: Vec<QuotaWindow>,
     context_window: Option<i64>,
+    /// The context size last reported, to repeat once the window is known.
+    context_used: Option<i64>,
     totals: TokenUsage,
     interrupting: bool,
     turn_active: bool,
@@ -539,11 +541,21 @@ impl Parser {
         }
 
         if let Some(models) = value.get("modelUsage").and_then(Value::as_object) {
+            let known = self.context_window;
             self.context_window = models
                 .values()
                 .filter_map(|model| model.get("contextWindow").and_then(Value::as_i64))
                 .max()
                 .or(self.context_window);
+            // The first turn learns the window only now: say the size again with it.
+            if known.is_none()
+                && let (Some(window), Some(used)) = (self.context_window, self.context_used)
+            {
+                out.push(Output::Event(ProviderEvent::ContextSize {
+                    used_tokens: used,
+                    window_tokens: Some(window),
+                }));
+            }
         }
         let usage = value.get("usage").map(|usage| {
             let mut turn = token_usage(usage);
@@ -733,6 +745,7 @@ impl Parser {
             + usage.cache_write_tokens
             + usage.output_tokens;
         if used > 0 {
+            self.context_used = Some(used);
             out.push(Output::Event(ProviderEvent::ContextSize {
                 used_tokens: used,
                 window_tokens: self.context_window,

@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import type {
   Approval,
+  ContextUsage,
   ConversationView,
   EventEnvelope,
   MessageQueue,
@@ -64,6 +65,8 @@ export type Board = {
   head: string | null;
   /** What the orchestrator (or a Chat's model) is doing right now, in a few words. */
   doing: string | null;
+  /** How full the conversation model's context is; absent until its CLI first said. */
+  context: ContextUsage | null;
   streaming: StreamingMessage | null;
   notices: Notice[];
   /** What each worker is doing right now, in a few words (from its live events). */
@@ -107,6 +110,7 @@ export function emptyBoard(conversationId: string): Board {
     runRequest: null,
     head: null,
     doing: null,
+    context: null,
     streaming: null,
     notices: [],
     activity: {},
@@ -180,6 +184,7 @@ export function boardFromView(
     runRequest: view.runRequest,
     head: view.head,
     doing: keep?.doing ?? null,
+    context: view.context,
     streaming: view.streaming,
     notices: view.notices.slice(-NOTICES),
     activity: keep?.activity ?? {},
@@ -277,7 +282,17 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
     }
     case "orchestratorLogged": {
       if (event.entry.type !== "provider") return board;
-      const doing = doingOf(event.entry.event, board.doing);
+      const provided = event.entry.event;
+      if (provided.type === "contextSize") {
+        return {
+          ...board,
+          context: {
+            usedTokens: provided.usedTokens,
+            windowTokens: provided.windowTokens ?? board.context?.windowTokens ?? null,
+          },
+        };
+      }
+      const doing = doingOf(provided, board.doing);
       return doing === board.doing ? board : { ...board, doing };
     }
     case "runStateChanged":

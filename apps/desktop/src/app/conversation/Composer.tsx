@@ -22,9 +22,11 @@ import {
   type MentionTarget,
 } from "@/components/assistant-ui/elements/composer-mentions";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
+import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import type { Conversation } from "@/ipc/generated";
+import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
 /** What the composer is attached to: a draft being set up, or a started conversation. */
@@ -81,6 +83,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                   <DraftPickers resolved={resolved} />
                 )}
               </div>
+              {conversation && <ComposerContextRing />}
               {conversation ? (
                 <ConversationModelPicker conversation={conversation} groups={resolved.groups} />
               ) : (
@@ -100,6 +103,14 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   );
 };
+
+/** The context ring left of the model picker, once the model has said how full it is. */
+function ComposerContextRing() {
+  const show = useApp((s) => s.settings.showContextUsage);
+  const usage = useBoard((s) => s.board?.context ?? null);
+  if (!show || !usage) return null;
+  return <ContextRing usage={usage} />;
+}
 
 function DraftPickers({ resolved }: { resolved: ResolvedDraft }) {
   const projectId = resolved.project?.id ?? null;

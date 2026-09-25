@@ -1,6 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
 
-import { ErrorLine, errorText, Field, RadioChoice } from "@/app/dialogs/fields";
+import { ErrorLine, errorText, Field, RadioChoice, SwitchRow } from "@/app/dialogs/fields";
 import {
   ModelSelector,
   type ModelGroup,
@@ -54,6 +54,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const [chatModel, setChatModel] = useState(initial.defaultChatModel);
   const [permission, setPermission] = useState(initial.defaultPermission);
   const [queueEnabled, setQueueEnabled] = useState(initial.queueEnabled);
+  const [showContext, setShowContext] = useState(initial.showContextUsage);
   const [hibernate, setHibernate] = useState(String(initial.hibernateAfterMinutes));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -77,6 +78,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         defaultChatModel: chatModel,
         defaultPermission: permission,
         queueEnabled,
+        showContextUsage: showContext,
         hibernateAfterMinutes: minutes,
       };
       await updateSettings(next);
@@ -164,6 +166,13 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
           ]}
         />
       </Field>
+
+      <SwitchRow
+        label="Show context window usage"
+        hint="A ring by the model picker in the composer shows how full the model's context is."
+        checked={showContext}
+        onCheckedChange={setShowContext}
+      />
 
       <Field
         label="Hibernate after (minutes)"
