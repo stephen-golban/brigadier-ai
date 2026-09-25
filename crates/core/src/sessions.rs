@@ -1494,7 +1494,11 @@ fn remember(project: &mut Project, setup: Option<&Setup>) -> bool {
     };
     let before = project.prefs.clone();
     project.prefs.permission = Some(*permission);
-    project.prefs.orchestrator = Some(orchestrator.clone());
+    // Fast spends usage faster: each session opts in again rather than inheriting it.
+    project.prefs.orchestrator = Some(ModelChoice {
+        fast: None,
+        ..orchestrator.clone()
+    });
     project.prefs.environment = Some(match environment {
         crate::model::Environment::LocalCheckout { .. } => EnvironmentKind::LocalCheckout,
         crate::model::Environment::NewWorktree { .. } => EnvironmentKind::NewWorktree,

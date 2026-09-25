@@ -589,7 +589,8 @@ async fn open_thread(
     let sandbox = thread_sandbox(&spec.access);
     let approval = Some(approval_policy(&spec.access));
     let instructions = spec.append_system_prompt.clone();
-    let service_tier = spec.fast.then(|| FAST_TIER.to_owned());
+    // Always named: an omitted tier inherits the resumed thread's or the user's config.
+    let service_tier = Some(if spec.fast { FAST_TIER } else { STANDARD_TIER }.to_owned());
     let (thread, model) = match &spec.origin {
         Origin::New => {
             let started: p::ThreadStartResponse = rpc
@@ -931,6 +932,8 @@ fn sandbox_policy(access: &Access) -> p::SandboxPolicy {
 
 /// Codex's fast service tier ("Fast"), as `model/list` names it.
 const FAST_TIER: &str = "priority";
+/// Codex's standard speed, which the app server takes as an explicit "not Fast".
+const STANDARD_TIER: &str = "default";
 
 fn model_info(model: p::Model) -> ModelInfo {
     let fast = model
