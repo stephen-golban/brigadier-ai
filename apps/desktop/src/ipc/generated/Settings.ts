@@ -27,4 +27,8 @@ queueEnabled: boolean,
 /**
  * A conversation with nothing running hibernates after this many idle minutes.
  */
-hibernateAfterMinutes: number, };
+hibernateAfterMinutes: number, 
+/**
+ * The composer shows how full the model's context is (a ring by the model picker).
+ */
+showContextUsage: boolean, };

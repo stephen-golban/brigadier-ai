@@ -149,6 +149,7 @@ export const useApp = create<AppState>()(() => ({
     defaultChatModel: null,
     queueEnabled: false,
     hibernateAfterMinutes: 30,
+    showContextUsage: true,
   },
   threads: {},
   pending: [],

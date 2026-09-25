@@ -4,20 +4,22 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use brigadier_providers::ProviderEvent;
 use brigadier_store::{NewEvent, Retention, Store, StreamPage};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::board::{self, Board};
 use crate::model::{
-    Catalog, Conversation, ConversationId, ConversationKind, ConversationView, DomainEvent,
-    EnvironmentKind, ForkOrigin, Lifecycle, Message, MessagePage, MessageRole, ModelChoice,
-    OrchestratorLogEntry, OrchestratorPage, Project, ProjectId, ProjectPatch, ProjectRepo,
-    RawEntry, Settings, Setup, WorkerPage, streams,
+    Catalog, ContextUsage, Conversation, ConversationId, ConversationKind, ConversationView,
+    DomainEvent, EnvironmentKind, ForkOrigin, Lifecycle, Message, MessagePage, MessageRole,
+    ModelChoice, OrchestratorLogEntry, OrchestratorPage, Project, ProjectId, ProjectPatch,
+    ProjectRepo, RawEntry, Settings, Setup, WorkerPage, streams,
 };
 use crate::projection::Projection;
 use crate::work::{
-    AttachmentRef, MessageQueue, QueuedMessage, RequestState, Task, TaskId, UserRequest,
+    AttachmentRef, MessageQueue, OrchestratorEntry, QueuedMessage, RequestState, Task, TaskId,
+    UserRequest,
 };
 use crate::{Error, Result, now_ms};
 
@@ -41,6 +43,8 @@ pub const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ATTACHMENTS: usize = 20;
 const MAX_QUEUED: usize = 50;
 const BOARD_PAGE: u32 = 1_000;
+/// Newest orchestrator log entries searched for the model's context size.
+const CONTEXT_SCAN: u32 = 200;
 
 /// A synthetic event burst started by [`Core::probe_burst`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -811,8 +815,10 @@ impl Core {
         let conversation = self.conversation(&id)?;
         let messages = self.list_messages(id.clone(), None, limit).await?;
         let board = self.board(&id).await?;
+        let context = self.context_usage(&id).await?;
         Ok(ConversationView {
             conversation,
+            context,
             messages,
             tasks: board.sorted_tasks(),
             approvals: board.sorted_approvals(),
@@ -829,6 +835,56 @@ impl Core {
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),
         })
+    }
+
+    /// The context size the conversation's CLI last reported, from the newest orchestrator
+    /// log entries (a window it stopped repeating comes from an earlier report).
+    async fn context_usage(&self, id: &ConversationId) -> Result<Option<ContextUsage>> {
+        let entries = self
+            .store
+            .read_stream(
+                streams::orchestrator(id),
+                StreamPage {
+                    before: None,
+                    kinds: vec!["orchestrator.logged".into()],
+                    limit: CONTEXT_SCAN,
+                },
+            )
+            .await?;
+        let mut usage: Option<ContextUsage> = None;
+        for stored in &entries {
+            let DomainEvent::OrchestratorLogged {
+                entry:
+                    OrchestratorEntry::Provider {
+                        event:
+                            ProviderEvent::ContextSize {
+                                used_tokens,
+                                window_tokens,
+                            },
+                        ..
+                    },
+                ..
+            } = decode(stored)?
+            else {
+                continue;
+            };
+            match &mut usage {
+                None => {
+                    usage = Some(ContextUsage {
+                        used_tokens,
+                        window_tokens,
+                    });
+                }
+                Some(latest) if latest.window_tokens.is_none() => {
+                    latest.window_tokens = window_tokens;
+                }
+                Some(_) => break,
+            }
+            if usage.is_some_and(|latest| latest.window_tokens.is_some()) {
+                break;
+            }
+        }
+        Ok(usage)
     }
 
     /// Appends events to a conversation's stream and applies them to its board. Returns each

@@ -404,6 +404,8 @@ pub struct Settings {
     pub queue_enabled: bool,
     /// A conversation with nothing running hibernates after this many idle minutes.
     pub hibernate_after_minutes: u32,
+    /// The composer shows how full the model's context is (a ring by the model picker).
+    pub show_context_usage: bool,
 }
 
 impl Default for Settings {
@@ -415,6 +417,7 @@ impl Default for Settings {
             default_chat_model: None,
             queue_enabled: false,
             hibernate_after_minutes: 30,
+            show_context_usage: true,
         }
     }
 }
@@ -455,12 +458,23 @@ pub struct Notice {
     pub at_ms: i64,
 }
 
+/// How full the conversation model's context is, as its CLI last said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub used_tokens: i64,
+    /// Absent when the CLI does not say.
+    pub window_tokens: Option<i64>,
+}
+
 /// Everything a conversation view shows, in one read. Live changes follow on the
 /// conversation's event stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationView {
     pub conversation: Conversation,
+    /// How full its model's context is; absent until its CLI first said.
+    pub context: Option<ContextUsage>,
     /// The newest page of messages.
     pub messages: MessagePage,
     pub tasks: Vec<Task>,
