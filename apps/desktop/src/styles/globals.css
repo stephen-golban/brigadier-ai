@@ -35,6 +35,36 @@
   --animate-collapsible-down: collapsible-down 150ms ease-out;
   --animate-shimmer: shimmer 2s linear infinite;
   --animate-collapsible-up: collapsible-up 150ms ease-out;
+  /* A rail card opens from nothing to its height, as ChatGPT's do. */
+  @keyframes rail-open {
+    from {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    to {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+  }
+  --animate-rail-open: rail-open 300ms cubic-bezier(0.19, 1, 0.22, 1);
+}
+
+/* A row that scrolls sideways without showing a scrollbar (the composer's utility bar). */
+@utility hide-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* A row with more to its right than fits fades out at that edge (the composer's utility bar). */
+@utility mask-fade-end {
+  mask-image: linear-gradient(to right, black calc(100% - var(--spacing-row-sm)), transparent);
+}
+
+/* Text scrolled under the top edge of a field fades out (the composer once it scrolls). */
+@utility mask-fade-top {
+  mask-image: linear-gradient(to bottom, transparent, black var(--spacing-row-sm));
 }
 
 /* Live text: a highlight sweeps across muted text ("Working for 12s"). */

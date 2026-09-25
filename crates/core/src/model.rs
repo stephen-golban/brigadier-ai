@@ -101,6 +101,9 @@ pub struct ProjectPrefs {
     /// Gitignored env files (paths relative to the repository root) copied into every worker
     /// worktree. Their values are redacted everywhere Brigadier shows or stores text.
     pub secret_files: Vec<String>,
+    /// What "Create branch for this session" puts before the name it suggests. Absent:
+    /// `brigadier/`.
+    pub branch_prefix: Option<String>,
 }
 
 /// How much a session may do on its own (PLAN.md §5). Outward actions always ask.

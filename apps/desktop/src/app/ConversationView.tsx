@@ -24,9 +24,9 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanelContext } from "@/app/conversation/Agents";
-import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
 import { ChatActions, RenameDialog } from "@/app/conversation/ChatActions";
 import { PinnedSummary, PinnedSummaryToggle } from "@/app/conversation/PinnedSummary";
+import { ProjectCombobox } from "@/app/conversation/RailPickers";
 import {
   SidePanel,
   SidePanelContext,
@@ -48,7 +48,7 @@ import {
 import { useResolvedDraft } from "@/app/conversation/draftSetup";
 import { QueuePanel } from "@/app/conversation/QueuePanel";
 import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
-import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
+import { StatusCardContext } from "@/app/conversation/StatusCard";
 import { useAction } from "@/app/conversation/useAction";
 import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
 import { TopBar } from "@/app/TopBar";
@@ -637,11 +637,8 @@ export function ConversationView({ selection }: { selection: Selection }) {
                       {conversation && <PinnedSummary conversation={conversation} />}
                       <Thread
                         components={THREAD_COMPONENTS}
-                        placeholder={
-                          resolved.kind === "session" || conversation?.kind === "session"
-                            ? "Describe what this session should do…  (@ mentions a worker or file)"
-                            : "Message Brigadier…"
-                        }
+                        // ChatGPT's one placeholder, in every conversation.
+                        placeholder="Do anything"
                       />
                     </div>
                   </div>
@@ -669,23 +666,24 @@ const ViewContext = createContext<{ selection: Selection; conversation: Conversa
   conversation: null,
 });
 
+/** ChatGPT's hero over a new chat: "What should we build in {project}?". */
 const Welcome: FC = () => {
   const { selection } = useContext(ViewContext);
-  const projectName = useApp((s) =>
+  const project = useApp((s) =>
     selection.type === "draft" && selection.kind === "session"
-      ? s.projects[selection.projectId]?.name
-      : undefined,
+      ? (s.projects[selection.projectId] ?? null)
+      : null,
   );
-  const session = selection.type === "draft" && selection.kind === "session";
-  const heading = session ? `New session in ${projectName ?? "project"}` : "What are we working on?";
-  const detail = session
-    ? "Pick where the work lands below; the session starts with your first message."
-    : "Chat with the model you pick, or choose a project below to start a session.";
   return (
-    <div className="mb-6 flex flex-col gap-1 px-2">
-      <h1 className="text-2xl">{heading}</h1>
-      <p className="text-muted-foreground text-sm">{detail}</p>
-    </div>
+    <h1 className="font-display tracking-hero mb-6 px-2 text-center text-2xl">
+      {project ? (
+        <>
+          What should we build in <ProjectCombobox project={project} inHeading />?
+        </>
+      ) : (
+        "What should we build?"
+      )}
+    </h1>
   );
 };
 
@@ -749,13 +747,9 @@ function Notices({ notices }: { notices: readonly Notice[] }) {
 
 const NO_NOTICES: Notice[] = [];
 
-/**
- * Between the thread and the composer: notices, a failed run, the archived state, the queue,
- * and the `/status` card on the composer.
- */
+/** Between the thread and the composer: notices, a failed run, the archived state, the queue. */
 const AboveComposer: FC = () => {
   const { conversation } = useContext(ViewContext);
-  const statusCard = useContext(StatusCardContext);
   const conversationId = conversation?.id ?? null;
   const notices = useBoard((s) =>
     s.board?.conversationId === conversationId ? s.board.notices : NO_NOTICES,
@@ -797,18 +791,6 @@ const AboveComposer: FC = () => {
           targets={target?.targets ?? []}
         />
       )}
-      {/* On the composer's top edge, as ChatGPT attaches them; hidden with nothing in it. */}
-      <div
-        data-slot="composer-tray"
-        className="border-foreground/10 bg-muted/30 rounded-t-thread divide-foreground/10 mx-3 -mb-4 flex flex-col divide-y border border-b-0 empty:hidden"
-      >
-        {conversation.kind === "session" && conversation.lifecycle !== "archived" && (
-          <BackgroundWorkers conversationId={conversation.id} />
-        )}
-        {statusCard.open && (
-          <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
-        )}
-      </div>
     </div>
   );
 };

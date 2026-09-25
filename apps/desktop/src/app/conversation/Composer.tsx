@@ -1,20 +1,20 @@
 import { AuiIf, ComposerPrimitive } from "@assistant-ui/react";
 import { ArrowUp, PlayTriangle, Stop } from "@openai/apps-sdk-ui/components/Icon";
-import { createContext, type FC, useContext, useState } from "react";
+import { createContext, type FC, useContext, useEffect, useRef, useState } from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
+import { BranchPopover, ProjectCombobox, WorkInMenu } from "@/app/conversation/RailPickers";
 import {
-  BranchPicker,
   ConversationModelPicker,
   ConversationPermissionPicker,
-  EnvironmentChip,
-  EnvironmentPicker,
   PermissionPicker,
-  ProjectPicker,
   ProjectSettingsButton,
 } from "@/app/conversation/SetupPickers";
 import { type MentionMemory, Mentions, type MentionTarget } from "@/app/conversation/Mentions";
 import { SlashCommands } from "@/app/conversation/SlashCommands";
+import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
+import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
+import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 import {
   ComposerAddAttachment,
   ComposerAttachments,
@@ -50,41 +50,54 @@ export const ComposerTargetContext = createContext<ComposerTarget | null>(null);
 export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder }) => {
   const target = useContext(ComposerTargetContext);
   const [modelOpen, setModelOpen] = useState(false);
+  const statusCard = useContext(StatusCardContext);
   if (!target) return null;
   const { conversation, resolved, targets } = target;
   const archived = conversation?.lifecycle === "archived";
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <div className="relative w-full">
+      <div className="group/composer relative w-full">
         {conversation && (
           <Mentions conversation={conversation} targets={targets} memory={target.mentions} />
         )}
         <SlashCommands conversation={conversation} onOpenModel={() => setModelOpen(true)} />
+        {/* Hidden, not unmounted, while the slash menu is open over it, as ChatGPT's is. */}
+        <ComposerRail className="transition-[opacity,visibility] group-has-[[data-slot=composer-commands]]/composer:invisible group-has-[[data-slot=composer-commands]]/composer:opacity-0">
+          {!conversation && <UtilityBar resolved={resolved} />}
+          {/* ChatGPT's order: /status on top, then the cards below it. */}
+          {conversation && statusCard.open && (
+            <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
+          )}
+          {conversation?.kind === "session" && !archived && (
+            <BackgroundWorkers conversationId={conversation.id} />
+          )}
+        </ComposerRail>
         <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-1.5">
+          {/* ChatGPT's card: lifted, an inner hairline for an edge, and no focus ring. */}
           <div
             data-slot="aui_composer-shell"
-            className="@container/composer border-foreground/10 focus-within:border-foreground/25 bg-muted/30 rounded-thread flex w-full cursor-text flex-col gap-2 border p-2 transition-[border-color]"
+            className="@container/composer bg-composer rounded-composer shadow-hairline relative flex w-full cursor-text flex-col gap-1 p-2 backdrop-blur-lg"
           >
             <ComposerAttachments />
-            <ComposerPrimitive.Input
+            <ComposerInput
               placeholder={archived ? "Restore this conversation to continue it." : placeholder}
-              className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 min-h-composer max-h-48 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none"
-              rows={1}
               autoFocus={autoFocus}
-              enterKeyHint="send"
-              aria-label="Message input"
             />
             <div className="flex items-center gap-1">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
                 <ComposerAddAttachment />
                 {conversation ? (
-                  <>
-                    <EnvironmentChip conversation={conversation} />
-                    <ConversationPermissionPicker conversation={conversation} />
-                  </>
+                  <ConversationPermissionPicker conversation={conversation} />
                 ) : (
-                  <DraftPickers resolved={resolved} />
+                  resolved.kind === "session" && (
+                    <PermissionPicker
+                      value={resolved.permission}
+                      onChange={(permission) =>
+                        updateDraft(resolved.project?.id ?? null, { permission })
+                      }
+                    />
+                  )
                 )}
               </div>
               {conversation && <ComposerContextRing />}
@@ -115,6 +128,26 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   );
 };
 
+/**
+ * The text field: grows with its text up to a quarter of the window, then scrolls, the top
+ * line fading under the edge once scrolled.
+ */
+function ComposerInput({ placeholder, autoFocus }: { placeholder: string; autoFocus: boolean }) {
+  const [scrolled, setScrolled] = useState(false);
+  return (
+    <ComposerPrimitive.Input
+      placeholder={placeholder}
+      data-scrolled={scrolled || undefined}
+      onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
+      className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 min-h-composer max-h-composer-max data-scrolled:mask-fade-top w-full resize-none bg-transparent px-2 py-2.5 text-base outline-none"
+      rows={1}
+      autoFocus={autoFocus}
+      enterKeyHint="send"
+      aria-label="Message input"
+    />
+  );
+}
+
 /** The context ring left of the model picker, once the model has said how full it is. */
 function ComposerContextRing() {
   const show = useApp((s) => s.settings.showContextUsage);
@@ -123,24 +156,46 @@ function ComposerContextRing() {
   return <ContextRing usage={usage} />;
 }
 
-function DraftPickers({ resolved }: { resolved: ResolvedDraft }) {
-  const projectId = resolved.project?.id ?? null;
+/** Whether a sideways-scrolling row has more past its right edge. */
+function overflowsEnd(element: HTMLElement): boolean {
+  return element.scrollLeft + element.clientWidth < element.scrollWidth - 1;
+}
+
+/**
+ * The rail's utility bar on a new chat: project, where the session works and its branch.
+ * It scrolls sideways, fading at the edge, when the composer is too narrow.
+ */
+function UtilityBar({ resolved }: { resolved: ResolvedDraft }) {
+  const [overflowing, setOverflowing] = useState(false);
+  const bar = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const element = bar.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setOverflowing(overflowsEnd(element)));
+    // The bar's own width and its row's, which grows with the pills' text.
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <>
-      <ProjectPicker project={resolved.project} />
-      {resolved.kind === "session" && resolved.repoPath && (
-        <>
-          <EnvironmentPicker resolved={resolved} />
-          <BranchPicker resolved={resolved} />
-        </>
-      )}
-      {resolved.kind === "session" && (
-        <PermissionPicker
-          value={resolved.permission}
-          onChange={(permission) => updateDraft(projectId, { permission })}
-        />
-      )}
-    </>
+    <ComposerRailItem variant="controls" label="Composer utility bar">
+      <div
+        ref={bar}
+        onScroll={(event) => setOverflowing(overflowsEnd(event.currentTarget))}
+        data-overflowing={overflowing || undefined}
+        className="data-overflowing:mask-fade-end hide-scrollbar overflow-x-auto px-1 py-1.25"
+      >
+        <div className="flex w-max items-center gap-2">
+          <ProjectCombobox project={resolved.project} />
+          {resolved.kind === "session" && resolved.repoPath && (
+            <>
+              <WorkInMenu resolved={resolved} />
+              <BranchPopover resolved={resolved} />
+            </>
+          )}
+        </div>
+      </div>
+    </ComposerRailItem>
   );
 }
 
@@ -233,7 +288,8 @@ function ComposerHint({ target }: { target: ComposerTarget }) {
       </p>
     );
   }
-  if (resolved.kind !== "session") return null;
+  const dirty = environment === "localCheckout" && repo.info?.dirty;
+  if (resolved.kind !== "session" || (permission !== "fullAccess" && !dirty)) return null;
   return (
     <p className="text-muted-foreground px-2 text-xs">
       {permission === "fullAccess" && (
@@ -241,9 +297,9 @@ function ComposerHint({ target }: { target: ComposerTarget }) {
           Full access: workers run without the OS sandbox.{" "}
         </span>
       )}
-      {environment === "localCheckout" && repo.info?.dirty
-        ? "Your checkout has uncommitted changes; Brigadier will ask whether workers should see them."
-        : resolved.repoPath}
+      {environment === "localCheckout" &&
+        repo.info?.dirty &&
+        "Your checkout has uncommitted changes; Brigadier will ask whether workers should see them."}
     </p>
   );
 }
