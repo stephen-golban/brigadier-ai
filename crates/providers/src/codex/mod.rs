@@ -135,6 +135,22 @@ impl Codex {
         }
     }
 
+    /// Archives threads no Brigadier session has open (see [`archive_thread`]), except those
+    /// `open` says a session has opened meanwhile.
+    pub async fn archive_threads(
+        &self,
+        thread_ids: Vec<String>,
+        open: impl Fn(&str) -> bool + Send + Sync,
+    ) -> Result<()> {
+        self.control(async |rpc: &Rpc| {
+            for thread_id in thread_ids.iter().filter(|id| !open(id)) {
+                archive_thread(rpc, thread_id).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     fn binary(&self) -> Result<&Path> {
         self.binary
             .as_deref()
@@ -592,6 +608,8 @@ async fn open_thread(
             (started.thread, started.model)
         }
         Origin::Resume { native_id } => {
+            // Brigadier archived it when it last closed the thread.
+            unarchive_thread(rpc, native_id).await?;
             let resumed: p::ThreadResumeResponse = rpc
                 .call(
                     "thread/resume",
@@ -611,6 +629,7 @@ async fn open_thread(
             (resumed.thread, resumed.model)
         }
         Origin::Fork { native_id } => {
+            let archived = unarchive_thread(rpc, native_id).await?;
             let forked: p::ThreadForkResponse = rpc
                 .call(
                     "thread/fork",
@@ -627,6 +646,9 @@ async fn open_thread(
                     },
                 )
                 .await?;
+            if archived {
+                archive_thread(rpc, native_id).await?;
+            }
             (forked.thread, forked.model)
         }
     };
@@ -672,6 +694,44 @@ fn trusted() -> Value {
 }
 
 /// The `projects` table of the user's own `config.toml`, by project path.
+/// Archives a thread Brigadier is done with for now, so the Codex and ChatGPT apps don't list
+/// it among the user's own threads (their Recents). The app-server offers no unlisted threads
+/// that can still be resumed: every thread it starts is recorded as a `vscode` one. A thread
+/// with no turn yet has nothing to archive.
+async fn archive_thread(rpc: &Rpc, thread_id: &str) -> Result<()> {
+    let archived: Result<Value> = rpc
+        .call(
+            "thread/archive",
+            &p::ThreadArchiveParams {
+                thread_id: thread_id.to_owned(),
+            },
+        )
+        .await;
+    match archived {
+        Ok(_) => Ok(()),
+        Err(Error::Rejected(message)) if message.contains("no rollout found") => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Brings back a thread [`archive_thread`] archived, since an archived thread can't be resumed
+/// or forked. `false` when it wasn't archived.
+async fn unarchive_thread(rpc: &Rpc, thread_id: &str) -> Result<bool> {
+    let unarchived: Result<Value> = rpc
+        .call(
+            "thread/unarchive",
+            &p::ThreadUnarchiveParams {
+                thread_id: thread_id.to_owned(),
+            },
+        )
+        .await;
+    match unarchived {
+        Ok(_) => Ok(true),
+        Err(Error::Rejected(message)) if message.contains("no archived rollout found") => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
 async fn trusted_projects(rpc: &Rpc, cwd: &Path) -> Result<Map<String, Value>> {
     let read: Value = rpc
         .call(
@@ -1280,6 +1340,19 @@ impl ProviderSession for CodexSession {
 
     fn close(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
+            if self.rpc.process.is_running() {
+                match tokio::time::timeout(EXIT_GRACE, archive_thread(&self.rpc, &self.thread_id))
+                    .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        tracing::debug!(thread = %self.thread_id, error = %err, "could not archive a codex thread");
+                    }
+                    Err(_) => {
+                        tracing::debug!(thread = %self.thread_id, "archiving a codex thread timed out");
+                    }
+                }
+            }
             self.rpc.process.shutdown(EXIT_GRACE).await;
         })
     }

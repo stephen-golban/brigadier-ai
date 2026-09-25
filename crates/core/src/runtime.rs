@@ -143,6 +143,10 @@ impl Runtime {
         });
         runtime.load().await?;
         runtime.sweep().await;
+        let ledger = runtime.ledger.clone();
+        runtime
+            .pumps
+            .spawn(async move { ledger.archive_codex_threads().await });
         runtime.refresh_providers();
         Ok(runtime)
     }

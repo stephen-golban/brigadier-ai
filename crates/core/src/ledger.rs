@@ -218,6 +218,37 @@ impl CleanupLedger {
         leftovers
     }
 
+    /// After a restart, when nothing of Brigadier's runs: archives the Codex threads it still
+    /// holds, so the Codex and ChatGPT apps don't list them among the user's own. A session
+    /// closed normally archived its thread already; a thread is unarchived when resumed.
+    pub async fn archive_codex_threads(&self) {
+        let threads: Vec<String> = self
+            .state()
+            .artifacts
+            .values()
+            .flatten()
+            .filter_map(|artifact| match artifact {
+                Artifact::CodexThread { thread_id } => Some(thread_id.clone()),
+                _ => None,
+            })
+            .collect();
+        if threads.is_empty() {
+            return;
+        }
+        // A conversation resumed meanwhile has a CLI process again: its thread stays open.
+        let open = |thread_id: &str| {
+            self.state().artifacts.values().any(|artifacts| {
+                artifacts.iter().any(is_process)
+                    && artifacts.iter().any(|artifact| {
+                        matches!(artifact, Artifact::CodexThread { thread_id: held } if held == thread_id)
+                    })
+            })
+        };
+        if let Err(err) = self.codex.archive_threads(threads, open).await {
+            tracing::debug!(error = %err, "could not archive codex threads");
+        }
+    }
+
     /// Crash sweep: ends every process a previous daemon left running, then finishes the
     /// disposals it had started (or that failed before).
     pub async fn sweep(&self) {
