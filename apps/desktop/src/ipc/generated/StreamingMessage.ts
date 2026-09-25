@@ -3,4 +3,8 @@
 /**
  * Text an assistant is still writing.
  */
-export type StreamingMessage = { messageId: string, text: string, };
+export type StreamingMessage = { messageId: string, text: string, 
+/**
+ * The request the running turn serves.
+ */
+requestId: string | null, };

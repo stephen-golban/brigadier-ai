@@ -5,4 +5,8 @@ import type { CardState } from "./CardState";
 import type { ConversationId } from "./ConversationId";
 import type { TaskId } from "./TaskId";
 
-export type Approval = { id: CardId, conversationId: ConversationId, taskId: TaskId | null, position: number, subject: ApprovalSubject, state: CardState, createdAtMs: number, resolvedAtMs: number | null, };
+export type Approval = { id: CardId, conversationId: ConversationId, taskId: TaskId | null, 
+/**
+ * The user request it belongs to.
+ */
+requestId: string | null, position: number, subject: ApprovalSubject, state: CardState, createdAtMs: number, resolvedAtMs: number | null, };

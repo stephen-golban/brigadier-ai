@@ -613,7 +613,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             conversation_id,
             text,
         } => Response::AppendMessage {
-            message: core.append_message(conversation_id, text).await?,
+            message: Box::new(core.append_message(conversation_id, text).await?),
         },
         Request::ListMessages {
             conversation_id,

@@ -112,10 +112,12 @@ impl SessionManager {
         task_id: Option<TaskId>,
         subject: ApprovalSubject,
     ) -> Result<(Approval, oneshot::Receiver<CardAnswer>)> {
+        let request_id = self.request_for(conversation_id, task_id.as_ref()).await;
         let approval = Approval {
             id: CardId::generate(),
             conversation_id: conversation_id.clone(),
             task_id,
+            request_id,
             position: 0,
             subject,
             state: CardState::Pending,
@@ -135,8 +137,9 @@ impl SessionManager {
                     approval: approval.clone(),
                 }],
             )
-            .await
-            .map(|_| ())
+            .await?;
+        self.settle_requests(&approval.conversation_id).await;
+        Ok(())
     }
 
     /// Settles an approval card without the user (policy, timeout, a task that ended).
@@ -219,7 +222,7 @@ impl SessionManager {
                         }
                     ),
                 };
-                self.deliver(
+                self.deliver_for(
                     &conversation_id,
                     Envelope {
                         kind: InjectionKind::Decision,
@@ -227,6 +230,7 @@ impl SessionManager {
                         task_id: approval.task_id.clone(),
                         text,
                     },
+                    approval.request_id.clone(),
                 )
                 .await;
             }
@@ -316,10 +320,12 @@ impl SessionManager {
         text: String,
         options: Vec<String>,
     ) -> Result<(Question, oneshot::Receiver<CardAnswer>)> {
+        let request_id = self.request_for(conversation_id, task_id.as_ref()).await;
         let question = Question {
             id: CardId::generate(),
             conversation_id: conversation_id.clone(),
             task_id,
+            request_id,
             position: 0,
             kind,
             text,
@@ -337,6 +343,7 @@ impl SessionManager {
                 }],
             )
             .await?;
+        self.settle_requests(conversation_id).await;
         Ok((question, rx))
     }
 
@@ -372,7 +379,7 @@ impl SessionManager {
             .await?;
         match &question.kind {
             QuestionKind::Orchestrator => {
-                self.deliver(
+                self.deliver_for(
                     &conversation_id,
                     Envelope {
                         kind: InjectionKind::Decision,
@@ -383,6 +390,7 @@ impl SessionManager {
                             question.text
                         ),
                     },
+                    question.request_id.clone(),
                 )
                 .await;
             }
@@ -413,6 +421,7 @@ impl SessionManager {
             }
         }
         self.waiters.answer(&card_id, CardAnswer::Answered);
+        self.settle_requests(&conversation_id).await;
         Ok(())
     }
 
@@ -423,8 +432,9 @@ impl SessionManager {
                 &plan.conversation_id,
                 vec![DomainEvent::PlanUpdated { plan: plan.clone() }],
             )
-            .await
-            .map(|_| ())
+            .await?;
+        self.settle_requests(&plan.conversation_id).await;
+        Ok(())
     }
 
     /// The user approved or rejected a plan.
@@ -469,7 +479,7 @@ impl SessionManager {
                     .unwrap_or_else(|| ".".into())
             )
         };
-        self.deliver(
+        self.deliver_for(
             &conversation_id,
             Envelope {
                 kind: InjectionKind::Decision,
@@ -477,6 +487,7 @@ impl SessionManager {
                 task_id: None,
                 text,
             },
+            plan.request_id.clone(),
         )
         .await;
         Ok(())
@@ -499,7 +510,7 @@ impl SessionManager {
                 ApprovalSubject::Landing { .. } => {}
                 // Nothing would merge on a click any more: the orchestrator asks again.
                 ApprovalSubject::FinishSession { branch, base, .. } => {
-                    self.deliver(
+                    self.deliver_for(
                         conversation_id,
                         Envelope {
                             kind: InjectionKind::Decision,
@@ -509,6 +520,7 @@ impl SessionManager {
                                 "[not finished] The user had not answered whether to merge `{branch}` into `{base}` when Brigadier restarted; nothing was merged. Call finish_session again."
                             ),
                         },
+                        approval.request_id.clone(),
                     )
                     .await;
                 }

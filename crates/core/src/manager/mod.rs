@@ -22,6 +22,7 @@ mod landing;
 mod lifecycle;
 mod outputs;
 mod prompts;
+mod requests;
 mod secrets;
 mod tools;
 mod workers;

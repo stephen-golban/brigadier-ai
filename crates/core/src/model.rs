@@ -6,6 +6,7 @@ use brigadier_providers::{
 
 use crate::work::{
     Approval, AttachmentRef, MessageQueue, OrchestratorEntry, Plan, Question, RunState, Task,
+    UserRequest,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -331,6 +332,10 @@ pub struct Message {
     /// For assistant messages: the model that wrote it (a Chat may fall back to another).
     #[serde(default)]
     pub model: Option<ModelChoice>,
+    /// The user request it belongs to: its own id for a user message, the request the
+    /// model was serving for a reply. Absent for messages from before requests existed.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 /// Global size and spacing scale for every control.
@@ -397,6 +402,8 @@ pub struct MessagePage {
 pub struct StreamingMessage {
     pub message_id: String,
     pub text: String,
+    /// The request the running turn serves.
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -419,8 +426,12 @@ pub struct ConversationView {
     pub approvals: Vec<Approval>,
     pub questions: Vec<Question>,
     pub plans: Vec<Plan>,
+    /// Every request of the conversation, oldest first.
+    pub requests: Vec<UserRequest>,
     pub queue: MessageQueue,
     pub run: RunState,
+    /// The request the running turn serves.
+    pub run_request: Option<String>,
     pub streaming: Option<StreamingMessage>,
     /// The latest notices (environment problems, fallbacks), newest last.
     pub notices: Vec<Notice>,
@@ -685,6 +696,13 @@ pub enum DomainEvent {
         conversation_id: ConversationId,
         state: RunState,
         error: Option<String>,
+        /// The request the turn serves.
+        #[serde(default)]
+        request_id: Option<String>,
+    },
+    /// A user request started, or its state changed (full snapshot).
+    RequestUpdated {
+        request: UserRequest,
     },
     ConversationNotice {
         conversation_id: ConversationId,
@@ -748,6 +766,7 @@ impl DomainEvent {
             Self::ConversationDeleted { .. } => "conversation.deleted",
             Self::MessageDelta { .. } => "message.delta",
             Self::RunStateChanged { .. } => "conversation.run",
+            Self::RequestUpdated { .. } => "request.updated",
             Self::ConversationNotice { .. } => "conversation.notice",
             Self::TaskUpdated { .. } => "task.updated",
             Self::ApprovalUpdated { .. } => "approval.updated",

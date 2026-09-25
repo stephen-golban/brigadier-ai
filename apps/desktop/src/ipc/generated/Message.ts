@@ -28,4 +28,9 @@ mentions: Array<TaskId>,
 /**
  * For assistant messages: the model that wrote it (a Chat may fall back to another).
  */
-model: ModelChoice | null, };
+model: ModelChoice | null, 
+/**
+ * The user request it belongs to: its own id for a user message, the request the
+ * model was serving for a reply. Absent for messages from before requests existed.
+ */
+requestId: string | null, };

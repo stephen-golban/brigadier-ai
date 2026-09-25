@@ -437,7 +437,7 @@ pub enum Response {
         conversation: Box<Conversation>,
     },
     AppendMessage {
-        message: Message,
+        message: Box<Message>,
     },
     ListMessages {
         page: MessagePage,

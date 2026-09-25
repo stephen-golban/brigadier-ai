@@ -228,6 +228,7 @@ impl SessionManager {
         change: impl FnOnce(&mut Task),
     ) -> Result<Task> {
         let mut task = self.task_by_id(conversation_id, id).await?;
+        let was = task.state;
         change(&mut task);
         task.updated_at_ms = now_ms();
         self.core
@@ -238,6 +239,9 @@ impl SessionManager {
                 }],
             )
             .await?;
+        if task.state != was {
+            self.settle_requests(conversation_id).await;
+        }
         Ok(task)
     }
 
@@ -322,6 +326,10 @@ impl SessionManager {
             _ => choice.reason.clone(),
         };
         let number = self.core.next_task_number(conversation_id).await?;
+        let request_id = match &subject {
+            Some(subject) => subject.request_id.clone(),
+            None => self.request_for(conversation_id, None).await,
+        };
         let now = now_ms();
         let task = Task {
             id: TaskId::generate(),
@@ -353,6 +361,7 @@ impl SessionManager {
             error: None,
             kept: None,
             outputs: Vec::new(),
+            request_id,
             created_at_ms: now,
             updated_at_ms: now,
         };

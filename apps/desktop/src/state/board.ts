@@ -14,6 +14,7 @@ import type {
   RunState,
   StreamingMessage,
   Task,
+  UserRequest,
 } from "@/ipc/generated";
 
 /** Newest entries kept per open worker transcript; older ones load on demand. */
@@ -43,9 +44,13 @@ export type Board = {
   approvals: Record<string, Approval>;
   questions: Record<string, Question>;
   plans: Record<string, Plan>;
+  /** What each user message set in motion, by request id (the message's id). */
+  requests: Record<string, UserRequest>;
   queue: MessageQueue;
   run: RunState;
   runError: string | null;
+  /** The request the running turn serves. */
+  runRequest: string | null;
   streaming: StreamingMessage | null;
   notices: Notice[];
   /** What each worker is doing right now, in a few words (from its live events). */
@@ -79,9 +84,11 @@ export function emptyBoard(conversationId: string): Board {
     approvals: {},
     questions: {},
     plans: {},
+    requests: {},
     queue: EMPTY_QUEUE,
     run: "idle",
     runError: null,
+    runRequest: null,
     streaming: null,
     notices: [],
     activity: {},
@@ -104,6 +111,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "planUpdated",
   "queueChanged",
   "runStateChanged",
+  "requestUpdated",
 ]);
 
 /** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
@@ -139,9 +147,11 @@ export function boardFromView(
     approvals: byId(view.approvals),
     questions: byId(view.questions),
     plans: byId(view.plans),
+    requests: byId(view.requests),
     queue: view.queue,
     run: view.run,
     runError: keep?.runError ?? null,
+    runRequest: view.runRequest,
     streaming: view.streaming,
     notices: view.notices.slice(-NOTICES),
     activity: keep?.activity ?? {},
@@ -228,8 +238,8 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       const current = board.streaming;
       const streaming =
         current?.messageId === event.messageId
-          ? { messageId: current.messageId, text: current.text + event.text }
-          : { messageId: event.messageId, text: event.text };
+          ? { ...current, text: current.text + event.text }
+          : { messageId: event.messageId, text: event.text, requestId: board.runRequest };
       return { ...board, streaming };
     }
     case "runStateChanged":
@@ -237,6 +247,7 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
         ...board,
         run: event.state,
         runError: event.error,
+        runRequest: event.requestId,
         // A turn that ended without a final message leaves nothing streaming.
         streaming: event.state === "running" || event.state === "starting" ? board.streaming : null,
       };
@@ -250,6 +261,8 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       return { ...board, questions: placed(board.questions, event.question, envelope, board) };
     case "planUpdated":
       return { ...board, plans: placed(board.plans, event.plan, envelope, board) };
+    case "requestUpdated":
+      return { ...board, requests: { ...board.requests, [event.request.id]: event.request } };
     case "queueChanged":
       return { ...board, queue: event.queue };
     case "workerEvent": {

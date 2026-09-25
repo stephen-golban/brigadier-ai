@@ -405,6 +405,7 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     // log read these themselves.
     case "messageDelta":
     case "runStateChanged":
+    case "requestUpdated":
     case "conversationNotice":
     case "taskUpdated":
     case "approvalUpdated":
