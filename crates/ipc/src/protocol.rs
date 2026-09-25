@@ -11,8 +11,8 @@ use brigadier_core::{
     AttachmentRef, CardId, Catalog, CheckoutFile, CommitOutcome, Conversation,
     ConversationActivity, ConversationId, ConversationKind, ConversationStatus, ConversationView,
     DiffStat, ForkPlace, GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage,
-    ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating,
-    RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
+    ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, PullRequest, QueuedMessage,
+    Rating, RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
     ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
@@ -273,6 +273,10 @@ pub enum Request {
     },
     /// A session checkout's branch, changes and remote, for its Git actions.
     GetGitState {
+        conversation_id: ConversationId,
+    },
+    /// The GitHub pull request of a session checkout's branch, looked up with `gh` (read only).
+    GetPullRequest {
         conversation_id: ConversationId,
     },
     /// The user's commit of a session checkout's changes (every change with
@@ -579,6 +583,9 @@ pub enum Response {
     },
     GetGitState {
         state: GitState,
+    },
+    GetPullRequest {
+        pull_request: Option<PullRequest>,
     },
     CommitChanges {
         outcome: CommitOutcome,

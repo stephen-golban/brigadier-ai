@@ -26,6 +26,7 @@ mod landing;
 mod lifecycle;
 mod outputs;
 mod prompts;
+mod pull_request;
 mod requests;
 mod review;
 mod secrets;

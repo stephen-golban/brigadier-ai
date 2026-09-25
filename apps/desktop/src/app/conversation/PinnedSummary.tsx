@@ -6,6 +6,10 @@ import {
   FolderOpen,
   Link,
   Plus,
+  PullRequestClosed,
+  PullRequestDraft,
+  PullRequestMerged,
+  PullRequestOpen,
   Tasks,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
@@ -23,8 +27,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { openFolder, openUrl } from "@/ipc/client";
-import type { Conversation, DiffStat, Plan, Task } from "@/ipc/generated";
+import { openFolder, openUrl, request } from "@/ipc/client";
+import type {
+  Conversation,
+  DiffStat,
+  Plan,
+  PullRequest,
+  PullRequestState,
+  Task,
+} from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import { getSessionDiff, select, setPinnedSummary, setProjectExpanded } from "@/state/actions";
 import { useBoard } from "@/state/board";
@@ -254,6 +265,57 @@ function ProjectActions({ projectId, path }: { projectId: string; path: string }
   );
 }
 
+const PULL_REQUEST: Record<PullRequestState, { label: string; icon: ReactNode }> = {
+  open: { label: "Open", icon: <PullRequestOpen /> },
+  draft: { label: "Draft", icon: <PullRequestDraft /> },
+  merged: { label: "Merged", icon: <PullRequestMerged /> },
+  closed: { label: "Closed", icon: <PullRequestClosed /> },
+};
+
+/** The branch's GitHub pull request (from `gh`, read only), looked up again after landings. */
+function usePullRequest(conversationId: string): PullRequest | null {
+  const landed = useBoard(
+    (s) => Object.values(s.board?.tasks ?? {}).filter((task) => task.state === "landed").length,
+  );
+  const [found, setFound] = useState<PullRequest | null>(null);
+  useEffect(() => {
+    let current = true;
+    request({ method: "getPullRequest", conversationId })
+      .then(({ pullRequest }) => current && setFound(pullRequest))
+      // No row when it can't be told.
+      .catch(() => current && setFound(null));
+    return () => {
+      current = false;
+    };
+    // A landing may be what a pull request waits for: look again.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
+  }, [conversationId, landed]);
+  return found;
+}
+
+/** ChatGPT's pull request row: the branch's pull request, opened in the browser. */
+function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
+  const state = PULL_REQUEST[pullRequest.state];
+  return (
+    <button
+      type="button"
+      title={`${pullRequest.title}\n${pullRequest.url}`}
+      onClick={() =>
+        openUrl(pullRequest.url).catch((cause: unknown) =>
+          toast(cause instanceof Error ? cause.message : String(cause), { tone: "error" }),
+        )
+      }
+      className="hover:bg-foreground/5 rounded-control -mx-1 flex h-control-sm items-center gap-2 px-1 text-start text-sm transition-colors [&>svg]:size-icon-md [&>svg]:shrink-0"
+    >
+      {state.icon}
+      <span className="min-w-0 flex-1 truncate">
+        <span className="text-muted-foreground">#{pullRequest.number}</span> {pullRequest.title}
+      </span>
+      <span className="text-muted-foreground shrink-0 text-xs">{state.label}</span>
+    </button>
+  );
+}
+
 /**
  * A session's summary, pinned at the top right of its thread as ChatGPT does: the project,
  * the branch (with what it changed, for a worktree session), the workers and the plan.
@@ -278,6 +340,7 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
   const worktree = setup?.environment.type === "newWorktree";
   const diff = useSessionDiff(conversation.id, worktree);
   const sources = useSources(conversation.id).length > 0;
+  const pullRequest = usePullRequest(conversation.id);
   if (!shown || !setup) return null;
   const checkout =
     setup.environment.type === "newWorktree" ? (setup.environment.path ?? setup.repo) : setup.repo;
@@ -315,6 +378,7 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
           )}
         </div>
       </GitActions>
+      {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
       {(workers.length > 0 || plan || sources) && <div className="border-border border-t" />}
       {workers.length > 0 && (
         <Section title={WORKERS_LABEL}>

@@ -726,6 +726,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetGitState { conversation_id } => Response::GetGitState {
             state: sessions.git_state(&conversation_id).await?,
         },
+        Request::GetPullRequest { conversation_id } => Response::GetPullRequest {
+            pull_request: sessions.pull_request(&conversation_id).await?,
+        },
         Request::CommitChanges {
             conversation_id,
             message,
