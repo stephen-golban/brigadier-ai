@@ -152,14 +152,17 @@ Pushes, publishes, deploys and cloud commands (`policy::ALWAYS_ASK`) ask you at 
 level, for both vendors. Claude asks through its permission rules. For Codex, which runs such
 commands inside its sandbox without asking, and as a second line for Claude, the daemon puts a
 folder of shims (`<data>/gate/bin`: `git`, `gh`, `npm`, `cargo`, `docker`, deploy CLIs, …) first
-on each worker's `PATH`. A local command runs the real binary straight away; an outward one
-waits for your answer on the same approval card. A command Claude already asked about is not
-asked twice.
+on each worker's `PATH`. It holds a shim only for the programs you have on your login `PATH`,
+checked when a worker starts and before each message it is sent, so a program you don't have
+stays missing for workers too (`which` finds nothing, the shell says "command not found"). A
+local command runs the real binary straight away; an outward one waits for your answer on the
+same approval card. A command Claude already asked about is not asked twice.
 
 The gate guards against accidents, not against a hostile agent:
 
 - a program started by absolute path, a script that finds the real binary itself, or code
   calling an API directly is not seen;
+- a program installed while a worker's turn runs is gated from the worker's next message on;
 - git aliases are resolved (`-c alias.*=…` included), but a `!` shell alias, an external
   `git-<name>` program (which git runs ahead of an alias of that name) and anything run from
   git's own exec path (hooks) cannot be inspected, so they ask;
