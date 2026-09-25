@@ -94,6 +94,20 @@ impl Places {
             self.scratch.first()?.join(path)
         })
     }
+
+    /// A path listed under `artifacts`: as [`Places::resolve`], except that a relative path
+    /// missing from the scratch folder may name a file in the outputs folder (`notes.md`).
+    fn resolve_listed(&self, path: &str) -> Option<PathBuf> {
+        let resolved = self.resolve(path)?;
+        let in_outputs = self.outputs.join(path);
+        Some(
+            if Path::new(path).is_relative() && !resolved.exists() && in_outputs.exists() {
+                in_outputs
+            } else {
+                resolved
+            },
+        )
+    }
 }
 
 impl SessionManager {
@@ -290,7 +304,7 @@ fn collect(
     };
 
     for artifact in listed {
-        let Some(path) = places.resolve(&artifact.path) else {
+        let Some(path) = places.resolve_listed(&artifact.path) else {
             problems.push(format!("`{}` is not a path you can use", artifact.path));
             continue;
         };
@@ -391,6 +405,9 @@ fn collect(
         }
     }
 
+    // A path mentioned twice is one problem.
+    let mut listed_once = HashSet::new();
+    problems.retain(|problem| listed_once.insert(problem.clone()));
     if problems.is_empty() {
         Ok(found)
     } else {
