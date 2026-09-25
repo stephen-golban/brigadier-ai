@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
+mod browser;
 mod launcher;
 mod shell;
 mod smoke;
@@ -284,6 +285,14 @@ fn main() {
             }
             Ok(())
         })
+        // A new page in the app's webview knows none of the Browser tabs' pages: drop them.
+        .on_page_load(|webview, payload| {
+            if webview.label() == shell::MAIN_WINDOW
+                && payload.event() == tauri::webview::PageLoadEvent::Started
+            {
+                let _ = webview.app_handle().run_on_main_thread(browser::close_all);
+            }
+        })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event
                 && window.label() == shell::MAIN_WINDOW
@@ -305,7 +314,12 @@ fn main() {
             open_artifact,
             open_folder,
             open_url,
-            reveal_path
+            reveal_path,
+            browser::browser_open,
+            browser::browser_navigate,
+            browser::browser_place,
+            browser::browser_go,
+            browser::browser_close
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {

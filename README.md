@@ -31,6 +31,15 @@ docs/          plan and design notes
 - Node 24+ and pnpm 12.6.0 (`packageManager` in `package.json`)
 - Tauri 2 platform prerequisites: https://v2.tauri.app/start/prerequisites/
 
+## Dependency notes
+
+- `wry` (the desktop shell): the Browser tab's page is a plain wry webview laid over the tab, not
+  a Tauri one. Tauri gives every webview it makes the app's IPC bridge, init scripts and custom
+  protocols (and child webviews need its `unstable` feature); a web page must get none of that.
+  The crate is pinned to the release `tauri-runtime-wry` uses, since two copies of wry would
+  register the same native classes. Linux has no embedded page: its tab opens pages in the
+  system browser.
+
 ## Develop
 
 ```sh

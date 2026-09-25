@@ -12,6 +12,8 @@ export type { ArtifactText } from "./ArtifactText";
 export type { AttachmentRef } from "./AttachmentRef";
 export type { BranchInfo } from "./BranchInfo";
 export type { BridgeEvent } from "./BridgeEvent";
+export type { BrowserBounds } from "./BrowserBounds";
+export type { BrowserEvent } from "./BrowserEvent";
 export type { Budget } from "./Budget";
 export type { BudgetCheck } from "./BudgetCheck";
 export type { BudgetId } from "./BudgetId";
