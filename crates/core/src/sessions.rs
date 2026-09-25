@@ -1403,7 +1403,7 @@ fn preview(text: &str) -> String {
 }
 
 /// `text` with its whitespace collapsed, cut to `chars` characters (with an ellipsis).
-fn one_line(text: &str, chars: usize) -> String {
+pub(crate) fn one_line(text: &str, chars: usize) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() <= chars {
         line

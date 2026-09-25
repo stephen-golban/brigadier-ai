@@ -405,7 +405,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
         thread.hasMore,
         digest ?? EMPTY_DIGEST,
         pending,
-        !session,
+        session ? "edits" : "all",
       ),
     [thread.items, thread.fullText, thread.hasMore, digest, pending, session],
   );
