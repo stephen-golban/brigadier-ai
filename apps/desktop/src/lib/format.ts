@@ -62,3 +62,39 @@ export function formatAgo(epochMs: number, nowMs: number): string {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }
+
+const DAY_MS = 86_400_000;
+const weekdayFormat = new Intl.DateTimeFormat(undefined, { weekday: "long" });
+const monthDayFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+
+/** Midnight of the day `epochMs` falls on. */
+function startOfDay(epochMs: number): number {
+  return new Date(epochMs).setHours(0, 0, 0, 0);
+}
+
+/** Whole days between the calendar days of `epochMs` and `nowMs` (0: the same day). */
+function daysAgo(epochMs: number, nowMs: number): number {
+  return Math.round((startOfDay(nowMs) - startOfDay(epochMs)) / DAY_MS);
+}
+
+/** When a message was sent, as its hover label: "3:09 AM", "Thursday 3:09 AM", "Sep 18 3:09 AM". */
+export function formatSentAt(epochMs: number, nowMs: number): string {
+  const days = daysAgo(epochMs, nowMs);
+  const time = formatTime(epochMs);
+  if (days === 0) return time;
+  if (days < 7) return `${weekdayFormat.format(epochMs)} ${time}`;
+  return `${monthDayFormat.format(epochMs)} ${time}`;
+}
+
+/** The separator above the first message of a day: "Yesterday 3:09 AM". */
+export function formatDaySeparator(epochMs: number, nowMs: number): string {
+  const days = daysAgo(epochMs, nowMs);
+  if (days === 0) return `Today ${formatTime(epochMs)}`;
+  if (days === 1) return `Yesterday ${formatTime(epochMs)}`;
+  return formatSentAt(epochMs, nowMs);
+}
+
+/** Whether two instants fall on the same calendar day. */
+export function sameDay(a: number, b: number): boolean {
+  return daysAgo(a, b) === 0;
+}

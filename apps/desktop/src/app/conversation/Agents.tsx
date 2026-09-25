@@ -24,8 +24,9 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { TASK_STATE_LABELS, TaskActions } from "@/app/conversation/cards/TaskCardView";
-import { useNow, useTaskElapsed, WorkerThread } from "@/app/conversation/WorkerThread";
+import { useTaskElapsed, WorkerThread } from "@/app/conversation/WorkerThread";
 import { Button } from "@/components/ui/button";
+import { useNow } from "@/hooks/use-now";
 import type { Task, WorkerStepKind } from "@/ipc/generated";
 import { formatAgo, formatDuration } from "@/lib/format";
 import { modelName, useModelGroups } from "@/lib/setup";

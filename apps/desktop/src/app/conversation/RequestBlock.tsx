@@ -21,11 +21,10 @@ import {
   StreamingMessageText,
 } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { mono } from "@/components/assistant-ui/elements/surfaces";
-import { Badge } from "@/components/ui/badge";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { useNow } from "@/hooks/use-now";
 import type { ModelChoice } from "@/ipc/generated";
-import { formatDuration, formatTime } from "@/lib/format";
+import { formatDuration, formatSentAt } from "@/lib/format";
 import { modelName, sameModel, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
@@ -260,8 +259,9 @@ export const RequestBlock: FC = () => {
       data-slot="aui_assistant-message-root"
       data-role="assistant"
       data-state={meta.state}
-      className="fade-in animate-in message-contain relative flex flex-col gap-2 px-2 duration-150"
+      className="group/answer fade-in animate-in message-contain relative flex flex-col gap-2 px-2 duration-150"
     >
+      <ModelChanged model={meta.texts[last]?.model ?? null} picked={meta.picked} />
       {header && (
         <WorkHeader meta={meta} open={open} foldable={foldable} onToggle={() => setOpen(!open)} />
       )}
@@ -303,35 +303,39 @@ export const RequestBlock: FC = () => {
       )}
       <MessageError />
       {!live && last >= 0 && (
-        <AnswerActions
-          model={meta.texts[last]?.model ?? null}
-          picked={meta.picked}
-          rework={meta.rework}
-          atMs={meta.endedAtMs}
-        />
+        <AnswerActions rework={meta.rework} atMs={meta.endedAtMs} />
       )}
     </MessagePrimitive.Root>
   );
 };
 
-/**
- * Under the answer: copy it, ask for another answer, move between answers, and which model
- * wrote it (flagged when it was a fallback).
- */
+/** ChatGPT's line when a turn ran on another model than the one picked (a fallback). */
+const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }> = ({
+  model,
+  picked,
+}) => {
+  const groups = useModelGroups();
+  if (!model || !picked || sameModel(picked, model)) return null;
+  return (
+    <p className="text-muted-foreground text-sm">
+      Model changed from {modelName(groups, picked)} to {modelName(groups, model)}.
+    </p>
+  );
+};
+
+/** Under the answer, always shown: copy it, ask for another answer, move between answers; when
+ * it came shows on hover. */
 const AnswerActions: FC<{
-  model: ModelChoice | null;
-  picked: ModelChoice | null;
   rework: boolean;
   atMs: number | null;
-}> = ({ model, picked, rework, atMs }) => {
+}> = ({ rework, atMs }) => {
   const answer = useAuiState((s) => {
     const parts = s.message.parts;
     const part = parts[parts.length - 1];
     return part?.type === "text" ? part.text : "";
   });
   const { isCopied, copyToClipboard } = useCopyToClipboard();
-  const groups = useModelGroups();
-  const fellBack = model !== null && picked !== null && !sameModel(picked, model);
+  const now = useNow(60_000);
   return (
     <ActionBarPrimitive.Root
       autohide="never"
@@ -352,18 +356,11 @@ const AnswerActions: FC<{
         </ActionBarPrimitive.Reload>
       )}
       <BranchPicker />
-      {model && (
-        <span className={cn(mono, "flex items-center gap-1.5 ps-1")}>
-          {modelName(groups, model)}
-          {model.effort && ` · ${model.effort}`}
-          {fellBack && (
-            <Badge variant="warning" title={`You picked ${modelName(groups, picked)}`}>
-              fallback
-            </Badge>
-          )}
+      {atMs !== null && (
+        <span className="ps-1 text-xs tabular-nums opacity-0 transition-opacity group-hover/answer:opacity-100 group-focus-within/answer:opacity-100">
+          {formatSentAt(atMs, now)}
         </span>
       )}
-      {atMs !== null && <span className="ps-1 text-xs tabular-nums">{formatTime(atMs)}</span>}
     </ActionBarPrimitive.Root>
   );
 };

@@ -38,8 +38,9 @@ import { DECIDERS, ErrorCard } from "@/components/transcript/TranscriptRow";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { useNow } from "@/hooks/use-now";
 import type { RawEntry, Task } from "@/ipc/generated";
-import { formatDuration, formatTime } from "@/lib/format";
+import { formatDuration, formatSentAt } from "@/lib/format";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { loadEarlierWorkerEntries, openWorkerTranscript } from "@/state/actions";
@@ -55,17 +56,6 @@ import { useBoard } from "@/state/board";
 const NO_ENTRIES: RawEntry[] = [];
 
 const FINAL: ReadonlySet<Task["state"]> = new Set(["landed", "done", "rejected", "stopped", "failed"]);
-
-/** The time now, read again every `everyMs` (never when null). */
-export function useNow(everyMs: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (everyMs === null) return;
-    const timer = window.setInterval(() => setNow(Date.now()), everyMs);
-    return () => window.clearInterval(timer);
-  }, [everyMs]);
-  return now;
-}
 
 /** Milliseconds a task has worked: until now while it is active, until its last update after. */
 export function useTaskElapsed(task: Task): number {
@@ -259,13 +249,14 @@ function header(task: Task, elapsed: number): string {
   }
 }
 
-/** The report as the thread's answer, with copy and when it came. */
+/** The report as the thread's answer, with copy; when it came shows on hover. */
 function Answer({ task }: { task: Task }) {
   const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const now = useNow(60_000);
   const summary = task.report?.summary;
   if (!summary) return null;
   return (
-    <>
+    <div className="group/answer flex flex-col gap-2">
       <div className="text-foreground leading-relaxed wrap-break-word">
         <MarkdownBlock text={summary} />
       </div>
@@ -276,9 +267,11 @@ function Answer({ task }: { task: Task }) {
         >
           {isCopied ? <Check /> : <Copy />}
         </TooltipIconButton>
-        <span className="ps-1 text-xs tabular-nums">{formatTime(task.updatedAtMs)}</span>
+        <span className="ps-1 text-xs tabular-nums opacity-0 transition-opacity group-hover/answer:opacity-100">
+          {formatSentAt(task.updatedAtMs, now)}
+        </span>
       </div>
-    </>
+    </div>
   );
 }
 
