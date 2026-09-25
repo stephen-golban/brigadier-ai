@@ -111,9 +111,24 @@ type Placed =
   | { kind: "card"; position: number; requestId: string | null; card: BlockCard }
   | { kind: "task"; position: number; requestId: string | null; id: string };
 
+function createdAt(board: BoardDigest, item: Exclude<Placed, { kind: "message" }>): number {
+  if (item.kind === "task") return board.tasks[item.id]?.createdAtMs ?? 0;
+  const { type, id } = item.card;
+  const card =
+    type === "task"
+      ? board.tasks[id]
+      : type === "approval"
+        ? board.approvals[id]
+        : type === "question"
+          ? board.questions[id]
+          : board.plans[id];
+  return card?.createdAtMs ?? 0;
+}
+
 /**
- * Groups the loaded messages, the board's cards and the pending sends into blocks, oldest
- * first. Items of a request whose user message is on an older, unloaded page wait for it.
+ * Groups the messages of a branch, the board's cards and the pending sends into blocks, oldest
+ * first. Items of a request whose user message is on an older, unloaded page wait for it;
+ * items of a request on another branch are not shown.
  */
 export function buildBlocks(
   messages: readonly Message[],
@@ -165,6 +180,13 @@ export function buildBlocks(
     });
   }
   placed.sort((a, b) => a.position - b.position);
+  // Work from before a request was answered again belongs to its earlier attempt.
+  const current = placed.filter(
+    (item) =>
+      item.kind === "message" ||
+      item.requestId === null ||
+      createdAt(board, item) >= (board.requests[item.requestId]?.startedAtMs ?? 0),
+  );
 
   const oldest = messages[0]?.seq ?? Number.POSITIVE_INFINITY;
   const blocks = new Map<string, Block>();
@@ -191,21 +213,22 @@ export function buildBlocks(
   };
 
   // Items from before requests existed belong to the user message before them.
-  let current: string | null = null;
-  for (const item of placed) {
+  let latest: string | null = null;
+  for (const item of current) {
     // Anything older than the loaded page waits until that page loads.
     if (hasMore && item.position < oldest) continue;
     if (item.kind === "message") {
       const { message } = item;
       if (message.role === "user") {
         const key = message.requestId ?? message.id;
-        current = key;
+        latest = key;
         open(key, message.createdAtMs).user = { kind: "message", message, text: item.text };
         continue;
       }
       if (message.role === "system") continue;
-      const key = message.requestId ?? current ?? `orphan:${message.id}`;
-      if (hasMore && message.requestId && !blocks.has(key)) continue;
+      const key = message.requestId ?? latest ?? `orphan:${message.id}`;
+      // A request whose message is on an older page, or on a branch not shown.
+      if (message.requestId && !blocks.has(key)) continue;
       open(key, message.createdAtMs).texts.push({
         messageId: message.id,
         position: item.position,
@@ -214,9 +237,9 @@ export function buildBlocks(
       });
       continue;
     }
-    const key = item.requestId ?? current;
+    const key = item.requestId ?? latest;
     if (key === null) continue;
-    if (hasMore && item.requestId && !blocks.has(key)) continue;
+    if (item.requestId && !blocks.has(key)) continue;
     const block = open(key, 0);
     if (item.kind === "task") block.tasks.push(item.id);
     else block.cards.push(item.card);
@@ -225,7 +248,7 @@ export function buildBlocks(
   // What streams belongs to the turn's request.
   const streaming = board.streaming;
   if (streaming && !messages.some((message) => message.id === streaming.messageId)) {
-    const key = streaming.requestId ?? current;
+    const key = streaming.requestId ?? latest;
     const block = key !== null ? blocks.get(key) : undefined;
     block?.texts.push({
       messageId: streaming.messageId,
@@ -261,4 +284,171 @@ export function isLive(state: BlockState): boolean {
 /** Whether a task still runs (for chips). */
 export function isWorking(task: Task): boolean {
   return WORKING.has(task.state);
+}
+
+/** Whether a block has anything to show: a finished block with nothing in it hides. */
+export function blockShows(block: Block): boolean {
+  return (
+    block.texts.length > 0 || block.cards.length > 0 || block.tasks.length > 0 || block.state !== "done"
+  );
+}
+
+/**
+ * A message of the thread as assistant-ui sees it: a user message or a request's block, under
+ * its parent. Siblings (an edit beside the message it replaced, another answer beside the one
+ * it replaced) share a parent.
+ */
+export type ThreadNode = {
+  id: string;
+  parentId: string | null;
+  kind: "user" | "block";
+  block: Block;
+  /** The stored message the branch would end at if this node were the last one shown. */
+  head: string | null;
+};
+
+export type ThreadTree = {
+  nodes: ThreadNode[];
+  /** The last node of the branch shown. */
+  headId: string | null;
+};
+
+/**
+ * The parent of `messages[at]` on its branch: its own, or (for messages from before branches
+ * existed) the message before it. `null` at the start of the conversation; `undefined` when
+ * the message before it is on an older page.
+ */
+function parentOf(messages: readonly Message[], at: number, hasMore: boolean): string | null | undefined {
+  const { parentId } = messages[at] as Message;
+  if (parentId !== null) return parentId === "" ? null : parentId;
+  if (at > 0) return (messages[at - 1] as Message).id;
+  return hasMore ? undefined : null;
+}
+
+/**
+ * The thread as assistant-ui's message tree. The branch that ends at `head` becomes blocks
+ * with everything its requests did; with `branches` (a Chat), each message the user or the
+ * model replaced on that branch comes along with its own continuation, so the branch picker
+ * can move between them.
+ */
+export function buildThread(
+  messages: readonly Message[],
+  fullText: Readonly<Record<string, string>>,
+  hasMore: boolean,
+  board: BoardDigest & { head: string | null },
+  pending: readonly PendingMessage[],
+  branches: boolean,
+): ThreadTree {
+  const index = new Map(messages.map((message, at) => [message.id, at]));
+  const children = new Map<string | null, Message[]>();
+  messages.forEach((message, at) => {
+    const parent = parentOf(messages, at, hasMore);
+    if (parent === undefined) return;
+    const siblings = children.get(parent);
+    if (siblings) siblings.push(message);
+    else children.set(parent, [message]);
+  });
+
+  // The branch shown, back from its last message as far as the loaded pages go.
+  const path: Message[] = [];
+  let at = index.get(board.head ?? "") ?? (messages.length > 0 ? messages.length - 1 : undefined);
+  while (at !== undefined) {
+    path.push(messages[at] as Message);
+    const parent = parentOf(messages, at, hasMore);
+    const next = parent == null ? undefined : index.get(parent);
+    at = next !== undefined && next < at ? next : undefined;
+  }
+  path.reverse();
+
+  // Each node sorts by its oldest message, so siblings number oldest first ("1/2" is the
+  // original) and every parent comes before its children.
+  const nodes: { node: ThreadNode; order: number }[] = [];
+  const nodeOf = new Map<string, { id: string; order: number }>();
+  // A block keeps its id whichever branch is shown: a request's first answer is
+  // `request:R`, a later one (answered again) is named after its first reply.
+  const blockId = (block: Block, first: string | undefined): string => {
+    const oldest = children.get(block.key)?.find((child) => child.role === "assistant")?.id;
+    if (first === undefined) return oldest === undefined ? `request:${block.key}` : `request:${block.key}:next`;
+    return oldest === undefined || first === oldest ? `request:${block.key}` : `request:${block.key}:${first}`;
+  };
+  const place = (
+    blocks: readonly Block[],
+    parent: { id: string; order: number } | null,
+  ): { id: string; order: number } | null => {
+    for (const block of blocks) {
+      if (block.user) {
+        const message = block.user.kind === "message" ? block.user.message : null;
+        const id = message?.id ?? (block.user.kind === "pending" ? block.user.pending.localId : block.key);
+        const order = message?.seq ?? Number.POSITIVE_INFINITY;
+        nodes.push({ node: { id, parentId: parent?.id ?? null, kind: "user", block, head: message?.id ?? null }, order });
+        if (message) nodeOf.set(message.id, { id, order });
+        parent = { id, order };
+      }
+      if (!blockShows(block)) continue;
+      const stored = block.texts.filter((text) => index.has(text.messageId));
+      const id = blockId(block, stored[0]?.messageId);
+      const order = stored[0]?.position ?? (parent ? parent.order + 0.5 : 0);
+      nodes.push({
+        node: {
+          id,
+          parentId: parent?.id ?? null,
+          kind: "block",
+          block,
+          head: stored.at(-1)?.messageId ?? (block.user?.kind === "message" ? block.user.message.id : null),
+        },
+        order,
+      });
+      for (const text of stored) nodeOf.set(text.messageId, { id, order });
+      parent = { id, order };
+    }
+    return parent;
+  };
+  const headId = place(buildBlocks(path, fullText, hasMore, board, pending), null)?.id ?? null;
+
+  if (branches) {
+    const quiet: BoardDigest = { ...EMPTY_WORK, requests: board.requests };
+    for (const message of path) {
+      const parent = parentOf(messages, index.get(message.id) as number, hasMore);
+      if (parent === undefined) continue;
+      const parentNode = parent === null ? null : nodeOf.get(parent);
+      if (parentNode === undefined) continue;
+      const siblings = (children.get(parent) ?? []).filter(
+        (other) => other.id !== message.id && other.role === message.role,
+      );
+      for (const sibling of siblings) {
+        // The replaced message and its newest continuation.
+        const chain = [sibling];
+        for (let kids = children.get(sibling.id); kids?.length; kids = children.get(chain.at(-1)?.id ?? "")) {
+          chain.push(kids.at(-1) as Message);
+        }
+        // Another answer groups under its user message, which the branch shown already has.
+        const user = sibling.role === "assistant" && parent !== null ? messages[index.get(parent) as number] : undefined;
+        const blocks = buildBlocks(user ? [user, ...chain] : chain, fullText, false, quiet, []).map((block) =>
+          settled(user && block.user?.kind === "message" && block.user.message.id === user.id ? { ...block, user: null } : block, chain),
+        );
+        place(blocks, parentNode);
+      }
+    }
+  }
+  return { nodes: nodes.toSorted((a, b) => a.order - b.order).map(({ node }) => node), headId };
+}
+
+const EMPTY_WORK: BoardDigest = {
+  tasks: {},
+  approvals: {},
+  questions: {},
+  plans: {},
+  requests: {},
+  runRequest: null,
+  streaming: null,
+};
+
+/** A block on a branch the thread does not show: finished, timed by its own replies. */
+function settled(block: Block, chain: readonly Message[]): Block {
+  const times = chain
+    .filter((message) => block.texts.some((text) => text.messageId === message.id))
+    .map((message) => message.createdAtMs);
+  const user = block.user?.kind === "message" ? block.user.message.createdAtMs : undefined;
+  const start = user ?? times[0] ?? block.startedAtMs;
+  return { ...block, state: "done", error: null, startedAtMs: start, endedAtMs: times.at(-1) ?? start };
 }

@@ -51,6 +51,8 @@ export type Board = {
   runError: string | null;
   /** The request the running turn serves. */
   runRequest: string | null;
+  /** The last message of the branch the thread shows. */
+  head: string | null;
   streaming: StreamingMessage | null;
   notices: Notice[];
   /** What each worker is doing right now, in a few words (from its live events). */
@@ -89,6 +91,7 @@ export function emptyBoard(conversationId: string): Board {
     run: "idle",
     runError: null,
     runRequest: null,
+    head: null,
     streaming: null,
     notices: [],
     activity: {},
@@ -112,6 +115,8 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "queueChanged",
   "runStateChanged",
   "requestUpdated",
+  "messageAppended",
+  "branchSwitched",
 ]);
 
 /** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
@@ -152,6 +157,7 @@ export function boardFromView(
     run: view.run,
     runError: keep?.runError ?? null,
     runRequest: view.runRequest,
+    head: view.head,
     streaming: view.streaming,
     notices: view.notices.slice(-NOTICES),
     activity: keep?.activity ?? {},
@@ -230,10 +236,15 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
   const { event, streamSeq, atMs } = envelope;
   switch (event.type) {
     case "messageAppended":
-      // The final message replaces the text that streamed for it.
-      return board.streaming?.messageId === event.message.id
-        ? { ...board, streaming: null }
-        : board;
+      // A new message continues the branch shown; the final message replaces the text that
+      // streamed for it.
+      return {
+        ...board,
+        head: event.message.id,
+        streaming: board.streaming?.messageId === event.message.id ? null : board.streaming,
+      };
+    case "branchSwitched":
+      return { ...board, head: event.head };
     case "messageDelta": {
       const current = board.streaming;
       const streaming =

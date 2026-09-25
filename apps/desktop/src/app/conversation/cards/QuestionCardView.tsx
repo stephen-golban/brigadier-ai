@@ -25,7 +25,8 @@ export const QuestionCardView = memo(function QuestionCardView({ cardId }: { car
   const [typed, setTyped] = useState("");
   if (!question) return null;
 
-  const pending = question.answer === null;
+  // Closed without an answer when the user edited or redid the request that asked.
+  const pending = question.answer === null && question.answeredAtMs === null;
   const uncommitted = question.kind.type === "uncommittedChanges" ? question.kind.files : null;
   const answer = (text: string) =>
     action.run(() => answerQuestion(question.conversationId, question.id, text));
@@ -44,10 +45,14 @@ export const QuestionCardView = memo(function QuestionCardView({ cardId }: { car
       }
       pending={pending}
       resolution={
-        <>
-          <Check className="text-success size-icon-sm" />
-          You answered: {question.answer}
-        </>
+        question.answer === null ? (
+          "Withdrawn: you changed the request that asked"
+        ) : (
+          <>
+            <Check className="text-success size-icon-sm" />
+            You answered: {question.answer}
+          </>
+        )
       }
       actions={
         <div className="flex w-full flex-col gap-2">

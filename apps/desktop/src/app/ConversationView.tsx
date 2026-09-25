@@ -1,8 +1,11 @@
 import {
   type AppendMessage,
   AssistantRuntimeProvider,
+  type ExternalStoreBranchChange,
+  ExportedMessageRepository,
   type ExternalThreadQueueAdapter,
   type QueueItemState,
+  type ThreadMessage,
   type ThreadMessageLike,
   useAuiState,
   useExternalStoreRuntime,
@@ -21,7 +24,12 @@ import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanel, AgentsPanelContext, type AgentsPanelState } from "@/app/conversation/Agents";
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
-import { type Block, type BoardDigest, buildBlocks } from "@/app/conversation/blocks";
+import {
+  type Block,
+  type BoardDigest,
+  buildThread,
+  type ThreadNode,
+} from "@/app/conversation/blocks";
 import {
   type ComposerTarget,
   ComposerTargetContext,
@@ -43,16 +51,20 @@ import type {
   Conversation,
   ModelChoice,
   Notice,
+  UserRequest,
 } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
+  editMessage,
   interrupt,
   loadEarlier,
   loadFullText,
+  regenerate,
   restore,
   send,
+  switchBranch,
 } from "@/state/actions";
-import { useBoard } from "@/state/board";
+import { type Board, useBoard } from "@/state/board";
 import {
   emptyThread,
   type PendingMessage,
@@ -60,14 +72,17 @@ import {
   useApp,
 } from "@/state/store";
 
-type Item =
-  | { kind: "user"; block: Block }
-  | { kind: "block"; block: Block; meta: BlockMeta; texts: string[] };
+type Item = { id: string; parentId: string | null } & (
+  | { kind: "user"; block: Block; rework: boolean }
+  | { kind: "block"; block: Block; meta: BlockMeta; texts: string[] }
+);
 
 /** Extra message data the footers read back from assistant-ui's message state. */
 type Custom = {
   attachments?: AttachmentRef[];
   block?: BlockMeta;
+  /** The message can be edited now (see `canRework`). */
+  rework?: boolean;
 };
 
 /** An attachment-only message has no text part, so no empty bubble shows above its files. */
@@ -100,20 +115,22 @@ function convertMessage(item: Item): ThreadMessageLike {
         role: "user",
         content: textContent(user.pending.text),
         createdAt: new Date(user.pending.createdAtMs),
-        metadata: { custom: { attachments: user.pending.attachments } satisfies Custom },
+        metadata: { custom: { attachments: user.pending.attachments, rework: false } satisfies Custom },
       };
     }
     const message = user?.message;
     return {
-      id: message?.id ?? block.key,
+      id: item.id,
       role: "user",
       content: textContent(user?.text ?? ""),
       createdAt: new Date(message?.createdAtMs ?? block.startedAtMs),
-      metadata: { custom: { attachments: message?.attachments ?? [] } satisfies Custom },
+      metadata: {
+        custom: { attachments: message?.attachments ?? [], rework: item.rework } satisfies Custom,
+      },
     };
   }
   return {
-    id: `request:${block.key}`,
+    id: item.id,
     role: "assistant",
     content: item.texts.map((text) => ({ type: "text" as const, text })),
     createdAt: new Date(block.startedAtMs),
@@ -131,8 +148,9 @@ function convertMessage(item: Item): ThreadMessageLike {
 }
 
 /** A block's shape without its text, to reuse the previous item while only text is unchanged. */
-function signature(block: Block, picked: ModelChoice | null, session: boolean): string {
+function signature(block: Block, picked: ModelChoice | null, session: boolean, rework: boolean): string {
   return JSON.stringify([
+    rework,
     block.state,
     block.error,
     block.startedAtMs,
@@ -146,31 +164,50 @@ function signature(block: Block, picked: ModelChoice | null, session: boolean): 
 }
 
 /**
- * The thread's messages: per request, the user's message and one assistant block. Items whose
- * block did not change keep their identity, so assistant-ui converts and renders only the
- * block that streams or changed.
+ * The thread's messages: per request, the user's message and one assistant block, each under
+ * its parent. Items whose block did not change keep their identity, so assistant-ui converts
+ * and renders only the block that streams or changed.
  */
 function useItems(
-  blocks: readonly Block[],
+  nodes: readonly ThreadNode[],
   picked: ModelChoice | null,
   session: boolean,
+  canRework: (requestId: string) => boolean,
 ): Item[] {
-  const [cache] = useState(() => new Map<string, { user: Item; block: Item; sig: string; texts: string[] }>());
+  const [cache] = useState(() => new Map<string, { item: Item; sig: string; texts: string[] }>());
   return useMemo(() => {
     const items: Item[] = [];
     const seen = new Set<string>();
-    for (const block of blocks) {
-      seen.add(block.key);
-      const sig = signature(block, picked, session);
+    for (const node of nodes) {
+      seen.add(node.id);
+      const { block } = node;
+      const entry = cache.get(node.id);
+      const rework = block.user?.kind === "message" && canRework(block.key);
+      if (node.kind === "user") {
+        if (
+          entry?.item.kind !== "user" ||
+          entry.item.block.user !== block.user ||
+          entry.item.parentId !== node.parentId ||
+          entry.item.rework !== rework
+        ) {
+          cache.set(node.id, {
+            item: { id: node.id, parentId: node.parentId, kind: "user", block, rework },
+            sig: "",
+            texts: [],
+          });
+        }
+        items.push((cache.get(node.id) as { item: Item }).item);
+        continue;
+      }
+      const sig = signature(block, picked, session, rework);
       const texts = block.texts.map((text) => text.text);
-      let entry = cache.get(block.key);
-      const userChanged = entry === undefined || entry.user.block.user !== block.user;
-      const blockChanged =
+      const changed =
         entry === undefined ||
+        entry.item.parentId !== node.parentId ||
         entry.sig !== sig ||
         entry.texts.length !== texts.length ||
         entry.texts.some((text, index) => text !== texts[index]);
-      if (!entry || userChanged || blockChanged) {
+      if (changed) {
         const meta: BlockMeta = {
           texts: block.texts.map((text) => ({ position: text.position, model: text.model })),
           cards: block.cards,
@@ -180,23 +217,34 @@ function useItems(
           endedAtMs: block.endedAtMs,
           picked,
           session,
+          rework,
         };
-        entry = {
-          user: userChanged || !entry ? { kind: "user", block } : entry.user,
-          block: blockChanged || !entry ? { kind: "block", block, meta, texts } : entry.block,
+        cache.set(node.id, {
+          item: { id: node.id, parentId: node.parentId, kind: "block", block, meta, texts },
           sig,
           texts,
-        };
-        cache.set(block.key, entry);
+        });
       }
-      if (block.user) items.push(entry.user);
-      const shows =
-        block.texts.length > 0 || block.cards.length > 0 || block.tasks.length > 0 || block.state !== "done";
-      if (shows) items.push(entry.block);
+      items.push((cache.get(node.id) as { item: Item }).item);
     }
     for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
     return items;
-  }, [blocks, picked, session, cache]);
+  }, [nodes, picked, session, canRework, cache]);
+}
+
+/** assistant-ui's form of each item, converted once per item. */
+const converted = new WeakMap<Item, ThreadMessage>();
+
+function toThreadMessage(item: Item): ThreadMessage {
+  let message = converted.get(item);
+  if (!message) {
+    const [entry] = ExportedMessageRepository.fromBranchableArray([
+      { message: convertMessage(item), parentId: item.parentId },
+    ]).messages;
+    message = (entry as { message: ThreadMessage }).message;
+    converted.set(item, message);
+  }
+  return message;
 }
 
 function textOf(message: AppendMessage): string {
@@ -208,7 +256,7 @@ function textOf(message: AppendMessage): string {
 
 const NO_PENDING: PendingMessage[] = [];
 
-const EMPTY_DIGEST: BoardDigest = {
+const EMPTY_DIGEST: BoardDigest & { head: string | null } = {
   tasks: {},
   approvals: {},
   questions: {},
@@ -216,7 +264,36 @@ const EMPTY_DIGEST: BoardDigest = {
   requests: {},
   runRequest: null,
   streaming: null,
+  head: null,
 };
+
+/**
+ * The session request the user may still edit or have answered again: the latest, until
+ * anything it started has landed (or is landing with their approval).
+ */
+function reworkableRequest(board: Board): string | null {
+  let latest: UserRequest | null = null;
+  for (const request of Object.values(board.requests)) {
+    if (
+      !latest ||
+      request.startedAtMs > latest.startedAtMs ||
+      (request.startedAtMs === latest.startedAtMs && request.id > latest.id)
+    ) {
+      latest = request;
+    }
+  }
+  if (!latest) return null;
+  const id = latest.id;
+  const landed =
+    Object.values(board.tasks).some((task) => task.requestId === id && task.state === "landed") ||
+    Object.values(board.approvals).some(
+      (approval) =>
+        approval.requestId === id &&
+        approval.state.type === "allowed" &&
+        (approval.subject.type === "landing" || approval.subject.type === "finishSession"),
+    );
+  return landed ? null : id;
+}
 
 /** The open conversation's workers, for @-mentions. */
 function useMentionTargets(conversationId: string | null): MentionTarget[] {
@@ -259,7 +336,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
     ),
   );
   const digest = useBoard(
-    useShallow((s): BoardDigest | null =>
+    useShallow((s): (BoardDigest & { head: string | null }) | null =>
       s.board?.conversationId === conversationId
         ? {
             tasks: s.board.tasks,
@@ -269,6 +346,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
             requests: s.board.requests,
             runRequest: s.board.runRequest,
             streaming: s.board.streaming,
+            head: s.board.head,
           }
         : null,
     ),
@@ -295,22 +373,43 @@ export function ConversationView({ selection }: { selection: Selection }) {
     }
   }, [conversationId, thread.items, thread.fullText]);
 
-  const blocks = useMemo(
+  const session = conversation?.kind === "session" || resolved.kind === "session";
+  const tree = useMemo(
     () =>
-      buildBlocks(
+      buildThread(
         thread.items,
         thread.fullText,
         thread.hasMore,
         digest ?? EMPTY_DIGEST,
         pending,
+        !session,
       ),
-    [thread.items, thread.fullText, thread.hasMore, digest, pending],
+    [thread.items, thread.fullText, thread.hasMore, digest, pending, session],
   );
   const setup = conversation?.setup;
   const picked =
     setup?.type === "chat" ? setup.model : setup?.type === "session" ? setup.orchestrator : null;
-  const session = conversation?.kind === "session" || resolved.kind === "session";
-  const items = useItems(blocks, picked, session);
+  const running = run === "running" || run === "starting";
+  const reworkable = useBoard((s) =>
+    s.board?.conversationId === conversationId && s.board ? reworkableRequest(s.board) : null,
+  );
+  const canRework = useCallback(
+    (requestId: string) => (session ? requestId === reworkable : !running),
+    [session, reworkable, running],
+  );
+  const items = useItems(tree.nodes, picked, session, canRework);
+  const repository = useMemo<ExportedMessageRepository>(
+    () => ({
+      headId: tree.headId,
+      messages: items.map((item) => ({ message: toThreadMessage(item), parentId: item.parentId })),
+    }),
+    [items, tree.headId],
+  );
+  // What each item's branch ends at, for the branch picker.
+  const heads = useMemo(
+    () => new Map(tree.nodes.map((node) => [node.id, node.head])),
+    [tree.nodes],
+  );
   const [panel, setPanel] = useState<AgentsPanelState>(undefined);
   const agents = useMemo(() => ({ panel, setPanel }), [panel]);
 
@@ -351,11 +450,29 @@ export function ConversationView({ selection }: { selection: Selection }) {
     };
   }, [queueItems, submit]);
 
-  const running = run === "running" || run === "starting";
   const archived = conversation?.lifecycle === "archived";
-  const runtime = useExternalStoreRuntime<Item>({
-    messages: items,
-    convertMessage,
+  const fail = useCallback((cause: unknown) => {
+    setError(cause instanceof Error ? cause.message : String(cause));
+  }, []);
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messageRepository: repository,
+    // The daemon owns the messages; this only lets the branch picker switch (see below).
+    setMessages: () => {},
+    unstable_onBranchChange: ({ headId }: ExternalStoreBranchChange) => {
+      const head = headId ? heads.get(headId) : null;
+      if (conversationId && head) void switchBranch(conversationId, head).catch(fail);
+    },
+    onEdit: async (message) => {
+      const text = textOf(message);
+      if (!conversationId || !message.sourceId || !text) return;
+      setError(null);
+      await editMessage(conversationId, message.sourceId, text).catch(fail);
+    },
+    onReload: async (parentId) => {
+      if (!conversationId || !parentId) return;
+      setError(null);
+      await regenerate(conversationId, parentId).catch(fail);
+    },
     isLoading: thread.loading && thread.items.length === 0,
     isRunning: running,
     isDisabled: archived,

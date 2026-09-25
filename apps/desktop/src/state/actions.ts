@@ -416,6 +416,25 @@ export async function interrupt(conversationId: string): Promise<void> {
   await request({ method: "interrupt", conversationId });
 }
 
+/** Replaces a sent message: the edit starts a branch beside it and gets its own answer. */
+export async function editMessage(
+  conversationId: string,
+  messageId: string,
+  text: string,
+): Promise<void> {
+  await request({ method: "editMessage", conversationId, messageId, text });
+}
+
+/** Answers a request again, from its user message. */
+export async function regenerate(conversationId: string, requestId: string): Promise<void> {
+  await request({ method: "regenerate", conversationId, requestId });
+}
+
+/** Shows the branch of a Chat that ends at `head`. */
+export async function switchBranch(conversationId: string, head: string): Promise<void> {
+  await request({ method: "switchBranch", conversationId, head });
+}
+
 export async function setQueueEnabled(queueEnabled: boolean): Promise<void> {
   await updateSettings({ ...useApp.getState().settings, queueEnabled });
 }

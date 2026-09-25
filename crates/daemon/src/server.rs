@@ -540,6 +540,30 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             sessions.interrupt(conversation_id).await?;
             Response::Interrupt
         }
+        Request::EditMessage {
+            conversation_id,
+            message_id,
+            text,
+        } => {
+            sessions
+                .edit_message(conversation_id, message_id, text)
+                .await?;
+            Response::EditMessage
+        }
+        Request::Regenerate {
+            conversation_id,
+            request_id,
+        } => {
+            sessions.regenerate(conversation_id, request_id).await?;
+            Response::Regenerate
+        }
+        Request::SwitchBranch {
+            conversation_id,
+            head,
+        } => {
+            sessions.switch_branch(conversation_id, head).await?;
+            Response::SwitchBranch
+        }
         Request::AnswerCard {
             conversation_id,
             card_id,

@@ -27,7 +27,12 @@ requests: Array<UserRequest>, queue: MessageQueue, run: RunState,
 /**
  * The request the running turn serves.
  */
-runRequest: string | null, streaming: StreamingMessage | null, 
+runRequest: string | null, 
+/**
+ * The last message of the branch the thread shows (the newest message until the user
+ * edits, regenerates or switches branches).
+ */
+head: string | null, streaming: StreamingMessage | null, 
 /**
  * The latest notices (environment problems, fallbacks), newest last.
  */

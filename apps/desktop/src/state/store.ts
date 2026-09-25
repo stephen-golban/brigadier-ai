@@ -406,6 +406,7 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "messageDelta":
     case "runStateChanged":
     case "requestUpdated":
+    case "branchSwitched":
     case "conversationNotice":
     case "taskUpdated":
     case "approvalUpdated":

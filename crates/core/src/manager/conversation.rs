@@ -51,7 +51,7 @@ const DELTA_WINDOW: Duration = Duration::from_millis(30);
 /// How long a blocking MCP call may take for the orchestrator (its tools return at once).
 const ORCHESTRATOR_TOOL_TIMEOUT_SECS: u64 = 120;
 /// Messages carried verbatim when a conversation's CLI session is started over.
-const RESEED_MESSAGES: u32 = 40;
+const RESEED_MESSAGES: usize = 40;
 /// Bytes of transcript carried when a conversation's CLI session is started over.
 const RESEED_BYTES: usize = 48_000;
 /// A Chat's text attachments up to this size go into the message itself.
@@ -106,6 +106,12 @@ struct ConvState {
     outcomes: HashMap<String, RequestState>,
     /// The last error the running turn reported.
     turn_error: Option<String>,
+    /// Brigadier's notes for the next turn that carries user messages (an edit, a redo).
+    notes: Vec<String>,
+    /// No new turn starts while the user's edit or redo takes the thread apart.
+    held: bool,
+    /// Tasks stopped by an edit or redo: what they still send is dropped.
+    withdrawn: HashSet<TaskId>,
     /// The user messages the running turn carries (resent after a Chat fallback).
     in_turn: Vec<Message>,
     /// The next CLI session starts fresh and must be given the transcript so far.
@@ -166,6 +172,62 @@ impl ConvLive {
     /// The next CLI session must start from the transcript (its files are gone).
     pub async fn mark_reseed(&self) {
         self.state.lock().await.reseed = true;
+    }
+
+    /// Whether a turn is starting or running.
+    pub(super) async fn turn_running(&self) -> bool {
+        self.state.lock().await.busy
+    }
+
+    /// Stops the running turn, if any; what it carried stays in the transcript.
+    pub(super) async fn interrupt_turn(&self) {
+        let cli = {
+            let state = self.state.lock().await;
+            state.busy.then(|| state.cli.clone()).flatten()
+        };
+        if let Some(cli) = cli
+            && let Err(err) = cli.session.interrupt().await
+        {
+            tracing::warn!(conversation = %self.id, error = %err, "could not stop the turn");
+        }
+    }
+
+    /// Holds new turns until [`Self::carry`].
+    pub(super) async fn hold(&self) {
+        self.state.lock().await.held = true;
+    }
+
+    /// Holds new turns and drops what waits for `request`, and anything `tasks` still send:
+    /// the user edits or redoes it.
+    pub(super) async fn withdraw(&self, request: &str, tasks: impl IntoIterator<Item = TaskId>) {
+        let mut state = self.state.lock().await;
+        state.held = true;
+        state.inbox.retain(|(_, of)| of.as_deref() != Some(request));
+        state
+            .pending
+            .retain(|message| message.request_id.as_deref() != Some(request));
+        state.withdrawn.extend(tasks);
+    }
+
+    /// Waits until no turn runs (a stopped turn has stored what it said), for at most `limit`.
+    pub(super) async fn wait_idle(&self, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        while self.turn_running().await {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        true
+    }
+
+    /// Queues a user message (already in the transcript) for the next turn, with a note, and
+    /// lets turns start again.
+    pub(super) async fn carry(&self, message: Option<Message>, note: Option<String>) {
+        let mut state = self.state.lock().await;
+        state.pending.extend(message);
+        state.notes.extend(note);
+        state.held = false;
     }
 
     /// The request the running turn serves.
@@ -381,7 +443,17 @@ impl SessionManager {
         ) {
             return;
         }
-        conv.state.lock().await.inbox.push((envelope, request));
+        {
+            let mut state = conv.state.lock().await;
+            if envelope
+                .task_id
+                .as_ref()
+                .is_some_and(|task| state.withdrawn.contains(task))
+            {
+                return;
+            }
+            state.inbox.push((envelope, request));
+        }
         // The request works again until the orchestrator has read it.
         self.settle_requests(id).await;
         self.kick(&conv);
@@ -395,12 +467,17 @@ impl SessionManager {
     }
 
     async fn next_turn(self: Arc<Self>, conv: Arc<ConvLive>) {
-        let (users, envelopes, request) = {
+        let (users, envelopes, request, user_notes) = {
             let mut state = conv.state.lock().await;
-            if state.busy || state.closing || self.admit().is_err() {
+            if state.busy || state.closing || state.held || self.admit().is_err() {
                 return;
             }
             let mut users = std::mem::take(&mut state.pending);
+            let notes = if users.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut state.notes)
+            };
             let envelopes = if users.is_empty() {
                 take_one_request(&mut state.inbox)
             } else {
@@ -447,7 +524,7 @@ impl SessionManager {
                 state.outcomes.remove(request);
             }
             state.in_turn = users.clone();
-            (users, envelopes, request)
+            (users, envelopes, request, notes)
         };
         self.settle_requests(&conv.id).await;
         self.set_run_for(&conv.id, RunState::Starting, None, request.clone())
@@ -464,7 +541,9 @@ impl SessionManager {
         let notes = self
             .request_notes(&conv.id, &envelopes, request.as_deref())
             .await;
-        let mut input = self.turn_input(&conv, &users, &notes).await;
+        let mut input = self
+            .turn_input(&conv, &users, &[user_notes, notes.clone()].concat())
+            .await;
         if reseed {
             let transcript = self.reseed_text(&conv.id, &users).await;
             if !transcript.is_empty() {
@@ -1216,20 +1295,17 @@ impl SessionManager {
             .is_ok_and(|page| page.messages.len() > 1)
     }
 
-    /// The transcript so far, for a CLI session that starts over: the last messages
-    /// verbatim (bounded), and the tasks.
+    /// The transcript so far, for a CLI session that starts over: the last messages of the
+    /// branch shown, verbatim (bounded), and the tasks.
     async fn reseed_text(&self, id: &ConversationId, carried: &[Message]) -> String {
-        let Ok(page) = self
-            .core
-            .list_messages(id.clone(), None, RESEED_MESSAGES)
-            .await
-        else {
-            return String::new();
+        let branch = match self.core.head(id).await {
+            Ok(Some(head)) => self.core.branch(id, &head).await.unwrap_or_default(),
+            _ => Vec::new(),
         };
         let carried: Vec<&str> = carried.iter().map(|m| m.id.as_str()).collect();
         let mut lines = Vec::new();
         let mut bytes = 0;
-        for message in page.messages.iter().rev() {
+        for message in branch.iter().rev().take(RESEED_MESSAGES) {
             if carried.contains(&message.id.as_str()) {
                 continue;
             }

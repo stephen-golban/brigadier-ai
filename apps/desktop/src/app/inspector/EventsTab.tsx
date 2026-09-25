@@ -55,6 +55,8 @@ function summary(event: DomainEvent): string {
       return event.error === null ? event.state : `${event.state}: ${event.error}`;
     case "requestUpdated":
       return `request ${event.request.state.type}`;
+    case "branchSwitched":
+      return `branch → ${event.head}`;
     case "conversationNotice":
       return event.notice.text;
     case "taskUpdated":
