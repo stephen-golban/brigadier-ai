@@ -94,7 +94,7 @@ export const StatusCard: FC<{ conversationId: string; onClose: () => void }> = (
     <section
       data-slot="status-card"
       aria-label="Status"
-      className="border-foreground/10 bg-muted/30 rounded-t-thread mx-3 -mb-4 border border-b-0 px-3 pt-2 pb-3"
+      className="px-3 pt-2 pb-3"
     >
       <header className="flex items-center justify-between text-sm">
         <h2 className="text-muted-foreground">Status</h2>
