@@ -1851,8 +1851,10 @@ impl SessionManager {
         Err(Error::NotFound(format!("task {task_id}")))
     }
 
-    /// A worker failed: the task ends and the orchestrator hears why.
+    /// A worker failed: the task ends and the orchestrator hears why. A landing's or plan's
+    /// reviewer failing releases what it was reviewing.
     pub(crate) async fn worker_failed(&self, task: &Task, reason: &str) {
+        let reviewing = task.kind == TaskKind::Review && self.review_in_landing(task).await;
         let mut kept = None;
         if let Some(live) = self.existing_task_live(&task.id) {
             live.close_cli().await;
@@ -1864,6 +1866,10 @@ impl SessionManager {
             })
             .await;
         self.dispose_task(task, TaskState::Failed).await;
+        if reviewing {
+            self.review_failed(task, reason).await;
+            return;
+        }
         self.deliver(
             &task.conversation_id,
             Envelope {
