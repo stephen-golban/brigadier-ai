@@ -615,6 +615,16 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             sessions.switch_branch(conversation_id, head).await?;
             Response::SwitchBranch
         }
+        Request::UndoChanges {
+            conversation_id,
+            request_id,
+            reapply,
+        } => {
+            sessions
+                .undo_request(conversation_id, request_id, reapply)
+                .await?;
+            Response::UndoChanges
+        }
         Request::AnswerCard {
             conversation_id,
             card_id,

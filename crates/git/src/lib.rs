@@ -348,6 +348,26 @@ pub enum RebaseOutcome {
     },
 }
 
+/// Result of preparing a commit that reverts landed commits (the user's Undo).
+#[derive(Debug, Clone)]
+pub enum RevertOutcome {
+    /// An unreferenced commit on the given tip; `land` puts it on the branch.
+    Ready {
+        /// The revert commit.
+        commit: Oid,
+    },
+    /// A later commit changed the same paths, so nothing was prepared.
+    Touched {
+        /// The paths changed since.
+        paths: Vec<String>,
+    },
+    /// The revert does not apply cleanly (a safety net: `Touched` normally comes first).
+    Conflicts {
+        /// Conflicted paths.
+        paths: Vec<String>,
+    },
+}
+
 /// Per-path and aggregate line statistics.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiffStat {

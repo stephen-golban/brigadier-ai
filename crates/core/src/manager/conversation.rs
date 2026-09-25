@@ -251,6 +251,11 @@ impl ConvLive {
         state.held = false;
     }
 
+    /// A note for the next turn that carries user messages, starting no turn of its own.
+    pub(super) async fn note(&self, note: String) {
+        self.state.lock().await.notes.push(note);
+    }
+
     /// The request the running turn serves.
     pub(super) async fn running_request(&self) -> Option<String> {
         let state = self.state.lock().await;

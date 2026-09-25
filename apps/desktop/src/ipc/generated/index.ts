@@ -113,6 +113,7 @@ export type { RepoInfo } from "./RepoInfo";
 export type { Report } from "./Report";
 export type { Request } from "./Request";
 export type { RequestState } from "./RequestState";
+export type { RequestUndo } from "./RequestUndo";
 export type { Response } from "./Response";
 export type { RestoreOutcome } from "./RestoreOutcome";
 export type { ReviewRecord } from "./ReviewRecord";

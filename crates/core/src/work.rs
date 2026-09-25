@@ -753,6 +753,21 @@ pub struct UserRequest {
     /// The reply that was streaming when it was steered in: its bubble shows after it.
     #[serde(default)]
     pub steered_after: Option<String>,
+    /// The user's Undo of what its workers landed, once they used it.
+    #[serde(default)]
+    pub undo: Option<RequestUndo>,
+}
+
+/// The user's Undo and Reapply of what a request's workers landed (ChatGPT's turn diff card).
+/// Each is a new commit, never a history rewrite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestUndo {
+    /// Its changes are reverted now: true after Undo, false after Reapply.
+    pub reverted: bool,
+    /// The commits Undo and Reapply landed, oldest first; each reverts the one before it, the
+    /// first the request's own landings.
+    pub commits: Vec<String>,
 }
 
 /// Why something entered the orchestrator's context.

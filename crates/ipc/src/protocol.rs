@@ -222,6 +222,13 @@ pub enum Request {
         scope: String,
         attachments: Vec<AttachmentRef>,
     },
+    /// Undoes (or, with `reapply`, reapplies) what a request's workers landed, with a new
+    /// commit on the branch they landed on.
+    UndoChanges {
+        conversation_id: ConversationId,
+        request_id: String,
+        reapply: bool,
+    },
     /// Answers an approval card.
     AnswerCard {
         conversation_id: ConversationId,
@@ -496,6 +503,7 @@ pub enum Response {
         data: String,
     },
     PinDraftAttachments,
+    UndoChanges,
     AnswerCard,
     AnswerQuestion,
     DecidePlan,
