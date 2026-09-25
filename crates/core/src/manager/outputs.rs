@@ -332,9 +332,15 @@ fn collect(
                         ));
                     }
                     Ok(meta) if meta.is_file() => {
-                        let title = path
-                            .strip_prefix(&places.scratch[0])
-                            .unwrap_or(&path)
+                        // Its path in the scratch folder, or in the outputs folder.
+                        let relative = places
+                            .scratch
+                            .iter()
+                            .find_map(|root| path.strip_prefix(root).ok())
+                            .unwrap_or(&path);
+                        let title = relative
+                            .strip_prefix(OUTPUTS_DIR)
+                            .unwrap_or(relative)
                             .display()
                             .to_string();
                         add(path, title, &mut found);
