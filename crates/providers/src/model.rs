@@ -613,6 +613,9 @@ pub enum Artifact {
     ClaudeStagingDir { path: String },
     /// A Codex thread: its rollout file and state records, removed through `thread/delete`.
     CodexThread { thread_id: String },
+    /// The folder where Codex saves a thread's generated images
+    /// (`$CODEX_HOME/generated_images/<thread id>`), which deleting the thread leaves behind.
+    CodexGeneratedImages { path: String },
     /// A project trust entry Codex persisted in the user's `config.toml` when a thread started
     /// there. Removed through Codex's config API, only while it is still just `trusted`.
     CodexProjectTrust { path: String },

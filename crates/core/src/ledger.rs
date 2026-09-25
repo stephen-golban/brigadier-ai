@@ -298,9 +298,9 @@ impl CleanupLedger {
                 | Artifact::ClaudeProjectDir { .. }
                 | Artifact::ClaudeStagingDir { .. }
                 | Artifact::ClaudeTempDir { .. } => claude.push(artifact),
-                Artifact::CodexThread { .. } | Artifact::CodexProjectTrust { .. } => {
-                    codex.push(artifact)
-                }
+                Artifact::CodexThread { .. }
+                | Artifact::CodexGeneratedImages { .. }
+                | Artifact::CodexProjectTrust { .. } => codex.push(artifact),
                 Artifact::Worktree { repo, path } => {
                     let remover = self
                         .worktrees

@@ -139,6 +139,16 @@ impl Codex {
             .ok_or(Error::NotInstalled(ProviderKind::Codex))
     }
 
+    /// Where Codex saves generated images, one folder per thread: `$CODEX_HOME` (by default
+    /// `~/.codex`) `/generated_images`.
+    fn images_root(&self) -> Option<PathBuf> {
+        let home = match self.env.var("CODEX_HOME") {
+            Some(home) if !home.is_empty() => PathBuf::from(home),
+            _ => self.env.home()?.join(".codex"),
+        };
+        Some(home.join("generated_images"))
+    }
+
     async fn version(&self) -> Option<String> {
         let spec = self.env.spec(self.binary().ok()?).arg("--version");
         let output = process::run(&self.platform, &spec, STATUS_TIMEOUT)
@@ -390,7 +400,13 @@ impl Provider for Codex {
 
             let started = tokio::time::timeout(
                 START_TIMEOUT,
-                open_thread(&rpc, &spec, &cwd, ledger.as_ref()),
+                open_thread(
+                    &rpc,
+                    &spec,
+                    &cwd,
+                    self.images_root().as_deref(),
+                    ledger.as_ref(),
+                ),
             )
             .await
             .map_err(|_| Error::Timeout("Codex to start the thread"))
@@ -451,12 +467,24 @@ impl Provider for Codex {
         Box::pin(async move {
             let mut threads = Vec::new();
             let mut trusts = Vec::new();
+            let mut images = Vec::new();
             for artifact in artifacts {
                 match artifact {
                     Artifact::CodexThread { thread_id } => threads.push(thread_id),
                     Artifact::CodexProjectTrust { path } => trusts.push(path),
+                    Artifact::CodexGeneratedImages { path } => images.push(PathBuf::from(path)),
                     _ => {}
                 }
+            }
+            if !images.is_empty() {
+                let root = self.images_root();
+                tokio::task::spawn_blocking(move || {
+                    images
+                        .iter()
+                        .try_for_each(|dir| remove_images_dir(root.as_deref(), dir))
+                })
+                .await
+                .map_err(|err| Error::Invalid(err.to_string()))??;
             }
             if threads.is_empty() && trusts.is_empty() {
                 return Ok(());
@@ -504,11 +532,13 @@ struct Opened {
     notices: Vec<String>,
 }
 
-/// Starts, resumes or forks the session's thread, recording it in the ledger.
+/// Starts, resumes or forks the session's thread, recording it (and the folder its generated
+/// images would go to, under `images_root`) in the ledger.
 async fn open_thread(
     rpc: &Rpc,
     spec: &SessionSpec,
     cwd: &Path,
+    images_root: Option<&Path>,
     ledger: &dyn Ledger,
 ) -> Result<Opened> {
     rpc.initialize().await?;
@@ -596,6 +626,13 @@ async fn open_thread(
             thread_id: thread.id.clone(),
         })
         .await?;
+    if let Some(root) = images_root {
+        ledger
+            .record(Artifact::CodexGeneratedImages {
+                path: root.join(&thread.id).display().to_string(),
+            })
+            .await?;
+    }
     let mut notices = Vec::new();
     if !watched.is_empty() {
         let trusted_after = trusted_projects(rpc, cwd).await?;
@@ -644,6 +681,30 @@ async fn trusted_projects(rpc: &Rpc, cwd: &Path) -> Result<Map<String, Value>> {
         .cloned()
         .unwrap_or_default();
     Ok(projects)
+}
+
+/// Removes a thread's generated-images folder, which must be one folder directly in Codex's
+/// `generated_images` (a thread id, never anything else).
+fn remove_images_dir(root: Option<&Path>, dir: &Path) -> Result<()> {
+    let ours = root.is_some_and(|root| dir.parent() == Some(root))
+        && dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+            });
+    if !ours {
+        return Err(Error::Invalid(format!(
+            "{} is not a Codex thread's generated-images folder",
+            dir.display()
+        )));
+    }
+    match std::fs::remove_dir_all(dir) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(Error::Io(
+            std::io::Error::new(err.kind(), format!("{}: {err}", dir.display())),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Removes a trust entry a thread added, unless it changed since (the user decided on it).
