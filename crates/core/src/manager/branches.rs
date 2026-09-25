@@ -10,6 +10,7 @@
 //! A session's work is real (tasks, cards, commits), so only its latest request can be edited
 //! or redone, and only while nothing from it has landed. What that request started is stopped
 //! and its cards are closed first; the orchestrator keeps its context and is told what changed.
+//! Its earlier versions can be shown again while nothing works.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,9 +19,12 @@ use super::SessionManager;
 use super::conversation::ConvLive;
 use crate::board::Board;
 use crate::model::{ConversationId, ConversationKind, MessageRole};
-use crate::sessions::{branch_of, parent_of};
+use crate::sessions::{branch_of, one_line, parent_of};
 use crate::work::{ApprovalSubject, CardState, PlanState, QuestionKind};
 use crate::{Error, Result, now_ms};
+
+/// Characters of the user's message quoted when the orchestrator is told of a switch.
+const NOTE_PREVIEW_CHARS: usize = 200;
 
 /// How long a stopped orchestrator turn may take to end before an edit gives up.
 const STOP_TURN_LIMIT: Duration = Duration::from_secs(20);
@@ -127,22 +131,47 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Shows another branch of a Chat: the one that ends at `head`.
+    /// Shows another branch: the one that ends at `head`. New messages continue it.
+    ///
+    /// A session switches only while nothing works (the orchestrator's turn and every worker
+    /// are over), so no work is left running for a version the thread no longer shows. Its
+    /// orchestrator keeps its context and is told, with the next message, which version the
+    /// user went back to.
     pub async fn switch_branch(&self, id: ConversationId, head: String) -> Result<()> {
         self.admit()?;
         let conv = self.conv(&id)?;
-        if conv.kind != ConversationKind::Chat {
-            return Err(Error::Invalid(
-                "only a Chat keeps the answers it replaced".into(),
-            ));
-        }
         let messages = self.core.all_messages(&id).await?;
-        if branch_of(&messages, &head).is_empty() {
+        let branch = branch_of(&messages, &head);
+        if branch.is_empty() {
             return Err(Error::NotFound(format!("message {head}")));
         }
-        self.chat_rework(&conv).await?;
+        let note = match conv.kind {
+            ConversationKind::Chat => {
+                self.chat_rework(&conv).await?;
+                None
+            }
+            ConversationKind::Session => {
+                let board = self.core.board(&id).await?;
+                if conv.turn_running().await
+                    || board.tasks.values().any(|task| !task.state.is_final())
+                {
+                    return Err(Error::Invalid(
+                        "wait for the work in progress to finish, or stop it, before switching versions".into(),
+                    ));
+                }
+                let shown = branch
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == MessageRole::User)
+                    .map(|message| one_line(&message.text, NOTE_PREVIEW_CHARS))
+                    .unwrap_or_default();
+                Some(format!(
+                    "[Brigadier: the user switched the thread back to another version of their message: \"{shown}\". Messages from now on continue from that version.]"
+                ))
+            }
+        };
         let switched = self.core.switch_branch(&id, head).await;
-        conv.carry(None, None).await;
+        conv.carry(None, note).await;
         switched
     }
 

@@ -382,7 +382,11 @@ export function buildThread(
   hasMore: boolean,
   board: BoardDigest & { head: string | null },
   pending: readonly PendingMessage[],
-  branches: boolean,
+  /**
+   * Which other versions the tree carries for the branch picker: a Chat's edits and other
+   * answers (`all`), or only a session's edits (`edits`), whose answers keep their work.
+   */
+  branches: "all" | "edits",
 ): ThreadTree {
   const index = new Map(messages.map((message, at) => [message.id, at]));
   const children = new Map<string | null, Message[]>();
@@ -450,29 +454,31 @@ export function buildThread(
   };
   const headId = place(buildBlocks(path, fullText, hasMore, board, pending), null)?.id ?? null;
 
-  if (branches) {
-    const quiet: BoardDigest = { ...EMPTY_WORK, requests: board.requests };
-    for (const message of path) {
-      const parent = parentOf(messages, index.get(message.id) as number, hasMore);
-      if (parent === undefined) continue;
-      const parentNode = parent === null ? null : nodeOf.get(parent);
-      if (parentNode === undefined) continue;
-      const siblings = (children.get(parent) ?? []).filter(
-        (other) => other.id !== message.id && other.role === message.role,
-      );
-      for (const sibling of siblings) {
-        // The replaced message and its newest continuation.
-        const chain = [sibling];
-        for (let kids = children.get(sibling.id); kids?.length; kids = children.get(chain.at(-1)?.id ?? "")) {
-          chain.push(kids.at(-1) as Message);
-        }
-        // Another answer groups under its user message, which the branch shown already has.
-        const user = sibling.role === "assistant" && parent !== null ? messages[index.get(parent) as number] : undefined;
-        const blocks = buildBlocks(user ? [user, ...chain] : chain, fullText, false, quiet, []).map((block) =>
-          settled(user && block.user?.kind === "message" && block.user.message.id === user.id ? { ...block, user: null } : block, chain),
-        );
-        place(blocks, parentNode);
+  const quiet: BoardDigest =
+    branches === "all"
+      ? { ...EMPTY_WORK, requests: board.requests }
+      : { ...board, runRequest: null, streaming: null };
+  for (const message of path) {
+    if (branches === "edits" && message.role !== "user") continue;
+    const parent = parentOf(messages, index.get(message.id) as number, hasMore);
+    if (parent === undefined) continue;
+    const parentNode = parent === null ? null : nodeOf.get(parent);
+    if (parentNode === undefined) continue;
+    const siblings = (children.get(parent) ?? []).filter(
+      (other) => other.id !== message.id && other.role === message.role,
+    );
+    for (const sibling of siblings) {
+      // The replaced message and its newest continuation.
+      const chain = [sibling];
+      for (let kids = children.get(sibling.id); kids?.length; kids = children.get(chain.at(-1)?.id ?? "")) {
+        chain.push(kids.at(-1) as Message);
       }
+      // Another answer groups under its user message, which the branch shown already has.
+      const user = sibling.role === "assistant" && parent !== null ? messages[index.get(parent) as number] : undefined;
+      const blocks = buildBlocks(user ? [user, ...chain] : chain, fullText, false, quiet, []).map((block) =>
+        settled(user && block.user?.kind === "message" && block.user.message.id === user.id ? { ...block, user: null } : block, chain),
+      );
+      place(blocks, parentNode);
     }
   }
   return { nodes: nodes.toSorted((a, b) => a.order - b.order).map(({ node }) => node), headId };
