@@ -1,5 +1,3 @@
-import "@assistant-ui/react-markdown/styles/dot.css";
-
 import {
   type CodeHeaderProps,
   MarkdownTextPrimitive,
@@ -13,11 +11,16 @@ import { Check, Copy } from "@openai/apps-sdk-ui/components/Icon";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { rehypeTailFade } from "@/lib/tail-fade";
 import { cn } from "@/lib/utils";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
+  /** The text is still streaming: its newest words fade in. */
+  streaming?: boolean | undefined;
 };
+
+const TAIL_FADE = [rehypeTailFade];
 
 const shallowEqual = (
   a: Record<string, unknown> | undefined,
@@ -41,7 +44,7 @@ const useShallowStable = <T extends Record<string, unknown> | undefined>(
   return stable;
 };
 
-const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
+const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, streaming }) => {
   const stableComponents = useShallowStable(components);
   const markdownComponents = useMemo(() => {
     if (!stableComponents) return defaultComponents;
@@ -54,6 +57,7 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={streaming ? TAIL_FADE : undefined}
       className="aui-md"
       components={markdownComponents}
       defer

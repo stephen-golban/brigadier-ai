@@ -35,6 +35,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -306,6 +307,13 @@ export const MessageText: FC<TextMessagePartProps> = (props) => (
   </Suspense>
 );
 
+/** Text that is still streaming: its newest words fade in. */
+export const StreamingMessageText: FC<TextMessagePartProps> = (props) => (
+  <Suspense fallback={<p className="whitespace-pre-wrap">{props.text}</p>}>
+    <MarkdownText {...props} streaming />
+  </Suspense>
+);
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -429,8 +437,10 @@ const UserMessageText: FC = () => {
 const canRework = (s: AssistantState) => s.message.metadata.custom["rework"] === true;
 
 const UserActionBar: FC = () => {
+  const sentAt = useAuiState((s) => s.message.createdAt.getTime());
   return (
     <ActionBarPrimitive.Root className="aui-user-action-bar-root text-muted-foreground flex items-center gap-1">
+      <span className="pe-1 text-xs tabular-nums">{formatTime(sentAt)}</span>
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton tooltip="Copy" className="aui-user-action-copy">
           <CopyIcon />

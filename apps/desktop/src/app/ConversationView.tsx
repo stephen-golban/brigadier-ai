@@ -218,6 +218,7 @@ function useItems(
           picked,
           session,
           rework,
+          requestId: block.key,
         };
         cache.set(node.id, {
           item: { id: node.id, parentId: node.parentId, kind: "block", block, meta, texts },
@@ -393,9 +394,13 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const reworkable = useBoard((s) =>
     s.board?.conversationId === conversationId && s.board ? reworkableRequest(s.board) : null,
   );
+  // Not while the orchestrator's turn for the request runs (the composer can stop it); a
+  // request whose workers still run can be redone.
+  const runRequest = digest?.runRequest ?? null;
   const canRework = useCallback(
-    (requestId: string) => (session ? requestId === reworkable : !running),
-    [session, reworkable, running],
+    (requestId: string) =>
+      session ? requestId === reworkable && !(running && runRequest === requestId) : !running,
+    [session, reworkable, running, runRequest],
   );
   const items = useItems(tree.nodes, picked, session, canRework);
   const repository = useMemo<ExportedMessageRepository>(
