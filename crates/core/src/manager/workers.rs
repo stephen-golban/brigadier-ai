@@ -992,6 +992,7 @@ impl SessionManager {
                             if files.len() == 1 { "" } else { "s" }
                         ),
                         vec!["Yes, show them to workers".into(), "No, use the last commit".into()],
+                        None,
                     )
                     .await?;
                 rx

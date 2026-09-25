@@ -319,6 +319,7 @@ impl SessionManager {
         kind: QuestionKind,
         text: String,
         options: Vec<String>,
+        recommended: Option<u32>,
     ) -> Result<(Question, oneshot::Receiver<CardAnswer>)> {
         let request_id = self.request_for(conversation_id, task_id.as_ref()).await;
         let question = Question {
@@ -329,6 +330,8 @@ impl SessionManager {
             position: 0,
             kind,
             text,
+            // Only an index that names one of the options.
+            recommended: recommended.filter(|&index| (index as usize) < options.len()),
             options,
             answer: None,
             created_at_ms: now_ms(),

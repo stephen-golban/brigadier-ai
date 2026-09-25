@@ -109,8 +109,15 @@ impl SessionManager {
                     Some(reference) => Some(self.find_task(id, reference).await?.id),
                     None => None,
                 };
-                self.open_question(id, task_id, QuestionKind::Orchestrator, args.question, args.options)
-                    .await?;
+                self.open_question(
+                    id,
+                    task_id,
+                    QuestionKind::Orchestrator,
+                    args.question,
+                    args.options,
+                    args.recommended,
+                )
+                .await?;
                 Ok("Asked the user. The answer arrives later as a message; carry on with anything that doesn't depend on it.".into())
             }
             OrchestratorCall::ReadReport(args) => {

@@ -16,4 +16,8 @@ requestId: string | null, position: number, kind: QuestionKind, text: string,
 /**
  * Suggested answers; the user may also type one.
  */
-options: Array<string>, answer: string | null, createdAtMs: number, answeredAtMs: number | null, };
+options: Array<string>, 
+/**
+ * The suggested answer the asker recommends, by its index in `options`.
+ */
+recommended: number | null, answer: string | null, createdAtMs: number, answeredAtMs: number | null, };

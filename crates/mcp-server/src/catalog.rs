@@ -31,8 +31,8 @@ went wrong. Nothing of it lands.";
 
 const ASK_USER: &str = "Ask the user a question only they can answer (a product choice, an \
 unclear requirement). Returns at once; the answer arrives later as a message. Name the task that \
-waits for the answer in `task` so other work continues; `options` become answer buttons (the \
-user can always type their own answer).";
+waits for the answer in `task` so other work continues; `options` become numbered answers (the \
+user can always type their own answer), and `recommended` marks the one you recommend.";
 
 const READ_REPORT: &str = "Read a task's final report again: summary, changes, decisions, \
 verification, open questions and artifact ids.";
