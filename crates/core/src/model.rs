@@ -336,6 +336,11 @@ pub struct Message {
     /// model was serving for a reply. Absent for messages from before requests existed.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// The message before it on its branch; empty for a first message that replaced another
+    /// (an edit). Absent for messages from before branches existed: those follow the message
+    /// before them.
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 /// Global size and spacing scale for every control.
@@ -432,6 +437,9 @@ pub struct ConversationView {
     pub run: RunState,
     /// The request the running turn serves.
     pub run_request: Option<String>,
+    /// The last message of the branch the thread shows (the newest message until the user
+    /// edits, regenerates or switches branches).
+    pub head: Option<String>,
     pub streaming: Option<StreamingMessage>,
     /// The latest notices (environment problems, fallbacks), newest last.
     pub notices: Vec<Notice>,
@@ -704,6 +712,11 @@ pub enum DomainEvent {
     RequestUpdated {
         request: UserRequest,
     },
+    /// The thread now shows the branch that ends at `head`; new messages continue it.
+    BranchSwitched {
+        conversation_id: ConversationId,
+        head: String,
+    },
     ConversationNotice {
         conversation_id: ConversationId,
         notice: Notice,
@@ -767,6 +780,7 @@ impl DomainEvent {
             Self::MessageDelta { .. } => "message.delta",
             Self::RunStateChanged { .. } => "conversation.run",
             Self::RequestUpdated { .. } => "request.updated",
+            Self::BranchSwitched { .. } => "conversation.branch",
             Self::ConversationNotice { .. } => "conversation.notice",
             Self::TaskUpdated { .. } => "task.updated",
             Self::ApprovalUpdated { .. } => "approval.updated",

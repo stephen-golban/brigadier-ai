@@ -2,6 +2,7 @@ import {
   ActionBarPrimitive,
   AuiIf,
   type AssistantState,
+  BranchPickerPrimitive,
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
@@ -13,7 +14,10 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Copy,
+  EditPencil,
   Stop,
 } from "@openai/apps-sdk-ui/components/Icon";
 import {
@@ -175,8 +179,9 @@ const ThreadMessage: FC = () => {
   const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
+  const editing = useAuiState((s) => s.message.composer.isEditing);
 
-  if (role === "user") return <UserMessage />;
+  if (role === "user") return editing ? <EditComposer /> : <UserMessage />;
   if (role === "system") return <SystemMessage />;
   return <AssistantMessageComponent />;
 };
@@ -420,6 +425,9 @@ const UserMessageText: FC = () => {
   );
 };
 
+/** Whether the message may be edited or answered again now (the view decides, per message). */
+const canRework = (s: AssistantState) => s.message.metadata.custom["rework"] === true;
+
 const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root className="aui-user-action-bar-root text-muted-foreground flex items-center gap-1">
@@ -428,6 +436,67 @@ const UserActionBar: FC = () => {
           <CopyIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
+      <AuiIf condition={canRework}>
+        <ActionBarPrimitive.Edit asChild>
+          <TooltipIconButton tooltip="Edit message" className="aui-user-action-edit">
+            <EditPencil />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Edit>
+      </AuiIf>
+      <BranchPicker />
     </ActionBarPrimitive.Root>
+  );
+};
+
+/** "‹ 2/3 ›" between the versions of a message (edits, or answers given again). */
+export const BranchPicker: FC = () => {
+  return (
+    <BranchPickerPrimitive.Root
+      hideWhenSingleBranch
+      className="aui-branch-picker-root text-muted-foreground inline-flex items-center text-xs"
+    >
+      <BranchPickerPrimitive.Previous asChild>
+        <TooltipIconButton tooltip="Previous version">
+          <ChevronLeft />
+        </TooltipIconButton>
+      </BranchPickerPrimitive.Previous>
+      <span className="tabular-nums">
+        <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
+      </span>
+      <BranchPickerPrimitive.Next asChild>
+        <TooltipIconButton tooltip="Next version">
+          <ChevronRight />
+        </TooltipIconButton>
+      </BranchPickerPrimitive.Next>
+    </BranchPickerPrimitive.Root>
+  );
+};
+
+/** A sent message being edited: the text in place, then cancel or send the new version. */
+const EditComposer: FC = () => {
+  return (
+    <MessagePrimitive.Root
+      data-slot="aui_edit-composer-root"
+      data-role="user"
+      className="message-contain flex flex-col px-2"
+    >
+      <ComposerPrimitive.Root className="bg-muted rounded-thread ms-auto flex w-full flex-col gap-2 p-2">
+        <ComposerPrimitive.Input
+          autoFocus
+          aria-label="Edit message"
+          className="text-foreground max-h-user-message min-h-composer w-full resize-none bg-transparent px-2 py-1 text-base outline-none"
+        />
+        <div className="flex items-center justify-end gap-2">
+          <ComposerPrimitive.Cancel asChild>
+            <Button variant="ghost" size="sm">
+              Cancel
+            </Button>
+          </ComposerPrimitive.Cancel>
+          <ComposerPrimitive.Send asChild>
+            <Button size="sm">Send</Button>
+          </ComposerPrimitive.Send>
+        </div>
+      </ComposerPrimitive.Root>
+    </MessagePrimitive.Root>
   );
 };

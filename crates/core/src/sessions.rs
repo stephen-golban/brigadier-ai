@@ -391,6 +391,21 @@ impl Core {
         attachments: Vec<AttachmentRef>,
         mentions: Vec<TaskId>,
     ) -> Result<Message> {
+        self.append_user_message_under(id, text, attachments, mentions, None)
+            .await
+    }
+
+    /// Appends a user message after `parent` (a message id, or [`ROOT`] for a new first
+    /// message) instead of after the branch shown: an edit starts a branch beside the
+    /// message it edits.
+    pub(crate) async fn append_user_message_under(
+        &self,
+        id: ConversationId,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        mentions: Vec<TaskId>,
+        parent: Option<String>,
+    ) -> Result<Message> {
         let conversation = self.conversation(&id)?;
         let trimmed = text.trim().to_owned();
         if trimmed.is_empty() && attachments.is_empty() {
@@ -407,6 +422,9 @@ impl Core {
             .await?;
         message.attachments = attachments;
         message.mentions = mentions;
+        if parent.is_some() {
+            message.parent_id = parent;
+        }
         // Each user message starts a request of its own.
         message.request_id = Some(message.id.clone());
 
@@ -505,6 +523,7 @@ impl Core {
         } else {
             (text, None)
         };
+        let parent_id = self.head(id).await?;
         Ok(Message {
             id: message_id,
             conversation_id: id.clone(),
@@ -518,7 +537,60 @@ impl Core {
             mentions: Vec::new(),
             model: None,
             request_id: None,
+            parent_id,
         })
+    }
+
+    /// The last message of the branch the thread shows: new messages continue from it.
+    pub(crate) async fn head(&self, id: &ConversationId) -> Result<Option<String>> {
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        Ok(boards
+            .get(id)
+            .and_then(|board| board.head.as_ref())
+            .map(|(head, _)| head.clone()))
+    }
+
+    /// Shows the branch that ends at `head` (a message of the conversation).
+    pub(crate) async fn switch_branch(&self, id: &ConversationId, head: String) -> Result<()> {
+        self.record_conversation(
+            id,
+            vec![DomainEvent::BranchSwitched {
+                conversation_id: id.clone(),
+                head,
+            }],
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Every message of the conversation, every branch, oldest first.
+    pub(crate) async fn all_messages(&self, id: &ConversationId) -> Result<Vec<Message>> {
+        let mut messages = Vec::new();
+        let mut before = None;
+        loop {
+            let page = self
+                .list_messages(id.clone(), before, brigadier_store::MAX_PAGE - 1)
+                .await?;
+            before = page.messages.first().map(|message| message.seq);
+            let more = page.has_more && before.is_some();
+            let mut older = page.messages;
+            older.append(&mut messages);
+            messages = older;
+            if !more {
+                return Ok(messages);
+            }
+        }
+    }
+
+    /// The branch that ends at `leaf`, oldest first: each message's parent, back to the
+    /// first message. Empty when `leaf` is unknown.
+    pub(crate) async fn branch(&self, id: &ConversationId, leaf: &str) -> Result<Vec<Message>> {
+        let messages = self.all_messages(id).await?;
+        Ok(branch_of(&messages, leaf))
     }
 
     /// Stores an attachment in the blob store.
@@ -746,6 +818,7 @@ impl Core {
             queue: board.queue.clone(),
             run: board.run,
             run_request: board.run_request.clone(),
+            head: board.head.as_ref().map(|(head, _)| head.clone()),
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),
         })
@@ -828,6 +901,38 @@ impl Core {
             board.apply(&event, stored[0]);
         }
         Ok(true)
+    }
+
+    /// Starts a request over (the user asked for a new answer): it works again from now, so
+    /// what its earlier attempt started is older than it.
+    pub(crate) async fn restart_request(
+        &self,
+        id: &ConversationId,
+        request_id: &str,
+    ) -> Result<()> {
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        let Some(mut request) = boards
+            .get(id)
+            .and_then(|board| board.requests.get(request_id))
+            .cloned()
+        else {
+            return Err(Error::NotFound(format!("request {request_id}")));
+        };
+        request.state = RequestState::Working;
+        request.started_at_ms = now_ms();
+        request.ended_at_ms = None;
+        let event = DomainEvent::RequestUpdated { request };
+        let stored = self
+            .record(vec![(streams::conversation(id), event.clone())])
+            .await?;
+        if let Some(board) = boards.get_mut(id) {
+            board.apply(&event, stored[0]);
+        }
+        Ok(())
     }
 
     /// A snapshot of a conversation's tasks.
@@ -1022,6 +1127,27 @@ impl Core {
         let mut board = Board::default();
         for event in events.iter().rev() {
             board.apply(&decode(event)?, event.stream_seq);
+        }
+        // The newest message is the head unless the user switched branches after it.
+        let newest = self
+            .store
+            .read_stream(
+                streams::conversation(id),
+                StreamPage {
+                    before: None,
+                    kinds: vec!["message.appended".into()],
+                    limit: 1,
+                },
+            )
+            .await?;
+        if let Some(event) = newest.first()
+            && board
+                .head
+                .as_ref()
+                .is_none_or(|(_, seq)| *seq < event.stream_seq)
+            && let DomainEvent::MessageAppended { message } = decode(event)?
+        {
+            board.head = Some((message.id, event.stream_seq));
         }
         // Nothing runs across a daemon restart.
         board.run = match board.run {
@@ -1284,6 +1410,47 @@ fn one_line(text: &str, chars: usize) -> String {
         cut.push('…');
         cut
     }
+}
+
+/// The parent of a message that starts a conversation's first branch anew (an edited first
+/// message). A message without any parent follows the message before it.
+pub(crate) const ROOT: &str = "";
+
+/// The parent a message has on its branch: its own, or the message before it.
+pub(crate) fn parent_of(messages: &[Message], at: usize) -> String {
+    match &messages[at].parent_id {
+        Some(parent) => parent.clone(),
+        None => at
+            .checked_sub(1)
+            .map_or_else(|| ROOT.to_owned(), |before| messages[before].id.clone()),
+    }
+}
+
+/// The branch of `messages` (oldest first, every branch) that ends at `leaf`, oldest first.
+/// A message without a parent follows the message before it.
+pub(crate) fn branch_of(messages: &[Message], leaf: &str) -> Vec<Message> {
+    let index: HashMap<&str, usize> = messages
+        .iter()
+        .enumerate()
+        .map(|(at, message)| (message.id.as_str(), at))
+        .collect();
+    let mut path = Vec::new();
+    let mut at = index.get(leaf).copied();
+    while let Some(current) = at {
+        let message = &messages[current];
+        path.push(message.clone());
+        at = match message.parent_id.as_deref() {
+            Some(ROOT) => None,
+            Some(parent) => index.get(parent).copied(),
+            None => current.checked_sub(1),
+        };
+        // A parent is always older; anything else is a broken link.
+        if at.is_some_and(|parent| parent >= current) {
+            break;
+        }
+    }
+    path.reverse();
+    path
 }
 
 /// The longest prefix of `text` that fits in `bytes` without splitting a character.

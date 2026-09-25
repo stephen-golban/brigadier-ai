@@ -3,12 +3,12 @@ import {
   MessagePrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { Check, ChevronRight, Copy } from "@openai/apps-sdk-ui/components/Icon";
+import { Check, ChevronRight, Copy, Regenerate } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
 
 import { AgentChips } from "@/app/conversation/Agents";
 import { type BlockCard, type BlockState, isLive } from "@/app/conversation/blocks";
-import { MessageError, MessageText } from "@/components/assistant-ui/thread";
+import { BranchPicker, MessageError, MessageText } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { mono } from "@/components/assistant-ui/elements/surfaces";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +33,8 @@ export type BlockMeta = {
   picked: ModelChoice | null;
   /** A session's block always says it works; a Chat's only until its reply streams. */
   session: boolean;
+  /** The request can be answered again now. */
+  rework: boolean;
 };
 
 /** Seconds since `from`, ticking while `live`. */
@@ -197,16 +199,24 @@ export const RequestBlock: FC = () => {
       )}
       <MessageError />
       {shown !== null && !live && (
-        <AnswerActions model={meta.texts[shown]?.model ?? null} picked={meta.picked} />
+        <AnswerActions
+          model={meta.texts[shown]?.model ?? null}
+          picked={meta.picked}
+          rework={meta.rework}
+        />
       )}
     </MessagePrimitive.Root>
   );
 };
 
-/** Under the answer: copy it, and which model wrote it (flagged when it was a fallback). */
-const AnswerActions: FC<{ model: ModelChoice | null; picked: ModelChoice | null }> = ({
+/**
+ * Under the answer: copy it, ask for another answer, move between answers, and which model
+ * wrote it (flagged when it was a fallback).
+ */
+const AnswerActions: FC<{ model: ModelChoice | null; picked: ModelChoice | null; rework: boolean }> = ({
   model,
   picked,
+  rework,
 }) => {
   const answer = useAuiState((s) => {
     const parts = s.message.parts;
@@ -228,6 +238,14 @@ const AnswerActions: FC<{ model: ModelChoice | null; picked: ModelChoice | null 
           <Copy className="animate-in zoom-in-75 fade-in duration-150" />
         )}
       </TooltipIconButton>
+      {rework && (
+        <ActionBarPrimitive.Reload asChild>
+          <TooltipIconButton tooltip="Try again">
+            <Regenerate />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Reload>
+      )}
+      <BranchPicker />
       {model && (
         <span className={cn(mono, "flex items-center gap-1.5 ps-1")}>
           {modelName(groups, model)}

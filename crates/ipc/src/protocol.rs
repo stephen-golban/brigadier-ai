@@ -146,6 +146,23 @@ pub enum Request {
     Interrupt {
         conversation_id: ConversationId,
     },
+    /// Replaces a sent message: the new text starts a branch beside it and is answered. In a
+    /// session only the latest message, while nothing from it has landed.
+    EditMessage {
+        conversation_id: ConversationId,
+        message_id: String,
+        text: String,
+    },
+    /// Answers a request again from its user message (same limits as editing).
+    Regenerate {
+        conversation_id: ConversationId,
+        request_id: String,
+    },
+    /// Shows the branch of a Chat that ends at `head`.
+    SwitchBranch {
+        conversation_id: ConversationId,
+        head: String,
+    },
     /// Stores a file for a message. `data` is base64; at most 10 MB decoded.
     AddAttachment {
         name: String,
@@ -394,6 +411,9 @@ pub enum Response {
         queue: MessageQueue,
     },
     Interrupt,
+    EditMessage,
+    Regenerate,
+    SwitchBranch,
     AddAttachment {
         attachment: AttachmentRef,
     },

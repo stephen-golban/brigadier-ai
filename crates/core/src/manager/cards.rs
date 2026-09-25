@@ -360,7 +360,7 @@ impl SessionManager {
             .get(&card_id)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("question {card_id}")))?;
-        if question.answer.is_some() {
+        if question.answer.is_some() || question.answered_at_ms.is_some() {
             return Err(Error::Invalid("this question was already answered".into()));
         }
         let answer = answer.trim().to_owned();
@@ -423,6 +423,25 @@ impl SessionManager {
         self.waiters.answer(&card_id, CardAnswer::Answered);
         self.settle_requests(&conversation_id).await;
         Ok(())
+    }
+
+    /// Closes a question nobody needs answered any more (the user redid the request that
+    /// asked it): answered, with no answer.
+    pub(crate) async fn withdraw_question(&self, question: &Question) {
+        let mut question = question.clone();
+        question.answered_at_ms = Some(now_ms());
+        self.waiters.take(&question.id);
+        let conversation_id = question.conversation_id.clone();
+        if let Err(err) = self
+            .core
+            .record_conversation(
+                &conversation_id,
+                vec![DomainEvent::QuestionUpdated { question }],
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "could not withdraw a question");
+        }
     }
 
     /// Records a plan card.

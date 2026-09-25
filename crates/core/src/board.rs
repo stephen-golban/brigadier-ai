@@ -21,6 +21,7 @@ pub(crate) const KINDS: &[&str] = &[
     "plan.updated",
     "queue.changed",
     "request.updated",
+    "conversation.branch",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -34,6 +35,8 @@ pub(crate) struct Board {
     pub(crate) run: RunState,
     /// The request the running turn serves.
     pub(crate) run_request: Option<String>,
+    /// The last message of the branch shown, and the stream sequence that set it.
+    pub(crate) head: Option<(String, i64)>,
     pub(crate) streaming: Option<StreamingMessage>,
     pub(crate) notices: Vec<Notice>,
 }
@@ -92,6 +95,9 @@ impl Board {
             DomainEvent::RequestUpdated { request } => {
                 self.requests.insert(request.id.clone(), request.clone());
             }
+            DomainEvent::BranchSwitched { head, .. } => {
+                self.head = Some((head.clone(), stream_seq));
+            }
             DomainEvent::ConversationNotice { notice, .. } => {
                 self.notices.push(notice.clone());
                 if self.notices.len() > NOTICES_KEPT {
@@ -112,14 +118,17 @@ impl Board {
                     });
                 }
             },
-            DomainEvent::MessageAppended { message }
+            DomainEvent::MessageAppended { message } => {
+                // A new message continues the branch shown.
+                self.head = Some((message.id.clone(), stream_seq));
                 if message.role == MessageRole::Assistant
                     && self
                         .streaming
                         .as_ref()
-                        .is_some_and(|streaming| streaming.message_id == message.id) =>
-            {
-                self.streaming = None;
+                        .is_some_and(|streaming| streaming.message_id == message.id)
+                {
+                    self.streaming = None;
+                }
             }
             _ => {}
         }

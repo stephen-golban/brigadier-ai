@@ -33,4 +33,10 @@ model: ModelChoice | null,
  * The user request it belongs to: its own id for a user message, the request the
  * model was serving for a reply. Absent for messages from before requests existed.
  */
-requestId: string | null, };
+requestId: string | null, 
+/**
+ * The message before it on its branch; empty for a first message that replaced another
+ * (an edit). Absent for messages from before branches existed: those follow the message
+ * before them.
+ */
+parentId: string | null, };
