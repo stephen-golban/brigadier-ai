@@ -503,6 +503,51 @@ impl SessionManager {
         });
     }
 
+    /// A landing's or plan's reviewer failed (its provider down, signed out, …): nothing lands,
+    /// and the task goes back to reported (or the plan is turned down) so the orchestrator can
+    /// retry instead of waiting on a review that will never come.
+    pub(crate) async fn review_failed(&self, review: &Task, reason: &str) {
+        let Ok(board) = self.core.board(&review.conversation_id).await else {
+            return;
+        };
+        let route = super::workers::route_label(review);
+        if let Some(plan) = board
+            .plans
+            .values()
+            .find(|p| matches!(&p.state, PlanState::InReview { task_id } if *task_id == review.id))
+            .cloned()
+        {
+            let summary = format!("The review could not run: {reason}");
+            self.plan_reviewed(plan, review, None, summary).await;
+            return;
+        }
+        let Some(task) = board
+            .tasks
+            .values()
+            .find(|t| t.review.as_ref().is_some_and(|r| r.task_id == review.id))
+            .cloned()
+        else {
+            return;
+        };
+        let task = self
+            .set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
+            .await
+            .unwrap_or(task);
+        self.deliver(
+            &task.conversation_id,
+            Envelope {
+                kind: InjectionKind::Report,
+                label: format!("review of task-{}", task.number),
+                task_id: Some(task.id.clone()),
+                text: format!(
+                    "[review task-{} by task-{} ({route})] The review could not run; nothing landed.\n{reason}\n[/review] If that is temporary, call accept_task for task-{} again to retry the review. If it needs the user (a sign-in, a key), tell them what failed instead of retrying.",
+                    task.number, review.number, task.number
+                ),
+            },
+        )
+        .await;
+    }
+
     /// Step 5 (the user's approval under "Ask for approval"), then step 6.
     async fn approve_and_land(&self, task: &Task) -> Result<()> {
         let conversation = self.core.conversation(&task.conversation_id)?;
