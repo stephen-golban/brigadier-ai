@@ -20,6 +20,7 @@ mod gate;
 mod instructions;
 mod landing;
 mod lifecycle;
+mod outputs;
 mod prompts;
 mod secrets;
 mod tools;
@@ -100,6 +101,14 @@ impl SessionManager {
             }
         }
         let data_dir = runtime.platform().paths().data_dir.clone();
+        {
+            let data_dir = data_dir.clone();
+            let _ = blocking(move || {
+                outputs::clear_opened(&data_dir);
+                Ok(())
+            })
+            .await;
+        }
         let manager = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             core,

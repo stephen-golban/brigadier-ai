@@ -20,6 +20,7 @@ use brigadier_sandbox::{Platform, PlatformOptions};
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::bridge::Bridge;
 use crate::launcher::Launcher;
@@ -65,6 +66,70 @@ async fn pick_folder(app: tauri::AppHandle, starting: Option<String>) -> Option<
     });
     let folder = rx.await.ok().flatten()?.into_path().ok()?;
     Some(folder.display().to_string())
+}
+
+/// Saves an artifact where the user picks in the system save dialog, offering `file_name`.
+/// `false` when they cancel. Scripts use the `saveArtifact` request with a path instead.
+#[tauri::command]
+async fn save_artifact(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    file_name: String,
+) -> Result<bool, IpcError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save to…")
+        .set_file_name(&file_name);
+    if let Some(window) = app.get_webview_window(shell::MAIN_WINDOW) {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx
+        .await
+        .ok()
+        .flatten()
+        .and_then(|path| path.into_path().ok())
+    else {
+        return Ok(false);
+    };
+    state
+        .bridge
+        .request(Request::SaveArtifact {
+            id,
+            path: path.display().to_string(),
+        })
+        .await?;
+    Ok(true)
+}
+
+/// Opens an artifact with the system's default app for its type (a copy of it, named
+/// `file_name`).
+#[tauri::command]
+async fn open_artifact(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    file_name: String,
+) -> Result<(), IpcError> {
+    let internal = |message: String| IpcError {
+        code: brigadier_ipc::protocol::ErrorCode::Internal,
+        message,
+    };
+    let Response::OpenArtifact { path } = state
+        .bridge
+        .request(Request::OpenArtifact { id, file_name })
+        .await?
+    else {
+        return Err(internal("unexpected response".into()));
+    };
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|err| internal(format!("could not open it: {err}")))
 }
 
 /// The webview painted its first interactive frame at `paint_ms` (ms since the Unix epoch).
@@ -156,6 +221,7 @@ fn main() {
             shell::show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let launcher = Launcher::new(platform.clone(), daemon_env);
             let bridge = Bridge::start(platform.clone() as Arc<dyn Platform>, launcher);
@@ -189,7 +255,9 @@ fn main() {
             ipc_subscribe,
             app_ready,
             smoke_finish,
-            pick_folder
+            pick_folder,
+            save_artifact,
+            open_artifact
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {

@@ -203,6 +203,18 @@ pub enum Request {
         offset: u64,
         limit: u32,
     },
+    /// Writes an artifact to a file the user picked ("Save to…"), replacing it.
+    SaveArtifact {
+        id: String,
+        /// Absolute path.
+        path: String,
+    },
+    /// Copies an artifact under `file_name` into Brigadier's cache (emptied at the next start),
+    /// for the user to open with its default app.
+    OpenArtifact {
+        id: String,
+        file_name: String,
+    },
     /// Stops its CLI processes and removes temp files now; the next message continues it.
     Hibernate {
         id: ConversationId,
@@ -402,6 +414,11 @@ pub enum Response {
     },
     ReadArtifact {
         text: ArtifactText,
+    },
+    SaveArtifact,
+    OpenArtifact {
+        /// The copy to open.
+        path: String,
     },
     Hibernate {
         conversation: Box<Conversation>,

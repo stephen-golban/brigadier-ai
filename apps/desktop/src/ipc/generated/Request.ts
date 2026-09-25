@@ -22,7 +22,11 @@ export type Request = { "method": "getCatalog" } | { "method": "createProject", 
 /**
  * Only entries with a smaller `streamSeq` (for paging backwards).
  */
-before: number | null, limit: number, } | { "method": "listOrchestratorLog", conversationId: ConversationId, before: number | null, limit: number, } | { "method": "readArtifact", id: string, offset: number, limit: number, } | { "method": "hibernate", id: ConversationId, } | { "method": "archive", id: ConversationId, } | { "method": "restore", id: ConversationId, } | { "method": "delete", id: ConversationId, 
+before: number | null, limit: number, } | { "method": "listOrchestratorLog", conversationId: ConversationId, before: number | null, limit: number, } | { "method": "readArtifact", id: string, offset: number, limit: number, } | { "method": "saveArtifact", id: string, 
+/**
+ * Absolute path.
+ */
+path: string, } | { "method": "openArtifact", id: string, fileName: string, } | { "method": "hibernate", id: ConversationId, } | { "method": "archive", id: ConversationId, } | { "method": "restore", id: ConversationId, } | { "method": "delete", id: ConversationId, 
 /**
  * Also delete its unmerged branches (otherwise they are kept).
  */

@@ -128,15 +128,26 @@ your checked-out branch (local checkout) or on the session branch `brigadier/<se
 a fast-forward only; if you switched branches, the tip moved unexpectedly or an untracked or
 ignored file would be overwritten, the task waits as "ready to land" and nothing changes.
 
+Workers report through `submit_report`; the orchestrator never sees their messages. Each worker
+has an outputs folder in its scratch folder for files meant for the orchestrator or you (full
+findings, documents, generated images; a Codex worker's generated images are copied there as they
+are made). What it leaves there, and every file its report names or mentions by path, is stored
+with the report before the task's folders are removed, so the orchestrator can read it with
+`read_artifact` after the task ended. A report that names a file that doesn't exist, or one the
+worker wrote to a temp folder, is refused with what to do instead; a worker that writes its
+findings as a message rather than reporting them has that message kept and attached to its
+report. The task card lists the outputs and artifacts with Open and Save to….
+
 Each project can name gitignored env files (for example `.env.local`) as secrets: they are copied
 into each worker's worktree, never committed, and their values are redacted from everything
 Brigadier records. Archiving a session removes its worktrees, scratch and temp folders (a Claude
-worker's is a short `/tmp/brigadier-<id>`, as Claude's sandbox needs), CLI session files and
-processes (the whole process tree, detached children included). Unfinished work is kept as a
-WIP commit on its task branch. When it overlaps uncommitted changes you let workers see, it is
-saved as a patch instead and its branch is deleted, because your uncommitted changes never stay
-in a commit; the task card shows the patch and can restore it as a new branch on the current tip
-of the target branch (or says where it conflicts). A task branch with no work of its own, and an
+worker's is a short `/tmp/brigadier-<id>`, as Claude's sandbox needs), CLI session files (Codex's
+generated images for its threads included) and processes (the whole process tree, detached
+children included). Unfinished work is kept as a WIP commit on its task branch. When it
+overlaps uncommitted changes you let workers see, it is saved as a patch instead and its branch
+is deleted, because your uncommitted changes never stay in a commit; the task card shows the
+patch and can restore it as a new branch on the current tip of the target branch (or says where
+it conflicts). A task branch with no work of its own, and an
 archived session's branch that its base already contains, are deleted too. Anything that could
 not be removed is retried at the next launch.
 
