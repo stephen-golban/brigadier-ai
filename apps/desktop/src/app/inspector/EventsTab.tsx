@@ -57,6 +57,8 @@ function summary(event: DomainEvent): string {
       return `request ${event.request.state.type}`;
     case "workerStepped":
       return `${event.step.kind} ${event.step.taskId}`;
+    case "orchestratorStepped":
+      return event.step.kind.type;
     case "messageRated":
       return `${event.rating} ${event.subject}`;
     case "branchSwitched":

@@ -7,11 +7,11 @@ use brigadier_providers::ProviderKind;
 use super::SessionManager;
 use super::prompts;
 use super::workers::route_label;
-use crate::model::{ConversationId, PermissionLevel, Setup};
+use crate::model::{ConversationId, DomainEvent, PermissionLevel, Setup};
 use crate::tools::{OrchestratorCall, ToolReply, WorkerCall};
 use crate::work::{
-    ApprovalSubject, AttachmentRef, CardId, InjectionKind, Plan, PlanApprover, PlanState, PlanStep,
-    QuestionKind, TaskId, TaskKind,
+    ApprovalSubject, AttachmentRef, CardId, InjectionKind, OrchestratorStep, OrchestratorStepKind,
+    Plan, PlanApprover, PlanState, PlanStep, QuestionKind, TaskId, TaskKind,
 };
 use crate::{Error, Result, now_ms};
 
@@ -91,7 +91,10 @@ impl SessionManager {
             }
             OrchestratorCall::MessageWorker(args) => {
                 let task = self.find_task(id, &args.task).await?;
-                self.message_worker(id, &task, args.text).await
+                let reply = self.message_worker(id, &task, args.text).await?;
+                self.orchestrator_step(id, OrchestratorStepKind::Messaged { task_id: task.id })
+                    .await;
+                Ok(reply)
             }
             OrchestratorCall::StopWorker(args) => {
                 let task = self.find_task(id, &args.task).await?;
@@ -113,7 +116,10 @@ impl SessionManager {
                     .report
                     .as_ref()
                     .ok_or_else(|| Error::Invalid(format!("task-{} has not reported yet", task.number)))?;
-                Ok(prompts::report_envelope(&task, report, &route_label(&task)))
+                let text = prompts::report_envelope(&task, report, &route_label(&task));
+                self.orchestrator_step(id, OrchestratorStepKind::ReadReport { task_id: task.id })
+                    .await;
+                Ok(text)
             }
             OrchestratorCall::ReadArtifact(args) => {
                 let limit = args.limit.unwrap_or(ARTIFACT_PAGE_MAX).min(ARTIFACT_PAGE_MAX);
@@ -128,6 +134,12 @@ impl SessionManager {
                     Err(_) => return Ok(format!("{} is not text ({total} bytes).", args.id)),
                 };
                 let end = offset + text.len() as u64;
+                // Paging on through the same artifact is one read.
+                if offset == 0 {
+                    let name = self.artifact_name(id, &args.id).await;
+                    self.orchestrator_step(id, OrchestratorStepKind::ReadArtifact { name })
+                        .await;
+                }
                 Ok(format!(
                     "[artifact {} bytes {offset}–{end} of {total}]\n{text}{}",
                     args.id,
@@ -156,7 +168,11 @@ impl SessionManager {
             }
             OrchestratorCall::AcceptTask(args) => {
                 let task = self.find_task(id, &args.task).await?;
-                self.accept_task(id, task, args.commit_message).await
+                let task_id = task.id.clone();
+                let reply = self.accept_task(id, task, args.commit_message).await?;
+                self.orchestrator_step(id, OrchestratorStepKind::Accepted { task_id })
+                    .await;
+                Ok(reply)
             }
             OrchestratorCall::FinishSession(args) => self.finish_session(id, args.message).await,
             OrchestratorCall::ListTasks => {
@@ -184,6 +200,38 @@ impl SessionManager {
                     .join("\n"))
             }
         }
+    }
+
+    /// Files a row for the thread under the request the orchestrator serves.
+    pub(crate) async fn orchestrator_step(&self, id: &ConversationId, kind: OrchestratorStepKind) {
+        let step = OrchestratorStep {
+            request_id: self.request_for(id, None).await,
+            kind,
+            at_ms: now_ms(),
+            position: 0,
+        };
+        if let Err(err) = self
+            .core
+            .record_conversation(id, vec![DomainEvent::OrchestratorStepped { step }])
+            .await
+        {
+            tracing::warn!(conversation = %id, error = %err, "could not store an orchestrator step");
+        }
+    }
+
+    /// An artifact's title from the report that lists it, else "an artifact".
+    async fn artifact_name(&self, id: &ConversationId, artifact: &str) -> String {
+        let Ok(board) = self.core.board(id).await else {
+            return "an artifact".into();
+        };
+        board
+            .tasks
+            .values()
+            .filter_map(|task| task.report.as_ref())
+            .flat_map(|report| &report.artifacts)
+            .chain(board.tasks.values().flat_map(|task| &task.outputs))
+            .find(|known| known.id == artifact)
+            .map_or_else(|| "an artifact".into(), |known| known.title.clone())
     }
 
     pub(crate) async fn worker_call(

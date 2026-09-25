@@ -8,6 +8,7 @@ import type { Message } from "./Message";
 import type { MessageQueue } from "./MessageQueue";
 import type { Notice } from "./Notice";
 import type { OrchestratorEntry } from "./OrchestratorEntry";
+import type { OrchestratorStep } from "./OrchestratorStep";
 import type { Plan } from "./Plan";
 import type { Project } from "./Project";
 import type { ProviderEvent } from "./ProviderEvent";
@@ -32,7 +33,7 @@ export type DomainEvent = { "type": "projectCreated", project: Project, } | { "t
 /**
  * The request the turn serves.
  */
-requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, } | { "type": "workerStepped", step: WorkerStep, } | { "type": "messageRated", 
+requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, } | { "type": "workerStepped", step: WorkerStep, } | { "type": "orchestratorStepped", step: OrchestratorStep, } | { "type": "messageRated", 
 /**
  * The answer: a message id, or `task:<id>` for a worker's report.
  */

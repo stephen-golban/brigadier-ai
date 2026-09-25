@@ -24,9 +24,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use brigadier_providers::{
-    Access, ApprovalDecision, Artifact, Decider, ErrorKind, InputFile, McpServer, Origin,
-    ProviderEvent, ProviderKind, ProviderSession, Role as ProviderRole, SessionSpec, Started,
-    ToolSet, TurnInput, TurnStatus,
+    Access, ApprovalDecision, Artifact, Decider, ErrorKind, InputFile, ItemStatus, McpServer,
+    Origin, ProviderEvent, ProviderKind, ProviderSession, Role as ProviderRole, SessionSpec,
+    Started, ToolSet, TurnInput, TurnStatus,
 };
 use brigadier_store::StreamPage;
 use tokio::sync::mpsc;
@@ -41,8 +41,8 @@ use crate::model::{
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
-    AttachmentRef, ContextInjection, InjectionKind, OrchestratorEntry, QueuedMessage, RequestState,
-    RunState, TaskId,
+    AttachmentRef, ContextInjection, InjectionKind, OrchestratorEntry, OrchestratorStepKind,
+    QueuedMessage, RequestState, RunState, TaskId,
 };
 use crate::{Error, Result, now_ms};
 
@@ -1184,6 +1184,16 @@ impl SessionManager {
             ProviderEvent::Notice { level, message } => {
                 self.notice(&conv.id, *level, message).await;
             }
+            ProviderEvent::ToolCall {
+                name,
+                input,
+                status: ItemStatus::Completed,
+                ..
+            } if conv.kind == ConversationKind::Chat => {
+                if let Some(kind) = web_step(name, input.as_deref()) {
+                    self.orchestrator_step(&conv.id, kind).await;
+                }
+            }
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
             }
@@ -1579,5 +1589,26 @@ pub(crate) fn safe_file_name(name: &str) -> String {
         "file".into()
     } else {
         trimmed.chars().take(80).collect()
+    }
+}
+
+/// A Chat's web search or page read, as a row for its answer.
+fn web_step(tool: &str, input: Option<&str>) -> Option<OrchestratorStepKind> {
+    let field = |key: &str| {
+        input
+            .and_then(|input| serde_json::from_str::<serde_json::Value>(input).ok())
+            .and_then(|args| {
+                args.get(key)
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            })
+    };
+    match tool {
+        "WebSearch" => field("query").map(|query| OrchestratorStepKind::SearchedWeb { query }),
+        // Codex gives the query itself.
+        "web_search" => input.map(|query| OrchestratorStepKind::SearchedWeb {
+            query: query.to_owned(),
+        }),
+        "WebFetch" => field("url").map(|url| OrchestratorStepKind::ReadPage { url }),
+        _ => None,
     }
 }

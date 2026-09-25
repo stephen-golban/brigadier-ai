@@ -225,6 +225,9 @@ impl SessionManager {
                     DomainEvent::WorkerStepped { step } if of(&step.request_id) => {
                         DomainEvent::WorkerStepped { step }
                     }
+                    DomainEvent::OrchestratorStepped { step } if of(&step.request_id) => {
+                        DomainEvent::OrchestratorStepped { step }
+                    }
                     DomainEvent::MessageRated { subject, rating }
                         if parents.contains_key(subject.as_str()) || tasks.contains(&subject) =>
                     {

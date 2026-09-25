@@ -3,6 +3,8 @@ import type {
   Approval,
   Message,
   ModelChoice,
+  OrchestratorStep,
+  OrchestratorStepKind,
   Plan,
   Question,
   RequestState,
@@ -45,6 +47,12 @@ export type BlockStep = {
   position: number;
 };
 
+/** Something the orchestrator did ("Sent message to …"), in the order it happened. */
+export type BlockOrchestratorStep = {
+  kind: OrchestratorStepKind;
+  position: number;
+};
+
 /** A message the user steered into the block's running turn: a bubble inside the block. */
 export type BlockSteer = {
   message: Message;
@@ -64,6 +72,8 @@ export type Block = {
   tasks: string[];
   /** Their steps, in order. */
   steps: BlockStep[];
+  /** The orchestrator's steps, in order. */
+  orchestratorSteps: BlockOrchestratorStep[];
   /** Messages steered into its turn, whose requests it shows too. */
   steers: BlockSteer[];
   /** The requests it shows: its own (the key), then the steered ones. */
@@ -82,6 +92,7 @@ export type BoardDigest = {
   plans: Readonly<Record<string, Plan>>;
   requests: Readonly<Record<string, UserRequest>>;
   workerSteps: readonly WorkerStep[];
+  orchestratorSteps: readonly OrchestratorStep[];
   runRequest: string | null;
   streaming: Board["streaming"];
 };
@@ -140,11 +151,18 @@ type Placed =
   | { kind: "message"; position: number; message: Message; text: string }
   | { kind: "card"; position: number; requestId: string | null; card: BlockCard }
   | { kind: "task"; position: number; requestId: string | null; id: string }
-  | { kind: "step"; position: number; requestId: string | null; step: BlockStep; atMs: number };
+  | { kind: "step"; position: number; requestId: string | null; step: BlockStep; atMs: number }
+  | {
+      kind: "orchestrator";
+      position: number;
+      requestId: string | null;
+      step: BlockOrchestratorStep;
+      atMs: number;
+    };
 
 function createdAt(board: BoardDigest, item: Exclude<Placed, { kind: "message" }>): number {
   if (item.kind === "task") return board.tasks[item.id]?.createdAtMs ?? 0;
-  if (item.kind === "step") return item.atMs;
+  if (item.kind === "step" || item.kind === "orchestrator") return item.atMs;
   const { type, id } = item.card;
   const card =
     type === "task"
@@ -193,6 +211,15 @@ export function buildBlocks(
       position: step.position,
       requestId: step.requestId,
       step: { taskId: step.taskId, kind: step.kind, position: step.position },
+      atMs: step.atMs,
+    });
+  }
+  for (const step of board.orchestratorSteps) {
+    placed.push({
+      kind: "orchestrator",
+      position: step.position,
+      requestId: step.requestId,
+      step: { kind: step.kind, position: step.position },
       atMs: step.atMs,
     });
   }
@@ -255,6 +282,7 @@ export function buildBlocks(
         cards: [],
         tasks: [],
         steps: [],
+        orchestratorSteps: [],
         steers: [],
         requestIds: [key],
         state: request?.state.type ?? "done",
@@ -299,6 +327,7 @@ export function buildBlocks(
     const block = open(key, 0);
     if (item.kind === "task") block.tasks.push(item.id);
     else if (item.kind === "step") block.steps.push(item.step);
+    else if (item.kind === "orchestrator") block.orchestratorSteps.push(item.step);
     else block.cards.push(item.card);
   }
 
@@ -328,6 +357,7 @@ export function buildBlocks(
       cards: [],
       tasks: [],
       steps: [],
+      orchestratorSteps: [],
       steers: [],
       requestIds: [entry.localId],
       state: "working",
@@ -364,6 +394,7 @@ function joinSteered(blocks: Block[], requests: BoardDigest["requests"]): Block[
       cards: [...previous.cards, ...block.cards],
       tasks: [...previous.tasks, ...block.tasks],
       steps: [...previous.steps, ...block.steps],
+      orchestratorSteps: [...previous.orchestratorSteps, ...block.orchestratorSteps],
       steers: [
         ...previous.steers,
         {
@@ -397,7 +428,11 @@ export function isWorking(task: Task): boolean {
 /** Whether a block has anything to show: a finished block with nothing in it hides. */
 export function blockShows(block: Block): boolean {
   return (
-    block.texts.length > 0 || block.cards.length > 0 || block.tasks.length > 0 || block.state !== "done"
+    block.texts.length > 0 ||
+    block.cards.length > 0 ||
+    block.tasks.length > 0 ||
+    block.orchestratorSteps.length > 0 ||
+    block.state !== "done"
   );
 }
 
@@ -554,6 +589,7 @@ const EMPTY_WORK: BoardDigest = {
   plans: {},
   requests: {},
   workerSteps: [],
+  orchestratorSteps: [],
   runRequest: null,
   streaming: null,
 };

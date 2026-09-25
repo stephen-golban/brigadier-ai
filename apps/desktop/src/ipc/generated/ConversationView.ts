@@ -4,6 +4,7 @@ import type { Conversation } from "./Conversation";
 import type { MessagePage } from "./MessagePage";
 import type { MessageQueue } from "./MessageQueue";
 import type { Notice } from "./Notice";
+import type { OrchestratorStep } from "./OrchestratorStep";
 import type { Plan } from "./Plan";
 import type { Question } from "./Question";
 import type { Rating } from "./Rating";
@@ -29,7 +30,11 @@ requests: Array<UserRequest>,
 /**
  * Every worker step, in the order they happened.
  */
-workerSteps: Array<WorkerStep>, queue: MessageQueue, run: RunState, 
+workerSteps: Array<WorkerStep>, 
+/**
+ * Every orchestrator step, in the order they happened.
+ */
+orchestratorSteps: Array<OrchestratorStep>, queue: MessageQueue, run: RunState, 
 /**
  * The request the running turn serves.
  */

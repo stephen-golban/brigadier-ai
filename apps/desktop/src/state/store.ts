@@ -411,6 +411,7 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "requestUpdated":
     case "branchSwitched":
     case "workerStepped":
+    case "orchestratorStepped":
     case "messageRated":
     case "conversationNotice":
     case "taskUpdated":
