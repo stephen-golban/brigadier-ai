@@ -3,7 +3,7 @@ import {
   ComposerPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { Paperclip, Spin, Warning, X } from "@openai/apps-sdk-ui/components/Icon";
+import { Spin, Warning, X } from "@openai/apps-sdk-ui/components/Icon";
 import type { FC } from "react";
 
 import { AttachmentIcon } from "@/components/assistant-ui/elements/message-attachment";
@@ -60,17 +60,4 @@ export const ComposerAttachments: FC = () => (
   >
     <ComposerPrimitive.Attachments>{() => <ComposerAttachment />}</ComposerPrimitive.Attachments>
   </div>
-);
-
-export const ComposerAddAttachment: FC = () => (
-  <ComposerPrimitive.AddAttachment asChild>
-    <TooltipIconButton
-      tooltip="Attach files"
-      side="bottom"
-      size="icon-md"
-      className="text-muted-foreground rounded-capsule"
-    >
-      <Paperclip />
-    </TooltipIconButton>
-  </ComposerPrimitive.AddAttachment>
 );

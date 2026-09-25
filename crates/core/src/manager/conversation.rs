@@ -61,6 +61,8 @@ const MENTIONED_CHAT_BYTES: usize = 24_000;
 /// A Chat's text attachments up to this size go into the message itself.
 const CHAT_INLINE_MAX_BYTES: usize = 200_000;
 const ENDED_UNEXPECTEDLY: &str = "The CLI session ended unexpectedly.";
+/// Sent with every turn while the session is in plan mode.
+const PLAN_MODE_NOTE: &str = "[plan mode] The user turned plan mode on: work out a plan and change nothing. Scouts and research may look around; then call propose_plan and wait for the user's decision. Implement and merge tasks, accept_task and finish_session are refused until the user approves a plan.";
 
 /// Where a sent message went.
 #[derive(Debug, Clone)]
@@ -1023,7 +1025,8 @@ impl SessionManager {
         .await
     }
 
-    /// The turn's input: user messages verbatim, then Brigadier's notes (the envelopes).
+    /// The turn's input: user messages verbatim, then Brigadier's notes (the envelopes)
+    /// and, in plan mode, a reminder of it.
     /// Images go along as images. Other attachments are named so the orchestrator can hand
     /// them to workers; a Chat cannot open files, so it gets text files inline.
     async fn turn_input(
@@ -1082,6 +1085,9 @@ impl SessionManager {
                 }
             }
             parts.push(text);
+        }
+        if conv.kind == ConversationKind::Session && self.plan_mode(&conv.id) {
+            parts.push(PLAN_MODE_NOTE.into());
         }
         parts.extend(notes.iter().cloned());
         TurnInput {

@@ -24,11 +24,9 @@ import { type ComposerTarget, ComposerTargetContext } from "@/app/conversation/c
 import { PendingActionCard, usePendingActions, WaitingReminder } from "@/app/conversation/ActionCards";
 import { QueueCard, usePullQueued } from "@/app/conversation/QueueCard";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
+import { PLAN_PLACEHOLDER, PlanChip, PlusMenu, usePlanMode } from "@/app/conversation/PlusMenu";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
-import {
-  ComposerAddAttachment,
-  ComposerAttachments,
-} from "@/components/assistant-ui/elements/attachment";
+import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
@@ -49,6 +47,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   const [modelOpen, setModelOpen] = useState(false);
   const statusCard = useContext(StatusCardContext);
   const pending = usePendingActions(target?.conversation ?? null);
+  const plan = usePlanMode(target);
   // Cards put aside with ×, for the conversation they belong to.
   const [aside, setAside] = useState<{ conversationId: string | null; ids: string[] }>({
     conversationId: null,
@@ -64,7 +63,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <div className="group/composer relative w-full">
+      <div data-slot="composer" className="group/composer relative w-full">
         {conversation && (
           <Mentions conversation={conversation} targets={targets} memory={target.mentions} />
         )}
@@ -108,13 +107,19 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
           >
             <ComposerAttachments />
             <ComposerInput
-              placeholder={archived ? "Restore this conversation to continue it." : placeholder}
+              placeholder={
+                archived
+                  ? "Restore this conversation to continue it."
+                  : plan.on
+                    ? PLAN_PLACEHOLDER
+                    : placeholder
+              }
               autoFocus={autoFocus}
               running={target.running}
             />
             <div className="flex items-center gap-1">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
-                <ComposerAddAttachment />
+                <PlusMenu />
                 {conversation ? (
                   <ConversationPermissionPicker conversation={conversation} />
                 ) : (
@@ -127,6 +132,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                     />
                   )
                 )}
+                <PlanChip />
               </div>
               {conversation && <ComposerContextRing />}
               {conversation ? (

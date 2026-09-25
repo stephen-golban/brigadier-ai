@@ -95,6 +95,7 @@ impl SessionManager {
                 permission,
                 orchestrator,
                 workers_see_uncommitted,
+                plan_mode,
             }) => {
                 let start = self
                     .fork_commit(&repo, &environment, &board, &copied)
@@ -108,6 +109,7 @@ impl SessionManager {
                     permission,
                     orchestrator,
                     workers_see_uncommitted,
+                    plan_mode,
                 })
             }
             other => other,

@@ -214,6 +214,9 @@ pub enum SetupRequest {
         environment: EnvironmentRequest,
         permission: PermissionLevel,
         orchestrator: ModelChoice,
+        /// Start in plan mode (see [`Setup::Session`]).
+        #[serde(default)]
+        plan_mode: bool,
     },
     Chat {
         model: ModelChoice,
@@ -244,6 +247,11 @@ pub enum Setup {
         /// Local checkout with uncommitted changes: whether workers start from them. Absent
         /// until the user answered (or when the checkout was clean).
         workers_see_uncommitted: Option<bool>,
+
+        /// Plan mode: the orchestrator plans and changes nothing until the user approves a
+        /// plan, whatever the permission level. Approving one turns it off.
+        #[serde(default)]
+        plan_mode: bool,
     },
     Chat {
         model: ModelChoice,
@@ -261,6 +269,7 @@ impl Setup {
                 environment,
                 permission,
                 orchestrator,
+                plan_mode,
             } => Self::Session {
                 repo,
                 environment: match environment {
@@ -279,6 +288,7 @@ impl Setup {
                 permission,
                 orchestrator,
                 workers_see_uncommitted: None,
+                plan_mode,
             },
             SetupRequest::Chat { model } => Self::Chat { model },
         }

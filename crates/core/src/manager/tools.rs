@@ -186,6 +186,7 @@ impl SessionManager {
                 Ok("Asked the user. The decision arrives later as a message.".into())
             }
             OrchestratorCall::AcceptTask(args) => {
+                self.check_plan_mode(id)?;
                 let task = self.find_task(id, &args.task).await?;
                 let task_id = task.id.clone();
                 let reply = self.accept_task(id, task, args.commit_message).await?;
@@ -193,7 +194,10 @@ impl SessionManager {
                     .await;
                 Ok(reply)
             }
-            OrchestratorCall::FinishSession(args) => self.finish_session(id, args.message).await,
+            OrchestratorCall::FinishSession(args) => {
+                self.check_plan_mode(id)?;
+                self.finish_session(id, args.message).await
+            }
             OrchestratorCall::ListTasks => {
                 let tasks = self.core.tasks(id).await?;
                 if tasks.is_empty() {
@@ -297,9 +301,21 @@ impl SessionManager {
         Ok((plan, index))
     }
 
+    /// In plan mode nothing changes until the user approves a plan: write tasks, accepting
+    /// and finishing are refused, whatever the permission level.
+    fn check_plan_mode(&self, id: &ConversationId) -> Result<()> {
+        if self.plan_mode(id) {
+            return Err(Error::Invalid(
+                "Plan mode is on: change nothing yet. Scouts and research may look around; call propose_plan and wait for the user's decision. Implement and merge tasks, accept_task and finish_session work again once the user approves a plan.".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Under "Ask for approval", write tasks wait for an approved plan, and for the user's
     /// decision on a newer plan still open.
     async fn check_plan_gate(&self, id: &ConversationId) -> Result<()> {
+        self.check_plan_mode(id)?;
         let conversation = self.core.conversation(id)?;
         let Some(Setup::Session { permission, .. }) = conversation.setup else {
             return Ok(());
@@ -341,6 +357,10 @@ impl SessionManager {
         }
         let conversation = self.core.conversation(id)?;
         let permission = match conversation.setup {
+            // In plan mode the user decides the plan, whatever the permission level.
+            Some(Setup::Session {
+                plan_mode: true, ..
+            }) => PermissionLevel::AskForApproval,
             Some(Setup::Session { permission, .. }) => permission,
             _ => PermissionLevel::ApproveForMe,
         };

@@ -72,9 +72,11 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
   const reviewNumber = useBoard((s) =>
     plan?.state.type === "inReview" ? s.board?.tasks[plan.state.taskId]?.number : undefined,
   );
-  const permission = useApp((s) => {
+  // Who decides a proposed plan: the user under Ask for approval or in plan mode.
+  const decider = useApp((s) => {
     const setup = plan ? s.conversations[plan.conversationId]?.setup : null;
-    return setup?.type === "session" ? setup.permission : null;
+    if (setup?.type !== "session") return null;
+    return setup.permission === "askForApproval" || setup.planMode ? "user" : "brigadier";
   });
   if (!plan) return null;
 
@@ -112,10 +114,10 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
           {plan.state.type === "rejected" && plan.state.message && (
             <p className="text-muted-foreground text-xs">Rejected: {plan.state.message}</p>
           )}
-          {proposed && permission === "askForApproval" && (
+          {proposed && decider === "user" && (
             <p className="text-muted-foreground shimmer text-xs">Waiting for your decision</p>
           )}
-          {proposed && permission !== null && permission !== "askForApproval" && (
+          {proposed && decider === "brigadier" && (
             <p className="text-muted-foreground text-xs">
               Brigadier decides this plan for you
               {plan.risky ? " after a cross-vendor plan review" : ""}.

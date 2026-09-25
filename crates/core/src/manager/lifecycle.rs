@@ -282,6 +282,7 @@ impl SessionManager {
             permission,
             orchestrator,
             workers_see_uncommitted,
+            plan_mode,
         }) = conversation.setup.clone()
             && session_worktree_goes
         {
@@ -329,6 +330,7 @@ impl SessionManager {
                         permission,
                         orchestrator,
                         workers_see_uncommitted,
+                        plan_mode,
                     },
                 )
                 .await;

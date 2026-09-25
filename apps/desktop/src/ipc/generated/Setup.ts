@@ -11,4 +11,9 @@ export type Setup = { "type": "session", repo: string, environment: Environment,
  * Local checkout with uncommitted changes: whether workers start from them. Absent
  * until the user answered (or when the checkout was clean).
  */
-workersSeeUncommitted: boolean | null, } | { "type": "chat", model: ModelChoice, };
+workersSeeUncommitted: boolean | null, 
+/**
+ * Plan mode: the orchestrator plans and changes nothing until the user approves a
+ * plan, whatever the permission level. Approving one turns it off.
+ */
+planMode: boolean, } | { "type": "chat", model: ModelChoice, };

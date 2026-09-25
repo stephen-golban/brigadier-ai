@@ -46,6 +46,8 @@ export type DraftSetup = {
   sessionBranch: string;
   permission: PermissionLevel | null;
   model: ModelChoice | null;
+  /** The session starts in plan mode. */
+  planMode: boolean;
 };
 
 export function emptyDraft(projectId: string | null): DraftSetup {
@@ -58,6 +60,7 @@ export function emptyDraft(projectId: string | null): DraftSetup {
     sessionBranch: "",
     permission: null,
     model: null,
+    planMode: false,
   };
 }
 

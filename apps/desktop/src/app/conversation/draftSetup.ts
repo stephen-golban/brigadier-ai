@@ -142,6 +142,7 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
         environment: request,
         permission,
         orchestrator: model,
+        planMode: draft.planMode,
       };
       target = { kind: "session", projectId: project.id, setup };
     }
