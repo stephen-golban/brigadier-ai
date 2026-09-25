@@ -637,6 +637,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 "a terminal opens on the connection that shows it".into(),
             )));
         }
+        Request::OpenSideChat { conversation_id } => Response::OpenSideChat {
+            conversation: Box::new(sessions.open_side_chat(&conversation_id).await?),
+        },
         Request::WriteTerminal { terminal_id, data } => {
             daemon.terminals.write(&terminal_id, &data)?;
             Response::WriteTerminal

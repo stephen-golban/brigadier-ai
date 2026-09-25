@@ -26,7 +26,7 @@ export type Request = { "method": "getCatalog" } | { "method": "getActivity" } |
 /**
  * Relative to the checkout's root.
  */
-path: string, } | { "method": "openTerminal", conversationId: ConversationId, cols: number, rows: number, } | { "method": "writeTerminal", terminalId: string, data: string, } | { "method": "resizeTerminal", terminalId: string, cols: number, rows: number, } | { "method": "closeTerminal", terminalId: string, } | { "method": "rateMessage", conversationId: ConversationId, 
+path: string, } | { "method": "openTerminal", conversationId: ConversationId, cols: number, rows: number, } | { "method": "openSideChat", conversationId: ConversationId, } | { "method": "writeTerminal", terminalId: string, data: string, } | { "method": "resizeTerminal", terminalId: string, cols: number, rows: number, } | { "method": "closeTerminal", terminalId: string, } | { "method": "rateMessage", conversationId: ConversationId, 
 /**
  * A message id, or `task:<id>` for a worker's report.
  */

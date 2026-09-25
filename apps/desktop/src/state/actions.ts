@@ -26,6 +26,7 @@ import type {
 import { applyDensity } from "@/lib/density";
 import {
   boardFromView,
+  boardOf,
   collectBoardEvents,
   emptyBoard,
   ORCHESTRATOR_ENTRIES,
@@ -100,11 +101,7 @@ export async function loadConversation(id: string): Promise<void> {
         ? state
         : { conversations: { ...state.conversations, [id]: view.conversation } };
     });
-    useBoard.setState((state) =>
-      state.board?.conversationId === id
-        ? { board: boardFromView(view, state.board, events) }
-        : state,
-    );
+    updateBoard(id, (board) => boardFromView(view, board, events));
   } catch (error) {
     arrived();
     updateThread(id, (thread) => ({ ...thread, loading: false }));
@@ -289,20 +286,31 @@ export type DraftTarget =
 export type SendLane = "auto" | "steer" | "queue";
 
 /**
- * Sends a user message from the current view. A draft first becomes a real chat or session
- * with the composer's setup; the message shows immediately and is replaced by the daemon's
- * copy once committed. While a turn runs the daemon queues it, unless queueing is off, in
+ * Sends a user message to `to`, else the selected conversation. A draft first becomes a real
+ * chat or session with the composer's setup; the message shows immediately and is replaced by
+ * the daemon's copy once committed. While a turn runs the daemon queues it, unless queueing is off, in
  * which case it steers the running turn. `queueIndex` puts a message that waits back in its
  * old slot (a queued message pulled out to edit, or a deleted one restored).
  */
 export async function send(
   outgoing: Outgoing,
   draft?: DraftTarget,
-  { lane = "auto", queueIndex = null }: { lane?: SendLane; queueIndex?: number | null } = {},
+  {
+    lane = "auto",
+    queueIndex = null,
+    to = null,
+  }: {
+    lane?: SendLane;
+    queueIndex?: number | null;
+    /** The conversation it goes to, when not the selected one (a side chat's). */
+    to?: string | null;
+  } = {},
 ): Promise<void> {
   const { selection, settings } = useApp.getState();
   let conversationId: string;
-  if (selection.type === "conversation") {
+  if (to) {
+    conversationId = to;
+  } else if (selection.type === "conversation") {
     conversationId = selection.id;
   } else if (selection.type === "draft" && draft) {
     const { conversation } = await request({
@@ -324,12 +332,10 @@ export async function send(
     return;
   }
 
-  const board = useBoard.getState().board;
-  const running =
-    board?.conversationId === conversationId &&
-    (board.run === "running" || board.run === "starting");
+  const board = boardOf(conversationId);
+  const running = board !== null && (board.run === "running" || board.run === "starting");
   const steer = lane === "steer" || (lane === "auto" && running && !settings.queueEnabled);
-  const queue = board?.conversationId === conversationId ? board.queue : null;
+  const queue = board?.queue ?? null;
   // Asked to queue with no slot: last.
   const slot = steer ? null : (queueIndex ?? (lane === "queue" ? (queue?.items.length ?? 0) : null));
   // A message that waits shows in the queue, not the thread; a steered one arrives as an event.

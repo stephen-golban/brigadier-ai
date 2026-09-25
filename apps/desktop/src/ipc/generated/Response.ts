@@ -40,7 +40,7 @@ files: Array<string>,
 /**
  * Set when the checkout has more files than were listed.
  */
-truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "openTerminal", terminal: TerminalInfo, } | { "method": "writeTerminal" } | { "method": "resizeTerminal" } | { "method": "closeTerminal" } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
+truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "openTerminal", terminal: TerminalInfo, } | { "method": "openSideChat", conversation: Conversation, } | { "method": "writeTerminal" } | { "method": "resizeTerminal" } | { "method": "closeTerminal" } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
 /**
  * Absent for Chats and local-checkout sessions.
  */

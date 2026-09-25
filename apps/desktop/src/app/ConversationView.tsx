@@ -13,7 +13,6 @@ import {
 } from "@assistant-ui/react";
 import { Unarchive, X } from "@openai/apps-sdk-ui/components/Icon";
 import {
-  createContext,
   type FC,
   useCallback,
   useContext,
@@ -51,6 +50,7 @@ import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
 import { StatusCardContext } from "@/app/conversation/StatusCard";
 import { ComposerCapsule } from "@/app/conversation/ComposerCapsule";
 import { useAction } from "@/app/conversation/useAction";
+import { ViewContext } from "@/app/conversation/viewContext";
 import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
 import { TopBar } from "@/app/TopBar";
 import { MessageAttachments } from "@/components/assistant-ui/elements/message-attachment";
@@ -63,7 +63,6 @@ import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread"
 import { Button } from "@/components/ui/button";
 import type {
   AttachmentRef,
-  Conversation,
   Mention,
   ModelChoice,
   Notice,
@@ -395,7 +394,17 @@ function useMentionTargets(conversationId: string | null): MentionTarget[] {
   }, [flat]);
 }
 
-export function ConversationView({ selection }: { selection: Selection }) {
+/**
+ * A conversation's thread and composer, with its title bar, pinned card and side panel; or,
+ * `embedded` in another one's side panel (a side chat), the thread and composer alone.
+ */
+export function ConversationView({
+  selection,
+  embedded = false,
+}: {
+  selection: Selection;
+  embedded?: boolean;
+}) {
   const conversationId = selection.type === "conversation" ? selection.id : null;
   const conversation = useApp((s) =>
     conversationId ? (s.conversations[conversationId] ?? null) : null,
@@ -502,7 +511,16 @@ export function ConversationView({ selection }: { selection: Selection }) {
     () => new Map(tree.nodes.map((node) => [node.id, node.head])),
     [tree.nodes],
   );
-  const { panel: sidePanel, agents } = useSidePanel(conversationId, session);
+  const { panel: sidePanel, agents } = useSidePanel(
+    conversationId,
+    embedded || conversation?.sideOf
+      ? "sideChat"
+      : session
+        ? "session"
+        : conversation
+          ? "chat"
+          : null,
+  );
   const [renaming, setRenaming] = useState(false);
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
@@ -540,7 +558,11 @@ export function ConversationView({ selection }: { selection: Selection }) {
       send(
         { text, attachments: refs, mentions: mentionsIn(text, targets, known) },
         draftTarget ?? undefined,
-        { lane: into, queueIndex: into === "steer" ? null : (slot?.index ?? null) },
+        {
+          lane: into,
+          queueIndex: into === "steer" ? null : (slot?.index ?? null),
+          to: conversationId,
+        },
       ).catch(fail);
     },
     [attachments, pulled, conversationId, targets, mentions, draftTarget, fail],
@@ -706,7 +728,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
     [checkout, openFile],
   );
   return (
-    <ViewContext.Provider value={{ selection, conversation }}>
+    <ViewContext.Provider value={{ selection, conversation, embedded }}>
       <ComposerTargetContext.Provider value={target}>
         <SidePanelContext.Provider value={sidePanel}>
           <AgentsPanelContext.Provider value={agents}>
@@ -714,15 +736,17 @@ export function ConversationView({ selection }: { selection: Selection }) {
               <AssistantRuntimeProvider runtime={runtime}>
                 <AttachmentReaderContext.Provider value={reader}>
                   <OpenFileContext.Provider value={openFileAt}>
-                    <div className="flex h-full">
+                    <div data-embedded-view={embedded || undefined} className="flex h-full min-h-0">
                       <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
-                        <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
-                          {conversation && (
-                            <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
-                          )}
-                          {conversation?.kind === "session" && <PinnedSummaryToggle />}
-                          {!sidePanel.state.open && <SidePanelToggle />}
-                        </TopBar>
+                        {!embedded && (
+                          <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
+                            {conversation && (
+                              <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
+                            )}
+                            {conversation?.kind === "session" && <PinnedSummaryToggle />}
+                            {!sidePanel.state.open && <SidePanelToggle />}
+                          </TopBar>
+                        )}
                         {error && (
                           <p
                             role="alert"
@@ -740,7 +764,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
                           </p>
                         )}
                         <div className="relative min-h-0 flex-1">
-                          {conversation && <PinnedSummary conversation={conversation} />}
+                          {conversation && !embedded && <PinnedSummary conversation={conversation} />}
                           <Thread
                             components={THREAD_COMPONENTS}
                             // ChatGPT's one placeholder, in every conversation.
@@ -748,7 +772,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
                           />
                         </div>
                       </div>
-                      <SidePanel conversationId={conversationId} />
+                      {!embedded && <SidePanel conversationId={conversationId} />}
                     </div>
                   </OpenFileContext.Provider>
                   {conversation && (
@@ -768,20 +792,22 @@ export function ConversationView({ selection }: { selection: Selection }) {
   );
 }
 
-/** The view's selection and conversation, for the thread slots below (which take no props). */
-const ViewContext = createContext<{ selection: Selection; conversation: Conversation | null }>({
-  selection: { type: "none" },
-  conversation: null,
-});
-
-/** ChatGPT's hero over a new chat: "What should we build in {project}?". */
+/** ChatGPT's hero over a new chat: "What should we build in {project}?". A side chat says
+ * what it is for instead. */
 const Welcome: FC = () => {
-  const { selection } = useContext(ViewContext);
+  const { selection, embedded } = useContext(ViewContext);
   const project = useApp((s) =>
     selection.type === "draft" && selection.kind === "session"
       ? (s.projects[selection.projectId] ?? null)
       : null,
   );
+  if (embedded) {
+    return (
+      <p className="text-muted-foreground mb-6 px-2 text-center text-sm">
+        Ask about this conversation without adding to it
+      </p>
+    );
+  }
   return (
     <h1 className="font-display tracking-hero mb-6 px-2 text-center text-2xl">
       {project ? (

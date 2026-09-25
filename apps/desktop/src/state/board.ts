@@ -1,4 +1,5 @@
-import { create } from "zustand";
+import { createContext, useContext } from "react";
+import { createStore, type StoreApi, useStore } from "zustand";
 
 import type {
   Approval,
@@ -91,7 +92,58 @@ type BoardState = {
   orchestrator: OrchestratorLog | null;
 };
 
-export const useBoard = create<BoardState>()(() => ({ board: null, orchestrator: null }));
+export type BoardStore = StoreApi<BoardState>;
+
+/** The open conversation's board (and the Inspector's orchestrator log). */
+const mainBoard: BoardStore = createStore<BoardState>()(() => ({
+  board: null,
+  orchestrator: null,
+}));
+
+/** Side chats' boards, each shown beside the open conversation in its side panel. */
+const sideBoards = new Set<BoardStore>();
+
+/** The board the components below read: the open conversation's, unless a side chat's. */
+export const BoardStoreContext = createContext<BoardStore>(mainBoard);
+
+/**
+ * Reads the board of the view it renders in. `getState`/`setState` are the open
+ * conversation's board, for code outside any view.
+ */
+export function useBoard<T>(selector: (state: BoardState) => T): T {
+  return useStore(useContext(BoardStoreContext), selector);
+}
+useBoard.getState = mainBoard.getState;
+useBoard.setState = mainBoard.setState;
+
+/** A board for a side chat, fed by the same events as the open one's until disposed. */
+export function createSideBoard(conversationId: string): BoardStore {
+  const store = createStore<BoardState>()(() => ({
+    board: emptyBoard(conversationId),
+    orchestrator: null,
+  }));
+  sideBoards.add(store);
+  return store;
+}
+
+export function disposeSideBoard(store: BoardStore): void {
+  sideBoards.delete(store);
+}
+
+/** The board showing `conversationId`, the open one's or a side chat's, if any does. */
+export function boardOf(conversationId: string): Board | null {
+  for (const store of [mainBoard, ...sideBoards]) {
+    const { board } = store.getState();
+    if (board?.conversationId === conversationId) return board;
+  }
+  return null;
+}
+
+/** The conversations side boards show. */
+export function sideBoardIds(): string[] {
+  return [...sideBoards].flatMap((store) => store.getState().board?.conversationId ?? []);
+}
+
 
 const EMPTY_QUEUE: MessageQueue = { items: [], paused: false };
 
@@ -418,8 +470,9 @@ function applyToLog(log: OrchestratorLog, envelope: EventEnvelope): Orchestrator
 }
 
 /**
- * Routes a batch of events to the open conversation's board and the Inspector's orchestrator
- * log, in one update. Everything else is ignored here: other conversations have no board.
+ * Routes a batch of events to the open conversation's board, the side chats' boards and the
+ * Inspector's orchestrator log, one update each. Everything else is ignored here: other
+ * conversations have no board.
  */
 export function applyBoardEvents(envelopes: readonly EventEnvelope[]): void {
   for (const load of viewLoads) {
@@ -430,7 +483,11 @@ export function applyBoardEvents(envelopes: readonly EventEnvelope[]): void {
       }
     }
   }
-  const { board, orchestrator } = useBoard.getState();
+  for (const store of [mainBoard, ...sideBoards]) applyToStore(store, envelopes);
+}
+
+function applyToStore(store: BoardStore, envelopes: readonly EventEnvelope[]): void {
+  const { board, orchestrator } = store.getState();
   if (!board && !orchestrator) return;
   const conversationStream = board ? `conversation:${board.conversationId}` : null;
   const boardLogStream = board ? `orch:${board.conversationId}` : null;
@@ -454,13 +511,15 @@ export function applyBoardEvents(envelopes: readonly EventEnvelope[]): void {
     }
   }
   if (nextBoard !== board || nextLog !== orchestrator) {
-    useBoard.setState({ board: nextBoard, orchestrator: nextLog });
+    store.setState({ board: nextBoard, orchestrator: nextLog });
   }
 }
 
-/** Updates the open board if it is still the given conversation's. */
+/** Updates every board that shows the given conversation (the open one's, a side chat's). */
 export function updateBoard(conversationId: string, update: (board: Board) => Board): void {
-  useBoard.setState((state) =>
-    state.board?.conversationId === conversationId ? { board: update(state.board) } : state,
-  );
+  for (const store of [mainBoard, ...sideBoards]) {
+    store.setState((state) =>
+      state.board?.conversationId === conversationId ? { board: update(state.board) } : state,
+    );
+  }
 }

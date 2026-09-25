@@ -1126,6 +1126,13 @@ impl SessionManager {
             }
             parts.push(text);
         }
+        // A side chat answers about the conversation beside it, as it stands now.
+        if let Ok(record) = self.core.conversation(&conv.id)
+            && let Some(parent) = &record.side_of
+            && let Ok(beside) = self.core.conversation(parent)
+        {
+            parts.push(self.side_chat_context(parent, &beside.title).await);
+        }
         if conv.kind == ConversationKind::Session && self.plan_mode(&conv.id) {
             parts.push(PLAN_MODE_NOTE.into());
         }
@@ -1139,6 +1146,35 @@ impl SessionManager {
     /// Another conversation the user @-mentioned, as context: its latest messages on the
     /// branch it shows (bounded).
     async fn mentioned_chat(&self, id: &ConversationId, title: &str) -> String {
+        let lines = self.latest_messages(id).await;
+        if lines.is_empty() {
+            return format!("\n[mentions the conversation \"{title}\", which has no messages]");
+        }
+        format!(
+            "\n[mentions the conversation \"{title}\"; its latest messages follow]\n{}\n[/conversation]",
+            lines.join("\n\n")
+        )
+    }
+
+    /// What a side chat's turn carries: the conversation it sits beside, as it stands.
+    async fn side_chat_context(&self, id: &ConversationId, title: &str) -> String {
+        let lines = self.latest_messages(id).await;
+        let intro = format!(
+            "[This is a side chat beside the conversation \"{title}\": the user asks about it \
+             here without adding to it, and nothing here changes it."
+        );
+        if lines.is_empty() {
+            return format!("{intro} It has no messages yet.]");
+        }
+        format!(
+            "{intro} Its latest messages follow.]\n{}\n[/conversation]",
+            lines.join("\n\n")
+        )
+    }
+
+    /// A conversation's latest messages on the branch it shows, oldest first, as
+    /// "User: …" / "Assistant: …" (bounded).
+    async fn latest_messages(&self, id: &ConversationId) -> Vec<String> {
         let branch = match self.core.head(id).await {
             Ok(Some(head)) => self.core.branch(id, &head).await.unwrap_or_default(),
             _ => Vec::new(),
@@ -1158,14 +1194,8 @@ impl SessionManager {
             }
             lines.push(line);
         }
-        if lines.is_empty() {
-            return format!("\n[mentions the conversation \"{title}\", which has no messages]");
-        }
         lines.reverse();
-        format!(
-            "\n[mentions the conversation \"{title}\"; its latest messages follow]\n{}\n[/conversation]",
-            lines.join("\n\n")
-        )
+        lines
     }
 
     async fn full_text(&self, message: &Message) -> String {

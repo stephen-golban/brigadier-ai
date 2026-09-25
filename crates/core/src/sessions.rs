@@ -31,6 +31,14 @@ const TITLE_CHARS: usize = 60;
 const REQUEST_PREVIEW_CHARS: usize = 80;
 const NEW_SESSION_TITLE: &str = "New session";
 const NEW_CHAT_TITLE: &str = "New chat";
+
+/// Where a new conversation comes from: a fork's source, or the conversation a side chat
+/// sits beside. Neither for a new session or Chat.
+#[derive(Debug, Clone, Default)]
+pub struct Origin {
+    pub forked_from: Option<ForkOrigin>,
+    pub side_of: Option<ConversationId>,
+}
 /// Diagnostic probes kept on disk; older ones are trimmed as new ones arrive.
 const PROBES_KEPT: u32 = 10_000;
 const MAX_PROBES: u32 = 5_000;
@@ -208,7 +216,7 @@ impl Core {
         project_id: Option<ProjectId>,
         title: Option<String>,
         setup: Option<Setup>,
-        forked_from: Option<ForkOrigin>,
+        origin: Origin,
     ) -> Result<Conversation> {
         match (&setup, kind) {
             (Some(Setup::Session { .. }), ConversationKind::Chat)
@@ -266,7 +274,8 @@ impl Core {
             updated_at_ms: now,
             setup,
             lifecycle: Lifecycle::Active,
-            forked_from,
+            forked_from: origin.forked_from,
+            side_of: origin.side_of,
         };
         events.insert(
             0,

@@ -3,6 +3,7 @@ import {
   ExpandLg,
   Folders,
   Plus,
+  PlusCircle,
   SidebarRight,
   Terminal,
   User,
@@ -32,6 +33,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
+import { closeSideChat } from "@/state/sideChats";
 import { closeTerminal } from "@/state/terminals";
 
 const ReviewTab = lazy(() =>
@@ -39,6 +41,9 @@ const ReviewTab = lazy(() =>
 );
 const TerminalTab = lazy(() =>
   import("@/app/conversation/TerminalTab").then((module) => ({ default: module.TerminalTab })),
+);
+const SideChatTab = lazy(() =>
+  import("@/app/conversation/SideChatTab").then((module) => ({ default: module.SideChatTab })),
 );
 const FilesTab = lazy(() =>
   import("@/app/conversation/FilesTab").then((module) => ({ default: module.FilesTab })),
@@ -51,7 +56,7 @@ const FilesTab = lazy(() =>
  */
 
 /** The kinds of tab the side panel opens. */
-export type SideTab = "workers" | "review" | "terminal" | "files";
+export type SideTab = "workers" | "review" | "terminal" | "files" | "sideChat";
 
 /** Each tab's title, icon and ChatGPT's shortcut (macOS keys; Ctrl for ⌘ elsewhere). */
 const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | null }> = {
@@ -59,9 +64,10 @@ const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | nul
   review: { title: "Review", icon: <DiffGlyph />, keys: "⌃⇧G" },
   terminal: { title: "Terminal", icon: <Terminal />, keys: "⌃`" },
   files: { title: "Files", icon: <Folders />, keys: "⌘P" },
+  sideChat: { title: "Side chat", icon: <PlusCircle />, keys: "⌥⌘S" },
 };
 
-/** Which tab a key press opens: ChatGPT's ⌃⇧G, ⌃` and ⌘P (Ctrl+P off macOS). */
+/** Which tab a key press opens: ChatGPT's ⌃⇧G, ⌃`, ⌘P and ⌥⌘S (Ctrl for ⌘ off macOS). */
 function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
   const command = mac ? event.metaKey : event.ctrlKey;
   if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyG") {
@@ -71,6 +77,7 @@ function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
     if (event.code === "Backquote") return "terminal";
   }
   if (command && !event.shiftKey && !event.altKey && event.code === "KeyP") return "files";
+  if (command && event.altKey && !event.shiftKey && event.code === "KeyS") return "sideChat";
   return null;
 }
 
@@ -97,7 +104,7 @@ export type SidePanelApi = {
   file: FileTarget | null;
   /** Shows a file in the Files tab (null: back to the tree). */
   openFile: (file: FileTarget | null) => void;
-  /** The tabs this conversation can open (a Chat has none yet). */
+  /** The tabs this conversation can open (a Chat has only Side chat). */
   available: readonly SideTab[];
   toggle: () => void;
   openTab: (tab: SideTab) => void;
@@ -124,7 +131,8 @@ export const SidePanelContext = createContext<SidePanelApi>({
  */
 export function useSidePanel(
   conversationId: string | null,
-  session: boolean,
+  /** What the panel sits beside: a side chat has no panel of its own. */
+  kind: "session" | "chat" | "sideChat" | null,
 ): {
   panel: SidePanelApi;
   agents: { panel: AgentsPanelState; setPanel: (panel: AgentsPanelState) => void };
@@ -134,8 +142,13 @@ export function useSidePanel(
   const [file, setFile] = useState<FileTarget | null>(null);
   const mac = useApp((s) => s.info?.platform === "macos");
   const available = useMemo<SideTab[]>(
-    () => (session ? ["workers", "review", "terminal", "files"] : []),
-    [session],
+    () =>
+      kind === "session"
+        ? ["workers", "review", "terminal", "files", "sideChat"]
+        : kind === "chat"
+          ? ["sideChat"]
+          : [],
+    [kind],
   );
 
   const openTab = useCallback((tab: SideTab) => {
@@ -147,8 +160,9 @@ export function useSidePanel(
     }));
   }, []);
   const closeTab = useCallback((tab: SideTab) => {
-    // Closing the Terminal tab ends its shell.
+    // Closing the Terminal tab ends its shell; closing the Side chat tab deletes the chat.
     if (tab === "terminal" && conversationId) closeTerminal(conversationId);
+    if (tab === "sideChat" && conversationId) closeSideChat(conversationId);
     setState((current) => {
       const tabs = current.tabs.filter((open) => open !== tab);
       // Closing the last tab closes the panel.
@@ -424,6 +438,10 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
         ) : state.active === "terminal" && conversationId ? (
           <Suspense fallback={null}>
             <TerminalTab conversationId={conversationId} />
+          </Suspense>
+        ) : state.active === "sideChat" && conversationId ? (
+          <Suspense fallback={null}>
+            <SideChatTab conversationId={conversationId} />
           </Suspense>
         ) : state.active === "files" && conversationId ? (
           <Suspense fallback={null}>

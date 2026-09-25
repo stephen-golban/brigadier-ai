@@ -110,6 +110,11 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    /// The conversation's side chat (the side panel's Side chat tab), started if it has none.
+    /// Closing it deletes it.
+    OpenSideChat {
+        conversation_id: ConversationId,
+    },
     /// Typed input for a terminal.
     WriteTerminal {
         terminal_id: String,
@@ -512,6 +517,9 @@ pub enum Response {
     },
     OpenTerminal {
         terminal: TerminalInfo,
+    },
+    OpenSideChat {
+        conversation: Box<Conversation>,
     },
     WriteTerminal,
     ResizeTerminal,
