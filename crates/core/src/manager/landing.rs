@@ -73,10 +73,14 @@ impl SessionManager {
             }
         }
         let retry = task.state == TaskState::ReadyToLand;
+        let later = self.later_request_for(conversation_id, &task).await;
         let task = self
             .update_task(conversation_id, &task.id, |t| {
                 t.state = TaskState::Reviewing;
                 t.blocked_reason = None;
+                if later.is_some() {
+                    t.request_id = later;
+                }
             })
             .await?;
         let number = task.number;

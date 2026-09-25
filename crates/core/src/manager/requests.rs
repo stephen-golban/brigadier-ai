@@ -11,7 +11,7 @@ use super::conversation::Envelope;
 use super::prompts;
 use crate::board::Board;
 use crate::model::ConversationId;
-use crate::work::{CardState, PlanState, RequestState, TaskId, TaskState};
+use crate::work::{CardState, PlanState, RequestState, Task, TaskId, TaskState};
 
 impl SessionManager {
     /// The request new work is filed under: the task's, else the running turn's, else the
@@ -34,6 +34,30 @@ impl SessionManager {
         }
         let board = self.core.board(conversation_id).await.ok()?;
         board.latest_request().map(|request| request.id.clone())
+    }
+
+    /// The request a task moves to when the running turn acts on it for a later request than
+    /// its own: what follows (its landing, the answer) then belongs to the request that asked.
+    pub(crate) async fn later_request_for(
+        &self,
+        conversation_id: &ConversationId,
+        task: &Task,
+    ) -> Option<String> {
+        let running = self.conv(conversation_id).ok()?.running_request().await?;
+        let Some(own) = &task.request_id else {
+            return Some(running);
+        };
+        if *own == running {
+            return None;
+        }
+        let board = self.core.board(conversation_id).await.ok()?;
+        let started = |id: &str| {
+            board
+                .requests
+                .get(id)
+                .map(|request| (request.started_at_ms, &request.id))
+        };
+        (started(&running)? > started(own)?).then_some(running)
     }
 
     /// Brings every request of the conversation up to date with what runs and waits.
