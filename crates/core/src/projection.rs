@@ -86,6 +86,7 @@ impl Projection {
             | DomainEvent::MessageDelta { .. }
             | DomainEvent::RunStateChanged { .. }
             | DomainEvent::RequestUpdated { .. }
+            | DomainEvent::WorkerStepped { .. }
             | DomainEvent::BranchSwitched { .. }
             | DomainEvent::ConversationNotice { .. }
             | DomainEvent::TaskUpdated { .. }

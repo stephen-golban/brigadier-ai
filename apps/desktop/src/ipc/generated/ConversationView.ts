@@ -10,6 +10,7 @@ import type { RunState } from "./RunState";
 import type { StreamingMessage } from "./StreamingMessage";
 import type { Task } from "./Task";
 import type { UserRequest } from "./UserRequest";
+import type { WorkerStep } from "./WorkerStep";
 
 /**
  * Everything a conversation view shows, in one read. Live changes follow on the
@@ -23,7 +24,11 @@ messages: MessagePage, tasks: Array<Task>, approvals: Array<Approval>, questions
 /**
  * Every request of the conversation, oldest first.
  */
-requests: Array<UserRequest>, queue: MessageQueue, run: RunState, 
+requests: Array<UserRequest>, 
+/**
+ * Every worker step, in the order they happened.
+ */
+workerSteps: Array<WorkerStep>, queue: MessageQueue, run: RunState, 
 /**
  * The request the running turn serves.
  */

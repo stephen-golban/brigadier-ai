@@ -53,3 +53,12 @@ const shortTimeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: "short" 
 export function formatTime(epochMs: number): string {
   return shortTimeFormat.format(epochMs);
 }
+
+/** How long ago, coarsely ("now", "3m ago", "2h ago", "4d ago"). */
+export function formatAgo(epochMs: number, nowMs: number): string {
+  const minutes = Math.floor(Math.max(0, nowMs - epochMs) / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}

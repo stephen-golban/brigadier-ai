@@ -22,6 +22,7 @@ import type { Setup } from "./Setup";
 import type { Task } from "./Task";
 import type { TaskId } from "./TaskId";
 import type { UserRequest } from "./UserRequest";
+import type { WorkerStep } from "./WorkerStep";
 
 /**
  * Every change the core records. Serialized as the payload of a stored event.
@@ -30,4 +31,4 @@ export type DomainEvent = { "type": "projectCreated", project: Project, } | { "t
 /**
  * The request the turn serves.
  */
-requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "probe", burstId: string, index: number, count: number, };
+requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, } | { "type": "workerStepped", step: WorkerStep, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "probe", burstId: string, index: number, count: number, };

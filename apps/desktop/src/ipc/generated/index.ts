@@ -130,3 +130,5 @@ export type { UiMeasurements } from "./UiMeasurements";
 export type { UserRequest } from "./UserRequest";
 export type { WorkerAccess } from "./WorkerAccess";
 export type { WorkerPage } from "./WorkerPage";
+export type { WorkerStep } from "./WorkerStep";
+export type { WorkerStepKind } from "./WorkerStepKind";

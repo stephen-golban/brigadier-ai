@@ -231,13 +231,12 @@ impl SessionManager {
         let was = task.state;
         change(&mut task);
         task.updated_at_ms = now_ms();
+        let mut events = vec![DomainEvent::TaskUpdated {
+            task: Box::new(task.clone()),
+        }];
+        events.extend(worker_step(&task, Some(was)));
         self.core
-            .record_conversation(
-                conversation_id,
-                vec![DomainEvent::TaskUpdated {
-                    task: Box::new(task.clone()),
-                }],
-            )
+            .record_conversation(conversation_id, events)
             .await?;
         if task.state != was {
             self.settle_requests(conversation_id).await;
@@ -365,13 +364,12 @@ impl SessionManager {
             created_at_ms: now,
             updated_at_ms: now,
         };
+        let mut events = vec![DomainEvent::TaskUpdated {
+            task: Box::new(task.clone()),
+        }];
+        events.extend(worker_step(&task, None));
         self.core
-            .record_conversation(
-                conversation_id,
-                vec![DomainEvent::TaskUpdated {
-                    task: Box::new(task.clone()),
-                }],
-            )
+            .record_conversation(conversation_id, events)
             .await?;
         let live = self.task_live(&task);
         let manager = self.arc();
@@ -2068,6 +2066,20 @@ fn task_branch(conversation_id: &ConversationId, number: u32, title: &str) -> St
     } else {
         format!("brigadier/{session}/task-{number}-{slug}")
     }
+}
+
+/// The step the thread shows when `task` just left `was` (absent: it was just created).
+fn worker_step(task: &Task, was: Option<TaskState>) -> Option<DomainEvent> {
+    let kind = crate::work::WorkerStepKind::between(was, task.state)?;
+    Some(DomainEvent::WorkerStepped {
+        step: crate::work::WorkerStep {
+            task_id: task.id.clone(),
+            request_id: task.request_id.clone(),
+            kind,
+            at_ms: task.updated_at_ms,
+            position: 0,
+        },
+    })
 }
 
 pub(crate) fn route_label(task: &Task) -> String {

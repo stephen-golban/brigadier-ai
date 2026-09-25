@@ -8,6 +8,8 @@ import type {
   RequestState,
   Task,
   UserRequest,
+  WorkerStep,
+  WorkerStepKind,
 } from "@/ipc/generated";
 import type { Board } from "@/state/board";
 import type { PendingMessage } from "@/state/store";
@@ -36,6 +38,13 @@ export type BlockText = {
   model: ModelChoice | null;
 };
 
+/** A worker's step in a block ("task-2 finished"), in the order it happened. */
+export type BlockStep = {
+  taskId: string;
+  kind: WorkerStepKind;
+  position: number;
+};
+
 export type BlockState = RequestState["type"];
 
 export type Block = {
@@ -46,6 +55,8 @@ export type Block = {
   cards: BlockCard[];
   /** Workers the request started, by task number. */
   tasks: string[];
+  /** Their steps, in order. */
+  steps: BlockStep[];
   state: BlockState;
   error: string | null;
   startedAtMs: number;
@@ -59,6 +70,7 @@ export type BoardDigest = {
   questions: Readonly<Record<string, Question>>;
   plans: Readonly<Record<string, Plan>>;
   requests: Readonly<Record<string, UserRequest>>;
+  workerSteps: readonly WorkerStep[];
   runRequest: string | null;
   streaming: Board["streaming"];
 };
@@ -109,10 +121,12 @@ function keepPlan(plan: Plan): boolean {
 type Placed =
   | { kind: "message"; position: number; message: Message; text: string }
   | { kind: "card"; position: number; requestId: string | null; card: BlockCard }
-  | { kind: "task"; position: number; requestId: string | null; id: string };
+  | { kind: "task"; position: number; requestId: string | null; id: string }
+  | { kind: "step"; position: number; requestId: string | null; step: BlockStep; atMs: number };
 
 function createdAt(board: BoardDigest, item: Exclude<Placed, { kind: "message" }>): number {
   if (item.kind === "task") return board.tasks[item.id]?.createdAtMs ?? 0;
+  if (item.kind === "step") return item.atMs;
   const { type, id } = item.card;
   const card =
     type === "task"
@@ -154,6 +168,27 @@ export function buildBlocks(
         card: { type: "task", id: task.id, position: task.position, keep: true },
       });
     }
+  }
+  for (const step of board.workerSteps) {
+    placed.push({
+      kind: "step",
+      position: step.position,
+      requestId: step.requestId,
+      step: { taskId: step.taskId, kind: step.kind, position: step.position },
+      atMs: step.atMs,
+    });
+  }
+  // Workers from before steps were stored show the start they had.
+  const stepped = new Set(board.workerSteps.map((step) => step.taskId));
+  for (const task of Object.values(board.tasks)) {
+    if (stepped.has(task.id)) continue;
+    placed.push({
+      kind: "step",
+      position: task.position,
+      requestId: task.requestId,
+      step: { taskId: task.id, kind: "started", position: task.position },
+      atMs: task.createdAtMs,
+    });
   }
   for (const approval of Object.values(board.approvals)) {
     placed.push({
@@ -201,6 +236,7 @@ export function buildBlocks(
         texts: [],
         cards: [],
         tasks: [],
+        steps: [],
         state: request?.state.type ?? "done",
         error: request?.state.type === "failed" ? request.state.error : null,
         startedAtMs: request?.startedAtMs ?? startedAtMs,
@@ -242,6 +278,7 @@ export function buildBlocks(
     if (item.requestId && !blocks.has(key)) continue;
     const block = open(key, 0);
     if (item.kind === "task") block.tasks.push(item.id);
+    else if (item.kind === "step") block.steps.push(item.step);
     else block.cards.push(item.card);
   }
 
@@ -267,6 +304,7 @@ export function buildBlocks(
       texts: [],
       cards: [],
       tasks: [],
+      steps: [],
       state: "working",
       error: null,
       startedAtMs: entry.createdAtMs,
@@ -439,6 +477,7 @@ const EMPTY_WORK: BoardDigest = {
   questions: {},
   plans: {},
   requests: {},
+  workerSteps: [],
   runRequest: null,
   streaming: null,
 };

@@ -38,12 +38,12 @@ use brigadier_providers::{BoxFuture, ProviderKind};
 use tokio_util::task::TaskTracker;
 
 use crate::model::{
-    Conversation, ConversationId, ConversationKind, EnvironmentRequest, ProjectId, RepoInfo, Setup,
-    SetupRequest,
+    Conversation, ConversationId, ConversationKind, Environment, EnvironmentRequest, ProjectId,
+    RepoInfo, Setup, SetupRequest,
 };
 use crate::runtime::{Runtime, Spawner};
 use crate::tools::{GateAnswer, Grants, Role, ToolCall, ToolHost, ToolReply};
-use crate::work::TaskId;
+use crate::work::{DiffStat, TaskId};
 use crate::{Core, Error, Result};
 
 pub use conversation::SendOutcome;
@@ -185,6 +185,35 @@ impl SessionManager {
                     })
                     .collect(),
             })
+        })
+        .await
+    }
+
+    /// What a worktree session's branch changed since it left its base. Absent for Chats,
+    /// local-checkout sessions (their commits are on the picked branch) and a session whose
+    /// branch or base does not exist (yet).
+    pub async fn session_diff_stat(&self, id: &ConversationId) -> Result<Option<DiffStat>> {
+        let conversation = self.core.conversation(id)?;
+        let Some(Setup::Session {
+            repo,
+            environment: Environment::NewWorktree { base, branch, .. },
+            ..
+        }) = conversation.setup
+        else {
+            return Ok(None);
+        };
+        let git = self.git.clone();
+        blocking(move || {
+            let repo = git.open(Path::new(&repo)).map_err(git_error)?;
+            let (Some(base), Some(tip)) = (
+                repo.branch_tip(&base).map_err(git_error)?,
+                repo.branch_tip(&branch).map_err(git_error)?,
+            ) else {
+                return Ok(None);
+            };
+            let fork = repo.merge_base(&base, &tip).map_err(git_error)?;
+            let stat = repo.diff_stat(&fork, &tip).map_err(git_error)?;
+            Ok(Some(landing::diff_stat_of(&stat)))
         })
         .await
     }

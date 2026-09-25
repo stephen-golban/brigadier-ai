@@ -5,6 +5,7 @@ import type {
   AttachmentRef,
   Conversation,
   Density,
+  DiffStat,
   MessageQueue,
   Project,
   ProjectPatch,
@@ -200,6 +201,12 @@ export async function updateProject(id: string, patch: ProjectPatch): Promise<Pr
 export async function getRepoInfo(path: string): Promise<RepoInfo> {
   const { repo } = await request({ method: "getRepoInfo", path });
   return repo;
+}
+
+/** What a worktree session's branch changed against its base; null for other conversations. */
+export async function getSessionDiff(id: string): Promise<DiffStat | null> {
+  const { stat } = await request({ method: "getSessionDiff", id });
+  return stat;
 }
 
 function storeConversation(conversation: Conversation): void {
@@ -700,6 +707,10 @@ export async function updateSettings(settings: Settings): Promise<void> {
 
 export async function setDensity(density: Density): Promise<void> {
   await updateSettings({ ...useApp.getState().settings, density });
+}
+
+export function setPinnedSummary(shown: boolean): void {
+  useApp.setState({ pinnedSummary: shown });
 }
 
 export function setInspectorOpen(open: boolean, tab?: InspectorTab): void {

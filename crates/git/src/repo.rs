@@ -525,6 +525,13 @@ impl Repo {
         )?)
     }
 
+    /// The best common ancestor of two commits.
+    pub fn merge_base(&self, a: &Oid, b: &Oid) -> Result<Oid> {
+        valid_oid(a)?;
+        valid_oid(b)?;
+        parse::oid(&self.cmd(&["merge-base", &a.0, &b.0], true)?)
+    }
+
     /// Count commits reachable from to but not from from.
     pub fn count_commits(&self, from: &Oid, to: &Oid) -> Result<u32> {
         valid_oid(from)?;

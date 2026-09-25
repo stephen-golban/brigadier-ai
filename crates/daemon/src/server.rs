@@ -529,6 +529,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
         },
+        Request::GetSessionDiff { id } => Response::GetSessionDiff {
+            stat: sessions.session_diff_stat(&id).await?,
+        },
         Request::SteerQueued {
             conversation_id,
             item_id,

@@ -1019,7 +1019,7 @@ enum Built {
     },
 }
 
-fn diff_stat_of(stat: &brigadier_git::DiffStat) -> DiffStat {
+pub(super) fn diff_stat_of(stat: &brigadier_git::DiffStat) -> DiffStat {
     DiffStat {
         files: stat
             .files

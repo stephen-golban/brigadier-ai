@@ -5,6 +5,7 @@ import type { Catalog } from "./Catalog";
 import type { Conversation } from "./Conversation";
 import type { ConversationView } from "./ConversationView";
 import type { Diagnostics } from "./Diagnostics";
+import type { DiffStat } from "./DiffStat";
 import type { EventEnvelope } from "./EventEnvelope";
 import type { Message } from "./Message";
 import type { MessagePage } from "./MessagePage";
@@ -24,7 +25,11 @@ import type { WorkerPage } from "./WorkerPage";
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "createConversation", conversation: Conversation, } | { "method": "updateSetup", conversation: Conversation, } | { "method": "getConversation", view: ConversationView, } | { "method": "sendMessage", outcome: SendOutcome, } | { "method": "editQueued", queue: MessageQueue, } | { "method": "deleteQueued", queue: MessageQueue, } | { "method": "moveQueued", queue: MessageQueue, } | { "method": "steerQueued" } | { "method": "resumeQueue", queue: MessageQueue, } | { "method": "interrupt" } | { "method": "editMessage" } | { "method": "regenerate" } | { "method": "switchBranch" } | { "method": "addAttachment", attachment: AttachmentRef, } | { "method": "answerCard" } | { "method": "answerQuestion" } | { "method": "decidePlan" } | { "method": "stopTask" } | { "method": "pauseTask" } | { "method": "resumeTask" } | { "method": "restoreKeptWork", outcome: RestoreOutcome, } | { "method": "listWorkerEvents", page: WorkerPage, } | { "method": "listOrchestratorLog", page: OrchestratorPage, } | { "method": "readArtifact", text: ArtifactText, } | { "method": "saveArtifact" } | { "method": "openArtifact", 
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "getSessionDiff", 
+/**
+ * Absent for Chats and local-checkout sessions.
+ */
+stat: DiffStat | null, } | { "method": "createConversation", conversation: Conversation, } | { "method": "updateSetup", conversation: Conversation, } | { "method": "getConversation", view: ConversationView, } | { "method": "sendMessage", outcome: SendOutcome, } | { "method": "editQueued", queue: MessageQueue, } | { "method": "deleteQueued", queue: MessageQueue, } | { "method": "moveQueued", queue: MessageQueue, } | { "method": "steerQueued" } | { "method": "resumeQueue", queue: MessageQueue, } | { "method": "interrupt" } | { "method": "editMessage" } | { "method": "regenerate" } | { "method": "switchBranch" } | { "method": "addAttachment", attachment: AttachmentRef, } | { "method": "answerCard" } | { "method": "answerQuestion" } | { "method": "decidePlan" } | { "method": "stopTask" } | { "method": "pauseTask" } | { "method": "resumeTask" } | { "method": "restoreKeptWork", outcome: RestoreOutcome, } | { "method": "listWorkerEvents", page: WorkerPage, } | { "method": "listOrchestratorLog", page: OrchestratorPage, } | { "method": "readArtifact", text: ArtifactText, } | { "method": "saveArtifact" } | { "method": "openArtifact", 
 /**
  * The copy to open.
  */

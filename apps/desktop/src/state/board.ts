@@ -15,6 +15,7 @@ import type {
   StreamingMessage,
   Task,
   UserRequest,
+  WorkerStep,
 } from "@/ipc/generated";
 
 /** Newest entries kept per open worker transcript; older ones load on demand. */
@@ -46,6 +47,8 @@ export type Board = {
   plans: Record<string, Plan>;
   /** What each user message set in motion, by request id (the message's id). */
   requests: Record<string, UserRequest>;
+  /** Every worker step (started, finished, …), in stream order. */
+  workerSteps: WorkerStep[];
   queue: MessageQueue;
   run: RunState;
   runError: string | null;
@@ -89,6 +92,7 @@ export function emptyBoard(conversationId: string): Board {
     questions: {},
     plans: {},
     requests: {},
+    workerSteps: [],
     queue: EMPTY_QUEUE,
     run: "idle",
     runError: null,
@@ -120,6 +124,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "requestUpdated",
   "messageAppended",
   "branchSwitched",
+  "workerStepped",
 ]);
 
 /** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
@@ -156,6 +161,7 @@ export function boardFromView(
     questions: byId(view.questions),
     plans: byId(view.plans),
     requests: byId(view.requests),
+    workerSteps: view.workerSteps,
     queue: view.queue,
     run: view.run,
     runError: keep?.runError ?? null,
@@ -284,6 +290,11 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       return { ...board, plans: placed(board.plans, event.plan, envelope, board) };
     case "requestUpdated":
       return { ...board, requests: { ...board.requests, [event.request.id]: event.request } };
+    case "workerStepped":
+      // Applied again after a view read: a step is kept once.
+      return board.workerSteps.some((step) => step.position === streamSeq)
+        ? board
+        : { ...board, workerSteps: [...board.workerSteps, { ...event.step, position: streamSeq }] };
     case "queueChanged":
       return { ...board, queue: event.queue };
     case "workerEvent": {

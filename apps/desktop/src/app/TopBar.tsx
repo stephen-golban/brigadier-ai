@@ -1,4 +1,4 @@
-import { ChevronRight, Terminal } from "@openai/apps-sdk-ui/components/Icon";
+import { ChevronRight, SidebarRight, Terminal } from "@openai/apps-sdk-ui/components/Icon";
 import { useShallow } from "zustand/react/shallow";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,10 +12,15 @@ import {
 } from "@/components/ui/tooltip";
 import type { Density, Lifecycle } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
-import { setDensity, setInspectorOpen } from "@/state/actions";
+import { setDensity, setInspectorOpen, setPinnedSummary } from "@/state/actions";
 import { useApp } from "@/state/store";
 
-function useTitle(): { project: string | null; title: string; lifecycle: Lifecycle | null } {
+function useTitle(): {
+  project: string | null;
+  title: string;
+  lifecycle: Lifecycle | null;
+  session: boolean;
+} {
   return useApp(
     useShallow((s) => {
       const { selection } = s;
@@ -28,6 +33,7 @@ function useTitle(): { project: string | null; title: string; lifecycle: Lifecyc
           project,
           title: conversation?.title ?? "",
           lifecycle: conversation?.lifecycle ?? null,
+          session: conversation?.kind === "session",
         };
       }
       if (selection.type === "draft" && selection.kind === "session") {
@@ -35,19 +41,21 @@ function useTitle(): { project: string | null; title: string; lifecycle: Lifecyc
           project: s.projects[selection.projectId]?.name ?? null,
           title: "New session",
           lifecycle: null,
+          session: false,
         };
       }
       if (selection.type === "archived") {
-        return { project: null, title: "Archived", lifecycle: null };
+        return { project: null, title: "Archived", lifecycle: null, session: false };
       }
-      return { project: null, title: "New chat", lifecycle: null };
+      return { project: null, title: "New chat", lifecycle: null, session: false };
     }),
   );
 }
 
 export function TopBar() {
   const { state } = useSidebar();
-  const { project, title, lifecycle } = useTitle();
+  const { project, title, lifecycle, session } = useTitle();
+  const pinnedSummary = useApp((s) => s.pinnedSummary);
   const connection = useApp((s) => s.connection.status);
   const density = useApp((s) => s.settings.density);
   const inspectorOpen = useApp((s) => s.inspector.open);
@@ -111,6 +119,23 @@ export function TopBar() {
           Normal
         </ToggleGroupItem>
       </ToggleGroup>
+
+      {session && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={pinnedSummary ? "secondary" : "ghost"}
+              size="icon-md"
+              aria-pressed={pinnedSummary}
+              aria-label="Session summary"
+              onClick={() => setPinnedSummary(!pinnedSummary)}
+            >
+              <SidebarRight />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Session summary</TooltipContent>
+        </Tooltip>
+      )}
 
       <Tooltip>
         <TooltipTrigger asChild>

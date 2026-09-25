@@ -9,9 +9,10 @@
 
 use brigadier_core::{
     AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
-    ConversationView, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
-    ProjectId, ProjectPatch, ProvidersView, QueuedMessage, RawApprovals, RawPage, RawSession,
-    RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId, WorkerPage,
+    ConversationView, DiffStat, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst,
+    Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, RawApprovals, RawPage,
+    RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId,
+    WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,10 @@ pub enum Request {
     /// Branches and state of a repository, for the composer's branch picker.
     GetRepoInfo {
         path: String,
+    },
+    /// What a worktree session's branch changed against its base (the pinned summary card).
+    GetSessionDiff {
+        id: ConversationId,
     },
     /// Creates a session (with a project) or a chat (without). The setup comes from the
     /// composer; sessions need one to run, and their project remembers it.
@@ -384,6 +389,10 @@ pub enum Response {
     },
     GetRepoInfo {
         repo: RepoInfo,
+    },
+    GetSessionDiff {
+        /// Absent for Chats and local-checkout sessions.
+        stat: Option<DiffStat>,
     },
     CreateConversation {
         conversation: Box<Conversation>,
