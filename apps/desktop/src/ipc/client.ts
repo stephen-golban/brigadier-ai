@@ -111,6 +111,15 @@ export async function openUrl(url: string): Promise<void> {
   }
 }
 
+/** Shows a file selected in the system file manager. */
+export async function revealPath(path: string): Promise<void> {
+  try {
+    await invoke("reveal_path", { path });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}
+
 /** Opens a folder in the system file manager, or with the app named `app` (macOS). */
 export async function openFolder(path: string, app?: string): Promise<void> {
   try {
