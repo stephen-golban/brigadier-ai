@@ -144,6 +144,8 @@ export type { TaskKind } from "./TaskKind";
 export type { TaskPollMetrics } from "./TaskPollMetrics";
 export type { TaskState } from "./TaskState";
 export type { TaskWorkspace } from "./TaskWorkspace";
+export type { TerminalInfo } from "./TerminalInfo";
+export type { TerminalOutput } from "./TerminalOutput";
 export type { TokenUsage } from "./TokenUsage";
 export type { TurnStatus } from "./TurnStatus";
 export type { UiMeasurements } from "./UiMeasurements";

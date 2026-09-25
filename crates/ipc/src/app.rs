@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::metrics::{BudgetId, DaemonMetrics, LatencySummary};
-use crate::protocol::{DaemonInfo, EventEnvelope};
+use crate::protocol::{DaemonInfo, EventEnvelope, TerminalOutput};
 
 /// Pushed from the shell to the webview.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -33,6 +33,10 @@ pub enum BridgeEvent {
     },
     Metrics {
         metrics: DaemonMetrics,
+    },
+    /// Output of a terminal the app opened.
+    Terminal {
+        output: TerminalOutput,
     },
     /// The window was hidden or shown; pause sampling while hidden.
     WindowVisibility {

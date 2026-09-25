@@ -3,8 +3,9 @@ import type { DaemonInfo } from "./DaemonInfo";
 import type { DaemonMetrics } from "./DaemonMetrics";
 import type { EventEnvelope } from "./EventEnvelope";
 import type { Outcome } from "./Outcome";
+import type { TerminalOutput } from "./TerminalOutput";
 
 /**
  * Frames sent by the daemon.
  */
-export type ServerFrame = { "type": "welcome", daemon: DaemonInfo, lastSeq: number, } | { "type": "response", id: number, result: Outcome, } | { "type": "event", event: EventEnvelope, } | { "type": "lagged", resumeAfter: number, } | { "type": "metrics", metrics: DaemonMetrics, } | { "type": "closing" };
+export type ServerFrame = { "type": "welcome", daemon: DaemonInfo, lastSeq: number, } | { "type": "response", id: number, result: Outcome, } | { "type": "event", event: EventEnvelope, } | { "type": "lagged", resumeAfter: number, } | { "type": "metrics", metrics: DaemonMetrics, } | { "type": "terminal", output: TerminalOutput, } | { "type": "closing" };

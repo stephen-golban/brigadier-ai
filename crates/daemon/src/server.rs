@@ -1,5 +1,6 @@
 //! Accepts IPC connections and serves requests and the live event feed.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -8,11 +9,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use brigadier_core::manager::SessionManager;
 use brigadier_core::runtime::{Runtime, StartRaw};
-use brigadier_core::{Core, MAX_ATTACHMENT_BYTES};
+use brigadier_core::{ConversationId, Core, MAX_ATTACHMENT_BYTES};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
     ArtifactText, ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome,
-    RawJson, Request, Response, SendOutcome, ServerFrame,
+    RawJson, Request, Response, SendOutcome, ServerFrame, TerminalOutput,
 };
 use brigadier_ipc::{Accepted, Connection, Listener, Reader, Token, Writer};
 use brigadier_store::{Store, StoredEvent};
@@ -23,6 +24,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::metrics::Metrics;
 use crate::supervisor::Supervisor;
+use crate::terminals::Terminals;
 use crate::upgrade;
 
 /// Frames buffered between a connection's reader task and its handler.
@@ -52,6 +54,8 @@ pub struct Daemon {
     /// Becomes true when all admitted writes are committed during shutdown.
     pub drained: watch::Receiver<bool>,
     pub connections: TaskTracker,
+    /// The sessions' terminals (the side panel's Terminal tab).
+    pub terminals: Terminals,
     next_connection: AtomicU64,
 }
 
@@ -81,6 +85,7 @@ impl Daemon {
             quit,
             drained,
             connections: TaskTracker::new(),
+            terminals: Terminals::new(),
             next_connection: AtomicU64::new(1),
         }
     }
@@ -148,6 +153,8 @@ async fn serve(daemon: Arc<Daemon>, connection: Connection, client: ClientInfo) 
         feed: None,
         last_sent: 0,
         metrics: None,
+        terminal_feed: None,
+        terminals: HashSet::new(),
     };
     if let Err(err) = session.run(connection.reader).await {
         tracing::debug!(connection = id, error = %err, "connection ended with an error");
@@ -167,6 +174,10 @@ struct Session {
     /// Highest `seq` delivered to this client.
     last_sent: i64,
     metrics: Option<watch::Receiver<DaemonMetrics>>,
+    /// Output of every terminal, once this connection opened one.
+    terminal_feed: Option<broadcast::Receiver<TerminalOutput>>,
+    /// The terminals this connection opened: only their output is forwarded.
+    terminals: HashSet<String>,
 }
 
 enum Flow {
@@ -246,6 +257,20 @@ impl Session {
                         self.writer.write(&ServerFrame::Metrics { metrics }).await?;
                     }
                 }
+                output = next_terminal_output(&mut self.terminal_feed) => {
+                    if let Some(output) = output {
+                        let id = match &output {
+                            TerminalOutput::Data { terminal_id, .. }
+                            | TerminalOutput::Exited { terminal_id, .. } => terminal_id,
+                        };
+                        if self.terminals.contains(id) {
+                            if matches!(output, TerminalOutput::Exited { .. }) {
+                                self.terminals.remove(id);
+                            }
+                            self.writer.write(&ServerFrame::Terminal { output }).await?;
+                        }
+                    }
+                }
             }
         };
         reader_task.abort();
@@ -262,6 +287,11 @@ impl Session {
                 self.set_metrics(enabled);
                 Ok(Response::SetMetricsStreaming { enabled })
             }
+            Request::OpenTerminal {
+                conversation_id,
+                cols,
+                rows,
+            } => self.open_terminal(&conversation_id, cols, rows),
             Request::Shutdown => {
                 // Stop admission and drain first; acknowledge only once writes are committed.
                 let _ = self.daemon.quit.try_send(());
@@ -288,6 +318,27 @@ impl Session {
             })
             .await?;
         Ok(())
+    }
+
+    /// Opens (or re-attaches to) a session's terminal; its output then comes to this
+    /// connection.
+    fn open_terminal(
+        &mut self,
+        conversation_id: &ConversationId,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Response, IpcError> {
+        let cwd = self.daemon.sessions.checkout_dir(conversation_id)?;
+        // Subscribed first, so no output between the scrollback and the feed is lost.
+        if self.terminal_feed.is_none() {
+            self.terminal_feed = Some(self.daemon.terminals.subscribe());
+        }
+        let terminal = self
+            .daemon
+            .terminals
+            .open(&conversation_id.0, cwd, cols, rows)?;
+        self.terminals.insert(terminal.id.clone());
+        Ok(Response::OpenTerminal { terminal })
     }
 
     fn set_metrics(&mut self, enabled: bool) {
@@ -351,6 +402,23 @@ async fn next_event(
 ) -> Result<Arc<StoredEvent>, RecvError> {
     match feed {
         Some(feed) => feed.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn next_terminal_output(
+    feed: &mut Option<broadcast::Receiver<TerminalOutput>>,
+) -> Option<TerminalOutput> {
+    match feed {
+        Some(rx) => match rx.recv().await {
+            Ok(output) => Some(output),
+            // A connection that fell behind misses some output; the shell goes on.
+            Err(RecvError::Lagged(_)) => None,
+            Err(RecvError::Closed) => {
+                *feed = None;
+                None
+            }
+        },
         None => std::future::pending().await,
     }
 }
@@ -564,6 +632,27 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         } => Response::ReadFile {
             file: sessions.read_file(&conversation_id, path).await?,
         },
+        Request::OpenTerminal { .. } => {
+            return Err(IpcError::from(brigadier_core::Error::Invalid(
+                "a terminal opens on the connection that shows it".into(),
+            )));
+        }
+        Request::WriteTerminal { terminal_id, data } => {
+            daemon.terminals.write(&terminal_id, &data)?;
+            Response::WriteTerminal
+        }
+        Request::ResizeTerminal {
+            terminal_id,
+            cols,
+            rows,
+        } => {
+            daemon.terminals.resize(&terminal_id, cols, rows)?;
+            Response::ResizeTerminal
+        }
+        Request::CloseTerminal { terminal_id } => {
+            daemon.terminals.close(&terminal_id);
+            Response::CloseTerminal
+        }
         Request::RateMessage {
             conversation_id,
             subject,
@@ -706,9 +795,13 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::Hibernate { id } => Response::Hibernate {
             conversation: Box::new(sessions.hibernate(id).await?),
         },
-        Request::Archive { id } => Response::Archive {
-            conversation: Box::new(sessions.archive(id).await?),
-        },
+        Request::Archive { id } => {
+            let conversation = sessions.archive(id.clone()).await?;
+            daemon.terminals.close_conversation(&id.0);
+            Response::Archive {
+                conversation: Box::new(conversation),
+            }
+        }
         Request::Restore { id } => Response::Restore {
             conversation: Box::new(sessions.restore(id).await?),
         },
@@ -717,6 +810,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             delete_branches,
             forget_brain: _,
         } => {
+            daemon.terminals.close_conversation(&id.0);
             sessions.delete(id, delete_branches).await?;
             Response::Delete
         }

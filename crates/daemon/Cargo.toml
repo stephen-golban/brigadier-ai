@@ -21,6 +21,7 @@ brigadier-providers.workspace = true
 brigadier-sandbox.workspace = true
 brigadier-store.workspace = true
 interprocess = "2.4.4"
+portable-pty = "0.9.0"
 serde_json = { workspace = true, features = ["raw_value"] }
 sysinfo.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

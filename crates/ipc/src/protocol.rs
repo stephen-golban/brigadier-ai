@@ -102,6 +102,28 @@ pub enum Request {
         /// Relative to the checkout's root.
         path: String,
     },
+    /// The session's terminal (the side panel's Terminal tab): a shell in its checkout,
+    /// started if none runs, sized `cols` × `rows`. Its output then streams to this
+    /// connection as [`ServerFrame::Terminal`].
+    OpenTerminal {
+        conversation_id: ConversationId,
+        cols: u16,
+        rows: u16,
+    },
+    /// Typed input for a terminal.
+    WriteTerminal {
+        terminal_id: String,
+        data: String,
+    },
+    ResizeTerminal {
+        terminal_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Ends a terminal's shell.
+    CloseTerminal {
+        terminal_id: String,
+    },
     /// Rates an answer ("Good response" / "Bad response").
     RateMessage {
         conversation_id: ConversationId,
@@ -488,6 +510,12 @@ pub enum Response {
     ReadFile {
         file: CheckoutFile,
     },
+    OpenTerminal {
+        terminal: TerminalInfo,
+    },
+    WriteTerminal,
+    ResizeTerminal,
+    CloseTerminal,
     RateMessage,
     GetSessionDiff {
         /// Absent for Chats and local-checkout sessions.
@@ -765,8 +793,42 @@ pub enum ServerFrame {
     Metrics {
         metrics: DaemonMetrics,
     },
+    /// Output of a terminal this connection opened. Live only: never stored.
+    Terminal {
+        output: TerminalOutput,
+    },
     /// The daemon is shutting down; the connection closes next.
     Closing,
+}
+
+/// A session's terminal, as `openTerminal` returns it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalInfo {
+    pub id: String,
+    /// The shell it runs, and where.
+    pub shell: String,
+    pub cwd: String,
+    /// Its latest output, for a tab opened again while it runs.
+    pub scrollback: String,
+}
+
+/// What a terminal printed, or that its shell ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TerminalOutput {
+    Data {
+        terminal_id: String,
+        data: String,
+    },
+    Exited {
+        terminal_id: String,
+        code: Option<u32>,
+    },
 }
 
 /// The daemon's only frame on a gate connection: the answer to its [`ClientFrame::Gate`]

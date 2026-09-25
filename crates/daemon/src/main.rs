@@ -25,6 +25,7 @@ mod logging;
 mod metrics;
 mod server;
 mod supervisor;
+mod terminals;
 mod upgrade;
 
 use std::path::PathBuf;
@@ -267,6 +268,7 @@ async fn run(
         state = store.writer_stopped() => {
             tracing::error!(state = ?state, "store writer stopped; exiting");
             stopping.cancel();
+            daemon.terminals.close_all();
             daemon.sessions.shutdown().await;
             providers.shutdown().await;
             return Ok(ExitCode::from(EXIT_FATAL));
@@ -274,6 +276,7 @@ async fn run(
         Some(reason) = fatal.recv() => {
             tracing::error!(reason = %reason, "critical task failed; exiting");
             stopping.cancel();
+            daemon.terminals.close_all();
             daemon.sessions.shutdown().await;
             providers.shutdown().await;
             return Ok(ExitCode::from(EXIT_FATAL));
@@ -285,7 +288,8 @@ async fn run(
     stopping.cancel();
     // 2. Stop admitting provider work, end every CLI session (bounded, whole process groups)
     //    and store their last events. Sessions, Chats and workers first: they are hosted by
-    //    the provider runtime.
+    //    the provider runtime. The user's terminals end too.
+    daemon.terminals.close_all();
     daemon.sessions.shutdown().await;
     providers.shutdown().await;
     // 3. Stop admitting writes and commit everything already queued.

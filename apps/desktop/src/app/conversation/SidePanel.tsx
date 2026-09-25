@@ -4,6 +4,7 @@ import {
   Folders,
   Plus,
   SidebarRight,
+  Terminal,
   User,
   X,
 } from "@openai/apps-sdk-ui/components/Icon";
@@ -31,9 +32,13 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
+import { closeTerminal } from "@/state/terminals";
 
 const ReviewTab = lazy(() =>
   import("@/app/conversation/ReviewTab").then((module) => ({ default: module.ReviewTab })),
+);
+const TerminalTab = lazy(() =>
+  import("@/app/conversation/TerminalTab").then((module) => ({ default: module.TerminalTab })),
 );
 const FilesTab = lazy(() =>
   import("@/app/conversation/FilesTab").then((module) => ({ default: module.FilesTab })),
@@ -46,20 +51,24 @@ const FilesTab = lazy(() =>
  */
 
 /** The kinds of tab the side panel opens. */
-export type SideTab = "workers" | "review" | "files";
+export type SideTab = "workers" | "review" | "terminal" | "files";
 
 /** Each tab's title, icon and ChatGPT's shortcut (macOS keys; Ctrl for ⌘ elsewhere). */
 const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | null }> = {
   workers: { title: WORKERS_LABEL, icon: <User />, keys: null },
   review: { title: "Review", icon: <DiffGlyph />, keys: "⌃⇧G" },
+  terminal: { title: "Terminal", icon: <Terminal />, keys: "⌃`" },
   files: { title: "Files", icon: <Folders />, keys: "⌘P" },
 };
 
-/** Which tab a key press opens: ChatGPT's ⌃⇧G and ⌘P (Ctrl+P off macOS). */
+/** Which tab a key press opens: ChatGPT's ⌃⇧G, ⌃` and ⌘P (Ctrl+P off macOS). */
 function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
   const command = mac ? event.metaKey : event.ctrlKey;
   if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyG") {
     return "review";
+  }
+  if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+    if (event.code === "Backquote") return "terminal";
   }
   if (command && !event.shiftKey && !event.altKey && event.code === "KeyP") return "files";
   return null;
@@ -113,7 +122,10 @@ export const SidePanelContext = createContext<SidePanelApi>({
  * The open conversation's side panel, and the Workers tab's selection behind
  * `AgentsPanelContext` (opening a worker opens its tab).
  */
-export function useSidePanel(session: boolean): {
+export function useSidePanel(
+  conversationId: string | null,
+  session: boolean,
+): {
   panel: SidePanelApi;
   agents: { panel: AgentsPanelState; setPanel: (panel: AgentsPanelState) => void };
 } {
@@ -122,7 +134,7 @@ export function useSidePanel(session: boolean): {
   const [file, setFile] = useState<FileTarget | null>(null);
   const mac = useApp((s) => s.info?.platform === "macos");
   const available = useMemo<SideTab[]>(
-    () => (session ? ["workers", "review", "files"] : []),
+    () => (session ? ["workers", "review", "terminal", "files"] : []),
     [session],
   );
 
@@ -135,6 +147,8 @@ export function useSidePanel(session: boolean): {
     }));
   }, []);
   const closeTab = useCallback((tab: SideTab) => {
+    // Closing the Terminal tab ends its shell.
+    if (tab === "terminal" && conversationId) closeTerminal(conversationId);
     setState((current) => {
       const tabs = current.tabs.filter((open) => open !== tab);
       // Closing the last tab closes the panel.
@@ -142,7 +156,7 @@ export function useSidePanel(session: boolean): {
       const active = current.active === tab ? (tabs.at(-1) ?? "new") : current.active;
       return { ...current, tabs, active };
     });
-  }, []);
+  }, [conversationId]);
   // ChatGPT's tab shortcuts while this conversation is open.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -406,6 +420,10 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
         ) : state.active === "review" && conversationId ? (
           <Suspense fallback={null}>
             <ReviewTab conversationId={conversationId} />
+          </Suspense>
+        ) : state.active === "terminal" && conversationId ? (
+          <Suspense fallback={null}>
+            <TerminalTab conversationId={conversationId} />
           </Suspense>
         ) : state.active === "files" && conversationId ? (
           <Suspense fallback={null}>
