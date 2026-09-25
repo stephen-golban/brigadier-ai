@@ -40,6 +40,7 @@ import {
 import { useResolvedDraft } from "@/app/conversation/draftSetup";
 import { QueuePanel } from "@/app/conversation/QueuePanel";
 import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
+import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { useAction } from "@/app/conversation/useAction";
 import {
   mentionedTasks,
@@ -482,12 +483,26 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const [attachments] = useState(() => new BlobAttachmentAdapter());
   const draftTarget = resolved.target;
   const compactable = useCanCompact(conversation?.setup);
+  // The conversation whose `/status` card shows (none once another one opens).
+  const [statusFor, setStatusFor] = useState<string | null>(null);
+  const statusCard = useMemo(
+    () => ({
+      open: statusFor !== null && statusFor === conversationId,
+      setOpen: (open: boolean) => setStatusFor(open ? conversationId : null),
+    }),
+    [statusFor, conversationId],
+  );
   const submit = useCallback(
     (message: AppendMessage) => {
       const text = textOf(message);
       const refs = attachments.refsOf(message.attachments ?? []);
       if (!text && refs.length === 0) return;
       setError(null);
+      // ChatGPT's `/status`: a card above the composer, nothing sent.
+      if (conversationId && text === "/status" && refs.length === 0) {
+        setStatusFor(conversationId);
+        return;
+      }
       // ChatGPT's `/compact`: no bubble, the thread shows the compaction itself.
       if (compactable && conversationId && text === "/compact" && refs.length === 0) {
         compact(conversationId).catch((cause: unknown) => {
@@ -597,6 +612,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
     <ViewContext.Provider value={{ selection, conversation }}>
       <ComposerTargetContext.Provider value={target}>
         <AgentsPanelContext.Provider value={agents}>
+          <StatusCardContext.Provider value={statusCard}>
           <AssistantRuntimeProvider runtime={runtime}>
             <div className="flex h-full">
               <div className="flex h-full min-w-0 flex-1 flex-col">
@@ -631,6 +647,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
               {conversationId && <AgentsPanel conversationId={conversationId} />}
             </div>
           </AssistantRuntimeProvider>
+          </StatusCardContext.Provider>
         </AgentsPanelContext.Provider>
       </ComposerTargetContext.Provider>
     </ViewContext.Provider>
@@ -723,9 +740,13 @@ function Notices({ notices }: { notices: readonly Notice[] }) {
 
 const NO_NOTICES: Notice[] = [];
 
-/** Between the thread and the composer: notices, a failed run, the archived state, the queue. */
+/**
+ * Between the thread and the composer: notices, a failed run, the archived state, the queue,
+ * and the `/status` card on the composer.
+ */
 const AboveComposer: FC = () => {
   const { conversation } = useContext(ViewContext);
+  const statusCard = useContext(StatusCardContext);
   const conversationId = conversation?.id ?? null;
   const notices = useBoard((s) =>
     s.board?.conversationId === conversationId ? s.board.notices : NO_NOTICES,
@@ -766,6 +787,9 @@ const AboveComposer: FC = () => {
           conversationId={conversation.id}
           targets={target?.targets ?? []}
         />
+      )}
+      {statusCard.open && (
+        <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
       )}
     </div>
   );

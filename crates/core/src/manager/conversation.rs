@@ -35,8 +35,8 @@ use tokio_util::sync::CancellationToken;
 use super::SessionManager;
 use super::prompts;
 use crate::model::{
-    ConversationId, ConversationKind, DomainEvent, Lifecycle, Message, MessageRole, ModelChoice,
-    Notice, Setup, streams,
+    ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Message,
+    MessageRole, ModelChoice, Notice, Setup, streams,
 };
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
@@ -569,6 +569,41 @@ impl SessionManager {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// What `/status` shows: the CLI session of the conversation's model (running, or the one
+    /// its next turn resumes) and its provider's usage left.
+    pub async fn conversation_status(&self, id: ConversationId) -> Result<ConversationStatus> {
+        let conversation = self.core.conversation(&id)?;
+        let conv = self.conv(&id)?;
+        let (cli, fallback) = {
+            let state = conv.state.lock().await;
+            (state.cli.clone(), state.fallback.clone())
+        };
+        let (provider, native_id) = match cli {
+            Some(cli) => (cli.provider, Some(cli.session.native_id())),
+            None => {
+                let provider = match (&conversation.setup, fallback) {
+                    (_, Some(fallback)) => fallback.provider,
+                    (Some(Setup::Chat { model }), None) => model.provider,
+                    (Some(Setup::Session { orchestrator, .. }), None) => orchestrator.provider,
+                    (None, None) => {
+                        return Err(Error::Invalid(
+                            "choose the conversation's model first".into(),
+                        ));
+                    }
+                };
+                (provider, self.last_native_id(&id, provider).await)
+            }
+        };
+        Ok(ConversationStatus {
+            provider,
+            native_id,
+            quota: self
+                .runtime
+                .overview(provider)
+                .and_then(|overview| overview.quota),
+        })
     }
 
     /// Queues an envelope for the orchestrator, starting a turn if it is idle. It belongs to

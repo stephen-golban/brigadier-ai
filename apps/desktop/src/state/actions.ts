@@ -4,6 +4,7 @@ import type {
   ApprovalDecision,
   AttachmentRef,
   Conversation,
+  ConversationStatus,
   Density,
   DiffStat,
   ForkPlace,
@@ -453,6 +454,12 @@ export async function interrupt(conversationId: string): Promise<void> {
 /** Continues the latest request after the user stopped it, in the same block. */
 export async function resume(conversationId: string): Promise<void> {
   await request({ method: "resume", conversationId });
+}
+
+/** What `/status` shows: the model's CLI session and the usage left. */
+export async function getConversationStatus(conversationId: string): Promise<ConversationStatus> {
+  const { status } = await request({ method: "getConversationStatus", conversationId });
+  return status;
 }
 
 /** Compacts a Chat's context now, in a turn of its own, as ChatGPT's `/compact` does. */

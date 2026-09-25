@@ -3,6 +3,7 @@ import type { ArtifactText } from "./ArtifactText";
 import type { AttachmentRef } from "./AttachmentRef";
 import type { Catalog } from "./Catalog";
 import type { Conversation } from "./Conversation";
+import type { ConversationStatus } from "./ConversationStatus";
 import type { ConversationView } from "./ConversationView";
 import type { Diagnostics } from "./Diagnostics";
 import type { DiffStat } from "./DiffStat";
@@ -29,7 +30,7 @@ export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method
 /**
  * Absent for Chats and local-checkout sessions.
  */
-stat: DiffStat | null, } | { "method": "createConversation", conversation: Conversation, } | { "method": "forkConversation", conversation: Conversation, } | { "method": "updateSetup", conversation: Conversation, } | { "method": "getConversation", view: ConversationView, } | { "method": "sendMessage", outcome: SendOutcome, } | { "method": "editQueued", queue: MessageQueue, } | { "method": "deleteQueued", queue: MessageQueue, } | { "method": "moveQueued", queue: MessageQueue, } | { "method": "steerQueued" } | { "method": "resumeQueue", queue: MessageQueue, } | { "method": "interrupt" } | { "method": "resume" } | { "method": "compact" } | { "method": "editMessage" } | { "method": "regenerate" } | { "method": "switchBranch" } | { "method": "addAttachment", attachment: AttachmentRef, } | { "method": "answerCard" } | { "method": "answerQuestion" } | { "method": "decidePlan" } | { "method": "stopTask" } | { "method": "pauseTask" } | { "method": "resumeTask" } | { "method": "restoreKeptWork", outcome: RestoreOutcome, } | { "method": "listWorkerEvents", page: WorkerPage, } | { "method": "listOrchestratorLog", page: OrchestratorPage, } | { "method": "readArtifact", text: ArtifactText, } | { "method": "saveArtifact" } | { "method": "openArtifact", 
+stat: DiffStat | null, } | { "method": "createConversation", conversation: Conversation, } | { "method": "forkConversation", conversation: Conversation, } | { "method": "updateSetup", conversation: Conversation, } | { "method": "getConversation", view: ConversationView, } | { "method": "sendMessage", outcome: SendOutcome, } | { "method": "editQueued", queue: MessageQueue, } | { "method": "deleteQueued", queue: MessageQueue, } | { "method": "moveQueued", queue: MessageQueue, } | { "method": "steerQueued" } | { "method": "resumeQueue", queue: MessageQueue, } | { "method": "interrupt" } | { "method": "resume" } | { "method": "compact" } | { "method": "getConversationStatus", status: ConversationStatus, } | { "method": "editMessage" } | { "method": "regenerate" } | { "method": "switchBranch" } | { "method": "addAttachment", attachment: AttachmentRef, } | { "method": "answerCard" } | { "method": "answerQuestion" } | { "method": "decidePlan" } | { "method": "stopTask" } | { "method": "pauseTask" } | { "method": "resumeTask" } | { "method": "restoreKeptWork", outcome: RestoreOutcome, } | { "method": "listWorkerEvents", page: WorkerPage, } | { "method": "listOrchestratorLog", page: OrchestratorPage, } | { "method": "readArtifact", text: ArtifactText, } | { "method": "saveArtifact" } | { "method": "openArtifact", 
 /**
  * The copy to open.
  */

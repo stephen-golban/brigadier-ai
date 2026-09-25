@@ -9,10 +9,10 @@
 
 use brigadier_core::{
     AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
-    ConversationView, DiffStat, ForkPlace, Message, MessagePage, MessageQueue, OrchestratorPage,
-    ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage, Rating,
-    RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings, Setup,
-    SetupRequest, TaskId, WorkerPage,
+    ConversationStatus, ConversationView, DiffStat, ForkPlace, Message, MessagePage, MessageQueue,
+    OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage,
+    Rating, RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings,
+    Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,10 @@ pub enum Request {
     },
     /// Compacts a Chat's context now, in a turn of its own (ChatGPT's `/compact`).
     Compact {
+        conversation_id: ConversationId,
+    },
+    /// What `/status` shows: the model's CLI session and the usage left.
+    GetConversationStatus {
         conversation_id: ConversationId,
     },
     /// Replaces a sent message: the new text starts a branch beside it and is answered. In a
@@ -449,6 +453,9 @@ pub enum Response {
     Interrupt,
     Resume,
     Compact,
+    GetConversationStatus {
+        status: ConversationStatus,
+    },
     EditMessage,
     Regenerate,
     SwitchBranch,
