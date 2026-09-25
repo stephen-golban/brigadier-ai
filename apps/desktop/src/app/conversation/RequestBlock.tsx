@@ -303,7 +303,7 @@ export const RequestBlock: FC = () => {
       )}
       <MessageError />
       {!live && last >= 0 && (
-        <AnswerActions rework={meta.rework} atMs={meta.endedAtMs} />
+        <AnswerActions session={meta.session} rework={meta.rework} atMs={meta.endedAtMs} />
       )}
     </MessagePrimitive.Root>
   );
@@ -323,12 +323,16 @@ const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }
   );
 };
 
-/** Under the answer, always shown: copy it, ask for another answer, move between answers; when
- * it came shows on hover. */
+/**
+ * Under the answer, always shown: copy it and, in a Chat, ask for another answer and move
+ * between answers (a session's answers have neither, as in ChatGPT's Codex mode); when it
+ * came shows on hover.
+ */
 const AnswerActions: FC<{
+  session: boolean;
   rework: boolean;
   atMs: number | null;
-}> = ({ rework, atMs }) => {
+}> = ({ session, rework, atMs }) => {
   const answer = useAuiState((s) => {
     const parts = s.message.parts;
     const part = parts[parts.length - 1];
@@ -348,14 +352,14 @@ const AnswerActions: FC<{
           <Copy className="animate-in zoom-in-75 fade-in duration-150" />
         )}
       </TooltipIconButton>
-      {rework && (
+      {!session && rework && (
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton tooltip="Try again">
             <Regenerate />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
       )}
-      <BranchPicker />
+      {!session && <BranchPicker />}
       {atMs !== null && (
         <span className="ps-1 text-xs tabular-nums opacity-0 transition-opacity group-hover/answer:opacity-100 group-focus-within/answer:opacity-100">
           {formatSentAt(atMs, now)}
