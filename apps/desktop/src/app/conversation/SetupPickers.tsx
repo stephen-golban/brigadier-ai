@@ -1,13 +1,15 @@
 import {
   Branch,
+  Check,
   ChevronDown,
+  ExclamationMarkCircle,
   Folder,
   FolderPlus,
+  HandRaised,
   Settings as SettingsIcon,
-  ShieldCheck,
-  Warning,
+  SimpleSmile,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { type ReactNode, useState } from "react";
+import { type FC, type ReactNode, useState } from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import { useAction } from "@/app/conversation/useAction";
@@ -18,6 +20,14 @@ import {
   type ModelGroup,
 } from "@/components/assistant-ui/elements/model-selector";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -333,6 +343,17 @@ export function EnvironmentChip({ conversation }: { conversation: Conversation }
 
 // ----- permission ------------------------------------------------------------------------
 
+const PERMISSION_ICONS: Record<PermissionLevel, FC<{ className?: string }>> = {
+  askForApproval: HandRaised,
+  approveForMe: SimpleSmile,
+  fullAccess: ExclamationMarkCircle,
+};
+
+/**
+ * ChatGPT's permission pill and menu: "How should Brigadier's actions be approved?", each
+ * level with its icon and what it means, a check on the one in use, Full access in orange and
+ * confirmed before it turns on. In a narrow composer the pill keeps only its icon.
+ */
 export function PermissionPicker({
   value,
   onChange,
@@ -340,38 +361,90 @@ export function PermissionPicker({
   value: PermissionLevel;
   onChange: (level: PermissionLevel) => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const full = value === "fullAccess";
+  const Icon = PERMISSION_ICONS[value];
   return (
-    <DropdownMenu modal={false}>
-      <PickerTrigger
-        label="Permission level"
-        icon={full ? <Warning /> : <ShieldCheck />}
-        text={PERMISSION_LABELS[value]}
-        className={cn(full && "bg-full-access/15 text-full-access hover:bg-full-access/25 hover:text-full-access rounded-capsule")}
-      />
-      <DropdownMenuContent align="start" className="max-w-sm">
-        <DropdownMenuRadioGroup
-          value={value}
-          onValueChange={(level) => onChange(level as PermissionLevel)}
-        >
-          {PERMISSION_LEVELS.map((level) => (
-            <DropdownMenuRadioItem key={level} value={level}>
-              <span className="flex flex-col">
-                <span className={cn(level === "fullAccess" && "text-full-access")}>
-                  {PERMISSION_LABELS[level]}
-                  {level === "approveForMe" && (
-                    <span className="text-muted-foreground"> (default)</span>
-                  )}
-                </span>
-                <span className="text-muted-foreground text-xs">{PERMISSION_DETAILS[level]}</span>
-              </span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        <p className="text-muted-foreground px-2 py-1 text-xs">{ALWAYS_ASK_NOTE}</p>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="Permission level"
+            data-slot="permission-picker"
+            className={cn(pickerTrigger, full && "text-full-access hover:text-full-access")}
+          >
+            <Icon />
+            <span className="truncate @max-md/composer:hidden">{PERMISSION_LABELS[value]}</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-w-sm">
+          <p className="text-muted-foreground px-2 py-1.5 text-sm">
+            How should Brigadier’s actions be approved?
+          </p>
+          <DropdownMenuRadioGroup
+            value={value}
+            onValueChange={(next) => {
+              const level = next as PermissionLevel;
+              if (level === "fullAccess" && !full) setConfirming(true);
+              else onChange(level);
+            }}
+          >
+            {PERMISSION_LEVELS.map((level) => {
+              const LevelIcon = PERMISSION_ICONS[level];
+              return (
+                <DropdownMenuRadioItem
+                  key={level}
+                  value={level}
+                  indicator={<Check className="size-icon-md" />}
+                  className={cn("items-start gap-2", level === "fullAccess" && "text-full-access")}
+                >
+                  <LevelIcon className="mt-0.5 size-icon-md shrink-0" />
+                  <span className="flex min-w-0 flex-col">
+                    <span>{PERMISSION_LABELS[level]}</span>
+                    <span
+                      className={cn(
+                        "text-xs",
+                        level === "fullAccess" ? "text-full-access" : "text-muted-foreground",
+                      )}
+                    >
+                      {PERMISSION_DETAILS[level]}
+                    </span>
+                  </span>
+                </DropdownMenuRadioItem>
+              );
+            })}
+          </DropdownMenuRadioGroup>
+          <DropdownMenuSeparator />
+          <p className="text-muted-foreground px-2 py-1 text-xs">{ALWAYS_ASK_NOTE}</p>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Turn on full access?</DialogTitle>
+            <DialogDescription>
+              Workers will run without the OS sandbox: they can read and change any file on your
+              computer and use the internet. {ALWAYS_ASK_NOTE}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setConfirming(false);
+                onChange("fullAccess");
+              }}
+            >
+              Turn on
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

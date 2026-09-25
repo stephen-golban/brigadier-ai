@@ -60,7 +60,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
         <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-1.5">
           <div
             data-slot="aui_composer-shell"
-            className="border-foreground/10 focus-within:border-foreground/25 bg-muted/30 rounded-thread flex w-full cursor-text flex-col gap-2 border p-2 transition-[border-color]"
+            className="@container/composer border-foreground/10 focus-within:border-foreground/25 bg-muted/30 rounded-thread flex w-full cursor-text flex-col gap-2 border p-2 transition-[border-color]"
           >
             <ComposerAttachments />
             <ComposerPrimitive.Input
@@ -142,14 +142,16 @@ function SendControls({
 }) {
   const queueEnabled = useApp((s) => s.settings.queueEnabled);
   const sendTip = running ? (queueEnabled ? "Queue" : "Steer") : "Send message";
+  // One button, as ChatGPT's: ■ while the model works and nothing is typed, ↑ to send (or
+  // steer, or queue), ▶ to resume a stopped request.
   return (
     <div className="flex shrink-0 items-center gap-1">
-      <AuiIf condition={(s) => s.composer.canCancel}>
+      <AuiIf condition={(s) => s.composer.canCancel && s.composer.isEmpty}>
         <ComposerPrimitive.Cancel asChild>
           <TooltipIconButton
-            tooltip="Stop the turn"
+            tooltip="Stop"
             side="bottom"
-            variant="outline"
+            variant="default"
             size="icon-md"
             className="rounded-capsule"
           >
@@ -157,7 +159,11 @@ function SendControls({
           </TooltipIconButton>
         </ComposerPrimitive.Cancel>
       </AuiIf>
-      {onResume ? (
+      {running ? (
+        <AuiIf condition={(s) => !s.composer.isEmpty}>
+          <SendButton tooltip={sendTip} />
+        </AuiIf>
+      ) : onResume ? (
         <>
           <AuiIf condition={(s) => s.composer.isEmpty}>
             <TooltipIconButton
