@@ -3,7 +3,7 @@ import { type ReactNode, useContext, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanelContext, WORKERS_LABEL, WorkerGlyphs } from "@/app/conversation/Agents";
-import { isWorking } from "@/app/conversation/blocks";
+import { isFinal, isWorking } from "@/app/conversation/blocks";
 import type { Conversation, DiffStat, Plan, Task } from "@/ipc/generated";
 import { getSessionDiff } from "@/state/actions";
 import { useBoard } from "@/state/board";
@@ -13,8 +13,6 @@ import { useApp } from "@/state/store";
 const GLYPHS = 4;
 
 const NO_TASKS: Readonly<Record<string, Task>> = {};
-
-const FINAL: ReadonlySet<Task["state"]> = new Set(["landed", "done", "rejected", "stopped", "failed"]);
 
 /** The branch's +N −N against its base, read again whenever a worker lands. */
 function useSessionDiff(conversationId: string, worktree: boolean): DiffStat | null {
@@ -52,7 +50,7 @@ function planLine(plan: Plan, tasks: Readonly<Record<string, Task>>): string {
   if (plan.state.type === "inReview") return `${total} steps · in review`;
   const finished = plan.steps.filter((step) => {
     const task = step.taskId ? tasks[step.taskId] : undefined;
-    return task !== undefined && FINAL.has(task.state);
+    return task !== undefined && isFinal(task);
   }).length;
   if (finished >= total) return `Done · ${total}/${total}`;
   const step = plan.steps[finished];
@@ -91,11 +89,11 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
   const diff = useSessionDiff(conversation.id, worktree);
   if (!shown || !setup) return null;
 
-  const active = workers.filter((task) => !FINAL.has(task.state));
+  const active = workers.filter((task) => !isFinal(task));
   const working = active.filter(isWorking).length;
   const waiting = active.length - working;
   const done = workers.length - active.length;
-  const glyphs = [...active, ...workers.filter((task) => FINAL.has(task.state))]
+  const glyphs = [...active, ...workers.filter(isFinal)]
     .slice(0, GLYPHS)
     .map((task) => task.id);
 

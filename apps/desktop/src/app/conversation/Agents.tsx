@@ -23,6 +23,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import { isFinal } from "@/app/conversation/blocks";
 import { TASK_STATE_LABELS, TaskActions } from "@/app/conversation/cards/TaskCardView";
 import { useTaskElapsed, WorkerThread } from "@/app/conversation/WorkerThread";
 import { Button } from "@/components/ui/button";
@@ -95,8 +96,8 @@ const STEP_VERBS: Record<WorkerStepKind, [one: string, many: string]> = {
   finished: ["finished", "finished"],
   landed: ["landed", "landed"],
   rejected: ["was turned down", "were turned down"],
-  stopped: ["was stopped", "were stopped"],
-  failed: ["failed", "failed"],
+  stopped: ["was interrupted", "were interrupted"],
+  failed: ["finished with errors", "finished with errors"],
 };
 
 /**
@@ -160,12 +161,6 @@ export const WorkerStepRow = memo(function WorkerStepRow({
     </div>
   );
 });
-
-const FINAL: ReadonlySet<Task["state"]> = new Set(["landed", "done", "rejected", "stopped", "failed"]);
-
-function isFinal(task: Task): boolean {
-  return FINAL.has(task.state);
-}
 
 /** A worker's state in a word or two, under its name in the list. */
 function statusLine(task: Task, activity: string | undefined): string | null {

@@ -11,6 +11,7 @@ import {
   type BlockCard,
   type BlockState,
   type BlockStep,
+  isFinal,
   isLive,
   isWorking,
 } from "@/app/conversation/blocks";
@@ -81,22 +82,27 @@ function headerLabel(state: BlockState, elapsed: number): string {
   }
 }
 
-/** The row that folds a request's work: "Working for 12s" while live, "Worked for 3m 4s" after. */
+/** A live turn shows no header until it has worked this long (only "Thinking"), as ChatGPT. */
+const HEADER_AFTER_MS = 2000;
+
+/**
+ * The row over a request's work, with a rule under it: "Working for 12s" while live, "Worked
+ * for 3m 4s ›" once its work folds.
+ */
 const WorkHeader: FC<{
   meta: BlockMeta;
   open: boolean;
   foldable: boolean;
   onToggle: () => void;
 }> = ({ meta, open, foldable, onToggle }) => {
-  const live = meta.state === "working";
   const elapsed = useElapsed(meta.startedAtMs, meta.endedAtMs, isLive(meta.state));
+  if (meta.state === "working" && !foldable && elapsed < HEADER_AFTER_MS) return null;
   const label = headerLabel(meta.state, elapsed);
   const text = (
     <span
       className={cn(
         "text-sm",
-        live ? "shimmer motion-reduce:animate-none" : "text-muted-foreground",
-        meta.state === "failed" && "text-destructive",
+        meta.state === "failed" ? "text-destructive" : "text-muted-foreground",
       )}
     >
       {label}
@@ -104,7 +110,10 @@ const WorkHeader: FC<{
   );
   if (!foldable) {
     return (
-      <div data-slot="request-work-header" className="flex h-control-sm items-center">
+      <div
+        data-slot="request-work-header"
+        className="border-border flex h-control-sm items-center border-b"
+      >
         {text}
       </div>
     );
@@ -115,7 +124,7 @@ const WorkHeader: FC<{
       data-slot="request-work-header"
       aria-expanded={open}
       onClick={onToggle}
-      className="group flex h-control-sm items-center gap-1 self-start"
+      className="group border-border flex h-control-sm items-center gap-1 border-b text-start"
     >
       {text}
       <ChevronRight
@@ -239,11 +248,24 @@ const ActivityRow: FC<{ requestId: string }> = ({ requestId }) => {
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
   const [open, setOpen] = useState(false);
+  const requestId = meta?.requestId;
+  const workersActive = useBoard((s) =>
+    Object.values(s.board?.tasks ?? {}).some(
+      (task) => task.requestId === requestId && !isFinal(task),
+    ),
+  );
   if (!meta) return null;
 
   const live = isLive(meta.state);
-  const done = meta.state === "done";
   const last = meta.texts.length - 1;
+  // The final answer is streaming: the workers it waited for are all over. The work folds now,
+  // as ChatGPT folds when its final answer starts.
+  const answering =
+    meta.state === "working" &&
+    meta.steps.length > 0 &&
+    !workersActive &&
+    meta.texts[last]?.position === Number.POSITIVE_INFINITY;
+  const done = meta.state === "done" || answering;
   const answer = done && last >= 0 ? last : null;
   const sequence = blockSequence(meta);
   const folded = sequence.filter((entry) =>
@@ -285,7 +307,7 @@ export const RequestBlock: FC = () => {
               data-slot="aui_assistant-message-content"
               className="text-foreground leading-relaxed wrap-break-word"
             >
-              <ReplyText index={answer} streaming={false} />
+              <ReplyText index={answer} streaming={answering} />
             </div>
           )}
         </>

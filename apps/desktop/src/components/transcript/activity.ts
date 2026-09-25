@@ -10,6 +10,8 @@ export type ActivityKind = "read" | "list" | "search" | "edit" | "run" | "report
 
 export type Activity = {
   kind: ActivityKind;
+  /** It reaches the network (curl, git fetch, …): ChatGPT shows a globe. */
+  web?: boolean;
   /** "Read notes.py", "Ran git status". */
   done: string;
   /** While it runs: "Reading notes.py". */
@@ -26,6 +28,8 @@ export type ThreadEntry =
 const READERS = new Set(["cat", "head", "tail", "nl", "less", "more", "bat", "wc", "sed"]);
 const LISTERS = new Set(["ls", "find", "tree", "fd"]);
 const SEARCHERS = new Set(["rg", "grep", "ag", "ack"]);
+const NETWORK = new Set(["curl", "wget", "http", "ping", "ssh", "scp", "nc", "dig"]);
+const NETWORK_GIT = new Set(["fetch", "pull", "push", "clone", "ls-remote"]);
 
 /** The command a shell wrapper runs: `/bin/zsh -c 'wc -l notes.py'` → `wc -l notes.py`. */
 export function unwrapCommand(command: string): string {
@@ -60,7 +64,14 @@ function classifyCommand(raw: string): Activity {
   const words = wordsOf(command);
   const program = basename(words[0] ?? "");
   const firstLine = command.split("\n")[0] ?? command;
-  const ran: Activity = { kind: "run", done: `Ran ${firstLine}`, doing: `Running ${firstLine}` };
+  const web =
+    NETWORK.has(program) || (program === "git" && NETWORK_GIT.has(words[1] ?? "")) || undefined;
+  const ran: Activity = {
+    kind: "run",
+    done: `Ran ${firstLine}`,
+    doing: `Running ${firstLine}`,
+    ...(web && { web }),
+  };
   if (!simple) return ran;
   if (program === "rg" && words.includes("--files")) {
     return { kind: "list", done: "Listed files", doing: "Listing files" };
@@ -112,7 +123,7 @@ function classifyTool(name: string, input: string | null): Activity {
     }
     case "WebSearch":
     case "WebFetch":
-      return { kind: "search", done: "Searched the web", doing: "Searching the web" };
+      return { kind: "search", web: true, done: "Searched the web", doing: "Searching the web" };
     case "Edit":
     case "MultiEdit":
     case "Write":
