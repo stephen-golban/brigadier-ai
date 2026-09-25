@@ -13,15 +13,12 @@ import {
   ProjectPicker,
   ProjectSettingsButton,
 } from "@/app/conversation/SetupPickers";
+import { type MentionMemory, Mentions, type MentionTarget } from "@/app/conversation/Mentions";
 import { SlashCommands } from "@/app/conversation/SlashCommands";
 import {
   ComposerAddAttachment,
   ComposerAttachments,
 } from "@/components/assistant-ui/elements/attachment";
-import {
-  ComposerMentions,
-  type MentionTarget,
-} from "@/components/assistant-ui/elements/composer-mentions";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
@@ -35,6 +32,8 @@ export type ComposerTarget = {
   conversation: Conversation | null;
   resolved: ResolvedDraft;
   targets: readonly MentionTarget[];
+  /** The files and conversations the `@` menu put in the text. */
+  mentions: MentionMemory;
   running: boolean;
   /** Set while the latest request is stopped: continues it (the ▶ send button). */
   onResume: (() => void) | null;
@@ -44,7 +43,7 @@ export const ComposerTargetContext = createContext<ComposerTarget | null>(null);
 
 /**
  * The composer (assistant-ui composer elements, BB parity): attachments, @-mentions of
- * workers, ChatGPT's `/` commands, and the setup pickers. A draft picks its project (or none, for a Chat),
+ * workers, files and conversations, ChatGPT's `/` commands, and the setup pickers. A draft picks its project (or none, for a Chat),
  * environment, branch, permission level and model; a started session can still change its
  * model, effort and permission level, a Chat its model.
  */
@@ -58,7 +57,9 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <div className="relative w-full">
-        {conversation?.kind === "session" && <ComposerMentions targets={targets} />}
+        {conversation && (
+          <Mentions conversation={conversation} targets={targets} memory={target.mentions} />
+        )}
         <SlashCommands conversation={conversation} onOpenModel={() => setModelOpen(true)} />
         <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-1.5">
           <div

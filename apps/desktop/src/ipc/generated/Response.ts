@@ -26,7 +26,15 @@ import type { WorkerPage } from "./WorkerPage";
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "listFiles", 
+/**
+ * Paths relative to the checkout's root, tracked and untracked (not ignored).
+ */
+files: Array<string>, 
+/**
+ * Set when the checkout has more files than were listed.
+ */
+truncated: boolean, } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
 /**
  * Absent for Chats and local-checkout sessions.
  */

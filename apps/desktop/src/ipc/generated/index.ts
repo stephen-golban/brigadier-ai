@@ -59,6 +59,7 @@ export type { KeptWork } from "./KeptWork";
 export type { LatencySummary } from "./LatencySummary";
 export type { Lifecycle } from "./Lifecycle";
 export type { LimitHit } from "./LimitHit";
+export type { Mention } from "./Mention";
 export type { Message } from "./Message";
 export type { MessagePage } from "./MessagePage";
 export type { MessageQueue } from "./MessageQueue";

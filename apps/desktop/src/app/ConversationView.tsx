@@ -43,10 +43,7 @@ import { QueuePanel } from "@/app/conversation/QueuePanel";
 import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { useAction } from "@/app/conversation/useAction";
-import {
-  mentionedTasks,
-  type MentionTarget,
-} from "@/components/assistant-ui/elements/composer-mentions";
+import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
 import { MessageAttachments } from "@/components/assistant-ui/elements/message-attachment";
 import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
@@ -480,6 +477,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const agents = useMemo(() => ({ panel, setPanel }), [panel]);
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
+  const [mentions] = useState(() => new MentionMemory());
   const draftTarget = resolved.target;
   // The conversation whose `/status` card shows (none once another one opens).
   const [statusFor, setStatusFor] = useState<string | null>(null);
@@ -497,13 +495,13 @@ export function ConversationView({ selection }: { selection: Selection }) {
       if (!text && refs.length === 0) return;
       setError(null);
       send(
-        { text, attachments: refs, mentions: mentionedTasks(text, targets) },
+        { text, attachments: refs, mentions: mentionsIn(text, targets, mentions.known()) },
         draftTarget ?? undefined,
       ).catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : String(cause));
       });
     },
-    [attachments, targets, draftTarget],
+    [attachments, targets, mentions, draftTarget],
   );
 
   // assistant-ui's queue surface over the daemon's queue: sending goes through it so the
@@ -590,8 +588,8 @@ export function ConversationView({ selection }: { selection: Selection }) {
   );
 
   const target = useMemo<ComposerTarget>(
-    () => ({ conversation, resolved, targets, running, onResume }),
-    [conversation, resolved, targets, running, onResume],
+    () => ({ conversation, resolved, targets, mentions, running, onResume }),
+    [conversation, resolved, targets, mentions, running, onResume],
   );
 
   return (
@@ -624,7 +622,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
                     components={THREAD_COMPONENTS}
                     placeholder={
                       resolved.kind === "session" || conversation?.kind === "session"
-                        ? "Describe what this session should do…  (@ mentions a worker)"
+                        ? "Describe what this session should do…  (@ mentions a worker or file)"
                         : "Message Brigadier…"
                     }
                   />

@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 use super::SessionManager;
 use super::prompts;
 use crate::model::{
-    ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Message,
+    ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Mention, Message,
     MessageRole, ModelChoice, Notice, Setup, streams,
 };
 use crate::runtime::{is_delta, merge_delta};
@@ -54,6 +54,10 @@ const ORCHESTRATOR_TOOL_TIMEOUT_SECS: u64 = 120;
 const RESEED_MESSAGES: usize = 40;
 /// Bytes of transcript carried when a conversation's CLI session is started over.
 const RESEED_BYTES: usize = 48_000;
+/// Messages of an @-mentioned conversation that go along as context.
+const MENTIONED_CHAT_MESSAGES: usize = 30;
+/// Bytes of an @-mentioned conversation that go along as context.
+const MENTIONED_CHAT_BYTES: usize = 24_000;
 /// A Chat's text attachments up to this size go into the message itself.
 const CHAT_INLINE_MAX_BYTES: usize = 200_000;
 const ENDED_UNEXPECTEDLY: &str = "The CLI session ended unexpectedly.";
@@ -283,7 +287,7 @@ impl SessionManager {
         id: ConversationId,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
         steer: bool,
     ) -> Result<SendOutcome> {
         self.admit()?;
@@ -1037,14 +1041,24 @@ impl SessionManager {
                     ));
                 }
             }
-            for task in &message.mentions {
-                if let Ok(tasks) = self.core.tasks(&conv.id).await
-                    && let Some(task) = tasks.iter().find(|t| &t.id == task)
-                {
-                    text.push_str(&format!(
-                        "\n[mentions task-{}: {}]",
-                        task.number, task.title
-                    ));
+            for mention in &message.mentions {
+                match mention {
+                    Mention::Task { id } => {
+                        if let Ok(tasks) = self.core.tasks(&conv.id).await
+                            && let Some(task) = tasks.iter().find(|t| &t.id == id)
+                        {
+                            text.push_str(&format!(
+                                "\n[mentions task-{}: {}]",
+                                task.number, task.title
+                            ));
+                        }
+                    }
+                    Mention::File { path } => {
+                        text.push_str(&format!("\n[mentions the file {path}]"));
+                    }
+                    Mention::Chat { id, title } => {
+                        text.push_str(&self.mentioned_chat(id, title).await);
+                    }
                 }
             }
             parts.push(text);
@@ -1054,6 +1068,38 @@ impl SessionManager {
             text: parts.join("\n\n"),
             files,
         }
+    }
+
+    /// Another conversation the user @-mentioned, as context: its latest messages on the
+    /// branch it shows (bounded).
+    async fn mentioned_chat(&self, id: &ConversationId, title: &str) -> String {
+        let branch = match self.core.head(id).await {
+            Ok(Some(head)) => self.core.branch(id, &head).await.unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut lines = Vec::new();
+        let mut bytes = 0;
+        for message in branch.iter().rev().take(MENTIONED_CHAT_MESSAGES) {
+            let who = match message.role {
+                MessageRole::User => "User",
+                MessageRole::Assistant => "Assistant",
+                MessageRole::System => continue,
+            };
+            let line = format!("{who}: {}", message.text);
+            bytes += line.len();
+            if bytes > MENTIONED_CHAT_BYTES {
+                break;
+            }
+            lines.push(line);
+        }
+        if lines.is_empty() {
+            return format!("\n[mentions the conversation \"{title}\", which has no messages]");
+        }
+        lines.reverse();
+        format!(
+            "\n[mentions the conversation \"{title}\"; its latest messages follow]\n{}\n[/conversation]",
+            lines.join("\n\n")
+        )
     }
 
     async fn full_text(&self, message: &Message) -> String {

@@ -536,6 +536,10 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
         },
+        Request::ListFiles { conversation_id } => {
+            let (files, truncated) = sessions.list_files(&conversation_id).await?;
+            Response::ListFiles { files, truncated }
+        }
         Request::RateMessage {
             conversation_id,
             subject,

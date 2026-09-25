@@ -9,10 +9,10 @@
 
 use brigadier_core::{
     AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
-    ConversationStatus, ConversationView, DiffStat, ForkPlace, Message, MessagePage, MessageQueue,
-    OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, QueuedMessage,
-    Rating, RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, Settings,
-    Setup, SetupRequest, TaskId, WorkerPage,
+    ConversationStatus, ConversationView, DiffStat, ForkPlace, Mention, Message, MessagePage,
+    MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView,
+    QueuedMessage, Rating, RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo,
+    RestoreOutcome, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,10 @@ pub enum Request {
     GetRepoInfo {
         path: String,
     },
+    /// The files of a session's checkout, for the composer's @-mentions.
+    ListFiles {
+        conversation_id: ConversationId,
+    },
     /// Rates an answer ("Good response" / "Bad response").
     RateMessage {
         conversation_id: ConversationId,
@@ -132,7 +136,7 @@ pub enum Request {
         conversation_id: ConversationId,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
         steer: bool,
     },
     EditQueued {
@@ -140,7 +144,7 @@ pub enum Request {
         item_id: String,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
     },
     DeleteQueued {
         conversation_id: ConversationId,
@@ -416,6 +420,12 @@ pub enum Response {
     },
     GetRepoInfo {
         repo: RepoInfo,
+    },
+    ListFiles {
+        /// Paths relative to the checkout's root, tracked and untracked (not ignored).
+        files: Vec<String>,
+        /// Set when the checkout has more files than were listed.
+        truncated: bool,
     },
     RateMessage,
     GetSessionDiff {

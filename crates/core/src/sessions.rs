@@ -18,8 +18,8 @@ use crate::model::{
 };
 use crate::projection::Projection;
 use crate::work::{
-    AttachmentRef, MessageQueue, OrchestratorEntry, QueuedMessage, RequestState, Task, TaskId,
-    UserRequest,
+    AttachmentRef, Mention, MessageQueue, OrchestratorEntry, QueuedMessage, RequestState, Task,
+    TaskId, UserRequest,
 };
 use crate::{Error, Result, now_ms};
 
@@ -395,7 +395,7 @@ impl Core {
         id: ConversationId,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
     ) -> Result<Message> {
         self.append_user_message_under(id, text, attachments, mentions, None)
             .await
@@ -409,7 +409,7 @@ impl Core {
         id: ConversationId,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
         parent: Option<String>,
     ) -> Result<Message> {
         let conversation = self.conversation(&id)?;
@@ -1048,7 +1048,7 @@ impl Core {
         id: &ConversationId,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
     ) -> Result<QueuedMessage> {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err(Error::Invalid("message is empty".into()));
@@ -1082,7 +1082,7 @@ impl Core {
         item_id: &str,
         text: String,
         attachments: Vec<AttachmentRef>,
-        mentions: Vec<TaskId>,
+        mentions: Vec<Mention>,
     ) -> Result<MessageQueue> {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err(Error::Invalid("message is empty".into()));

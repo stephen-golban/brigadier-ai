@@ -8,6 +8,7 @@ import type {
   Density,
   DiffStat,
   ForkPlace,
+  Mention,
   MessageQueue,
   Project,
   ProjectPatch,
@@ -206,6 +207,14 @@ export async function getRepoInfo(path: string): Promise<RepoInfo> {
   return repo;
 }
 
+/** A session checkout's files, for the composer's @-mentions. */
+export async function listFiles(
+  conversationId: string,
+): Promise<{ files: string[]; truncated: boolean }> {
+  const { files, truncated } = await request({ method: "listFiles", conversationId });
+  return { files, truncated };
+}
+
 /** Rates an answer: a message id, or `task:<id>` for a worker's report. */
 export async function rateMessage(
   conversationId: string,
@@ -261,8 +270,8 @@ export async function setPinned(id: string, pinned: boolean): Promise<void> {
 export type Outgoing = {
   text: string;
   attachments: AttachmentRef[];
-  /** Workers the message @-mentions. */
-  mentions: string[];
+  /** What the message @-mentions: workers, files, other conversations. */
+  mentions: Mention[];
 };
 
 /** Turns the composer's choices for a draft into the new conversation's setup. */

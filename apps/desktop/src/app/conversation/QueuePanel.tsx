@@ -9,7 +9,7 @@ import {
 import { memo, type PointerEvent as ReactPointerEvent, useRef, useState } from "react";
 
 import { useAction } from "@/app/conversation/useAction";
-import { mentionedTasks, type MentionTarget } from "@/components/assistant-ui/elements/composer-mentions";
+import { mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
 import {
   attachmentSummary,
   MessageAttachments,
@@ -146,7 +146,7 @@ export const QueuePanel = memo(function QueuePanel({
                 editQueued(conversationId, item.id, {
                   text,
                   attachments,
-                  mentions: mentionedTasks(text, targets),
+                  mentions: mentionsIn(text, targets, item.mentions),
                 })
               }
             />
@@ -246,7 +246,9 @@ function QueueEditor({
   const [attachments, setAttachments] = useState(item.attachments);
   const action = useAction();
   const empty = !text.trim() && attachments.length === 0;
-  const mentioned = mentionedTasks(text, targets).length;
+  const mentioned = mentionsIn(text, targets, item.mentions).filter(
+    (mention) => mention.type === "task",
+  ).length;
   return (
     <MessageQueueItem index={index} data-editing className="items-start py-2">
       <form
