@@ -13,6 +13,7 @@ import {
   useRef,
 } from "react";
 
+import { fuzzyMatch, MatchedText } from "@/components/assistant-ui/elements/fuzzy-match";
 import { floatingMenu } from "@/components/assistant-ui/elements/surfaces";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +44,7 @@ const atStart: Unstable_TriggerMatcher = (text, char, cursor) => {
 /**
  * assistant-ui's trigger adapter over the commands, as one filtered list: no drill-down
  * categories, so every command shows at once with its group heading, and typing filters by
- * name and description.
+ * name (letters in order are enough).
  */
 function commandAdapter(commands: readonly ComposerCommand[]): TriggerAdapter {
   const items: Unstable_TriggerItem[] = commands.map((command) => ({
@@ -57,14 +58,10 @@ function commandAdapter(commands: readonly ComposerCommand[]): TriggerAdapter {
     categories: () => [],
     categoryItems: () => [],
     search(query) {
-      const lower = query.toLowerCase();
-      // Names that start with the query first, then other names, then descriptions.
-      const rankOf = (item: Unstable_TriggerItem) => {
-        const label = item.label.toLowerCase();
-        if (label.startsWith(lower)) return 0;
-        if (label.includes(lower)) return 1;
-        return item.description?.toLowerCase().includes(lower) ? 2 : 3;
-      };
+      // Over names and ids, as ChatGPT's: names that start with the query first, then those
+      // holding it, then those with its letters in order; alphabetical within each.
+      const rankOf = (item: Unstable_TriggerItem) =>
+        Math.min(fuzzyMatch(item.label, query)?.rank ?? 3, fuzzyMatch(item.id, query)?.rank ?? 3);
       return items
         .map((item) => ({ item, rank: rankOf(item) }))
         .filter(({ rank }) => rank < 3)
@@ -109,7 +106,9 @@ export const ComposerCommands: FC<{ commands: readonly ComposerCommand[] }> = ({
                     <span className="text-muted-foreground flex size-icon-md shrink-0 items-center justify-center [&_svg]:size-icon-sm">
                       {command?.icon}
                     </span>
-                    <span className="shrink-0">{item.label}</span>
+                    <span className="shrink-0">
+                      <MatchedText text={item.label} />
+                    </span>
                     {item.description && (
                       <span className="text-muted-foreground min-w-0 flex-1 truncate">
                         {item.description}

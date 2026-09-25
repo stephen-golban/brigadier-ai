@@ -13,6 +13,7 @@ import {
   useRef,
 } from "react";
 
+import { MatchedText } from "@/components/assistant-ui/elements/fuzzy-match";
 import { floatingMenu, mono } from "@/components/assistant-ui/elements/surfaces";
 import { cn } from "@/lib/utils";
 
@@ -87,7 +88,9 @@ export const ComposerMentions: FC<{
                   <span className="text-muted-foreground flex size-icon-md shrink-0 items-center justify-center [&_svg]:size-icon-sm">
                     {option?.icon}
                   </span>
-                  <span className="shrink-0">{option?.name ?? item.label}</span>
+                  <span className="shrink-0">
+                    <MatchedText text={option?.name ?? item.label} />
+                  </span>
                   <span className="text-muted-foreground min-w-0 flex-1 truncate">
                     {option?.detail}
                   </span>
