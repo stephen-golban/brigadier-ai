@@ -82,11 +82,14 @@ impl SessionManager {
                     .create_task(id, args.title, args.kind, args.spec, pin, avoid, subject, attachments)
                     .await?;
                 Ok(format!(
-                    "Started task-{} ({:?}) on {}: {}. Its report arrives later as a message; don't wait for it.",
+                    "Started task-{} ({:?}) on {}: {}. Its report arrives later as a message; don't wait for it. \
+                     The user sees the worker live, so don't announce it: if nothing else is \
+                     needed now, reply with exactly {} and nothing else.",
                     task.number,
                     task.kind,
                     route_label(&task),
-                    task.route.reason
+                    task.route.reason,
+                    prompts::QUIET
                 ))
             }
             OrchestratorCall::MessageWorker(args) => {

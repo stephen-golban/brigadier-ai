@@ -1138,6 +1138,7 @@ impl SessionManager {
     ) {
         let mut deltas: Vec<ProviderEvent> = Vec::new();
         let mut deadline: Option<tokio::time::Instant> = None;
+        let mut quiet = Quiet::new(conv.kind == ConversationKind::Session);
         loop {
             let flush_at = async {
                 match deadline {
@@ -1153,8 +1154,9 @@ impl SessionManager {
                     }
                     Some(event) => {
                         deadline = None;
-                        self.store_deltas(&conv.id, std::mem::take(&mut deltas)).await;
+                        self.store_deltas(&conv.id, quiet.pass(std::mem::take(&mut deltas))).await;
                         let exited = matches!(event, ProviderEvent::Exited { .. });
+                        quiet.forget(&event);
                         self.on_conversation_event(&conv, &cli, event).await;
                         if exited {
                             break;
@@ -1164,11 +1166,11 @@ impl SessionManager {
                 },
                 () = flush_at => {
                     deadline = None;
-                    self.store_deltas(&conv.id, std::mem::take(&mut deltas)).await;
+                    self.store_deltas(&conv.id, quiet.pass(std::mem::take(&mut deltas))).await;
                 }
             }
         }
-        self.store_deltas(&conv.id, deltas).await;
+        self.store_deltas(&conv.id, quiet.pass(deltas)).await;
         self.grants.revoke_owner(&cli.owner);
         let (was_busy, closing) = {
             let mut state = conv.state.lock().await;
@@ -1245,16 +1247,22 @@ impl SessionManager {
                         .remove(item_id)
                         .or_else(|| state.request.clone())
                 };
-                if let Err(err) = self
-                    .core
-                    .append_assistant_message(
-                        conv.id.clone(),
-                        item_id.clone(),
-                        text.clone(),
-                        Some(cli.model.clone()),
-                        request,
-                    )
-                    .await
+                let shown = if conv.kind == ConversationKind::Session {
+                    without_quiet(text)
+                } else {
+                    Some(text.as_str())
+                };
+                if let Some(text) = shown
+                    && let Err(err) = self
+                        .core
+                        .append_assistant_message(
+                            conv.id.clone(),
+                            item_id.clone(),
+                            text.to_owned(),
+                            Some(cli.model.clone()),
+                            request,
+                        )
+                        .await
                 {
                     tracing::warn!(conversation = %conv.id, error = %err, "could not store a reply");
                 }
@@ -1757,6 +1765,68 @@ impl SessionManager {
             tracing::debug!(conversation = %id, error = %err, "could not log the orchestrator");
         }
     }
+}
+
+/// Holds back an orchestrator reply's streamed text while it may still be [`prompts::QUIET`],
+/// so the user never sees it appear.
+struct Quiet {
+    enabled: bool,
+    /// Text streamed so far per reply still held back; released replies are absent.
+    held: HashMap<String, String>,
+    released: HashSet<String>,
+}
+
+impl Quiet {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            held: HashMap::new(),
+            released: HashSet::new(),
+        }
+    }
+
+    /// The deltas the user may see: a reply's text is released, whole, once it can no longer
+    /// be [`prompts::QUIET`].
+    fn pass(&mut self, deltas: Vec<ProviderEvent>) -> Vec<ProviderEvent> {
+        if !self.enabled {
+            return deltas;
+        }
+        deltas
+            .into_iter()
+            .filter_map(|event| match event {
+                ProviderEvent::MessageDelta { item_id, text } => {
+                    if self.released.contains(&item_id) {
+                        return Some(ProviderEvent::MessageDelta { item_id, text });
+                    }
+                    let so_far = self.held.entry(item_id.clone()).or_default();
+                    so_far.push_str(&text);
+                    if prompts::QUIET.starts_with(so_far.trim()) {
+                        return None;
+                    }
+                    let text = self.held.remove(&item_id).unwrap_or_default();
+                    self.released.insert(item_id.clone());
+                    Some(ProviderEvent::MessageDelta { item_id, text })
+                }
+                event => Some(event),
+            })
+            .collect()
+    }
+
+    /// Forgets a reply once it is complete.
+    fn forget(&mut self, event: &ProviderEvent) {
+        if let ProviderEvent::Message { item_id, .. } = event {
+            self.held.remove(item_id);
+            self.released.remove(item_id);
+        }
+    }
+}
+
+/// An orchestrator reply as the user sees it: without a trailing [`prompts::QUIET`], and
+/// nothing when that was all of it.
+fn without_quiet(text: &str) -> Option<&str> {
+    let text = text.trim_end();
+    let text = text.strip_suffix(prompts::QUIET).unwrap_or(text).trim_end();
+    (!text.trim_start().is_empty()).then_some(text)
 }
 
 /// Takes every envelope of one request from the inbox, in arrival order: the request of the

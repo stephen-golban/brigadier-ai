@@ -8,6 +8,7 @@
 
 use super::SessionManager;
 use super::conversation::Envelope;
+use super::prompts;
 use crate::board::Board;
 use crate::model::ConversationId;
 use crate::work::{CardState, PlanState, RequestState, TaskId, TaskState};
@@ -136,8 +137,12 @@ impl SessionManager {
                     })
                     .collect();
                 last.push_str(&format!(
-                    "[still running for this request: {}]",
-                    list.join(", ")
+                    "[still running for this request: {}. Their reports come as later messages. \
+                     Act on this message with tools if it needs it. Then, unless the user must \
+                     change plans, reply with exactly {} and nothing else: the user already \
+                     sees the workers' progress.]",
+                    list.join(", "),
+                    prompts::QUIET
                 ));
             }
         }

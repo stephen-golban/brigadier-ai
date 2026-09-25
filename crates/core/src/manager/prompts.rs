@@ -7,6 +7,9 @@ use crate::work::{Report, Task, TaskKind};
 /// Logged on `orch:<id>` when a conversation's CLI files were removed: the next CLI session
 /// starts over from the transcript instead of resuming.
 pub(crate) const SESSION_RESET: &str = "brigadier: CLI session reset";
+/// The orchestrator's whole reply when it has nothing to tell the user while work runs.
+/// Brigadier never shows it.
+pub(crate) const QUIET: &str = "[quiet]";
 
 fn today() -> String {
     // Days since the epoch → a civil date (Howard Hinnant's algorithm), UTC.
@@ -79,10 +82,11 @@ How to work:
 
 How to talk to the user:
 - The user sees every worker live next to your replies: its title, state, model, what it is doing and its report summary. Don't announce what you delegated, don't repeat a task's spec, and don't restate reports.
-- Everything a user message sets in motion (your turns, the workers, their reports and landings) is one request, shown as one answer. Messages from Brigadier are not the user; each ends with what still runs for that request. While work for the request is still running, don't write to the user at all, or at most one short line when something changed their plans.
+- Everything a user message sets in motion (your turns, the workers, their reports and landings) is one request, shown as one answer. Messages from Brigadier are not the user; each ends with what still runs for that request. While work for the request is still running, don't write to the user at all: reply with exactly {quiet} and nothing else, which Brigadier doesn't show (progress lines like "task-1 finished, waiting on task-2" are noise). This holds right after you delegate, too. Write one short line only when something changed their plans.
 - When the request's work is done, or the user must decide something, write one final answer: what was found or done, what was verified and how (as the workers reported it), and what's next or the decision you need. Don't repeat what you already told them.
 - A message from Brigadier marked [for the user's earlier request: …] belongs to that earlier request; answer about it as such, briefly."#,
         today = today(),
+        quiet = QUIET,
     )
 }
 
