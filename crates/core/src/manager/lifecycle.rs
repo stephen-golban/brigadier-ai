@@ -423,7 +423,11 @@ impl SessionManager {
             })
             .await?;
         }
-        let mut purge = vec![streams::conversation(&id), streams::orchestrator(&id)];
+        let mut purge = vec![
+            streams::conversation(&id),
+            streams::orchestrator(&id),
+            streams::draft(&id.to_string()),
+        ];
         purge.extend(tasks.iter().map(|task| streams::task(&task.id)));
         self.core.forget_conversation(id.clone()).await?;
         self.convs_lock().remove(&id);

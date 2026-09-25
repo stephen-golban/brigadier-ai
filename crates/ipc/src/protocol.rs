@@ -216,6 +216,12 @@ pub enum Request {
     ReadAttachment {
         id: String,
     },
+    /// Keeps a composer draft's attachments stored until it is sent or discarded; `scope` is a
+    /// conversation id or `new`.
+    PinDraftAttachments {
+        scope: String,
+        attachments: Vec<AttachmentRef>,
+    },
     /// Answers an approval card.
     AnswerCard {
         conversation_id: ConversationId,
@@ -489,6 +495,7 @@ pub enum Response {
     ReadAttachment {
         data: String,
     },
+    PinDraftAttachments,
     AnswerCard,
     AnswerQuestion,
     DecidePlan,

@@ -47,6 +47,7 @@ import {
   upsertRawSession,
   useApp,
 } from "@/state/store";
+import { forgetDraft } from "@/state/drafts";
 import { toast } from "@/state/toasts";
 
 /** Messages shown when a conversation opens; older ones load on demand. */
@@ -728,6 +729,7 @@ export async function deleteConversation(
   forgetBrain: boolean,
 ): Promise<void> {
   await request({ method: "delete", id, deleteBranches, forgetBrain });
+  forgetDraft(id);
   const { selection } = useApp.getState();
   if (selection.type === "conversation" && selection.id === id) {
     select({ type: "draft", kind: "chat" });

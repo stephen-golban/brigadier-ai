@@ -495,6 +495,10 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 attachment: core.add_attachment(name, mime, bytes).await?,
             }
         }
+        Request::PinDraftAttachments { scope, attachments } => {
+            core.pin_draft_attachments(scope, attachments).await?;
+            Response::PinDraftAttachments
+        }
         Request::ReadAttachment { id } => Response::ReadAttachment {
             data: BASE64.encode(core.read_attachment(&id).await?),
         },

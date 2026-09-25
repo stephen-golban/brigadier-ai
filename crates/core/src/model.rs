@@ -884,6 +884,13 @@ pub enum DomainEvent {
         conversation_id: ConversationId,
         entry: OrchestratorEntry,
     },
+    /// The attachments a composer draft holds. Blob collection keeps what an event mentions and
+    /// the draft's stream keeps only its latest event, so they stay stored until the draft is
+    /// sent or discarded (an empty list).
+    DraftPinned {
+        scope: String,
+        attachments: Vec<AttachmentRef>,
+    },
     /// Diagnostic probe used to measure ingest → paint latency end to end.
     Probe {
         burst_id: String,
@@ -930,6 +937,7 @@ impl DomainEvent {
             Self::QueueChanged { .. } => "queue.changed",
             Self::WorkerEvent { .. } => "worker.event",
             Self::OrchestratorLogged { .. } => "orchestrator.logged",
+            Self::DraftPinned { .. } => "draft.pinned",
             Self::Probe { .. } => "diag.probe",
         }
     }
@@ -966,5 +974,10 @@ pub mod streams {
     /// The orchestrator's CLI events and context injections (Inspector).
     pub fn orchestrator(id: &ConversationId) -> String {
         format!("orch:{id}")
+    }
+
+    /// A composer draft's pinned attachments: a conversation id, or `new` for a new chat.
+    pub fn draft(scope: &str) -> String {
+        format!("draft:{scope}")
     }
 }

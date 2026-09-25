@@ -645,6 +645,34 @@ impl Core {
         })
     }
 
+    /// Keeps a composer draft's attachments stored until it is sent or discarded (see
+    /// [`DomainEvent::DraftPinned`]); an empty list lets the previous ones go. `scope` is a
+    /// conversation id, or `new` for a new chat.
+    pub async fn pin_draft_attachments(
+        &self,
+        scope: String,
+        attachments: Vec<AttachmentRef>,
+    ) -> Result<()> {
+        let valid = !scope.is_empty()
+            && scope.len() <= 64
+            && scope.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !valid {
+            return Err(Error::Invalid(
+                "a draft scope is a conversation id or \"new\"".into(),
+            ));
+        }
+        check_attachments(&attachments)?;
+        let stream = streams::draft(&scope);
+        let event = DomainEvent::DraftPinned { scope, attachments };
+        self.store
+            .append_with(
+                vec![to_new_event(stream, &event)?],
+                Some(Retention { keep_last: 1 }),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// A stored attachment's bytes.
     pub async fn read_attachment(&self, id: &str) -> Result<Vec<u8>> {
         self.store

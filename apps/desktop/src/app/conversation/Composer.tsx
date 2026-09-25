@@ -24,6 +24,8 @@ import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
 import { type ComposerTarget, ComposerTargetContext } from "@/app/conversation/composerTarget";
 import { PendingActionCard, usePendingActions, WaitingReminder } from "@/app/conversation/ActionCards";
 import { QueueCard, usePullQueued } from "@/app/conversation/QueueCard";
+import { usePromptHistory, useComposerDraft } from "@/app/conversation/composerDraft";
+import type { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
 import { PLAN_PLACEHOLDER, PlanChip, PlusMenu, usePlanMode } from "@/app/conversation/PlusMenu";
 import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
@@ -38,6 +40,7 @@ import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
+import { NEW_CHAT_SCOPE } from "@/state/drafts";
 import { useApp } from "@/state/store";
 
 
@@ -68,6 +71,12 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      {!archived && (
+        <ComposerDraft
+          scope={conversation?.id ?? NEW_CHAT_SCOPE}
+          attachments={target.queue.attachments}
+        />
+      )}
       <div data-slot="composer" className="group/composer relative w-full">
         {conversation && (
           <Mentions conversation={conversation} targets={targets} memory={target.mentions} />
@@ -168,10 +177,23 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   );
 };
 
+/** Keeps the composer's draft for its conversation (or the new chat). */
+function ComposerDraft({
+  scope,
+  attachments,
+}: {
+  scope: string;
+  attachments: BlobAttachmentAdapter;
+}) {
+  useComposerDraft(scope, attachments);
+  return null;
+}
+
 /**
  * The text field: grows with its text up to a quarter of the window, then scrolls, the top
- * line fading under the edge once scrolled. ↑ in an empty field edits the last queued message;
- * ⌘Enter while the model works does the opposite of the queueing setting, for this message.
+ * line fading under the edge once scrolled. ↑ in an empty field edits the last queued message,
+ * else walks back through the conversation's prompts (↓ forward); ⌘Enter while the model
+ * works does the opposite of the queueing setting, for this message.
  */
 function ComposerInput({
   placeholder,
@@ -188,6 +210,7 @@ function ComposerInput({
   const [scrolled, setScrolled] = useState(false);
   const aui = useAui();
   const pull = usePullQueued();
+  const history = usePromptHistory();
   const queueEnabled = useApp((s) => s.settings.queueEnabled);
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
@@ -195,6 +218,8 @@ function ComposerInput({
     if (event.key === "ArrowUp" && pull && composer.getState().isEmpty) {
       event.preventDefault();
       void pull(-1);
+    } else if (history(event)) {
+      event.preventDefault();
     } else if (
       event.key === "Enter" &&
       event.metaKey &&
