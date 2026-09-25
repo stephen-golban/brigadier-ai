@@ -75,6 +75,11 @@ const ACTIVE: ReadonlySet<TaskState> = new Set([
   "readyToLand",
 ]);
 
+/** Whether a worker can still be paused or stopped. */
+export function isStoppable(task: Task): boolean {
+  return ACTIVE.has(task.state);
+}
+
 /** One worker, read from the open board by id so only its own updates rerender it. */
 export const TaskCardView = memo(function TaskCardView({
   taskId,
