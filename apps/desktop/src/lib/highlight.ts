@@ -69,6 +69,17 @@ const ALIASES: Record<string, string> = {
   svg: "xml",
 };
 
+/** Text longer than this shows without colours, which would take too long to work out. */
+export const HIGHLIGHT_CHARS = 300_000;
+
+/** The grammar for a file: its extension, or its name for the ones known without one. */
+export function languageOf(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  if (name === "dockerfile" || name === "makefile") return name;
+  const dot = name.lastIndexOf(".");
+  return dot < 0 ? "" : name.slice(dot + 1);
+}
+
 let highlighter: Promise<HighlighterCore> | null = null;
 
 function core(): Promise<HighlighterCore> {
