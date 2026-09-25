@@ -562,6 +562,10 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             sessions.resume(conversation_id).await?;
             Response::Resume
         }
+        Request::Compact { conversation_id } => {
+            sessions.compact(conversation_id).await?;
+            Response::Compact
+        }
         Request::EditMessage {
             conversation_id,
             message_id,

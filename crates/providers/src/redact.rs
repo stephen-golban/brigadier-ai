@@ -533,6 +533,7 @@ pub fn redact_event(redactor: &Redactor, event: &mut ProviderEvent) {
         ProviderEvent::TurnStarted { .. }
         | ProviderEvent::Usage { .. }
         | ProviderEvent::ContextSize { .. }
+        | ProviderEvent::CompactionStarted { .. }
         | ProviderEvent::RateLimits { .. }
         | ProviderEvent::TurnCompleted { .. } => {}
         ProviderEvent::MessageDelta { text, .. }
@@ -589,6 +590,7 @@ pub fn redact_event(redactor: &Redactor, event: &mut ProviderEvent) {
             opt(&mut error.code);
         }
         ProviderEvent::Notice { message, .. } => r(message),
+        ProviderEvent::CompactionEnded { error, .. } => opt(error),
         ProviderEvent::Exited { stderr_tail, .. } => opt(stderr_tail),
     }
 }

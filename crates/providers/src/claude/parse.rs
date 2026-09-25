@@ -92,6 +92,12 @@ pub struct Parser {
     /// An error was already reported for the running turn.
     turn_error: bool,
     turn_started_ms: Option<i64>,
+    /// `/compact` was written and Claude has not started compacting yet.
+    compact_asked: bool,
+    /// The compaction running now: whether Claude started it on its own.
+    compacting: Option<bool>,
+    /// A compaction failed: Claude says why once more, as a reply of its own, which is dropped.
+    compact_failed: bool,
 }
 
 impl Parser {
@@ -121,6 +127,11 @@ impl Parser {
     /// Writing a message failed: Claude never saw it.
     pub fn write_failed(&mut self) {
         self.unechoed = self.unechoed.saturating_sub(1);
+    }
+
+    /// `/compact` is about to be written: the compaction it starts was asked for.
+    pub fn compact_requested(&mut self) {
+        self.compact_asked = true;
     }
 
     pub fn interrupt_requested(&mut self) {
@@ -290,6 +301,12 @@ impl Parser {
             }));
             return;
         }
+        // Why a compaction failed, said again as a reply: already reported with it.
+        if std::mem::take(&mut self.compact_failed)
+            && str_of(&message, "model") == Some("<synthetic>")
+        {
+            return;
+        }
         // Subagent output is summarized by its tool result.
         if value
             .get("parent_tool_use_id")
@@ -406,6 +423,10 @@ impl Parser {
         if value.get("isReplay").and_then(Value::as_bool) == Some(true) {
             self.unechoed = self.unechoed.saturating_sub(1);
             let text = content_text(value.get("message").unwrap_or(&Value::Null));
+            // What a slash command printed ("Compacted"), not something the user said.
+            if text.starts_with("<local-command-") {
+                return;
+            }
             if !self.turn_active {
                 self.turn_active = true;
                 self.turn_error = false;
@@ -500,14 +521,48 @@ impl Parser {
                 error.will_retry = true;
                 out.push(Output::Event(ProviderEvent::Error { error }));
             }
-            Some("compact_boundary") => out.push(notice(
-                NoticeLevel::Info,
-                "Claude compacted the conversation".into(),
-            )),
-            Some("status") if str_of(value, "status") == Some("compacting") => out.push(notice(
-                NoticeLevel::Info,
-                "Claude is compacting the conversation".into(),
-            )),
+            Some("status") if str_of(value, "status") == Some("compacting") => {
+                self.compaction_started(out)
+            }
+            Some("status") if str_of(value, "compact_result") == Some("failed") => {
+                let automatic = self.compacting.take().unwrap_or(false);
+                // No echo comes for the `/compact` that failed.
+                if !automatic {
+                    self.unechoed = self.unechoed.saturating_sub(1);
+                }
+                self.compact_failed = true;
+                out.push(Output::Event(ProviderEvent::CompactionEnded {
+                    automatic,
+                    tokens_before: None,
+                    tokens_after: None,
+                    error: Some(
+                        str_of(value, "compact_error")
+                            .unwrap_or("Claude could not compact the conversation")
+                            .to_owned(),
+                    ),
+                }));
+            }
+            Some("compact_boundary") => {
+                let metadata = value.get("compact_metadata").unwrap_or(&Value::Null);
+                let automatic = self
+                    .compacting
+                    .take()
+                    .unwrap_or_else(|| str_of(metadata, "trigger") == Some("auto"));
+                let tokens_after = metadata.get("post_tokens").and_then(Value::as_i64);
+                out.push(Output::Event(ProviderEvent::CompactionEnded {
+                    automatic,
+                    tokens_before: metadata.get("pre_tokens").and_then(Value::as_i64),
+                    tokens_after,
+                    error: None,
+                }));
+                if let Some(used) = tokens_after {
+                    self.context_used = Some(used);
+                    out.push(Output::Event(ProviderEvent::ContextSize {
+                        used_tokens: used,
+                        window_tokens: self.context_window,
+                    }));
+                }
+            }
             Some(
                 subtype @ ("model_fallback"
                 | "model_refusal_fallback"
@@ -527,6 +582,23 @@ impl Parser {
             }
             _ => {}
         }
+    }
+
+    /// Claude began compacting: in the running turn when it compacts on its own, else in a
+    /// turn of its own (Claude echoes the `/compact` only once it is done).
+    fn compaction_started(&mut self, out: &mut Vec<Output>) {
+        let automatic = !std::mem::take(&mut self.compact_asked);
+        if !self.turn_active {
+            self.turn_active = true;
+            self.turn_error = false;
+            self.interrupting = false;
+            self.turn_started_ms = Some(now_ms());
+            out.push(Output::Event(ProviderEvent::TurnStarted { turn_id: None }));
+        }
+        self.compacting = Some(automatic);
+        out.push(Output::Event(ProviderEvent::CompactionStarted {
+            automatic,
+        }));
     }
 
     fn result(&mut self, value: &Value, out: &mut Vec<Output>) {

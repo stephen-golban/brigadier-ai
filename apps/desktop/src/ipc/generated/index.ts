@@ -23,6 +23,8 @@ export type { Catalog } from "./Catalog";
 export type { CheckStatus } from "./CheckStatus";
 export type { ClientFrame } from "./ClientFrame";
 export type { ClientInfo } from "./ClientInfo";
+export type { Compaction } from "./Compaction";
+export type { CompactionState } from "./CompactionState";
 export type { ContextInjection } from "./ContextInjection";
 export type { ContextUsage } from "./ContextUsage";
 export type { Conversation } from "./Conversation";

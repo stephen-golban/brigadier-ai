@@ -20,4 +20,9 @@ plan: string | null,
 /**
  * What the user should do before this provider can be used. Absent when ready.
  */
-guidance: string | null, };
+guidance: string | null, 
+/**
+ * Its version can compact a session's context on request
+ * ([`ProviderSession::compact`](crate::ProviderSession::compact)).
+ */
+compacts: boolean, };

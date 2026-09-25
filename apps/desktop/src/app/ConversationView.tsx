@@ -56,8 +56,10 @@ import type {
   Rating,
   UserRequest,
 } from "@/ipc/generated";
+import { useCanCompact } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import {
+  compact,
   editMessage,
   interrupt,
   loadEarlier,
@@ -175,6 +177,7 @@ function signature(
     block.tasks,
     block.steps,
     block.orchestratorSteps,
+    block.compactions,
     block.steers.map((steer) => [steer.message.id, steer.text]),
     block.requestIds,
     picked,
@@ -239,6 +242,7 @@ function useItems(
           cards: block.cards,
           steps: block.steps,
           orchestratorSteps: block.orchestratorSteps,
+          compactions: block.compactions,
           steers: block.steers.map((steer) => ({
             position: steer.position,
             text: steer.text,
@@ -300,6 +304,7 @@ const EMPTY_DIGEST: BoardDigest & { head: string | null } = {
   requests: {},
   workerSteps: [],
   orchestratorSteps: [],
+  compactions: {},
   runRequest: null,
   streaming: null,
   head: null,
@@ -390,6 +395,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
             requests: s.board.requests,
             workerSteps: s.board.workerSteps,
             orchestratorSteps: s.board.orchestratorSteps,
+            compactions: s.board.compactions,
             runRequest: s.board.runRequest,
             streaming: s.board.streaming,
             head: s.board.head,
@@ -475,12 +481,20 @@ export function ConversationView({ selection }: { selection: Selection }) {
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
   const draftTarget = resolved.target;
+  const compactable = useCanCompact(conversation?.setup);
   const submit = useCallback(
     (message: AppendMessage) => {
       const text = textOf(message);
       const refs = attachments.refsOf(message.attachments ?? []);
       if (!text && refs.length === 0) return;
       setError(null);
+      // ChatGPT's `/compact`: no bubble, the thread shows the compaction itself.
+      if (compactable && conversationId && text === "/compact" && refs.length === 0) {
+        compact(conversationId).catch((cause: unknown) => {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        });
+        return;
+      }
       send(
         { text, attachments: refs, mentions: mentionedTasks(text, targets) },
         draftTarget ?? undefined,
@@ -488,7 +502,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
         setError(cause instanceof Error ? cause.message : String(cause));
       });
     },
-    [attachments, targets, draftTarget],
+    [attachments, targets, draftTarget, compactable, conversationId],
   );
 
   // assistant-ui's queue surface over the daemon's queue: sending goes through it so the

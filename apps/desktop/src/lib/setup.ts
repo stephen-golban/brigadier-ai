@@ -9,6 +9,7 @@ import type {
   Project,
   ProviderOverview,
   Settings,
+  Setup,
 } from "@/ipc/generated";
 import { loadProviders } from "@/state/actions";
 import { useApp } from "@/state/store";
@@ -63,6 +64,17 @@ export function useModelGroups(): ModelGroup[] {
     void loadProviders().catch((error: unknown) => console.error("loading providers failed", error));
   }, [providers, connected]);
   return useMemo(() => (providers ? groupsOf(providers) : NO_GROUPS), [providers]);
+}
+
+/** Whether a Chat's CLI can compact its context on request; a session's never does. */
+export function useCanCompact(setup: Setup | null | undefined): boolean {
+  return useApp(
+    (s) =>
+      setup?.type === "chat" &&
+      (s.providers.view?.providers.find((overview) => overview.provider === setup.model.provider)
+        ?.status?.compacts ??
+        false),
+  );
 }
 
 /** The first ready provider's default model: the last step of the resolution order. */

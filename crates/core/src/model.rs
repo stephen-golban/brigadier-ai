@@ -7,8 +7,8 @@ use brigadier_providers::{
 };
 
 use crate::work::{
-    Approval, AttachmentRef, MessageQueue, OrchestratorEntry, OrchestratorStep, Plan, Question,
-    RunState, Task, UserRequest, WorkerStep,
+    Approval, AttachmentRef, Compaction, MessageQueue, OrchestratorEntry, OrchestratorStep, Plan,
+    Question, RunState, Task, UserRequest, WorkerStep,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -487,6 +487,8 @@ pub struct ConversationView {
     pub worker_steps: Vec<WorkerStep>,
     /// Every orchestrator step, in the order they happened.
     pub orchestrator_steps: Vec<OrchestratorStep>,
+    /// Every compaction of a Chat's context, in the order they happened.
+    pub compactions: Vec<Compaction>,
     pub queue: MessageQueue,
     pub run: RunState,
     /// The request the running turn serves.
@@ -776,6 +778,10 @@ pub enum DomainEvent {
     OrchestratorStepped {
         step: OrchestratorStep,
     },
+    /// A Chat's model began compacting its context, or finished (full snapshot).
+    CompactionUpdated {
+        compaction: Compaction,
+    },
     /// The user rated an answer. Ratings stay on this machine.
     MessageRated {
         /// The answer: a message id, or `task:<id>` for a worker's report.
@@ -852,6 +858,7 @@ impl DomainEvent {
             Self::RequestUpdated { .. } => "request.updated",
             Self::WorkerStepped { .. } => "worker.step",
             Self::OrchestratorStepped { .. } => "orchestrator.step",
+            Self::CompactionUpdated { .. } => "compaction.updated",
             Self::MessageRated { .. } => "message.rated",
             Self::BranchSwitched { .. } => "conversation.branch",
             Self::ConversationNotice { .. } => "conversation.notice",

@@ -33,7 +33,7 @@ pub mod protocol;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,7 +43,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::cli::{CliEnv, parse_version};
+use crate::cli::{CliEnv, parse_version, version_at_least};
 use crate::events::Events;
 use crate::model::*;
 use crate::process::{self, CliProcess};
@@ -59,6 +59,8 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
+/// The first version seen to serve `thread/compact/start`.
+const COMPACT_SINCE: &str = "0.156.1";
 
 /// Built-ins switched off for sessions that must not act on their own (the orchestrator, a
 /// Chat): viewing local images, generating images, Codex's own sub-agents, goals, the sleep
@@ -263,6 +265,7 @@ impl Provider for Codex {
                 auth_method: None,
                 plan: None,
                 guidance: None,
+                compacts: false,
             };
             let Ok(binary) = self.binary() else {
                 status.guidance = Some(
@@ -273,6 +276,10 @@ impl Provider for Codex {
                 return status;
             };
             status.version = self.version().await;
+            status.compacts = status
+                .version
+                .as_deref()
+                .is_some_and(|version| version_at_least(version, COMPACT_SINCE));
             let spec = self.env.spec(binary).arg("login").arg("status");
             match process::run(&self.platform, &spec, STATUS_TIMEOUT).await {
                 Ok(output) => {
@@ -388,6 +395,7 @@ impl Provider for Codex {
             let shared = Arc::new(Shared {
                 approvals: Mutex::new(HashMap::new()),
                 turn_id: Mutex::new(None),
+                compact_asked: AtomicBool::new(false),
                 events: Events::new(events_tx, spec.redactor.clone()),
             });
             let trusted: HashSet<String> = spec
@@ -425,6 +433,7 @@ impl Provider for Codex {
 
             let session = Arc::new(CodexSession {
                 thread_id: thread.id.clone(),
+                compacts: version_at_least(&thread.cli_version, COMPACT_SINCE),
                 rpc,
                 shared,
                 access: spec.access.clone(),
@@ -1076,11 +1085,15 @@ struct Shared {
     /// Unanswered approvals: approval id → JSON-RPC request id and answer shape.
     approvals: Mutex<HashMap<String, (Value, PendingKind)>>,
     turn_id: Mutex<Option<String>>,
+    /// `thread/compact/start` is being sent; the reader tells its parser.
+    compact_asked: AtomicBool,
     events: Events,
 }
 
 pub struct CodexSession {
     thread_id: String,
+    /// The app-server serves `thread/compact/start`.
+    compacts: bool,
     rpc: Arc<Rpc>,
     shared: Arc<Shared>,
     access: Access,
@@ -1194,6 +1207,39 @@ impl ProviderSession for CodexSession {
         })
     }
 
+    fn can_compact(&self) -> bool {
+        self.compacts
+    }
+
+    fn compact(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if !self.compacts {
+                return Err(Error::Invalid(format!(
+                    "compacting needs Codex {COMPACT_SINCE} or newer"
+                )));
+            }
+            if self.turn_id().is_some() {
+                return Err(Error::Invalid(
+                    "Codex is still answering; compact once it is done".into(),
+                ));
+            }
+            self.shared.compact_asked.store(true, Ordering::Release);
+            let started: std::result::Result<p::ThreadCompactStartResponse, _> = self
+                .rpc
+                .call(
+                    "thread/compact/start",
+                    &p::ThreadCompactStartParams {
+                        thread_id: self.thread_id.clone(),
+                    },
+                )
+                .await;
+            if started.is_err() {
+                self.shared.compact_asked.store(false, Ordering::Release);
+            }
+            started.map(drop)
+        })
+    }
+
     fn interrupt(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let Some(turn_id) = self.turn_id() else {
@@ -1253,6 +1299,9 @@ async fn read_loop(
 ) {
     let mut parser = Parser::live();
     while let Some(line) = stdout.recv().await {
+        if shared.compact_asked.swap(false, Ordering::AcqRel) {
+            parser.compact_requested();
+        }
         for output in parser.feed(&line) {
             match output {
                 Output::Event(event) => {

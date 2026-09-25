@@ -121,6 +121,17 @@ pub trait ProviderSession: Send + Sync {
     /// Stops the running turn.
     fn interrupt(&self) -> BoxFuture<'_, Result<()>>;
 
+    /// Whether this CLI's version can [`compact`](Self::compact) its conversation.
+    fn can_compact(&self) -> bool {
+        false
+    }
+
+    /// Compacts the conversation now, in a turn of its own that replies nothing: it reports
+    /// [`ProviderEvent::CompactionStarted`], then [`ProviderEvent::CompactionEnded`].
+    fn compact(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Err(Error::Invalid("this CLI cannot compact its context".into())) })
+    }
+
     /// Answers an [`ProviderEvent::ApprovalRequested`].
     fn answer(&self, approval_id: String, decision: ApprovalDecision) -> BoxFuture<'_, Result<()>>;
 

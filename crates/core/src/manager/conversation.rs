@@ -41,8 +41,8 @@ use crate::model::{
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
-    AttachmentRef, ContextInjection, InjectionKind, OrchestratorEntry, OrchestratorStepKind,
-    QueuedMessage, RequestState, RunState, TaskId,
+    AttachmentRef, Compaction, CompactionState, ContextInjection, InjectionKind, OrchestratorEntry,
+    OrchestratorStepKind, QueuedMessage, RequestState, RunState, TaskId,
 };
 use crate::{Error, Result, now_ms};
 
@@ -123,6 +123,11 @@ struct ConvState {
     fallback: Option<ModelChoice>,
     /// The running turn failed on a usage limit.
     limit_hit: bool,
+    /// The running turn is one of its own that compacts the context: messages sent meanwhile
+    /// wait for the next turn.
+    compacting: bool,
+    /// The compaction running now (a Chat's).
+    compaction: Option<Compaction>,
     last_activity_ms: i64,
 }
 
@@ -159,6 +164,7 @@ impl ConvLive {
         let mut state = self.state.lock().await;
         state.closing = false;
         state.busy = false;
+        state.compacting = false;
     }
 
     /// Whether a turn is starting or running, or work waits for one.
@@ -318,7 +324,7 @@ impl SessionManager {
         let conv = self.conv(&id)?;
         let mut state = conv.state.lock().await;
         state.last_activity_ms = now_ms();
-        if state.busy {
+        if state.busy && !state.compacting {
             if steer || !self.core.settings().queue_enabled {
                 let message = self
                     .core
@@ -371,7 +377,7 @@ impl SessionManager {
             .append_user_message(id.clone(), item.text, item.attachments, item.mentions)
             .await?;
         let mut state = conv.state.lock().await;
-        let steered = match (&state.cli, state.busy) {
+        let steered = match (&state.cli, state.busy && !state.compacting) {
             (Some(cli), true) => {
                 let input = self
                     .turn_input(&conv, std::slice::from_ref(&message), &[])
@@ -485,6 +491,83 @@ impl SessionManager {
                 .into(),
         };
         self.deliver_for(&id, envelope, Some(request)).await;
+        Ok(())
+    }
+
+    /// Compacts a Chat's context now, as ChatGPT's `/compact` does: its CLI summarizes the
+    /// conversation in a turn of its own that answers nothing, which the thread shows as one
+    /// row. A session's orchestrator never compacts: Brigadier starts it afresh instead.
+    pub async fn compact(&self, id: ConversationId) -> Result<()> {
+        self.admit()?;
+        let conversation = self.core.conversation(&id)?;
+        if conversation.kind != ConversationKind::Chat {
+            return Err(Error::Invalid("only a chat compacts its context".into()));
+        }
+        match conversation.lifecycle {
+            Lifecycle::Archived => {
+                return Err(Error::Invalid(
+                    "this conversation is archived; restore it first".into(),
+                ));
+            }
+            Lifecycle::Hibernated => {
+                self.core
+                    .set_lifecycle(id.clone(), Lifecycle::Active)
+                    .await?;
+            }
+            Lifecycle::Active => {}
+        }
+        if !self.has_history(&id).await {
+            return Err(Error::Invalid("there is nothing to compact yet".into()));
+        }
+        let conv = self.conv(&id)?;
+        {
+            let mut state = conv.state.lock().await;
+            if state.busy || state.held || !state.pending.is_empty() || !state.inbox.is_empty() {
+                return Err(Error::Invalid(
+                    "wait until the reply is done, then compact".into(),
+                ));
+            }
+            // A turn of its own, for no request.
+            state.busy = true;
+            state.compacting = true;
+            state.request = None;
+            state.turn_error = None;
+            state.limit_hit = false;
+            state.in_turn.clear();
+        }
+        self.set_run(&id, RunState::Starting, None).await;
+        let started = async {
+            let cli = self.ensure_cli(&conv).await?;
+            if conv.state.lock().await.reseed {
+                return Err(Error::Invalid(
+                    "the model starts afresh with the next message, so there is nothing to \
+                     compact"
+                        .into(),
+                ));
+            }
+            if !cli.session.can_compact() {
+                return Err(Error::Invalid(format!(
+                    "this version of {} cannot compact its context",
+                    cli.provider
+                )));
+            }
+            self.set_run(&id, RunState::Running, None).await;
+            cli.session
+                .compact()
+                .await
+                .map_err(|err| Error::Provider(err.to_string()))
+        }
+        .await;
+        if let Err(err) = started {
+            {
+                let mut state = conv.state.lock().await;
+                state.busy = false;
+                state.compacting = false;
+            }
+            self.set_run(&id, RunState::Idle, None).await;
+            self.kick(&conv);
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -658,6 +741,7 @@ impl SessionManager {
         {
             let mut state = conv.state.lock().await;
             state.busy = false;
+            state.compacting = false;
             if let Some(request) = state.request.take() {
                 state.outcomes.insert(
                     request,
@@ -1062,6 +1146,7 @@ impl SessionManager {
             }
             let was_busy = state.busy;
             state.busy = false;
+            state.compacting = false;
             if let Some(request) = state.request.take()
                 && was_busy
                 && !state.closing
@@ -1075,6 +1160,7 @@ impl SessionManager {
             }
             (was_busy, state.closing)
         };
+        self.end_compaction(&conv, ENDED_UNEXPECTEDLY.into()).await;
         cli.ended.cancel();
         if was_busy && !closing {
             self.set_run(&conv.id, RunState::Failed, Some(ENDED_UNEXPECTEDLY.into()))
@@ -1197,6 +1283,66 @@ impl SessionManager {
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
             }
+            ProviderEvent::CompactionStarted { automatic }
+                if conv.kind == ConversationKind::Chat =>
+            {
+                let after = self
+                    .core
+                    .board(&conv.id)
+                    .await
+                    .ok()
+                    .and_then(|board| board.head.map(|(head, _)| head));
+                let compaction = {
+                    let mut state = conv.state.lock().await;
+                    let compaction = Compaction {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        // Compacting on its own, the model is in the middle of a request.
+                        request_id: automatic.then(|| state.request.clone()).flatten(),
+                        after,
+                        automatic: *automatic,
+                        state: CompactionState::Running,
+                        tokens_before: None,
+                        tokens_after: None,
+                        started_at_ms: now_ms(),
+                        ended_at_ms: None,
+                        position: 0,
+                    };
+                    state.compaction = Some(compaction.clone());
+                    compaction
+                };
+                self.record_compaction(&conv.id, compaction).await;
+            }
+            ProviderEvent::CompactionEnded {
+                automatic,
+                tokens_before,
+                tokens_after,
+                error,
+            } if conv.kind == ConversationKind::Chat => {
+                let running = conv.state.lock().await.compaction.take();
+                let now = now_ms();
+                let mut compaction = running.unwrap_or_else(|| Compaction {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    request_id: None,
+                    after: None,
+                    automatic: *automatic,
+                    state: CompactionState::Running,
+                    tokens_before: None,
+                    tokens_after: None,
+                    started_at_ms: now,
+                    ended_at_ms: None,
+                    position: 0,
+                });
+                compaction.state = match error {
+                    Some(error) => CompactionState::Failed {
+                        error: error.clone(),
+                    },
+                    None => CompactionState::Done,
+                };
+                compaction.tokens_before = *tokens_before;
+                compaction.tokens_after = *tokens_after;
+                compaction.ended_at_ms = Some(now);
+                self.record_compaction(&conv.id, compaction).await;
+            }
             _ => {}
         }
         let completed = match &event {
@@ -1209,10 +1355,43 @@ impl SessionManager {
         }
     }
 
+    /// Stores a compaction's snapshot.
+    async fn record_compaction(&self, id: &ConversationId, compaction: Compaction) {
+        if let Err(err) = self
+            .core
+            .record_conversation(id, vec![DomainEvent::CompactionUpdated { compaction }])
+            .await
+        {
+            tracing::warn!(conversation = %id, error = %err, "could not store a compaction");
+        }
+    }
+
+    /// A compaction the turn left unfinished failed (it was stopped, or the CLI ended).
+    async fn end_compaction(&self, conv: &Arc<ConvLive>, error: String) {
+        let Some(mut compaction) = conv.state.lock().await.compaction.take() else {
+            return;
+        };
+        compaction.state = CompactionState::Failed { error };
+        compaction.ended_at_ms = Some(now_ms());
+        self.record_compaction(&conv.id, compaction).await;
+    }
+
     async fn turn_completed(&self, conv: &Arc<ConvLive>, cli: &Arc<Cli>, status: TurnStatus) {
+        let unfinished = match status {
+            TurnStatus::Interrupted => "You stopped it".to_owned(),
+            _ => conv
+                .state
+                .lock()
+                .await
+                .turn_error
+                .clone()
+                .unwrap_or_else(|| "The model did not finish compacting".into()),
+        };
+        self.end_compaction(conv, unfinished).await;
         let (limit_hit, carried) = {
             let mut state = conv.state.lock().await;
             state.busy = false;
+            state.compacting = false;
             state.last_activity_ms = now_ms();
             state.replying_for.clear();
             let ended = match status {

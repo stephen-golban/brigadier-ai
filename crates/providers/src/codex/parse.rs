@@ -67,6 +67,13 @@ pub struct Parser {
     /// Files of file-change items, which their approval requests do not repeat.
     file_items: HashMap<String, Vec<FileChange>>,
     quota: Option<QuotaSnapshot>,
+    /// The context size last reported.
+    context_used: Option<i64>,
+    /// `thread/compact/start` was sent and Codex has not started compacting yet.
+    compact_asked: bool,
+    /// The compaction running now: whether Codex started it on its own, the context before
+    /// it, and the size reported since it started.
+    compacting: Option<(bool, Option<i64>, Option<i64>)>,
 }
 
 impl Parser {
@@ -84,6 +91,11 @@ impl Parser {
     /// The turn Codex is running, if any.
     pub fn turn_id(&self) -> Option<&str> {
         self.turn_id.as_deref()
+    }
+
+    /// `thread/compact/start` is about to be sent: the compaction it starts was asked for.
+    pub fn compact_requested(&mut self) {
+        self.compact_asked = true;
     }
 
     /// The latest rate limits, to classify limit errors.
@@ -233,10 +245,15 @@ impl Parser {
                 out.push(Output::Event(ProviderEvent::Usage {
                     total: token_usage(&usage.total),
                 }));
-                // The last request's input is what the model saw: the context in use.
-                let last = &usage.last;
+                // The last request is what the model saw: the context in use. (What a
+                // compaction left counts only in its total.)
+                let used = usage.last.total_tokens;
+                self.context_used = Some(used);
+                if let Some((_, _, after)) = &mut self.compacting {
+                    *after = Some(used);
+                }
                 out.push(Output::Event(ProviderEvent::ContextSize {
-                    used_tokens: last.input_tokens + last.output_tokens,
+                    used_tokens: used,
                     window_tokens: usage.model_context_window,
                 }));
             }
@@ -257,10 +274,8 @@ impl Parser {
                     }));
                 }
             }
-            "thread/compacted" => out.push(notice(
-                NoticeLevel::Info,
-                "Codex compacted the conversation".into(),
-            )),
+            // Told by the `contextCompaction` item as well; this notification is deprecated.
+            "thread/compacted" => {}
             "warning" | "configWarning" | "deprecationNotice" | "guardianWarning" => {
                 let message = ["message", "summary", "details"]
                     .iter()
@@ -437,10 +452,21 @@ impl Parser {
                 status: ItemStatus::Completed,
                 output: Some(text),
             },
-            ThreadItem::ContextCompaction { .. } if completed => ProviderEvent::Notice {
-                level: NoticeLevel::Info,
-                message: "Codex compacted the conversation".into(),
-            },
+            ThreadItem::ContextCompaction { .. } if !completed => {
+                let automatic = !std::mem::take(&mut self.compact_asked);
+                self.compacting = Some((automatic, self.context_used, None));
+                ProviderEvent::CompactionStarted { automatic }
+            }
+            ThreadItem::ContextCompaction { .. } => {
+                let (automatic, tokens_before, tokens_after) =
+                    self.compacting.take().unwrap_or((true, None, None));
+                ProviderEvent::CompactionEnded {
+                    automatic,
+                    tokens_before,
+                    tokens_after,
+                    error: None,
+                }
+            }
             _ => return,
         };
         out.push(Output::Event(event));

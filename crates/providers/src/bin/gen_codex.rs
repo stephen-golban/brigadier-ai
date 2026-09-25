@@ -28,6 +28,8 @@ const V2_ROOTS: &[&str] = &[
     "TurnSteerParams",
     "TurnSteerResponse",
     "TurnInterruptParams",
+    "ThreadCompactStartParams",
+    "ThreadCompactStartResponse",
     "ModelListParams",
     "ModelListResponse",
     "GetAccountRateLimitsResponse",

@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import type {
   Approval,
+  Compaction,
   ContextUsage,
   ConversationView,
   EventEnvelope,
@@ -54,6 +55,8 @@ export type Board = {
   workerSteps: WorkerStep[];
   /** Every orchestrator step (messaged a worker, read a report, …), in stream order. */
   orchestratorSteps: OrchestratorStep[];
+  /** A Chat's context compactions, by id. */
+  compactions: Record<string, Compaction>;
   /** The user's ratings of answers, by subject (a message id, or `task:<id>`). */
   ratings: Partial<Record<string, Rating>>;
   queue: MessageQueue;
@@ -103,6 +106,7 @@ export function emptyBoard(conversationId: string): Board {
     requests: {},
     workerSteps: [],
     orchestratorSteps: [],
+    compactions: {},
     ratings: {},
     queue: EMPTY_QUEUE,
     run: "idle",
@@ -138,6 +142,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "branchSwitched",
   "workerStepped",
   "orchestratorStepped",
+  "compactionUpdated",
   "messageRated",
 ]);
 
@@ -177,6 +182,7 @@ export function boardFromView(
     requests: byId(view.requests),
     workerSteps: view.workerSteps,
     orchestratorSteps: view.orchestratorSteps,
+    compactions: byId(view.compactions),
     ratings: view.ratings,
     queue: view.queue,
     run: view.run,
@@ -329,6 +335,8 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
             ...board,
             orchestratorSteps: [...board.orchestratorSteps, { ...event.step, position: streamSeq }],
           };
+    case "compactionUpdated":
+      return { ...board, compactions: placed(board.compactions, event.compaction, envelope, board) };
     case "messageRated":
       return { ...board, ratings: { ...board.ratings, [event.subject]: event.rating } };
     case "queueChanged":

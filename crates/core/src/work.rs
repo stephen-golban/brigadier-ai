@@ -646,6 +646,48 @@ pub struct OrchestratorStep {
     pub position: i64,
 }
 
+// ----- compactions -----------------------------------------------------------------------
+
+/// Where a compaction stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CompactionState {
+    Running,
+    Done,
+    Failed { error: String },
+}
+
+/// A Chat's model compacting its context: ChatGPT's "Compacting context" row, then "Context
+/// compacted". A session's orchestrator never compacts (it starts afresh instead).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Compaction {
+    pub id: String,
+    /// The request whose turn it happened in (the model compacted on its own mid-turn);
+    /// absent when the user asked for it between turns.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// The last message of the branch shown when it began: it shows after that message's
+    /// answer, on that branch only.
+    #[serde(default)]
+    pub after: Option<String>,
+    /// The model compacted on its own as its context filled up.
+    pub automatic: bool,
+    pub state: CompactionState,
+    /// The context before and after, when the CLI says.
+    pub tokens_before: Option<i64>,
+    pub tokens_after: Option<i64>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    /// Where it happened in the conversation's stream (set when the board reads it).
+    #[serde(default)]
+    pub position: i64,
+}
+
 // ----- user requests ----------------------------------------------------------------------
 
 /// Where a user's request stands.
