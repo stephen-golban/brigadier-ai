@@ -8,4 +8,8 @@ export type ArtifactRef = {
 /**
  * Content hash in the blob store.
  */
-id: string, title: string, kind: ArtifactKind, mime: string, bytes: number, };
+id: string, title: string, kind: ArtifactKind, mime: string, bytes: number, 
+/**
+ * The name to save it under (a worker's file keeps its own name).
+ */
+fileName: string | null, };

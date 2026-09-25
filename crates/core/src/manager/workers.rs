@@ -59,6 +59,13 @@ const QUESTION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const REPORT_MAX_BYTES: usize = 3_600;
 /// Largest file a report may attach as an artifact.
 const ARTIFACT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// The folder in a worker's scratch folder for files meant for the orchestrator or the user.
+const OUTPUTS_DIR: &str = "outputs";
+
+/// A worker's outputs folder.
+pub(crate) fn outputs_dir(scratch: &Path) -> PathBuf {
+    scratch.join(OUTPUTS_DIR)
+}
 
 /// What a task's workspace is made of, once prepared.
 #[derive(Debug, Clone)]
@@ -345,6 +352,7 @@ impl SessionManager {
             blocked_reason: None,
             error: None,
             kept: None,
+            outputs: Vec::new(),
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -481,6 +489,15 @@ impl SessionManager {
                 workspace.scratch.display()
             ),
         };
+        let outputs = outputs_dir(&workspace.scratch);
+        let repo_note = format!(
+            "{repo_note}\nYour outputs folder (files for the orchestrator and the user): {}",
+            outputs.display()
+        );
+        blocking(move || {
+            std::fs::create_dir_all(&outputs).map_err(|err| Error::Invalid(err.to_string()))
+        })
+        .await?;
         let native = match &workspace.worktree {
             Some(worktree) => instructions::for_worker(provider, worktree).await,
             None => String::new(),
@@ -1453,6 +1470,9 @@ impl SessionManager {
             },
             mime,
             bytes: size,
+            file_name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
         })
     }
 
@@ -1486,6 +1506,7 @@ impl SessionManager {
             kind: ArtifactKind::Diff,
             mime: "text/x-diff".into(),
             bytes: size,
+            file_name: Some(format!("task-{}.diff", task.number)),
         })
     }
 
