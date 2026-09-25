@@ -53,6 +53,8 @@ export type ThreadComponents = {
   BeforeMessages?: ComponentType | undefined;
   MessageFooter?: ComponentType | undefined;
   AboveComposer?: ComponentType | undefined;
+  /** Floats centred just above the composer, over the thread (ChatGPT's capsule). */
+  Capsule?: ComponentType | undefined;
   Composer?: ComponentType<ComposerProps> | undefined;
 };
 
@@ -130,6 +132,7 @@ const ThreadRoot: FC<{
     Welcome = ThreadWelcome,
     BeforeMessages,
     AboveComposer,
+    Capsule,
     Composer: ComposerComponent = Composer,
   } = useContext(ThreadComponentsContext);
 
@@ -165,11 +168,12 @@ const ThreadRoot: FC<{
 
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4",
-              !isEmpty && "rounded-t-thread sticky bottom-0 mt-auto",
+              "aui-thread-viewport-footer group/footer bg-background flex flex-col gap-4 overflow-visible pb-4",
+              isEmpty ? "relative" : "rounded-t-thread sticky bottom-0 mt-auto",
             )}
           >
             <ThreadScrollToBottom />
+            {Capsule && <Capsule />}
             {AboveComposer && <AboveComposer />}
             <ComposerComponent autoFocus={autoFocus} placeholder={placeholder} />
           </ThreadPrimitive.ViewportFooter>
@@ -213,7 +217,7 @@ const ThreadScrollToBottom: FC = () => {
         variant="outline"
         size="icon-lg"
         data-running={running || undefined}
-        className="aui-thread-scroll-to-bottom border-border bg-background hover:bg-accent rounded-capsule absolute -top-12 z-10 self-center disabled:invisible"
+        className="aui-thread-scroll-to-bottom border-border bg-background hover:bg-accent rounded-capsule absolute -top-12 z-10 self-center group-has-data-[slot=composer-capsule]/footer:-top-22 disabled:invisible"
       >
         {running ? <DotsHorizontal className="animate-pulse motion-reduce:animate-none" /> : <ArrowDown />}
       </TooltipIconButton>

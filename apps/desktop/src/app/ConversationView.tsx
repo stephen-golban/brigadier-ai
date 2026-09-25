@@ -49,6 +49,7 @@ import {
 import { useResolvedDraft } from "@/app/conversation/draftSetup";
 import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
 import { StatusCardContext } from "@/app/conversation/StatusCard";
+import { ComposerCapsule } from "@/app/conversation/ComposerCapsule";
 import { useAction } from "@/app/conversation/useAction";
 import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
 import { TopBar } from "@/app/TopBar";
@@ -829,7 +830,9 @@ const AboveComposer: FC = () => {
       : null,
   );
   const action = useAction();
-  if (!conversation) return null;
+  const archived = conversation?.lifecycle === "archived";
+  // Nothing at all when there is nothing to say, so the footer adds no gap for it.
+  if (!conversation || (notices.length === 0 && !runError && !archived)) return null;
   return (
     <div className="flex flex-col gap-1.5">
       <Notices notices={notices} />
@@ -838,7 +841,7 @@ const AboveComposer: FC = () => {
           {runError}
         </p>
       )}
-      {conversation.lifecycle === "archived" ? (
+      {archived ? (
         <div className="bg-muted rounded-control flex items-center gap-2 px-3 py-2 text-sm">
           <span className="min-w-0 flex-1">
             Archived. Restore it to continue; the orchestrator restarts from its transcript.
@@ -864,5 +867,6 @@ const THREAD_COMPONENTS: ThreadComponents = {
   BeforeMessages: LoadEarlier,
   MessageFooter,
   AboveComposer,
+  Capsule: ComposerCapsule,
   Composer: ConversationComposer,
 };
