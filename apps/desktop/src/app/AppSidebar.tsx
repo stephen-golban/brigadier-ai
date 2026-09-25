@@ -11,6 +11,8 @@ import {
   Settings,
   SettingsCog,
   Sleep,
+  Spin,
+  Terminal,
   Trash,
   Unpin,
   X,
@@ -55,6 +57,7 @@ import {
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { openFolder } from "@/ipc/client";
 import type { Conversation, Project } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
@@ -62,9 +65,11 @@ import {
   openConversation,
   renameConversation,
   select,
+  setInspectorOpen,
   setPinned,
   setProjectExpanded,
 } from "@/state/actions";
+import { useRowActivity } from "@/state/activity";
 import { useApp } from "@/state/store";
 
 type DialogState =
@@ -149,6 +154,10 @@ export function AppSidebar() {
   const searchShortcut = useApp((s) =>
     s.info?.platform === "macos" ? "⌘K" : "Ctrl K",
   );
+  const inspectorShortcut = useApp((s) =>
+    s.info?.platform === "macos" ? "⌥⌘I" : "Ctrl Alt I",
+  );
+  const inspectorOpen = useApp((s) => s.inspector.open);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [deleting, setDeleting] = useState<Conversation | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -316,6 +325,16 @@ export function AppSidebar() {
               <span>Settings</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={inspectorOpen}
+              onClick={() => setInspectorOpen(!inspectorOpen)}
+            >
+              <Terminal />
+              <span className="flex-1">Inspector</span>
+              <Kbd className="ms-auto">{inspectorShortcut}</Kbd>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
 
@@ -382,6 +401,8 @@ const ProjectRow = memo(function ProjectRow({
   onSettings: (project: Project) => void;
 }) {
   const expanded = useApp((s) => s.expandedProjects[project.id] ?? true);
+  const mac = useApp((s) => s.info?.platform === "macos");
+  const repo = project.repos[0]?.path;
   const newSession = () => {
     setProjectExpanded(project.id, true);
     select({ type: "draft", kind: "session", projectId: project.id });
@@ -423,6 +444,16 @@ const ProjectRow = memo(function ProjectRow({
               <SettingsCog />
               Project settings…
             </DropdownMenuItem>
+            {repo && (
+              <DropdownMenuItem
+                onSelect={() =>
+                  void openFolder(repo).catch((error: unknown) => actions.onError(errorText(error)))
+                }
+              >
+                <FolderOpen />
+                {mac ? "Reveal in Finder" : "Open in File Manager"}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         <CollapsibleContent>
@@ -447,6 +478,44 @@ const ProjectRow = memo(function ProjectRow({
     </Collapsible>
   );
 });
+
+/**
+ * At the end of a row, as ChatGPT's sidebar shows a chat's state: a green "Awaiting approval"
+ * or "Needs input" pill while it waits for the user, else a spinner while it runs. The row's
+ * actions take its place on hover.
+ */
+function RowStatus({ conversationId, nested }: { conversationId: string; nested: boolean }) {
+  const { running, awaiting } = useRowActivity(conversationId);
+  if (!running && !awaiting) return null;
+  const hide = nested
+    ? "group-hover/menu-sub-item:invisible group-focus-within/menu-sub-item:invisible"
+    : "group-hover/menu-item:invisible group-focus-within/menu-item:invisible";
+  if (awaiting) {
+    return (
+      <span
+        data-slot="row-status"
+        data-status={awaiting}
+        className={cn(
+          "bg-success/15 text-success rounded-capsule h-pill px-pill ms-auto flex shrink-0 items-center text-2xs whitespace-nowrap",
+          hide,
+        )}
+      >
+        {awaiting === "approval" ? "Awaiting approval" : "Needs input"}
+      </span>
+    );
+  }
+  return (
+    <Spin
+      data-slot="row-status"
+      data-status="running"
+      aria-label="Running"
+      className={cn(
+        "text-sidebar-foreground/60 size-icon-sm ms-auto shrink-0 animate-spin motion-reduce:animate-none",
+        hide,
+      )}
+    />
+  );
+}
 
 /** A small moon after the title of a conversation that went idle and stopped its CLIs. */
 function HibernatedMark() {
@@ -537,6 +606,7 @@ const ConversationRow = memo(function ConversationRow({
         >
           <span className="min-w-0 truncate">{conversation.title}</span>
           {hibernated && <HibernatedMark />}
+          <RowStatus conversationId={conversation.id} nested />
         </SidebarMenuSubButton>
         {menu}
       </SidebarMenuSubItem>
@@ -546,11 +616,12 @@ const ConversationRow = memo(function ConversationRow({
     <SidebarMenuItem>
       <SidebarMenuButton
         isActive={active}
-        className={cn(hibernated && "pe-7")}
+        className="pe-7"
         onClick={() => openConversation(conversation.id)}
       >
         <span className="min-w-0 truncate">{conversation.title}</span>
         {hibernated && <HibernatedMark />}
+        <RowStatus conversationId={conversation.id} nested={false} />
       </SidebarMenuButton>
       {menu}
     </SidebarMenuItem>

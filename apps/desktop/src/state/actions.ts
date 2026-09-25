@@ -46,6 +46,7 @@ import {
   upsertRawSession,
   useApp,
 } from "@/state/store";
+import { toast } from "@/state/toasts";
 
 /** Messages shown when a conversation opens; older ones load on demand. */
 const PAGE = 200;
@@ -635,6 +636,7 @@ export async function hibernate(id: string): Promise<void> {
   storeConversation(conversation);
 }
 
+/** Archives a conversation and confirms it with ChatGPT's "Archived chat · View · Undo" toast. */
 export async function archive(id: string): Promise<void> {
   const { conversation } = await request({ method: "archive", id });
   storeConversation(conversation);
@@ -642,6 +644,20 @@ export async function archive(id: string): Promise<void> {
   if (selection.type === "conversation" && selection.id === id) {
     select({ type: "draft", kind: "chat" });
   }
+  toast(conversation.kind === "chat" ? "Archived chat" : "Archived session", {
+    actions: [
+      { label: "View", run: () => select({ type: "archived" }) },
+      {
+        label: "Undo",
+        run: () =>
+          void restore(id)
+            .then(() => openConversation(id))
+            .catch((error: unknown) =>
+              toast(error instanceof Error ? error.message : String(error), { tone: "error" }),
+            ),
+      },
+    ],
+  });
 }
 
 export async function restore(id: string): Promise<void> {

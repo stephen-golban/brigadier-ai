@@ -3,10 +3,11 @@
 
 use std::collections::HashMap;
 
+use crate::model::ConversationId;
 use crate::model::{DomainEvent, MessageRole, Notice, Rating, StreamingMessage};
 use crate::work::{
-    Approval, CardId, Compaction, MessageQueue, OrchestratorStep, Plan, Question, RunState, Task,
-    TaskId, UserRequest, WorkerStep,
+    Approval, CardId, CardState, Compaction, ConversationActivity, MessageQueue, OrchestratorStep,
+    Plan, PlanState, Question, RunState, Task, TaskId, UserRequest, WorkerStep,
 };
 
 /// Notices kept per conversation.
@@ -53,6 +54,44 @@ pub(crate) struct Board {
 }
 
 impl Board {
+    /// The conversation's activity, or `None` when it neither runs nor waits for the user.
+    pub(crate) fn activity(&self, id: &ConversationId) -> Option<ConversationActivity> {
+        let tasks: Vec<_> = self
+            .tasks
+            .values()
+            .filter(|task| !task.state.is_final())
+            .map(|task| (task.id.clone(), task.state))
+            .collect();
+        let approvals: Vec<_> = self
+            .approvals
+            .values()
+            .filter(|approval| approval.state == CardState::Pending)
+            .map(|approval| approval.id.clone())
+            .chain(
+                self.plans
+                    .values()
+                    .filter(|plan| plan.state == PlanState::Proposed)
+                    .map(|plan| plan.id.clone()),
+            )
+            .collect();
+        let questions: Vec<_> = self
+            .questions
+            .values()
+            .filter(|question| question.answer.is_none())
+            .map(|question| question.id.clone())
+            .collect();
+        let running = matches!(self.run, RunState::Starting | RunState::Running);
+        (running || !tasks.is_empty() || !approvals.is_empty() || !questions.is_empty()).then(
+            || ConversationActivity {
+                conversation_id: id.clone(),
+                run: self.run,
+                tasks,
+                approvals,
+                questions,
+            },
+        )
+    }
+
     /// Applies an event stored at `stream_seq` in the conversation's stream. An object's
     /// position is the stream sequence of the event that first recorded it.
     pub(crate) fn apply(&mut self, event: &DomainEvent, stream_seq: i64) {

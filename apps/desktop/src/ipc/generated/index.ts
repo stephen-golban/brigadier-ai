@@ -28,6 +28,7 @@ export type { CompactionState } from "./CompactionState";
 export type { ContextInjection } from "./ContextInjection";
 export type { ContextUsage } from "./ContextUsage";
 export type { Conversation } from "./Conversation";
+export type { ConversationActivity } from "./ConversationActivity";
 export type { ConversationId } from "./ConversationId";
 export type { ConversationKind } from "./ConversationKind";
 export type { ConversationStatus } from "./ConversationStatus";

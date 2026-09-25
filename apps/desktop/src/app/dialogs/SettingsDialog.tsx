@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import type { ModelChoice, PermissionLevel, Settings } from "@/ipc/generated";
+import type { Density, ModelChoice, PermissionLevel, Settings } from "@/ipc/generated";
 import {
   ALWAYS_ASK_NOTE,
   builtInDefault,
@@ -26,7 +26,7 @@ import {
   PERMISSION_LEVELS,
   useModelGroups,
 } from "@/lib/setup";
-import { updateSettings } from "@/state/actions";
+import { setDensity, updateSettings } from "@/state/actions";
 import { useApp } from "@/state/store";
 
 /** The defaults new conversations start from. The full Settings screen comes in Phase 9. */
@@ -49,6 +49,7 @@ export function SettingsDialog({
 function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
   const id = useId();
   const initial = useApp((s) => s.settings);
+  const density = useApp((s) => s.settings.density);
   const groups = useModelGroups();
   const [orchestrator, setOrchestrator] = useState(initial.defaultOrchestrator);
   const [chatModel, setChatModel] = useState(initial.defaultChatModel);
@@ -167,6 +168,19 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         />
       </Field>
 
+      <Field label="Density">
+        <RadioChoice<Density>
+          label="Density"
+          value={density}
+          // Applied at once, so the whole app tightens or loosens while you choose.
+          onChange={(value) => void setDensity(value).catch((cause: unknown) => setError(errorText(cause)))}
+          options={[
+            { value: "compact", label: "Compact", hint: "Smaller controls and tighter spacing." },
+            { value: "normal", label: "Normal", hint: "The default sizes and spacing." },
+          ]}
+        />
+      </Field>
+
       <SwitchRow
         label="Show context window usage"
         hint="A ring by the model picker in the composer shows how full the model's context is."
@@ -193,7 +207,6 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
 
       <p className="text-muted-foreground text-xs">
         Routing, secrets and the other settings arrive with the full Settings screen (Phase 9).
-        Density is in the top bar.
       </p>
       <ErrorLine error={error} />
       <DialogFooter>

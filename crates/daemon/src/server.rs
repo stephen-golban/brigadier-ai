@@ -391,6 +391,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetCatalog => Response::GetCatalog {
             catalog: core.catalog(),
         },
+        Request::GetActivity => Response::GetActivity {
+            activity: core.activity().await,
+        },
         Request::CreateProject { name, repo } => Response::CreateProject {
             project: Box::new(core.create_project(name, repo).await?),
         },

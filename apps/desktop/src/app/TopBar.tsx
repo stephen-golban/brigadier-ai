@@ -1,18 +1,11 @@
-import { ChevronRight, SidebarRight, Terminal } from "@openai/apps-sdk-ui/components/Icon";
+import { Folder } from "@openai/apps-sdk-ui/components/Icon";
+import type { ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import type { Density, Lifecycle } from "@/ipc/generated";
+import type { Lifecycle } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
-import { setDensity, setInspectorOpen, setPinnedSummary } from "@/state/actions";
 import { useApp } from "@/state/store";
 
 function useTitle(): {
@@ -52,34 +45,49 @@ function useTitle(): {
   );
 }
 
-export function TopBar() {
+/**
+ * The header over the thread, as ChatGPT's: a session's folder icon and the title (click to
+ * rename), then the conversation's own controls (`children`) on the right.
+ */
+export function TopBar({
+  onRename,
+  children,
+}: {
+  onRename?: (() => void) | undefined;
+  children?: ReactNode;
+}) {
   const { state } = useSidebar();
   const { project, title, lifecycle, session } = useTitle();
-  const pinnedSummary = useApp((s) => s.pinnedSummary);
   const connection = useApp((s) => s.connection.status);
-  const density = useApp((s) => s.settings.density);
-  const inspectorOpen = useApp((s) => s.inspector.open);
 
   return (
     <header
       data-tauri-drag-region
       className={cn(
-        "h-titlebar flex shrink-0 items-center gap-2 border-b px-3",
+        "h-titlebar flex shrink-0 items-center gap-1 border-b px-3",
         state === "collapsed" && "macos:ps-traffic-lights",
       )}
     >
-      <SidebarTrigger className="text-muted-foreground" />
-      <div
-        data-tauri-drag-region
-        className="flex min-w-0 flex-1 items-center gap-1 text-sm"
-      >
-        {project && (
-          <>
-            <span className="text-muted-foreground truncate">{project}</span>
-            <ChevronRight className="text-muted-foreground size-icon-sm shrink-0" />
-          </>
+      <SidebarTrigger className="text-muted-foreground me-1" />
+      <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
+        {session && (
+          <Folder
+            aria-label={project ?? undefined}
+            className="text-muted-foreground size-icon-md shrink-0"
+          />
         )}
-        <span className="truncate font-medium">{title}</span>
+        {onRename ? (
+          <button
+            type="button"
+            title={project ? `${project} · Rename` : "Rename"}
+            onClick={onRename}
+            className="hover:text-foreground/80 min-w-0 truncate font-medium transition-colors"
+          >
+            {title}
+          </button>
+        ) : (
+          <span className="truncate font-medium">{title}</span>
+        )}
         {lifecycle === "hibernated" && (
           <Badge variant="secondary" className="ms-1" title="Idle: its CLI processes are stopped. Sending a message wakes it.">
             Hibernated
@@ -99,58 +107,7 @@ export function TopBar() {
             : "Reconnecting to core…"}
         </Badge>
       )}
-
-      <ToggleGroup
-        type="single"
-        size="sm"
-        variant="outline"
-        value={density}
-        onValueChange={(value) => {
-          if (value === "compact" || value === "normal") {
-            void setDensity(value satisfies Density);
-          }
-        }}
-        aria-label="Density"
-      >
-        <ToggleGroupItem value="compact" className="text-xs">
-          Compact
-        </ToggleGroupItem>
-        <ToggleGroupItem value="normal" className="text-xs">
-          Normal
-        </ToggleGroupItem>
-      </ToggleGroup>
-
-      {session && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant={pinnedSummary ? "secondary" : "ghost"}
-              size="icon-md"
-              aria-pressed={pinnedSummary}
-              aria-label="Session summary"
-              onClick={() => setPinnedSummary(!pinnedSummary)}
-            >
-              <SidebarRight />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Session summary</TooltipContent>
-        </Tooltip>
-      )}
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant={inspectorOpen ? "secondary" : "ghost"}
-            size="icon-md"
-            aria-pressed={inspectorOpen}
-            aria-label="Inspector"
-            onClick={() => setInspectorOpen(!inspectorOpen)}
-          >
-            <Terminal />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Inspector (Ctrl/⌘ ⌥ I)</TooltipContent>
-      </Tooltip>
+      {children}
     </header>
   );
 }

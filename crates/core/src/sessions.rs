@@ -18,8 +18,8 @@ use crate::model::{
 };
 use crate::projection::Projection;
 use crate::work::{
-    AttachmentRef, Mention, MessageQueue, OrchestratorEntry, QueuedMessage, RequestState, Task,
-    TaskId, UserRequest,
+    AttachmentRef, ConversationActivity, Mention, MessageQueue, OrchestratorEntry, QueuedMessage,
+    RequestState, Task, TaskId, UserRequest,
 };
 use crate::{Error, Result, now_ms};
 
@@ -117,6 +117,18 @@ impl Core {
 
     pub fn catalog(&self) -> Catalog {
         self.projection().catalog()
+    }
+
+    /// What runs and what waits for the user, per conversation (those whose board is loaded:
+    /// every conversation that ran or changed since the daemon started).
+    pub async fn activity(&self) -> Vec<ConversationActivity> {
+        let boards = self.boards.lock().await;
+        let mut activity: Vec<_> = boards
+            .iter()
+            .filter_map(|(id, board)| board.activity(id))
+            .collect();
+        activity.sort_by(|a, b| a.conversation_id.0.cmp(&b.conversation_id.0));
+        activity
     }
 
     /// Creates a project, optionally with its repository (named after it when `name` is

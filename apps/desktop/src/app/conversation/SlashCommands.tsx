@@ -42,7 +42,7 @@ const INIT_PROMPT =
   "and keep the file short and specific to this project.";
 
 /** The id of the newest answer on the shown branch, which `/fork` forks from. */
-function useLatestAnswer(): string | null {
+export function useLatestAnswer(): string | null {
   return useAuiState((s) => {
     for (let index = s.thread.messages.length - 1; index >= 0; index--) {
       const custom = s.thread.messages[index]?.metadata.custom as {

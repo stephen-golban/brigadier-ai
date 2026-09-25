@@ -6,6 +6,7 @@ import { ConversationView } from "@/app/ConversationView";
 import { runSmoke } from "@/app/smoke";
 import { TopBar } from "@/app/TopBar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { Toaster } from "@/components/ui/toast";
 import { appReady, nowEpochMs } from "@/ipc/client";
 import { nextPaint, setFrameSampling } from "@/lib/perf";
 import { markStartup } from "@/lib/startup";
@@ -85,15 +86,18 @@ export function App() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset className="h-full flex-row overflow-hidden">
-        <div className="flex h-full min-w-0 flex-1 flex-col">
-          <TopBar />
-          <div className="min-h-0 flex-1">
-            {selection.type === "archived" ? (
-              <ArchivedView />
-            ) : (
-              <ConversationView key={viewKey(selection)} selection={selection} />
-            )}
-          </div>
+        <div className="relative flex h-full min-w-0 flex-1 flex-col">
+          {selection.type === "archived" ? (
+            <>
+              <TopBar />
+              <div className="min-h-0 flex-1">
+                <ArchivedView />
+              </div>
+            </>
+          ) : (
+            <ConversationView key={viewKey(selection)} selection={selection} />
+          )}
+          <Toaster className="top-titlebar pt-2" />
         </div>
         {inspectorOpen && (
           <Suspense fallback={null}>

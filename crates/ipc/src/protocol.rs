@@ -8,11 +8,11 @@
 //! `method` tag, so TypeScript can pair them with `Extract<Response, { method: M }>`.
 
 use brigadier_core::{
-    AttachmentRef, CardId, Catalog, Conversation, ConversationId, ConversationKind,
-    ConversationStatus, ConversationView, DiffStat, ForkPlace, Mention, Message, MessagePage,
-    MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView,
-    QueuedMessage, Rating, RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo,
-    RestoreOutcome, Settings, Setup, SetupRequest, TaskId, WorkerPage,
+    AttachmentRef, CardId, Catalog, Conversation, ConversationActivity, ConversationId,
+    ConversationKind, ConversationStatus, ConversationView, DiffStat, ForkPlace, Mention, Message,
+    MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch,
+    ProvidersView, QueuedMessage, Rating, RawApprovals, RawPage, RawSession, RawSessionId,
+    RepoInfo, RestoreOutcome, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,8 @@ pub enum ClientFrame {
 )]
 pub enum Request {
     GetCatalog,
+    /// Which conversations run and which wait for the user (the sidebar's spinner and pills).
+    GetActivity,
     /// Creates a project. With `repo` (a repository's top-level folder, from the native
     /// picker or typed), an empty `name` names it after the folder.
     CreateProject {
@@ -411,6 +413,9 @@ pub enum Request {
 pub enum Response {
     GetCatalog {
         catalog: Catalog,
+    },
+    GetActivity {
+        activity: Vec<ConversationActivity>,
     },
     CreateProject {
         project: Box<Project>,
