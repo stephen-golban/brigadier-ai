@@ -1,7 +1,7 @@
 use crate::{
     Branch, Change, ChangeKind, CollidingPath, DiffStat, Environment, Error, Git, LandBlock,
-    LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RepoState, Result, Snapshot,
-    Worktree, WorktreeInfo, WorktreeSpec,
+    LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RepoState, Result, RevertOutcome,
+    Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
     command::{TempIndex, check, failure, valid_oid, valid_path},
     parse,
 };
@@ -795,6 +795,76 @@ impl Repo {
         Ok(LandOutcome::Landed {
             new_tip: request.commit.clone(),
         })
+    }
+
+    /// A commit on `onto` that reverts `commits` (in any order), touching no checkout or ref;
+    /// `land` puts it on the branch under the landing lock. Refused when a commit after the
+    /// oldest of them, other than they, changed any of their paths.
+    pub fn prepare_revert(
+        &self,
+        commits: &[Oid],
+        onto: &Oid,
+        message: &str,
+    ) -> Result<RevertOutcome> {
+        valid_oid(onto)?;
+        // Newest first, so each revert applies to the tree the one before it left.
+        let mut newest_first: Vec<Oid> = Vec::with_capacity(commits.len());
+        for commit in commits {
+            valid_oid(commit)?;
+            if !self.ancestor(commit, onto)? {
+                return Err(Error::Invalid(format!("{} is not on the branch", commit.0)));
+            }
+            let mut at = newest_first.len();
+            for (index, placed) in newest_first.iter().enumerate() {
+                if self.ancestor(placed, commit)? {
+                    at = index;
+                    break;
+                }
+            }
+            newest_first.insert(at, commit.clone());
+        }
+        let commits = newest_first;
+        let oldest = commits
+            .last()
+            .ok_or_else(|| Error::Invalid("no commits to revert".into()))?;
+        let parent = |commit: &Oid| self.resolve(&format!("{}^", commit.0));
+        let mut paths = BTreeSet::new();
+        for commit in &commits {
+            paths.extend(self.changed_paths(&parent(commit)?, commit)?);
+        }
+        let range = format!("{}..{}", oldest.0, onto.0);
+        let later = self.cmd(&["rev-list", "--reverse", &range], true)?;
+        let mut touched = BTreeSet::new();
+        for line in String::from_utf8_lossy(&later).lines() {
+            let commit = Oid(line.trim().to_owned());
+            if commits.contains(&commit) {
+                continue;
+            }
+            for path in self.changed_paths(&parent(&commit)?, &commit)? {
+                if paths.iter().any(|ours| parse::overlaps(ours, &path)) {
+                    touched.insert(path);
+                }
+            }
+        }
+        if !touched.is_empty() {
+            return Ok(RevertOutcome::Touched {
+                paths: touched.into_iter().collect(),
+            });
+        }
+        let mut current = onto.clone();
+        for commit in &commits {
+            let tree = match self.replay_tree(commit, &current, &parent(commit)?)? {
+                TreeMerge::Ready(tree) => tree,
+                TreeMerge::Conflicts(paths) => return Ok(RevertOutcome::Conflicts { paths }),
+            };
+            current = self.commit_tree(&tree, &[&current], "Brigadier revert step", true)?;
+        }
+        let tree = parse::oid(&self.cmd(
+            &["rev-parse", "--verify", &format!("{}^{{tree}}", current.0)],
+            true,
+        )?)?;
+        let commit = self.commit_tree(&tree, &[onto], message, false)?;
+        Ok(RevertOutcome::Ready { commit })
     }
 
     pub(crate) fn merge_tree(&self, left: &Oid, right: &Oid) -> Result<TreeMerge> {

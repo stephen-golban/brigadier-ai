@@ -26,6 +26,7 @@ import {
   isLive,
   isWorking,
 } from "@/app/conversation/blocks";
+import { TurnDiff } from "@/app/conversation/TurnDiff";
 import {
   BranchPicker,
   MessageError,
@@ -442,6 +443,7 @@ export const RequestBlock: FC = () => {
           {meta.state === "working" && <ActivityRow requestIds={meta.requestIds} />}
         </div>
       )}
+      {!live && meta.session && <TurnDiff requestId={meta.requestId} />}
       <MessageError />
       {!live && last >= 0 && (
         <AnswerActions

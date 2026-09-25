@@ -19,7 +19,7 @@ use crate::model::{
 use crate::projection::Projection;
 use crate::work::{
     AttachmentRef, ConversationActivity, Mention, MessageQueue, OrchestratorEntry, QueuedMessage,
-    RequestState, Task, TaskId, UserRequest,
+    RequestState, RequestUndo, Task, TaskId, UserRequest,
 };
 use crate::{Error, Result, now_ms};
 
@@ -465,6 +465,7 @@ impl Core {
                         ended_at_ms: None,
                         steered_into: None,
                         steered_after: None,
+                        undo: None,
                     },
                 },
             ),
@@ -1038,6 +1039,36 @@ impl Core {
         request.state = RequestState::Working;
         request.started_at_ms = now_ms();
         request.ended_at_ms = None;
+        let event = DomainEvent::RequestUpdated { request };
+        let stored = self
+            .record(vec![(streams::conversation(id), event.clone())])
+            .await?;
+        if let Some(board) = boards.get_mut(id) {
+            board.apply(&event, stored[0]);
+        }
+        Ok(())
+    }
+
+    /// Records the user's Undo or Reapply of what a request's workers landed.
+    pub(crate) async fn set_request_undo(
+        &self,
+        id: &ConversationId,
+        request_id: &str,
+        undo: RequestUndo,
+    ) -> Result<()> {
+        let mut boards = self.boards.lock().await;
+        if !boards.contains_key(id) {
+            let board = self.load_board(id).await?;
+            boards.insert(id.clone(), board);
+        }
+        let Some(mut request) = boards
+            .get(id)
+            .and_then(|board| board.requests.get(request_id))
+            .cloned()
+        else {
+            return Err(Error::NotFound(format!("request {request_id}")));
+        };
+        request.undo = Some(undo);
         let event = DomainEvent::RequestUpdated { request };
         let stored = self
             .record(vec![(streams::conversation(id), event.clone())])
