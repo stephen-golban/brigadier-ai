@@ -25,6 +25,8 @@ function summary(event: DomainEvent): string {
       return `density ${event.settings.density}`;
     case "probe":
       return `probe ${event.index + 1}/${event.count}`;
+    case "draftPinned":
+      return `${event.scope}: ${event.attachments.length} attachments`;
     case "rawSessionCreated":
       return `${event.session.provider} ${event.session.source.type}`;
     case "rawSessionUpdated":

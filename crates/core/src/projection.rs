@@ -106,6 +106,7 @@ impl Projection {
             | DomainEvent::CleanupRequested { .. }
             | DomainEvent::CleanupCompleted { .. }
             | DomainEvent::ProviderChecked { .. }
+            | DomainEvent::DraftPinned { .. }
             | DomainEvent::Probe { .. } => {}
         }
     }

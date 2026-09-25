@@ -403,6 +403,8 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "providerChecked":
       return { ...slice, providers: applyProviderEvent(envelope, slice.providers) };
     case "probe":
+    // A draft's pinned attachments only matter to blob collection.
+    case "draftPinned":
     // The cleanup ledger shows in the event list only.
     case "cleanupRecorded":
     case "cleanupRemoved":
