@@ -1,90 +1,78 @@
 import type { ComponentProps, ReactNode } from "react";
 
-import { field, mono, paper } from "@/components/assistant-ui/elements/surfaces";
 import { cn } from "@/lib/utils";
 
 /**
- * The Message queue element (assistant-ui), on Brigadier's tokens: the running turn, then the
- * messages typed meanwhile, in the order they will be sent. Brigadier extends it with
- * steering, editing, reordering and a paused state; those controls come in as children.
+ * The Message queue element (assistant-ui), laid out as ChatGPT's queue card on the composer
+ * rail: one quiet row per waiting message, in the order they will be sent, no header and no
+ * count. Brigadier's controls (steer, delete, the actions menu, the drag grip) come in as
+ * children.
  */
-export function MessageQueue({ className, ...props }: ComponentProps<"div">) {
+export function MessageQueue({ className, ...props }: ComponentProps<"ol">) {
   return (
-    <div
+    <ol
       data-slot="message-queue"
-      className={cn("flex w-full flex-col gap-1.5", className)}
+      className={cn("max-h-queue-max flex flex-col overflow-y-auto px-1 py-1", className)}
       {...props}
     />
   );
 }
 
-/** The row for the turn in flight. */
-export function MessageQueueRunning({
-  label,
-  active,
-  children,
-  className,
-}: {
-  label: ReactNode;
-  /** Pulses while the turn runs; still while it is paused or stopping. */
-  active: boolean;
-  children?: ReactNode;
-  className?: string;
-}) {
+/** "Queue paused because you interrupted", with its Resume button. */
+export function MessageQueuePaused({ children }: { children?: ReactNode }) {
   return (
     <div
-      data-slot="message-queue-running"
-      className={cn(paper, "rounded-thread flex items-center gap-2.5 px-3 py-2", className)}
+      data-slot="message-queue-paused"
+      className="text-muted-foreground min-h-row flex items-center gap-2 px-3 text-sm"
     >
-      <span className="relative flex size-2 shrink-0">
-        {active && (
-          <span className="bg-success/60 absolute inline-flex size-full animate-ping rounded-full motion-reduce:hidden" />
-        )}
-        <span
-          className={cn(
-            "relative inline-flex size-2 rounded-full",
-            active ? "bg-success" : "bg-warning",
-          )}
-        />
-      </span>
-      <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
+      <span className="bg-warning size-2 shrink-0 rounded-full" />
+      <span className="min-w-0 flex-1 truncate">Queue paused because you interrupted</span>
       {children}
     </div>
   );
 }
 
-/** "2 queued · sends when this finishes". */
-export function MessageQueueHeader({ start, end }: { start: ReactNode; end?: ReactNode }) {
+/** ChatGPT's queue glyph: lines of a list with an arrow into them. */
+export function QueueGlyph({ className }: { className?: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-2 px-1">
-      <span className={cn(mono, "text-muted-foreground")}>{start}</span>
-      {end && <span className={cn(mono, "text-muted-foreground")}>{end}</span>}
-    </div>
+    <svg aria-hidden viewBox="0 0 20 20" fill="currentColor" className={className}>
+      <path d="M9.75 4.25h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5Zm0 5h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5Zm0 5h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5ZM3.5 6.6a.5.5 0 0 1 .8-.4l3.9 3.4a.5.5 0 0 1 0 .8l-3.9 3.4a.5.5 0 0 1-.8-.4Z" />
+    </svg>
   );
 }
 
-/** One queued message. */
+/** One queued message: the glyph (a drag grip on hover), its text, then its actions. */
 export function MessageQueueItem({
-  index,
   dragging,
+  grip,
   className,
   children,
   ...props
-}: ComponentProps<"li"> & { index: number; dragging?: boolean }) {
+}: ComponentProps<"li"> & {
+  dragging?: boolean;
+  /** Shown over the glyph on hover, when the order can change. */
+  grip?: ReactNode;
+}) {
   return (
     <li
       data-slot="message-queue-item"
       data-dragging={dragging || undefined}
       className={cn(
-        field,
-        "rounded-thread fade-in slide-in-from-bottom-1 animate-in fill-mode-both flex items-center gap-2 py-1.5 ps-2 pe-1.5 duration-300",
-        dragging && "bg-accent relative z-10 opacity-90",
+        "group/queue-item rounded-control min-h-row fade-in animate-in flex items-center gap-2 ps-1.5 pe-1 text-sm duration-200",
+        dragging && "bg-foreground/10 relative z-10",
         className,
       )}
       {...props}
     >
-      <span className={cn(mono, "text-muted-foreground w-3 shrink-0 text-center tabular-nums")}>
-        {index + 1}
+      <span className="text-muted-foreground/70 relative flex size-icon-button-sm shrink-0 items-center justify-center">
+        <QueueGlyph
+          className={cn("size-icon-sm", grip && "group-hover/queue-item:invisible group-focus-within/queue-item:invisible")}
+        />
+        {grip && (
+          <span className="invisible absolute inset-0 flex group-hover/queue-item:visible group-focus-within/queue-item:visible">
+            {grip}
+          </span>
+        )}
       </span>
       {children}
     </li>

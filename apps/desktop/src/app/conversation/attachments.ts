@@ -2,6 +2,7 @@ import type {
   Attachment,
   AttachmentAdapter,
   CompleteAttachment,
+  CreateAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
 
@@ -71,6 +72,16 @@ export class BlobAttachmentAdapter implements AttachmentAdapter {
       throw new Error(`${attachment.name} was not stored; remove it and attach it again.`);
     }
     return { ...attachment, status: { type: "complete" }, content: [] };
+  }
+
+  /**
+   * An attachment already in the blob store (a queued message pulled back into the composer),
+   * ready for `composer.addAttachment`: sending passes the same reference again.
+   */
+  adopt(ref: AttachmentRef): CreateAttachment {
+    const id = crypto.randomUUID();
+    this.refs.set(id, ref);
+    return { id, type: kindOf(ref.mime), name: ref.name, contentType: ref.mime, content: [] };
   }
 
   /** The stored references for a sent message's attachments, in order. */

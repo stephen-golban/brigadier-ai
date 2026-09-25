@@ -282,6 +282,8 @@ pub(super) struct RequestActivity {
 
 impl SessionManager {
     /// Sends a user message: starts a turn, or queues it, or steers it into the running turn.
+    /// With `queue_index` (and no `steer`) it queues at that slot whenever it would wait: while
+    /// a turn runs, whatever the queueing setting, or while the queue is paused.
     pub async fn send_message(
         &self,
         id: ConversationId,
@@ -289,6 +291,7 @@ impl SessionManager {
         attachments: Vec<AttachmentRef>,
         mentions: Vec<Mention>,
         steer: bool,
+        queue_index: Option<u32>,
     ) -> Result<SendOutcome> {
         self.admit()?;
         let conversation = self.core.conversation(&id)?;
@@ -325,11 +328,13 @@ impl SessionManager {
                 )));
             }
         }
+        let queue_index = queue_index.filter(|_| !steer);
+        let paused = queue_index.is_some() && self.core.board(&id).await?.queue.paused;
         let conv = self.conv(&id)?;
         let mut state = conv.state.lock().await;
         state.last_activity_ms = now_ms();
         if state.busy && !state.compacting {
-            if steer || !self.core.settings().queue_enabled {
+            if steer || (queue_index.is_none() && !self.core.settings().queue_enabled) {
                 let message = self
                     .core
                     .append_user_message(id.clone(), text, attachments, mentions)
@@ -358,7 +363,18 @@ impl SessionManager {
                 self.settle_requests(&id).await;
                 return Ok(SendOutcome::Sent(message));
             }
-            let item = self.core.enqueue(&id, text, attachments, mentions).await?;
+            let item = self
+                .core
+                .enqueue(&id, text, attachments, mentions, queue_index)
+                .await?;
+            return Ok(SendOutcome::Queued(item));
+        }
+        if paused {
+            // Back into the paused queue it came from; nothing sends until the user resumes.
+            let item = self
+                .core
+                .enqueue(&id, text, attachments, mentions, queue_index)
+                .await?;
             return Ok(SendOutcome::Queued(item));
         }
         let message = self

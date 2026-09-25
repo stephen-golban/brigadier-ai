@@ -40,13 +40,13 @@ import {
   buildThread,
   type ThreadNode,
 } from "@/app/conversation/blocks";
+import { ConversationComposer } from "@/app/conversation/Composer";
 import {
   type ComposerTarget,
   ComposerTargetContext,
-  ConversationComposer,
-} from "@/app/conversation/Composer";
+  PulledSlot,
+} from "@/app/conversation/composerTarget";
 import { useResolvedDraft } from "@/app/conversation/draftSetup";
-import { QueuePanel } from "@/app/conversation/QueuePanel";
 import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
 import { StatusCardContext } from "@/app/conversation/StatusCard";
 import { useAction } from "@/app/conversation/useAction";
@@ -65,17 +65,24 @@ import type {
 } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
+  deleteQueued,
   editMessage,
+  editQueued,
   interrupt,
   loadEarlier,
   loadFullText,
   rateMessage,
+  moveQueued,
   regenerate,
   restore,
+  restoreQueued,
   resume,
   send,
+  type SendLane,
+  steerQueued,
   switchBranch,
 } from "@/state/actions";
+import { toast } from "@/state/toasts";
 import { type Board, useBoard } from "@/state/board";
 import {
   emptyThread,
@@ -486,6 +493,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
   const [mentions] = useState(() => new MentionMemory());
+  const [pulled] = useState(() => new PulledSlot());
   const draftTarget = resolved.target;
   // The conversation whose `/status` card shows (none once another one opens).
   const [statusFor, setStatusFor] = useState<string | null>(null);
@@ -496,45 +504,98 @@ export function ConversationView({ selection }: { selection: Selection }) {
     }),
     [statusFor, conversationId],
   );
+  const fail = useCallback((cause: unknown) => {
+    setError(cause instanceof Error ? cause.message : String(cause));
+  }, []);
   const submit = useCallback(
-    (message: AppendMessage) => {
+    (message: AppendMessage, lane: SendLane) => {
       const text = textOf(message);
       const refs = attachments.refsOf(message.attachments ?? []);
+      // A queued message pulled out to edit goes back to its slot, unless steered in now.
+      const slot = pulled.take(conversationId);
       if (!text && refs.length === 0) return;
       setError(null);
+      const known = [...mentions.known(), ...(slot?.mentions ?? [])];
+      // An edited queued message stays queued whatever the setting; only an explicit steer
+      // sends it in now.
+      const into = slot && lane === "auto" ? "queue" : lane;
       send(
-        { text, attachments: refs, mentions: mentionsIn(text, targets, mentions.known()) },
+        { text, attachments: refs, mentions: mentionsIn(text, targets, known) },
         draftTarget ?? undefined,
-      ).catch((cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : String(cause));
-      });
+        { lane: into, queueIndex: into === "steer" ? null : (slot?.index ?? null) },
+      ).catch(fail);
     },
-    [attachments, targets, mentions, draftTarget],
+    [attachments, pulled, conversationId, targets, mentions, draftTarget, fail],
   );
 
-  // assistant-ui's queue surface over the daemon's queue: sending goes through it so the
-  // composer stays usable while a turn runs; the panel above the composer shows the items.
+  // assistant-ui's queue over the daemon's: sends go through it so the composer stays usable
+  // while a turn runs (an explicit steer or queue is ⌘Enter's inversion of the setting), and
+  // the queue card's steer, move and delete come back through it.
   const queue = useMemo<ExternalThreadQueueAdapter>(() => {
-    const states: QueueItemState[] = (queueItems ?? []).map((item) => ({
+    const queued = queueItems ?? [];
+    const states: QueueItemState[] = queued.map((item) => ({
       id: item.id,
       prompt: item.text,
       parts: [{ type: "text", text: item.text }],
     }));
+    const find = (id: string) => queued.findIndex((item) => item.id === id);
     return {
       items: states,
       steerItems: [],
-      enqueue: submit,
-      steer: submit,
-      move: () => {},
-      edit: () => {},
-      remove: () => {},
+      enqueue: (message) => submit(message, message.steer === false ? "queue" : "auto"),
+      steer: (message) => submit(message, message.steer ? "steer" : "auto"),
+      move: (id, placement) => {
+        if (!conversationId) return;
+        if (placement.lane === "steer") {
+          void steerQueued(conversationId, id).catch(fail);
+          return;
+        }
+        const rest = queued.filter((item) => item.id !== id);
+        const at = (anchor: string) => rest.findIndex((item) => item.id === anchor);
+        const index =
+          placement.insertAfter !== undefined
+            ? placement.insertAfter === null
+              ? 0
+              : at(placement.insertAfter) + 1
+            : placement.insertBefore
+              ? at(placement.insertBefore)
+              : rest.length;
+        void moveQueued(conversationId, id, Math.max(0, index)).catch(fail);
+      },
+      edit: (id, message) => {
+        if (!conversationId) return;
+        const text = textOf(message);
+        const item = queued[find(id)];
+        void editQueued(conversationId, id, {
+          text,
+          attachments: attachments.refsOf(message.attachments ?? []),
+          mentions: mentionsIn(text, targets, [...mentions.known(), ...(item?.mentions ?? [])]),
+        }).catch(fail);
+      },
+      remove: (id) => {
+        const index = find(id);
+        const item = queued[index];
+        if (!conversationId || !item) return;
+        void deleteQueued(conversationId, id)
+          .then(() =>
+            toast("Queued message deleted", {
+              actions: [
+                {
+                  label: "Undo",
+                  run: () =>
+                    void restoreQueued(conversationId, item, index)
+                      .then(() => toast("Queued message restored"))
+                      .catch(fail),
+                },
+              ],
+            }),
+          )
+          .catch(fail);
+      },
     };
-  }, [queueItems, submit]);
+  }, [queueItems, submit, conversationId, attachments, targets, mentions, fail]);
 
   const archived = conversation?.lifecycle === "archived";
-  const fail = useCallback((cause: unknown) => {
-    setError(cause instanceof Error ? cause.message : String(cause));
-  }, []);
   // "Good response" / "Bad response" on an answer: kept by the daemon, on this machine.
   const feedback = useMemo<FeedbackAdapter>(
     () => ({
@@ -573,7 +634,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
     isSendDisabled: conversation === null && resolved.problem !== null,
     queue,
     adapters: { attachments, feedback },
-    onNew: async (message) => submit(message),
+    onNew: async (message) => submit(message, "auto"),
     onCancel: async () => {
       if (!conversationId) return;
       try {
@@ -596,8 +657,16 @@ export function ConversationView({ selection }: { selection: Selection }) {
   );
 
   const target = useMemo<ComposerTarget>(
-    () => ({ conversation, resolved, targets, mentions, running, onResume }),
-    [conversation, resolved, targets, mentions, running, onResume],
+    () => ({
+      conversation,
+      resolved,
+      targets,
+      mentions,
+      running,
+      onResume,
+      queue: { pulled, attachments },
+    }),
+    [conversation, resolved, targets, mentions, running, onResume, pulled, attachments],
   );
 
   const fullscreen = sidePanel.state.open && sidePanel.state.fullscreen;
@@ -747,7 +816,7 @@ function Notices({ notices }: { notices: readonly Notice[] }) {
 
 const NO_NOTICES: Notice[] = [];
 
-/** Between the thread and the composer: notices, a failed run, the archived state, the queue. */
+/** Between the thread and the composer: notices, a failed run, the archived state. */
 const AboveComposer: FC = () => {
   const { conversation } = useContext(ViewContext);
   const conversationId = conversation?.id ?? null;
@@ -759,7 +828,6 @@ const AboveComposer: FC = () => {
       ? (s.board.runError ?? "The model stopped with an error.")
       : null,
   );
-  const target = useContext(ComposerTargetContext);
   const action = useAction();
   if (!conversation) return null;
   return (
@@ -785,12 +853,7 @@ const AboveComposer: FC = () => {
             Restore
           </Button>
         </div>
-      ) : (
-        <QueuePanel
-          conversationId={conversation.id}
-          targets={target?.targets ?? []}
-        />
-      )}
+      ) : null}
     </div>
   );
 };
