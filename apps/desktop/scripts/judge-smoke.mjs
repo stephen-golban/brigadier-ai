@@ -7,6 +7,8 @@
 // before the page loads, and that swings by seconds between otherwise identical launches.
 // Every other check is judged on the first launch exactly as the app judged it. All launches
 // are printed with their startup milestones, and written to the combined report.
+// Runner preparation may delay a launch, but every one of the three judged launches is kept.
+// There is no retry or best-of selection: a failed launch remains part of the judgment.
 
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -42,6 +44,12 @@ launches.forEach((launch, index) => {
   const check = coldStartOf(launch);
   const value = check?.measured == null ? "n/a" : `${Math.round(check.measured)} ms`;
   console.log(`  launch ${index + 1}: ${value}; ${check?.note ?? launch.error ?? ""}`);
+  for (const id of ["frameGaps", "schedulerDelay"]) {
+    const timing = launch.checks?.find((candidate) => candidate.id === id);
+    console.log(
+      `    ${id}: ${timing ? `${timing.measured} ms (${timing.status}, limit ${timing.limit} ms)` : "n/a"}`,
+    );
+  }
 });
 console.log(`  median: ${median == null ? "n/a" : `${Math.round(median)} ms`}`);
 if (median == null || limit == null || !(median < limit)) {
