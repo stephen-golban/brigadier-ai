@@ -7,4 +7,4 @@ import type { TerminalOutput } from "./TerminalOutput";
 /**
  * Pushed from the shell to the webview.
  */
-export type BridgeEvent = { "type": "connected", daemon: DaemonInfo, lastSeq: number, } | { "type": "disconnected", reason: string, } | { "type": "event", event: EventEnvelope, } | { "type": "lagged", resumeAfter: number, } | { "type": "metrics", metrics: DaemonMetrics, } | { "type": "terminal", output: TerminalOutput, } | { "type": "windowVisibility", visible: boolean, };
+export type BridgeEvent = { "type": "connected", daemon: DaemonInfo, lastSeq: number, } | { "type": "disconnected", reason: string, } | { "type": "event", event: EventEnvelope, } | { "type": "lagged", resumeAfter: number, } | { "type": "metrics", metrics: DaemonMetrics, } | { "type": "terminal", output: TerminalOutput, } | { "type": "windowVisibility", visible: boolean, } | { "type": "openConversation", conversationId: string, };

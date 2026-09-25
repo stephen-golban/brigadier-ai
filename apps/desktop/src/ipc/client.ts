@@ -6,6 +6,7 @@ import type {
   BrowserBounds,
   BrowserEvent,
   IpcError,
+  RunningChat,
   Request,
   Response,
   SmokeReport,
@@ -111,6 +112,11 @@ export async function openUrl(url: string): Promise<void> {
   } catch (error) {
     throw isIpcError(error) ? new RequestError(error) : error;
   }
+}
+
+/** The conversations the menu-bar item lists under "Running". */
+export function setRunningChats(chats: RunningChat[]): Promise<void> {
+  return invoke("set_running_chats", { chats });
 }
 
 /** Shows a file selected in the system file manager. */

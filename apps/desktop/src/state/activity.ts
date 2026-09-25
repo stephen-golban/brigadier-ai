@@ -158,6 +158,13 @@ function rowActivity(activity: Activity | undefined): RowActivity {
 }
 
 /** The row activity of one conversation; re-renders only when it changes. */
+/** The conversations running now (a turn or a worker in progress), for the menu-bar item. */
+export function runningConversations(byConversation: Record<string, Activity>): string[] {
+  return Object.entries(byConversation)
+    .filter(([, activity]) => rowActivity(activity).running)
+    .map(([id]) => id);
+}
+
 export function useRowActivity(conversationId: string): RowActivity {
   const running = useActivity((s) => rowActivity(s.byConversation[conversationId]).running);
   const awaiting = useActivity((s) => rowActivity(s.byConversation[conversationId]).awaiting);

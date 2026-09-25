@@ -15,7 +15,7 @@ mod smoke;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use brigadier_ipc::app::{AppInfo, BridgeEvent, SmokeReport, UiMeasurements};
+use brigadier_ipc::app::{AppInfo, BridgeEvent, RunningChat, SmokeReport, UiMeasurements};
 use brigadier_ipc::protocol::{IpcError, Request, Response};
 use brigadier_sandbox::{Platform, PlatformOptions};
 use tauri::ipc::Channel;
@@ -167,6 +167,14 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), IpcError> {
         })
 }
 
+/// The conversations running now, which the menu-bar item lists under "Running".
+#[tauri::command]
+fn set_running_chats(app: tauri::AppHandle, chats: Vec<RunningChat>) {
+    if let Err(err) = shell::set_running(&app, &chats) {
+        tracing::warn!(error = %err, "could not update the menu-bar item");
+    }
+}
+
 /// Shows a file (a file link in an answer) selected in the system file manager.
 #[tauri::command]
 fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), IpcError> {
@@ -315,6 +323,7 @@ fn main() {
             open_folder,
             open_url,
             reveal_path,
+            set_running_chats,
             browser::browser_open,
             browser::browser_navigate,
             browser::browser_place,
