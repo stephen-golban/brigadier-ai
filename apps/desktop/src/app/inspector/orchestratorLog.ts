@@ -40,6 +40,7 @@ export const KIND_LABELS: Record<InjectionKind, string> = {
   toolResult: "tool result",
   artifact: "artifact",
   reseed: "reseed",
+  resume: "resume",
 };
 
 export function groupOf(kind: InjectionKind): InjectionGroup {
@@ -48,6 +49,7 @@ export function groupOf(kind: InjectionKind): InjectionGroup {
     case "reseed":
       return "instructions";
     case "userMessage":
+    case "resume":
       return "messages";
     case "report":
       return "reports";

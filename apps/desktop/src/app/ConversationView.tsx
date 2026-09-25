@@ -65,6 +65,7 @@ import {
   rateMessage,
   regenerate,
   restore,
+  resume,
   send,
   switchBranch,
 } from "@/state/actions";
@@ -289,11 +290,8 @@ const EMPTY_DIGEST: BoardDigest & { head: string | null } = {
   head: null,
 };
 
-/**
- * The session request the user may still edit or have answered again: the latest, until
- * anything it started has landed (or is landing with their approval).
- */
-function reworkableRequest(board: Board): string | null {
+/** The conversation's newest request (the daemon orders them the same way). */
+function latestRequest(board: Board): UserRequest | null {
   let latest: UserRequest | null = null;
   for (const request of Object.values(board.requests)) {
     if (
@@ -304,6 +302,15 @@ function reworkableRequest(board: Board): string | null {
       latest = request;
     }
   }
+  return latest;
+}
+
+/**
+ * The session request the user may still edit or have answered again: the latest, until
+ * anything it started has landed (or is landing with their approval).
+ */
+function reworkableRequest(board: Board): string | null {
+  const latest = latestRequest(board);
   if (!latest) return null;
   const id = latest.id;
   const landed =
@@ -415,6 +422,13 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const running = run === "running" || run === "starting";
   const reworkable = useBoard((s) =>
     s.board?.conversationId === conversationId && s.board ? reworkableRequest(s.board) : null,
+  );
+  // The user stopped the latest request and nothing runs for it: the send button resumes it.
+  const stopped = useBoard(
+    (s) =>
+      s.board?.conversationId === conversationId &&
+      !!s.board &&
+      latestRequest(s.board)?.state.type === "stopped",
   );
   // Not while the orchestrator's turn for the request runs (the composer can stop it); a
   // request whose workers still run can be redone.
@@ -533,9 +547,20 @@ export function ConversationView({ selection }: { selection: Selection }) {
     },
   });
 
+  const onResume = useMemo(
+    () =>
+      conversationId && stopped && !running && !archived
+        ? () => {
+            setError(null);
+            void resume(conversationId).catch(fail);
+          }
+        : null,
+    [conversationId, stopped, running, archived, fail],
+  );
+
   const target = useMemo<ComposerTarget>(
-    () => ({ conversation, resolved, targets, running }),
-    [conversation, resolved, targets, running],
+    () => ({ conversation, resolved, targets, running, onResume }),
+    [conversation, resolved, targets, running, onResume],
   );
 
   return (

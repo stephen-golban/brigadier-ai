@@ -664,6 +664,8 @@ pub enum InjectionKind {
     Artifact,
     /// The transcript a new orchestrator CLI session is seeded with.
     Reseed,
+    /// The user resumed a request they had stopped.
+    Resume,
 }
 
 /// One thing Brigadier put into the orchestrator's context, for the Inspector.
