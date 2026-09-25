@@ -24,6 +24,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanel, AgentsPanelContext, type AgentsPanelState } from "@/app/conversation/Agents";
+import { BackgroundWorkers } from "@/app/conversation/BackgroundWorkers";
 import { PinnedSummary } from "@/app/conversation/PinnedSummary";
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import {
@@ -788,9 +789,18 @@ const AboveComposer: FC = () => {
           targets={target?.targets ?? []}
         />
       )}
-      {statusCard.open && (
-        <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
-      )}
+      {/* On the composer's top edge, as ChatGPT attaches them; hidden with nothing in it. */}
+      <div
+        data-slot="composer-tray"
+        className="border-foreground/10 bg-muted/30 rounded-t-thread divide-foreground/10 mx-3 -mb-4 flex flex-col divide-y border border-b-0 empty:hidden"
+      >
+        {conversation.kind === "session" && conversation.lifecycle !== "archived" && (
+          <BackgroundWorkers conversationId={conversation.id} />
+        )}
+        {statusCard.open && (
+          <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
+        )}
+      </div>
     </div>
   );
 };
