@@ -502,7 +502,7 @@ export function ConversationView({ selection }: { selection: Selection }) {
     () => new Map(tree.nodes.map((node) => [node.id, node.head])),
     [tree.nodes],
   );
-  const { panel: sidePanel, agents } = useSidePanel(session);
+  const { panel: sidePanel, agents } = useSidePanel(conversationId, session);
   const [renaming, setRenaming] = useState(false);
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());

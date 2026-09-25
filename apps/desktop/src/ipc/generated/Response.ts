@@ -26,6 +26,7 @@ import type { RestoreOutcome } from "./RestoreOutcome";
 import type { ReviewDiff } from "./ReviewDiff";
 import type { SendOutcome } from "./SendOutcome";
 import type { Settings } from "./Settings";
+import type { TerminalInfo } from "./TerminalInfo";
 import type { WorkerPage } from "./WorkerPage";
 
 /**
@@ -39,7 +40,7 @@ files: Array<string>,
 /**
  * Set when the checkout has more files than were listed.
  */
-truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
+truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "openTerminal", terminal: TerminalInfo, } | { "method": "writeTerminal" } | { "method": "resizeTerminal" } | { "method": "closeTerminal" } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
 /**
  * Absent for Chats and local-checkout sessions.
  */

@@ -326,6 +326,7 @@ impl Bridge {
                 return Some("lagged behind the live feed".into());
             }
             ServerFrame::Metrics { metrics } => self.emit(BridgeEvent::Metrics { metrics }),
+            ServerFrame::Terminal { output } => self.emit(BridgeEvent::Terminal { output }),
             ServerFrame::Closing => return Some("daemon is shutting down".into()),
             ServerFrame::Welcome { .. } => return Some("unexpected second welcome".into()),
         }

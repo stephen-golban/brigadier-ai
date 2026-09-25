@@ -5,6 +5,7 @@ import { loadCatalog, loadConversation, openOrchestratorLog } from "@/state/acti
 import { applyActivityEvents, loadActivity } from "@/state/activity";
 import { applyBoardEvents, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
+import { emitTerminalOutput } from "@/state/terminals";
 
 let queued: EventEnvelope[] = [];
 let flushScheduled = false;
@@ -74,6 +75,9 @@ function onBridgeEvent(message: BridgeEvent) {
       useApp.setState((state) => ({
         inspector: { ...state.inspector, metrics: message.metrics },
       }));
+      break;
+    case "terminal":
+      emitTerminalOutput(message.output);
       break;
     case "windowVisibility":
       setSamplingPaused(!message.visible);

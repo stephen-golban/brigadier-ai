@@ -16,19 +16,25 @@ const MAX_TEXT: u64 = 1024 * 1024;
 const BINARY_PROBE: usize = 8000;
 
 impl SessionManager {
-    /// The file at `path`, relative to the session's checkout (the repository while its
-    /// worktree doesn't exist yet): its text, or that it is binary.
-    pub async fn read_file(&self, id: &ConversationId, path: String) -> Result<CheckoutFile> {
+    /// Where the user looks at a session's files and runs its terminal: its checkout, or the
+    /// repository while its worktree doesn't exist yet.
+    pub fn checkout_dir(&self, id: &ConversationId) -> Result<String> {
         let Some(Setup::Session {
             repo, environment, ..
         }) = self.core.conversation(id)?.setup
         else {
-            return Err(Error::Invalid("only a session has files".into()));
+            return Err(Error::Invalid("only a session has a checkout".into()));
         };
-        let root = match environment {
+        Ok(match environment {
             Environment::LocalCheckout { .. } => repo,
             Environment::NewWorktree { path, .. } => path.unwrap_or(repo),
-        };
+        })
+    }
+
+    /// The file at `path`, relative to the session's checkout: its text, or that it is
+    /// binary.
+    pub async fn read_file(&self, id: &ConversationId, path: String) -> Result<CheckoutFile> {
+        let root = self.checkout_dir(id)?;
         blocking(move || read_checkout_file(Path::new(&root), &path)).await
     }
 }
