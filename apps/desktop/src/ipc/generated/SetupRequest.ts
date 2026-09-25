@@ -10,4 +10,8 @@ export type SetupRequest = { "type": "session",
 /**
  * One of the project's repositories.
  */
-repo: string, environment: EnvironmentRequest, permission: PermissionLevel, orchestrator: ModelChoice, } | { "type": "chat", model: ModelChoice, };
+repo: string, environment: EnvironmentRequest, permission: PermissionLevel, orchestrator: ModelChoice, 
+/**
+ * Start in plan mode (see [`Setup::Session`]).
+ */
+planMode: boolean, } | { "type": "chat", model: ModelChoice, };

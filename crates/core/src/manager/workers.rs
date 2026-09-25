@@ -165,6 +165,17 @@ impl SessionManager {
         }
     }
 
+    /// Whether the session is in plan mode (see [`Setup::Session`]).
+    pub(crate) fn plan_mode(&self, id: &ConversationId) -> bool {
+        matches!(
+            self.core.conversation(id).map(|c| c.setup),
+            Ok(Some(Setup::Session {
+                plan_mode: true,
+                ..
+            }))
+        )
+    }
+
     /// How many workers each provider runs now, so parallel work spreads across vendors.
     fn running_workers(&self) -> Vec<(ProviderKind, u32)> {
         let mut claude = 0;
@@ -890,6 +901,7 @@ impl SessionManager {
                     permission,
                     orchestrator,
                     workers_see_uncommitted,
+                    plan_mode,
                     ..
                 }) = conversation.setup
                 {
@@ -907,6 +919,7 @@ impl SessionManager {
                                 permission,
                                 orchestrator,
                                 workers_see_uncommitted,
+                                plan_mode,
                             },
                         )
                         .await?;

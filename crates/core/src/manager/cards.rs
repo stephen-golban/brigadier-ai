@@ -422,6 +422,7 @@ impl SessionManager {
                     environment,
                     permission,
                     orchestrator,
+                    plan_mode,
                     ..
                 }) = conversation.setup
                 {
@@ -434,6 +435,7 @@ impl SessionManager {
                                 permission,
                                 orchestrator,
                                 workers_see_uncommitted: Some(see),
+                                plan_mode,
                             },
                         )
                         .await?;
@@ -504,6 +506,15 @@ impl SessionManager {
         };
         plan.decided_at_ms = Some(now_ms());
         self.store_plan(&plan).await?;
+        // Approving a plan leaves plan mode, as ChatGPT's "Yes, implement this plan" does.
+        if approve
+            && let Some(mut setup) = self.core.conversation(&conversation_id)?.setup
+            && let Setup::Session { plan_mode, .. } = &mut setup
+            && *plan_mode
+        {
+            *plan_mode = false;
+            self.core.set_setup(conversation_id.clone(), setup).await?;
+        }
         let text = if approve {
             format!(
                 "[decision] The user approved the plan \"{}\". Go ahead, and pass each step's number as `step` when you delegate it.",

@@ -59,8 +59,10 @@ const SKIPPED = "Skipped: use your best judgment.";
  * questions, and plans a session under "Ask for approval" waits on.
  */
 export function usePendingActions(conversation: Conversation | null): PendingAction[] {
+  // Plan mode hands the plan to the user whatever the permission level.
   const decidesPlans =
-    conversation?.setup?.type === "session" && conversation.setup.permission === "askForApproval";
+    conversation?.setup?.type === "session" &&
+    (conversation.setup.permission === "askForApproval" || conversation.setup.planMode);
   const keys = useBoard(
     useShallow((s) => {
       const board = s.board;

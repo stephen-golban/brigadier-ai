@@ -5,6 +5,7 @@ import {
   ChatCompose,
   Document,
   InfoCircle,
+  Lightbulb,
   Pencil,
   Pin,
   SettingsSlider,
@@ -31,6 +32,7 @@ import {
   renameConversation,
   select,
   setPinned,
+  updateSetup,
 } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
@@ -155,6 +157,16 @@ export const SlashCommands: FC<{
             : `Compact this chat's context (${Math.round(share * 100)}% full)`,
         icon: <ContextArc share={share} className="size-icon-sm" />,
         run: () => run(() => compact(id)),
+      });
+    }
+    const { setup } = conversation;
+    if (setup?.type === "session") {
+      list.push({
+        id: "plan",
+        label: "Plan mode",
+        description: setup.planMode ? "Turn plan mode off" : "Turn plan mode on",
+        icon: <Lightbulb />,
+        run: () => run(() => updateSetup(id, { ...setup, planMode: !setup.planMode })),
       });
     }
     if (conversation.kind === "session") {
