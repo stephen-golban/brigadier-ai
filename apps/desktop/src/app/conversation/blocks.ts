@@ -530,6 +530,15 @@ function parentOf(messages: readonly Message[], at: number, hasMore: boolean): s
 }
 
 /**
+ * A node's sort order, never before its parent's: a message sent while the request before it
+ * had not answered yet (queued or steered in) is older than that answer. The sort is stable
+ * and parents are pushed first, so a tie keeps the parent ahead.
+ */
+function under(parent: { order: number } | null, order: number): number {
+  return parent ? Math.max(order, parent.order) : order;
+}
+
+/**
  * The thread as assistant-ui's message tree. The branch that ends at `head` becomes blocks
  * with everything its requests did; with `branches` (a Chat), each message the user or the
  * model replaced on that branch comes along with its own continuation, so the branch picker
@@ -587,7 +596,7 @@ export function buildThread(
       if (block.user) {
         const message = block.user.kind === "message" ? block.user.message : null;
         const id = message?.id ?? (block.user.kind === "pending" ? block.user.pending.localId : block.key);
-        const order = message?.seq ?? Number.POSITIVE_INFINITY;
+        const order = under(parent, message?.seq ?? Number.POSITIVE_INFINITY);
         nodes.push({ node: { id, parentId: parent?.id ?? null, kind: "user", block, head: message?.id ?? null }, order });
         if (message) nodeOf.set(message.id, { id, order });
         parent = { id, order };
@@ -595,7 +604,7 @@ export function buildThread(
       if (!blockShows(block)) continue;
       const stored = block.texts.filter((text) => index.has(text.messageId));
       const id = blockId(block, stored[0]?.messageId);
-      const order = stored[0]?.position ?? (parent ? parent.order + 0.5 : 0);
+      const order = under(parent, stored[0]?.position ?? (parent ? parent.order + 0.5 : 0));
       nodes.push({
         node: {
           id,
