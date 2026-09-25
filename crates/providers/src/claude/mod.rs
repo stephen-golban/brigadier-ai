@@ -796,6 +796,8 @@ struct Shared {
 
 enum ParserCommand {
     Interrupting,
+    WroteMessage,
+    WriteFailed,
 }
 
 pub struct ClaudeSession {
@@ -863,7 +865,13 @@ impl ClaudeSession {
         if !text.trim().is_empty() {
             content.push(json!({ "type": "text", "text": text }));
         }
-        self.process.write_line(&parse::user_message(content)).await
+        // Told before writing, so the parser knows of it before Claude can answer.
+        let _ = self.parser.send(ParserCommand::WroteMessage);
+        let written = self.process.write_line(&parse::user_message(content)).await;
+        if written.is_err() {
+            let _ = self.parser.send(ParserCommand::WriteFailed);
+        }
+        written
     }
 }
 
@@ -942,6 +950,8 @@ async fn read_loop(
         while let Ok(command) = commands.try_recv() {
             match command {
                 ParserCommand::Interrupting => parser.interrupt_requested(),
+                ParserCommand::WroteMessage => parser.wrote_message(),
+                ParserCommand::WriteFailed => parser.write_failed(),
             }
         }
         for output in parser.feed(&line) {

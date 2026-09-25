@@ -85,6 +85,8 @@ pub struct Parser {
     totals: TokenUsage,
     interrupting: bool,
     turn_active: bool,
+    /// Messages written to Claude that it has not taken yet (echoed back).
+    unechoed: u32,
     /// An error was already reported for the running turn.
     turn_error: bool,
     turn_started_ms: Option<i64>,
@@ -107,6 +109,16 @@ impl Parser {
     /// Whether Claude is working on a turn.
     pub fn turn_active(&self) -> bool {
         self.turn_active
+    }
+
+    /// A message was written to Claude; it echoes it when it takes it.
+    pub fn wrote_message(&mut self) {
+        self.unechoed += 1;
+    }
+
+    /// Writing a message failed: Claude never saw it.
+    pub fn write_failed(&mut self) {
+        self.unechoed = self.unechoed.saturating_sub(1);
     }
 
     pub fn interrupt_requested(&mut self) {
@@ -390,6 +402,7 @@ impl Parser {
         // With `--replay-user-messages` Claude echoes each message when it takes it: while idle
         // that starts a turn, during a turn it was folded into the running one (a steer).
         if value.get("isReplay").and_then(Value::as_bool) == Some(true) {
+            self.unechoed = self.unechoed.saturating_sub(1);
             let text = content_text(value.get("message").unwrap_or(&Value::Null));
             if !self.turn_active {
                 self.turn_active = true;
@@ -518,7 +531,12 @@ impl Parser {
         let subtype = str_of(value, "subtype").unwrap_or("success");
         let is_error = value.get("is_error").and_then(Value::as_bool) == Some(true);
         let interrupted = std::mem::take(&mut self.interrupting);
-        self.turn_active = false;
+        // A message steered in too late for this step is still to come: Claude answers it in
+        // a turn of its own right after, which carries on this one.
+        let continuing = self.unechoed > 0 && !interrupted && subtype == "success" && !is_error;
+        if !continuing {
+            self.turn_active = false;
+        }
 
         if let Some(models) = value.get("modelUsage").and_then(Value::as_object) {
             self.context_window = models
@@ -545,6 +563,9 @@ impl Parser {
             }));
         }
 
+        if continuing {
+            return;
+        }
         let status = if interrupted {
             TurnStatus::Interrupted
         } else if subtype == "success" && !is_error {
