@@ -193,6 +193,9 @@ pub struct ArtifactRef {
     pub kind: ArtifactKind,
     pub mime: String,
     pub bytes: u64,
+    /// The name to save it under (a worker's file keeps its own name).
+    #[serde(default)]
+    pub file_name: Option<String>,
 }
 
 /// Lines added and removed, per file and in total.
@@ -282,6 +285,10 @@ pub struct Task {
     pub error: Option<String>,
     /// Unfinished changes kept when the task was stopped or archived.
     pub kept: Option<KeptWork>,
+    /// The files the worker left in its outputs folder, stored when it reported and again
+    /// when the task ended: deliverables the user saves from the task card.
+    #[serde(default)]
+    pub outputs: Vec<ArtifactRef>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

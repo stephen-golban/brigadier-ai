@@ -74,6 +74,7 @@ How to work:
 - A worker may ask you a blocking question ([question from task-N]); answer it with message_worker. message_worker also steers a running worker, or sends a reported worker back to fix something.
 - When a write task's report is good, accept it with accept_task and a proper commit message (a short imperative subject line, a blank line, then why). Brigadier then reviews the change with a model from another vendor, and you get the outcome. If the review asks for changes, send the worker back with message_worker, then accept again.
 - Use read_report and read_artifact only when you need details a report left out; they cost context.
+- Each worker has an outputs folder for files meant for you or the user (long findings, documents, generated images); they come back as artifacts, and the user saves them from the task card. Never tell a worker to write files to /tmp or anywhere else outside its worktree and scratch folder.
 - Pushing, publishing, deploying, opening pull requests and anything else that affects the outside world always needs the user's approval: use request_approval, never ask a worker to do it on its own.
 - Keep the user informed briefly: what you delegated, what came back, what landed. Your final summary says exactly what was verified and how, as the workers reported it."#,
         today = today(),
@@ -103,9 +104,9 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
         }
     };
     let write_rules = if task.kind.writes() {
-        "\n- Work only inside this worktree. Don't commit, push, switch branches or touch other checkouts: Brigadier builds one clean commit from your changes after review.\n- List every file you changed, created or deleted in the report's `changes`: new files that aren't listed are left out of the commit.\n- Put scratch notes, logs and throwaway scripts in your scratch folder ($TMPDIR), never in the repository.\n- Don't write new tests unless the task asks for them. If a change breaks an existing test, fix the code; change a test only for an intended behaviour change."
+        "\n- Work only inside this worktree. Don't commit, push, switch branches or touch other checkouts: Brigadier builds one clean commit from your changes after review.\n- List every file you changed, created or deleted in the report's `changes`: new files that aren't listed are left out of the commit.\n- Put scratch notes, logs and throwaway scripts in your scratch folder, never in the repository.\n- Don't write new tests unless the task asks for them. If a change breaks an existing test, fix the code; change a test only for an intended behaviour change."
     } else {
-        "\n- Don't change files in the repository. Your scratch folder ($TMPDIR) is yours for notes and output."
+        "\n- Don't change files in the repository. Your scratch folder is yours for notes."
     };
     format!(
         r#"You are a Brigadier worker. Today is {today}. Your models' knowledge may be older than today: check current docs before relying on any third-party API, version or CLI.
@@ -117,7 +118,8 @@ Kind: {kind}
 Rules:
 - You work alone on this task. If you are blocked by a question only the orchestrator can answer, call the ask_orchestrator tool (it waits for the answer). Don't ask about things you can find out yourself.{write_rules}
 - Pushing, publishing, deploying and other outward actions are not yours to do; if one seems needed, say so in the report.
-- When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); save long output (logs, full findings) as files in your scratch folder and attach them as artifacts.{instructions}{extra}
+- Files meant for the orchestrator or the user (full findings, logs worth keeping, documents, generated images) go in your outputs folder. Brigadier attaches them to your report and the user saves them from the task card. Never write files to /tmp or anywhere else outside your worktree and scratch folder, even if the task names such a place: nobody could read them, and they would be left behind. Save them in your outputs folder and say so in the report.
+- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{instructions}{extra}
 
 The task:
 {spec}"#,
@@ -163,6 +165,17 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
             text.push_str(&format!(
                 "\n- {} ({:?}, {} bytes): {}",
                 artifact.id, artifact.kind, artifact.bytes, artifact.title
+            ));
+        }
+    }
+    if !task.outputs.is_empty() {
+        text.push_str(
+            "\nOutputs (the user saves them from the task card; read_artifact reads them):",
+        );
+        for output in &task.outputs {
+            text.push_str(&format!(
+                "\n- {} ({}, {} bytes): {}",
+                output.id, output.mime, output.bytes, output.title
             ));
         }
     }

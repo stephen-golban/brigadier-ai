@@ -268,6 +268,7 @@ impl SessionManager {
                         kind: crate::work::ArtifactKind::Diff,
                         mime: "text/x-diff".into(),
                         bytes: diff_bytes,
+                        file_name: Some(format!("task-{}-candidate.diff", task.number)),
                     }),
                 };
                 let task = self
