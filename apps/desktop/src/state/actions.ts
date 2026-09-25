@@ -433,6 +433,11 @@ export async function interrupt(conversationId: string): Promise<void> {
   await request({ method: "interrupt", conversationId });
 }
 
+/** Continues the latest request after the user stopped it, in the same block. */
+export async function resume(conversationId: string): Promise<void> {
+  await request({ method: "resume", conversationId });
+}
+
 /** Replaces a sent message: the edit starts a branch beside it and gets its own answer. */
 export async function editMessage(
   conversationId: string,

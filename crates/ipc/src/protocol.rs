@@ -158,6 +158,11 @@ pub enum Request {
     Interrupt {
         conversation_id: ConversationId,
     },
+    /// Continues the latest request after it was stopped, in the same block; the queue
+    /// unpauses and runs after it.
+    Resume {
+        conversation_id: ConversationId,
+    },
     /// Replaces a sent message: the new text starts a branch beside it and is answered. In a
     /// session only the latest message, while nothing from it has landed.
     EditMessage {
@@ -428,6 +433,7 @@ pub enum Response {
         queue: MessageQueue,
     },
     Interrupt,
+    Resume,
     EditMessage,
     Regenerate,
     SwitchBranch,

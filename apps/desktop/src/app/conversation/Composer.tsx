@@ -1,5 +1,5 @@
 import { AuiIf, ComposerPrimitive } from "@assistant-ui/react";
-import { ArrowUp, Stop } from "@openai/apps-sdk-ui/components/Icon";
+import { ArrowUp, PlayTriangle, Stop } from "@openai/apps-sdk-ui/components/Icon";
 import { createContext, type FC, useContext } from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
@@ -33,6 +33,8 @@ export type ComposerTarget = {
   resolved: ResolvedDraft;
   targets: readonly MentionTarget[];
   running: boolean;
+  /** Set while the latest request is stopped: continues it (the ▶ send button). */
+  onResume: (() => void) | null;
 };
 
 export const ComposerTargetContext = createContext<ComposerTarget | null>(null);
@@ -89,7 +91,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                   onChange={(model) => updateDraft(resolved.project?.id ?? null, { model })}
                 />
               )}
-              <SendControls running={target.running} />
+              <SendControls running={target.running} onResume={target.onResume} />
             </div>
           </div>
           <ComposerHint target={target} />
@@ -120,7 +122,13 @@ function DraftPickers({ resolved }: { resolved: ResolvedDraft }) {
   );
 }
 
-function SendControls({ running }: { running: boolean }) {
+function SendControls({
+  running,
+  onResume,
+}: {
+  running: boolean;
+  onResume: (() => void) | null;
+}) {
   const queueEnabled = useApp((s) => s.settings.queueEnabled);
   const sendTip = running
     ? queueEnabled
@@ -142,19 +150,46 @@ function SendControls({ running }: { running: boolean }) {
           </TooltipIconButton>
         </ComposerPrimitive.Cancel>
       </AuiIf>
-      <ComposerPrimitive.Send asChild>
-        <TooltipIconButton
-          tooltip={sendTip}
-          side="bottom"
-          type="button"
-          variant="default"
-          size="icon-md"
-          className="aui-composer-send rounded-capsule"
-        >
-          <ArrowUp />
-        </TooltipIconButton>
-      </ComposerPrimitive.Send>
+      {onResume ? (
+        <>
+          <AuiIf condition={(s) => s.composer.isEmpty}>
+            <TooltipIconButton
+              tooltip="Resume"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon-md"
+              className="rounded-capsule"
+              onClick={onResume}
+            >
+              <PlayTriangle />
+            </TooltipIconButton>
+          </AuiIf>
+          <AuiIf condition={(s) => !s.composer.isEmpty}>
+            <SendButton tooltip={sendTip} />
+          </AuiIf>
+        </>
+      ) : (
+        <SendButton tooltip={sendTip} />
+      )}
     </div>
+  );
+}
+
+function SendButton({ tooltip }: { tooltip: string }) {
+  return (
+    <ComposerPrimitive.Send asChild>
+      <TooltipIconButton
+        tooltip={tooltip}
+        side="bottom"
+        type="button"
+        variant="default"
+        size="icon-md"
+        className="aui-composer-send rounded-capsule"
+      >
+        <ArrowUp />
+      </TooltipIconButton>
+    </ComposerPrimitive.Send>
   );
 }
 

@@ -420,6 +420,41 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Continues the latest request after the user stopped it: a turn for that request, in its
+    /// block, telling the model to carry on. Workers are untouched (a stop never ends them);
+    /// the queue unpauses and runs after this turn.
+    pub async fn resume(&self, id: ConversationId) -> Result<()> {
+        let conv = self.conv(&id)?;
+        {
+            let state = conv.state.lock().await;
+            if state.busy || !state.pending.is_empty() || !state.inbox.is_empty() {
+                return Err(Error::Invalid(
+                    "a turn is already running or about to start".into(),
+                ));
+            }
+        }
+        let board = self.core.board(&id).await?;
+        let request = match board.latest_request() {
+            Some(request) if request.state == RequestState::Stopped => request.id.clone(),
+            _ => {
+                return Err(Error::Invalid(
+                    "only a stopped request can be resumed".into(),
+                ));
+            }
+        };
+        self.core.set_queue_paused(&id, false).await?;
+        let envelope = Envelope {
+            kind: InjectionKind::Resume,
+            label: "resume".into(),
+            task_id: None,
+            text: "[The user stopped you, then asked you to resume. Continue their request from \
+                   where you left off.]"
+                .into(),
+        };
+        self.deliver_for(&id, envelope, Some(request)).await;
+        Ok(())
+    }
+
     /// Queues an envelope for the orchestrator, starting a turn if it is idle. It belongs to
     /// its task's request (or the running turn's, or the newest).
     pub(crate) async fn deliver(&self, id: &ConversationId, envelope: Envelope) {

@@ -551,6 +551,10 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             sessions.interrupt(conversation_id).await?;
             Response::Interrupt
         }
+        Request::Resume { conversation_id } => {
+            sessions.resume(conversation_id).await?;
+            Response::Resume
+        }
         Request::EditMessage {
             conversation_id,
             message_id,
