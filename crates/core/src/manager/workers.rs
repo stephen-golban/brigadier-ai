@@ -580,6 +580,7 @@ impl SessionManager {
             session,
             owner,
             ended: CancellationToken::new(),
+            granted: Default::default(),
         });
         {
             let mut state = live.state.lock().await;
@@ -1246,6 +1247,34 @@ impl SessionManager {
             .unwrap_or(Access::ReadOnly);
         let mut route = policy::route(&request, &access, ApprovalMode::Delegated);
         let outward = request.command.as_deref().is_some_and(policy::is_outward);
+        // The user already allowed exactly this command for the rest of the CLI session.
+        if route == PolicyRoute::AskUser
+            && !outward
+            && request.grant.is_some()
+            && let Some(command) = &request.command
+            && cli
+                .granted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&(command.clone(), request.escalation))
+        {
+            if let Err(err) = cli
+                .session
+                .answer(request.id.clone(), ApprovalDecision::Allow)
+                .await
+            {
+                tracing::warn!(task = %live.id, error = %err, "could not answer an approval");
+                return;
+            }
+            self.record_worker_resolution(
+                &live.id,
+                request.id,
+                ApprovalDecision::Allow,
+                Decider::User,
+            )
+            .await;
+            return;
+        }
         // Approve for me stays sandboxed and stops only for what only the user can decide:
         // Brigadier declines anything else outside the task's access on the user's behalf.
         // Outward actions always ask.
@@ -1297,13 +1326,15 @@ impl SessionManager {
         }
     }
 
-    /// Passes the user's answer to the worker's CLI.
+    /// Passes the user's answer to the worker's CLI; "Don't ask again for this command" also
+    /// keeps the grant for the rest of the CLI session.
     pub(crate) async fn answer_worker_approval(
         &self,
         task_id: &TaskId,
-        approval_id: String,
+        request: &ApprovalRequest,
         decision: ApprovalDecision,
     ) -> Result<()> {
+        let approval_id = request.id.clone();
         let live = self
             .existing_task_live(task_id)
             .ok_or_else(|| Error::Invalid("the worker has ended".into()))?;
@@ -1318,6 +1349,15 @@ impl SessionManager {
             .answer(approval_id.clone(), decision.clone())
             .await
             .map_err(|err| Error::Provider(err.to_string()))?;
+        if decision == ApprovalDecision::AllowSimilar
+            && request.grant.is_some()
+            && let Some(command) = &request.command
+        {
+            cli.granted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert((command.clone(), request.escalation));
+        }
         self.record_worker_resolution(task_id, approval_id, decision, Decider::User)
             .await;
         self.set_task_blocked(task_id, None).await;

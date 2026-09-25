@@ -1012,18 +1012,18 @@ impl Replayer for CodexReplayer {
             if sent.get("method").is_some() || result.is_null() || !self.asked.remove(&answered) {
                 return Vec::new();
             }
-            let allowed = match result.get("decision") {
-                Some(decision) => decision.as_str().is_some_and(|d| d.starts_with("accept")),
-                None => result["permissions"]
+            let decision = match result.get("decision").and_then(Value::as_str) {
+                Some("acceptForSession") => ApprovalDecision::AllowSimilar,
+                Some(decision) if decision.starts_with("accept") => ApprovalDecision::Allow,
+                None if result["permissions"]
                     .as_object()
-                    .is_some_and(|permissions| !permissions.is_empty()),
-            };
-            let decision = if allowed {
-                ApprovalDecision::Allow
-            } else {
-                ApprovalDecision::Deny {
-                    message: String::new(),
+                    .is_some_and(|permissions| !permissions.is_empty()) =>
+                {
+                    ApprovalDecision::Allow
                 }
+                _ => ApprovalDecision::Deny {
+                    message: String::new(),
+                },
             };
             return vec![ProviderEvent::ApprovalResolved {
                 id: answered,
@@ -1324,9 +1324,20 @@ impl ProviderSession for CodexSession {
             let (rpc_id, kind) = lock(&self.shared.approvals)
                 .remove(&approval_id)
                 .ok_or_else(|| Error::Invalid(format!("no pending approval {approval_id}")))?;
-            let allow = decision == ApprovalDecision::Allow;
+            let allow = !matches!(decision, ApprovalDecision::Deny { .. });
             let result = match kind {
-                PendingKind::Command | PendingKind::FileChange => {
+                PendingKind::Command { grant: true }
+                    if decision == ApprovalDecision::AllowSimilar =>
+                {
+                    json!({ "decision": "acceptForSession" })
+                }
+                _ if decision == ApprovalDecision::AllowSimilar => {
+                    lock(&self.shared.approvals).insert(approval_id, (rpc_id, kind));
+                    return Err(Error::Invalid(
+                        "this request has no \"don't ask again\" option".into(),
+                    ));
+                }
+                PendingKind::Command { .. } | PendingKind::FileChange => {
                     json!({ "decision": if allow { "accept" } else { "decline" } })
                 }
                 PendingKind::Permissions(requested) => json!({

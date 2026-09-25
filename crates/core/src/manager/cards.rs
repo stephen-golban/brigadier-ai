@@ -169,8 +169,23 @@ impl SessionManager {
         if approval.state != CardState::Pending {
             return Err(Error::Invalid("this card was already answered".into()));
         }
+        // Only a CLI's own session grant: Brigadier's gates ask every time.
+        if decision == ApprovalDecision::AllowSimilar
+            && !matches!(&approval.subject, ApprovalSubject::Cli { request } if request.grant.is_some())
+        {
+            return Err(Error::Invalid(
+                "only a worker's own command can be allowed again".into(),
+            ));
+        }
         approval.state = match &decision {
-            ApprovalDecision::Allow => CardState::Allowed { by: Decider::User },
+            ApprovalDecision::Allow => CardState::Allowed {
+                by: Decider::User,
+                similar: false,
+            },
+            ApprovalDecision::AllowSimilar => CardState::Allowed {
+                by: Decider::User,
+                similar: true,
+            },
             ApprovalDecision::Deny { message } => CardState::Denied {
                 by: Decider::User,
                 message: (!message.trim().is_empty()).then(|| message.clone()),
@@ -185,7 +200,7 @@ impl SessionManager {
                     .task_id
                     .clone()
                     .ok_or_else(|| Error::Invalid("the card has no task".into()))?;
-                if decision == ApprovalDecision::Allow
+                if !matches!(decision, ApprovalDecision::Deny { .. })
                     && let Some(command) = &request.command
                     && brigadier_providers::policy::is_outward(command)
                 {
@@ -205,12 +220,12 @@ impl SessionManager {
                         expires_ms: now_ms() + PASS_TTL_MS,
                     });
                 }
-                self.answer_worker_approval(&task_id, request.id.clone(), decision.clone())
+                self.answer_worker_approval(&task_id, request, decision.clone())
                     .await?;
             }
             ApprovalSubject::Action { action, .. } => {
                 let text = match &decision {
-                    ApprovalDecision::Allow => {
+                    ApprovalDecision::Allow | ApprovalDecision::AllowSimilar => {
                         format!("[decision] The user approved: {action}")
                     }
                     ApprovalDecision::Deny { message } => format!(
@@ -285,7 +300,9 @@ impl SessionManager {
             self.set_task_blocked(task_id, None).await;
         }
         match answer {
-            Ok(Ok(CardAnswer::Decision(ApprovalDecision::Allow))) => GateAnswer::Allow,
+            Ok(Ok(CardAnswer::Decision(
+                ApprovalDecision::Allow | ApprovalDecision::AllowSimilar,
+            ))) => GateAnswer::Allow,
             Ok(Ok(CardAnswer::Decision(ApprovalDecision::Deny { message }))) => GateAnswer::Deny {
                 message: if message.trim().is_empty() {
                     "you declined this command".into()

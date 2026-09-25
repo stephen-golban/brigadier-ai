@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::model::*;
+use crate::policy;
 use crate::{clip, now_ms};
 
 /// Tool output kept in events; the full output stays in the CLI's transcript.
@@ -790,6 +791,11 @@ impl Parser {
             .or_else(|| {
                 str_of(&request, "blocked_path").map(|path| format!("needs access to {path}"))
             });
+        // Brigadier keeps a "don't ask again" grant itself (an allow rule could not beat its
+        // ask rules, and would be broader than the exact command).
+        let grant = str_of(&input, "command")
+            .filter(|command| tool == "Bash" && !policy::is_outward(command))
+            .map(str::to_owned);
         out.push(Output::Event(ProviderEvent::ApprovalRequested {
             request: ApprovalRequest {
                 id: request_id.clone(),
@@ -805,6 +811,7 @@ impl Parser {
                 reason,
                 escalation,
                 input: Some(clip(&input.to_string(), OUTPUT_CLIP)),
+                grant,
             },
         }));
         out.push(Output::Control(Control::Approval { request_id, input }));

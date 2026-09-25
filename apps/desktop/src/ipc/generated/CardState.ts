@@ -4,4 +4,8 @@ import type { Decider } from "./Decider";
 /**
  * Whether a card still waits for an answer, and the answer.
  */
-export type CardState = { "type": "pending" } | { "type": "allowed", by: Decider, } | { "type": "denied", by: Decider, message: string | null, } | { "type": "expired", reason: string, };
+export type CardState = { "type": "pending" } | { "type": "allowed", by: Decider, 
+/**
+ * The CLI keeps allowing the request's session grant (similar commands).
+ */
+similar: boolean, } | { "type": "denied", by: Decider, message: string | null, } | { "type": "expired", reason: string, };

@@ -32,4 +32,9 @@ escalation: boolean,
 /**
  * The tool input as JSON text, for display.
  */
-input: string | null, };
+input: string | null, 
+/**
+ * Set when the user may allow this exact command for the rest of the CLI session
+ * ([`ApprovalDecision::AllowSimilar`]): the command as shown.
+ */
+grant: string | null, };

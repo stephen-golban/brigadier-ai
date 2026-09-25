@@ -948,7 +948,10 @@ impl ProviderSession for ClaudeSession {
                 .remove(&approval_id)
                 .ok_or_else(|| Error::Invalid(format!("no pending approval {approval_id}")))?;
             let response = match &decision {
-                ApprovalDecision::Allow => json!({ "behavior": "allow", "updatedInput": input }),
+                // Brigadier answers the same command again itself.
+                ApprovalDecision::Allow | ApprovalDecision::AllowSimilar => {
+                    json!({ "behavior": "allow", "updatedInput": input })
+                }
                 ApprovalDecision::Deny { message } => {
                     json!({ "behavior": "deny", "message": message })
                 }

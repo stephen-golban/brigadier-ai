@@ -346,6 +346,9 @@ pub enum CardState {
     Pending,
     Allowed {
         by: Decider,
+        /// The CLI keeps allowing the request's session grant (similar commands).
+        #[serde(default)]
+        similar: bool,
     },
     Denied {
         by: Decider,
