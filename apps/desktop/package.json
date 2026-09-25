@@ -14,8 +14,8 @@
     "stage-sidecar": "node scripts/stage-sidecar.mjs"
   },
   "dependencies": {
-    "@assistant-ui/react": "0.15.21",
-    "@assistant-ui/react-markdown": "0.14.16",
+    "@assistant-ui/react": "0.15.22",
+    "@assistant-ui/react-markdown": "0.14.17",
     "@openai/apps-sdk-ui": "0.2.2",
     "@tanstack/react-virtual": "3.14.13",
     "@tauri-apps/api": "2.11.1",

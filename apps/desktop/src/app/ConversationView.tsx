@@ -11,8 +11,6 @@ import { Unarchive, X } from "@openai/apps-sdk-ui/components/Icon";
 import {
   createContext,
   type FC,
-  lazy,
-  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -21,8 +19,9 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import { AgentsPanel, AgentsPanelContext, type AgentsPanelState } from "@/app/conversation/Agents";
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
-import type { CardType } from "@/app/conversation/cards/CardBody";
+import { type Block, type BoardDigest, buildBlocks } from "@/app/conversation/blocks";
 import {
   type ComposerTarget,
   ComposerTargetContext,
@@ -30,24 +29,21 @@ import {
 } from "@/app/conversation/Composer";
 import { useResolvedDraft } from "@/app/conversation/draftSetup";
 import { QueuePanel } from "@/app/conversation/QueuePanel";
+import { type BlockMeta, RequestBlock } from "@/app/conversation/RequestBlock";
 import { useAction } from "@/app/conversation/useAction";
 import {
   mentionedTasks,
   type MentionTarget,
 } from "@/components/assistant-ui/elements/composer-mentions";
 import { MessageAttachments } from "@/components/assistant-ui/elements/message-attachment";
-import { mono } from "@/components/assistant-ui/elements/surfaces";
 import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type {
   AttachmentRef,
   Conversation,
-  Message,
   ModelChoice,
   Notice,
 } from "@/ipc/generated";
-import { modelName, sameModel, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import {
   interrupt,
@@ -64,22 +60,14 @@ import {
   useApp,
 } from "@/state/store";
 
-const CardBody = lazy(() => import("@/app/conversation/cards/CardBody"));
-
-type CardItem = { kind: "card"; type: CardType; id: string; position: number };
-
 type Item =
-  | { kind: "message"; message: Message; text: string }
-  | { kind: "pending"; pending: PendingMessage }
-  | { kind: "streaming"; messageId: string; text: string }
-  | CardItem;
+  | { kind: "user"; block: Block }
+  | { kind: "block"; block: Block; meta: BlockMeta; texts: string[] };
 
-/** Extra message data the footers and cards read back from assistant-ui's message state. */
+/** Extra message data the footers read back from assistant-ui's message state. */
 type Custom = {
-  card?: CardType;
-  cardId?: string;
   attachments?: AttachmentRef[];
-  model?: ModelChoice | null;
+  block?: BlockMeta;
 };
 
 /** An attachment-only message has no text part, so no empty bubble shows above its files. */
@@ -87,45 +75,128 @@ function textContent(text: string): ThreadMessageLike["content"] {
   return text ? [{ type: "text", text }] : [];
 }
 
+function blockStatus(block: Block): ThreadMessageLike["status"] {
+  switch (block.state) {
+    case "working":
+      return { type: "running" };
+    case "waiting":
+      return { type: "requires-action", reason: "interrupt" };
+    case "done":
+      return { type: "complete", reason: "stop" };
+    case "stopped":
+      return { type: "incomplete", reason: "cancelled" };
+    case "failed":
+      return { type: "incomplete", reason: "error", error: block.error ?? "The reply failed." };
+  }
+}
+
 function convertMessage(item: Item): ThreadMessageLike {
-  switch (item.kind) {
-    case "message": {
-      const custom: Custom = {
-        attachments: item.message.attachments,
-        model: item.message.model,
-      };
+  const { block } = item;
+  if (item.kind === "user") {
+    const user = block.user;
+    if (user?.kind === "pending") {
       return {
-        id: item.message.id,
-        role: item.message.role,
-        content: textContent(item.text),
-        createdAt: new Date(item.message.createdAtMs),
-        metadata: { custom },
+        id: user.pending.localId,
+        role: "user",
+        content: textContent(user.pending.text),
+        createdAt: new Date(user.pending.createdAtMs),
+        metadata: { custom: { attachments: user.pending.attachments } satisfies Custom },
       };
     }
-    case "pending":
-      return {
-        id: item.pending.localId,
-        role: "user",
-        content: textContent(item.pending.text),
-        createdAt: new Date(item.pending.createdAtMs),
-        metadata: { custom: { attachments: item.pending.attachments } satisfies Custom },
-      };
-    case "streaming":
-      return {
-        id: item.messageId,
-        role: "assistant",
-        content: [{ type: "text", text: item.text }],
-        status: { type: "running" },
-      };
-    case "card":
-      return {
-        id: `${item.type}:${item.id}`,
-        role: "assistant",
-        content: [],
-        status: { type: "complete", reason: "unknown" },
-        metadata: { custom: { card: item.type, cardId: item.id } satisfies Custom },
-      };
+    const message = user?.message;
+    return {
+      id: message?.id ?? block.key,
+      role: "user",
+      content: textContent(user?.text ?? ""),
+      createdAt: new Date(message?.createdAtMs ?? block.startedAtMs),
+      metadata: { custom: { attachments: message?.attachments ?? [] } satisfies Custom },
+    };
   }
+  return {
+    id: `request:${block.key}`,
+    role: "assistant",
+    content: item.texts.map((text) => ({ type: "text" as const, text })),
+    createdAt: new Date(block.startedAtMs),
+    status: blockStatus(block),
+    metadata: {
+      custom: { block: item.meta } satisfies Custom,
+      timing: {
+        streamStartTime: block.startedAtMs,
+        ...(block.endedAtMs !== null && { totalStreamTime: block.endedAtMs - block.startedAtMs }),
+        totalChunks: item.texts.length,
+        toolCallCount: block.tasks.length,
+      },
+    },
+  };
+}
+
+/** A block's shape without its text, to reuse the previous item while only text is unchanged. */
+function signature(block: Block, picked: ModelChoice | null, session: boolean): string {
+  return JSON.stringify([
+    block.state,
+    block.error,
+    block.startedAtMs,
+    block.endedAtMs,
+    block.texts.map((text) => [text.messageId, text.position, text.model]),
+    block.cards,
+    block.tasks,
+    picked,
+    session,
+  ]);
+}
+
+/**
+ * The thread's messages: per request, the user's message and one assistant block. Items whose
+ * block did not change keep their identity, so assistant-ui converts and renders only the
+ * block that streams or changed.
+ */
+function useItems(
+  blocks: readonly Block[],
+  picked: ModelChoice | null,
+  session: boolean,
+): Item[] {
+  const [cache] = useState(() => new Map<string, { user: Item; block: Item; sig: string; texts: string[] }>());
+  return useMemo(() => {
+    const items: Item[] = [];
+    const seen = new Set<string>();
+    for (const block of blocks) {
+      seen.add(block.key);
+      const sig = signature(block, picked, session);
+      const texts = block.texts.map((text) => text.text);
+      let entry = cache.get(block.key);
+      const userChanged = entry === undefined || entry.user.block.user !== block.user;
+      const blockChanged =
+        entry === undefined ||
+        entry.sig !== sig ||
+        entry.texts.length !== texts.length ||
+        entry.texts.some((text, index) => text !== texts[index]);
+      if (!entry || userChanged || blockChanged) {
+        const meta: BlockMeta = {
+          texts: block.texts.map((text) => ({ position: text.position, model: text.model })),
+          cards: block.cards,
+          tasks: block.tasks,
+          state: block.state,
+          startedAtMs: block.startedAtMs,
+          endedAtMs: block.endedAtMs,
+          picked,
+          session,
+        };
+        entry = {
+          user: userChanged || !entry ? { kind: "user", block } : entry.user,
+          block: blockChanged || !entry ? { kind: "block", block, meta, texts } : entry.block,
+          sig,
+          texts,
+        };
+        cache.set(block.key, entry);
+      }
+      if (block.user) items.push(entry.user);
+      const shows =
+        block.texts.length > 0 || block.cards.length > 0 || block.tasks.length > 0 || block.state !== "done";
+      if (shows) items.push(entry.block);
+    }
+    for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
+    return items;
+  }, [blocks, picked, session, cache]);
 }
 
 function textOf(message: AppendMessage): string {
@@ -135,19 +206,17 @@ function textOf(message: AppendMessage): string {
     .trim();
 }
 
-/** Every card on the board as `type:id:position`, a stable list while nothing is added. */
-function cardKeys(s: ReturnType<typeof useBoard.getState>, conversationId: string | null): string[] {
-  const board = s.board;
-  if (!board || board.conversationId !== conversationId) return [];
-  const keys: string[] = [];
-  for (const task of Object.values(board.tasks)) keys.push(`task:${task.id}:${task.position}`);
-  for (const card of Object.values(board.approvals)) keys.push(`approval:${card.id}:${card.position}`);
-  for (const card of Object.values(board.questions)) keys.push(`question:${card.id}:${card.position}`);
-  for (const card of Object.values(board.plans)) keys.push(`plan:${card.id}:${card.position}`);
-  return keys;
-}
-
 const NO_PENDING: PendingMessage[] = [];
+
+const EMPTY_DIGEST: BoardDigest = {
+  tasks: {},
+  approvals: {},
+  questions: {},
+  plans: {},
+  requests: {},
+  runRequest: null,
+  streaming: null,
+};
 
 /** The open conversation's workers, for @-mentions. */
 function useMentionTargets(conversationId: string | null): MentionTarget[] {
@@ -189,8 +258,20 @@ export function ConversationView({ selection }: { selection: Selection }) {
         : NO_PENDING,
     ),
   );
-  const streaming = useBoard((s) =>
-    s.board?.conversationId === conversationId ? s.board.streaming : null,
+  const digest = useBoard(
+    useShallow((s): BoardDigest | null =>
+      s.board?.conversationId === conversationId
+        ? {
+            tasks: s.board.tasks,
+            approvals: s.board.approvals,
+            questions: s.board.questions,
+            plans: s.board.plans,
+            requests: s.board.requests,
+            runRequest: s.board.runRequest,
+            streaming: s.board.streaming,
+          }
+        : null,
+    ),
   );
   const run = useBoard((s) =>
     s.board?.conversationId === conversationId ? s.board.run : "idle",
@@ -198,7 +279,6 @@ export function ConversationView({ selection }: { selection: Selection }) {
   const queueItems = useBoard((s) =>
     s.board?.conversationId === conversationId ? s.board.queue.items : null,
   );
-  const cards = useBoard(useShallow((s) => cardKeys(s, conversationId)));
   const targets = useMentionTargets(conversationId);
   const resolved = useResolvedDraft(selection);
   const [error, setError] = useState<string | null>(null);
@@ -215,38 +295,24 @@ export function ConversationView({ selection }: { selection: Selection }) {
     }
   }, [conversationId, thread.items, thread.fullText]);
 
-  // Card items change only when a card is added or moves; a task update rerenders its card
-  // (which reads the board itself), not the thread.
-  const cardItems = useMemo(
+  const blocks = useMemo(
     () =>
-      cards.map((key): CardItem => {
-        const [type, id, position] = key.split(":") as [CardType, string, string];
-        return { kind: "card", type, id, position: Number(position) };
-      }),
-    [cards],
+      buildBlocks(
+        thread.items,
+        thread.fullText,
+        thread.hasMore,
+        digest ?? EMPTY_DIGEST,
+        pending,
+      ),
+    [thread.items, thread.fullText, thread.hasMore, digest, pending],
   );
-
-  const items = useMemo<Item[]>(() => {
-    // Messages and cards interleave by position: both are sequences in the conversation's stream.
-    const placed: { position: number; item: Item }[] = [
-      ...thread.items.map((message) => ({
-        position: message.seq,
-        item: {
-          kind: "message" as const,
-          message,
-          text: thread.fullText[message.id] ?? message.text,
-        },
-      })),
-      ...cardItems.map((item) => ({ position: item.position, item })),
-    ];
-    placed.sort((a, b) => a.position - b.position);
-    const ordered: Item[] = placed.map((entry) => entry.item);
-    if (streaming && !thread.items.some((message) => message.id === streaming.messageId)) {
-      ordered.push({ kind: "streaming", messageId: streaming.messageId, text: streaming.text });
-    }
-    for (const entry of pending) ordered.push({ kind: "pending", pending: entry });
-    return ordered;
-  }, [thread.items, thread.fullText, cardItems, streaming, pending]);
+  const setup = conversation?.setup;
+  const picked =
+    setup?.type === "chat" ? setup.model : setup?.type === "session" ? setup.orchestrator : null;
+  const session = conversation?.kind === "session" || resolved.kind === "session";
+  const items = useItems(blocks, picked, session);
+  const [panel, setPanel] = useState<AgentsPanelState>(undefined);
+  const agents = useMemo(() => ({ panel, setPanel }), [panel]);
 
   const [attachments] = useState(() => new BlobAttachmentAdapter());
   const draftTarget = resolved.target;
@@ -315,36 +381,41 @@ export function ConversationView({ selection }: { selection: Selection }) {
   return (
     <ViewContext.Provider value={{ selection, conversation }}>
       <ComposerTargetContext.Provider value={target}>
-        <AssistantRuntimeProvider runtime={runtime}>
-          <div className="flex h-full flex-col">
-            {error && (
-              <p
-                role="alert"
-                className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
-              >
-                <span className="min-w-0 flex-1">{error}</span>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Dismiss"
-                  onClick={() => setError(null)}
-                >
-                  <X />
-                </Button>
-              </p>
-            )}
-            <div className="min-h-0 flex-1">
-              <Thread
-                components={THREAD_COMPONENTS}
-                placeholder={
-                  resolved.kind === "session" || conversation?.kind === "session"
-                    ? "Describe what this session should do…  (@ mentions a worker)"
-                    : "Message Brigadier…"
-                }
-              />
+        <AgentsPanelContext.Provider value={agents}>
+          <AssistantRuntimeProvider runtime={runtime}>
+            <div className="flex h-full">
+              <div className="flex h-full min-w-0 flex-1 flex-col">
+                {error && (
+                  <p
+                    role="alert"
+                    className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-2 border-b px-4 py-2 text-sm"
+                  >
+                    <span className="min-w-0 flex-1">{error}</span>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Dismiss"
+                      onClick={() => setError(null)}
+                    >
+                      <X />
+                    </Button>
+                  </p>
+                )}
+                <div className="min-h-0 flex-1">
+                  <Thread
+                    components={THREAD_COMPONENTS}
+                    placeholder={
+                      resolved.kind === "session" || conversation?.kind === "session"
+                        ? "Describe what this session should do…  (@ mentions a worker)"
+                        : "Message Brigadier…"
+                    }
+                  />
+                </div>
+              </div>
+              {conversationId && <AgentsPanel conversationId={conversationId} />}
             </div>
-          </div>
-        </AssistantRuntimeProvider>
+          </AssistantRuntimeProvider>
+        </AgentsPanelContext.Provider>
       </ComposerTargetContext.Provider>
     </ViewContext.Provider>
   );
@@ -396,48 +467,12 @@ const LoadEarlier: FC = () => {
   );
 };
 
-/** A worker, approval, question or plan card, placed in the thread by its position. */
-const Card: FC = () => {
-  const custom = useAuiState((s) => s.message.metadata.custom) as Custom;
-  const id = custom.cardId ?? "";
-  return (
-    <div data-slot="thread-card" className="message-contain px-2">
-      {custom.card && (
-        <Suspense fallback={null}>
-          <CardBody type={custom.card} id={id} />
-        </Suspense>
-      )}
-    </div>
-  );
-};
-
-/** Under a message: its attachments, and for replies, which model wrote it. */
+/** Under a user message: its attachments. */
 const MessageFooter: FC = () => {
-  const { conversation } = useContext(ViewContext);
   const role = useAuiState((s) => s.message.role);
   const custom = useAuiState((s) => s.message.metadata.custom) as Custom;
-  const groups = useModelGroups();
-  if (role === "user") {
-    return custom.attachments && custom.attachments.length > 0 ? (
-      <MessageAttachments attachments={custom.attachments} className="max-w-4/5 justify-end" />
-    ) : null;
-  }
-  const model = custom.model;
-  if (!model) return null;
-  const setup = conversation?.setup;
-  const picked = setup?.type === "chat" ? setup.model : setup?.type === "session" ? setup.orchestrator : null;
-  const fellBack = picked !== null && picked !== undefined && !sameModel(picked, model);
-  return (
-    <span className={cn(mono, "text-muted-foreground flex items-center gap-1.5")}>
-      {modelName(groups, model)}
-      {model.effort && ` · ${model.effort}`}
-      {fellBack && (
-        <Badge variant="warning" title={`You picked ${modelName(groups, picked)}`}>
-          fallback
-        </Badge>
-      )}
-    </span>
-  );
+  if (role !== "user" || !custom.attachments || custom.attachments.length === 0) return null;
+  return <MessageAttachments attachments={custom.attachments} className="justify-end" />;
 };
 
 /** Notices (environment problems, fallbacks), newest last; each can be dismissed. */
@@ -524,9 +559,9 @@ const AboveComposer: FC = () => {
 };
 
 const THREAD_COMPONENTS: ThreadComponents = {
+  AssistantMessage: RequestBlock,
   Welcome,
   BeforeMessages: LoadEarlier,
-  Card,
   MessageFooter,
   AboveComposer,
   Composer: ConversationComposer,

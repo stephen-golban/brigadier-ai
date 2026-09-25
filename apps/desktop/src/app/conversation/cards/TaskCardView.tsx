@@ -57,6 +57,11 @@ const CARD_STATES: Record<TaskState, TaskCardState> = {
   failed: "failed",
 };
 
+/** How a task's state shows on its card and chip. */
+export function taskCardState(state: TaskState): TaskCardState {
+  return CARD_STATES[state];
+}
+
 /** States in which a worker (or its task) can still be stopped. */
 const ACTIVE: ReadonlySet<TaskState> = new Set([
   "queued",
@@ -71,10 +76,17 @@ const ACTIVE: ReadonlySet<TaskState> = new Set([
 ]);
 
 /** One worker, read from the open board by id so only its own updates rerender it. */
-export const TaskCardView = memo(function TaskCardView({ taskId }: { taskId: string }) {
+export const TaskCardView = memo(function TaskCardView({
+  taskId,
+  standalone = false,
+}: {
+  taskId: string;
+  /** On its own in the workers panel, which names the worker: always open, no toggle. */
+  standalone?: boolean;
+}) {
   const task = useBoard((s) => s.board?.tasks[taskId]);
   const activity = useBoard((s) => s.board?.activity[taskId]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(standalone);
   const groups = useModelGroups();
   const action = useAction();
   if (!task) return null;
@@ -151,6 +163,7 @@ export const TaskCardView = memo(function TaskCardView({ taskId }: { taskId: str
       result={taskResult(task)}
       open={open}
       onOpenChange={setOpen}
+      standalone={standalone}
     >
       <TaskDetails task={task} model={model} />
     </TaskCard>

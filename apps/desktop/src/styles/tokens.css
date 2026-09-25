@@ -25,6 +25,8 @@
  *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
  *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
+ *               w-agents                      a session's agents panel
+ *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{xs,sm,md,lg} readable column / surface widths
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
  *               rounded-dialog, rounded-thread (message bubbles, composer), rounded-capsule,
@@ -96,6 +98,8 @@
   --spacing-traffic-lights: 4.75rem;
   --spacing-inspector: 28rem;
   --spacing-inspector-wide: 42rem;
+  --spacing-agents: 26rem;
+  --spacing-user-message: 22.5rem;
   /* Placeholder height for off-screen messages skipped by content-visibility. */
   --message-intrinsic-size: 12rem;
 
@@ -262,6 +266,8 @@
   --spacing-titlebar: 2.5rem;
   --spacing-inspector: 24rem;
   --spacing-inspector-wide: 36rem;
+  --spacing-agents: 22rem;
+  --spacing-user-message: 18.75rem;
   --message-intrinsic-size: 9rem;
 
   --radius-xs: 0.125rem;
