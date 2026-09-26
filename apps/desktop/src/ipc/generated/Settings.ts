@@ -27,4 +27,8 @@ hibernateAfterMinutes: number,
 /**
  * The composer shows how full the model's context is (a ring by the model picker).
  */
-showContextUsage: boolean, };
+showContextUsage: boolean, 
+/**
+ * A notice above the composer while a conversation is in Full access.
+ */
+showFullAccessNotice: boolean, };

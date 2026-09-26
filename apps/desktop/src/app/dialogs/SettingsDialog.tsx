@@ -55,6 +55,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const [chatModel, setChatModel] = useState(initial.defaultChatModel);
   const [permission, setPermission] = useState(initial.defaultPermission);
   const [showContext, setShowContext] = useState(initial.showContextUsage);
+  const [fullAccessNotice, setFullAccessNotice] = useState(initial.showFullAccessNotice);
   const [hibernate, setHibernate] = useState(String(initial.hibernateAfterMinutes));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -78,6 +79,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         defaultChatModel: chatModel,
         defaultPermission: permission,
         showContextUsage: showContext,
+        showFullAccessNotice: fullAccessNotice,
         hibernateAfterMinutes: minutes,
       };
       await updateSettings(next);
@@ -141,7 +143,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
               ) : (
                 PERMISSION_LABELS[level]
               ),
-            hint: PERMISSION_DETAILS[level],
+            hint: `${PERMISSION_DETAILS[level]}.`,
           }))}
         />
       </Field>
@@ -164,6 +166,13 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         hint="A ring by the model picker in the composer shows how full the model's context is."
         checked={showContext}
         onCheckedChange={setShowContext}
+      />
+
+      <SwitchRow
+        label="Show the Full access notice"
+        hint="A card above the composer while a conversation's workers run without the OS sandbox."
+        checked={fullAccessNotice}
+        onCheckedChange={setFullAccessNotice}
       />
 
       <Field
