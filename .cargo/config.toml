@@ -1,7 +1,6 @@
-# whisper.cpp, brigadierd's dictation engine (whisper-rs-sys), built the same everywhere:
-# - for any CPU of the target's kind, not just the build machine's (on x86-64 that still means
-#   AVX2, FMA and F16C);
-# - with the crate's own Rust bindings, so building needs no libclang.
+# whisper.cpp, brigadierd's dictation engine (whisper-rs-sys), built for any CPU of the target's
+# kind, not just the build machine's (on x86-64 that still means AVX2, FMA and F16C). Its Rust
+# bindings are generated for the target at build time (with libclang), since the crate's bundled
+# ones fit only targets where a C `long` is 64 bits, which Windows' isn't.
 [env]
 GGML_NATIVE = "OFF"
-WHISPER_DONT_GENERATE_BINDINGS = "1"

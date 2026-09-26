@@ -30,7 +30,9 @@ docs/          plan and design notes
 - Rust 1.98.1 (pinned in `rust-toolchain.toml`; rustup installs it on first use)
 - Node 24+ and pnpm 12.6.0 (`packageManager` in `package.json`)
 - Tauri 2 platform prerequisites: https://v2.tauri.app/start/prerequisites/
-- CMake 3.x or newer, to build whisper.cpp (dictation's engine; see below)
+- CMake 3.x or newer and libclang, to build whisper.cpp (dictation's engine; see below).
+  macOS has libclang with the Xcode Command Line Tools; on Windows install LLVM, on Linux
+  `libclang-dev`.
 
 ## Dependency notes
 
@@ -56,9 +58,9 @@ docs/          plan and design notes
   process, so the daemon never holds the model. The model (whisper.cpp's `ggml-base-q5_1`,
   60 MB) is downloaded from Hugging Face on first use, at a pinned revision, checked against its
   SHA-256 and kept in the data directory under `models/whisper/`. `.cargo/config.toml` builds
-  whisper.cpp for any CPU of the target's kind (`GGML_NATIVE=OFF`) and with the crate's own
-  bindings, so building needs no libclang. The approach follows OpenWhispr (MIT); no code is
-  copied from it.
+  whisper.cpp for any CPU of the target's kind (`GGML_NATIVE=OFF`); its Rust bindings are
+  generated for the target, since the crate's bundled ones don't fit Windows. The approach
+  follows OpenWhispr (MIT); no code is copied from it.
 
 ## Develop
 
