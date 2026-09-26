@@ -33,6 +33,7 @@ import { formatBytes } from "@/lib/format";
 import { HIGHLIGHT_CHARS, highlight, languageOf, type Token } from "@/lib/highlight";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
+import { listFiles } from "@/state/actions";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
@@ -47,6 +48,8 @@ export type FileTarget = { path: string; line: number | null };
 
 /** Search results listed at once; typing more narrows them. */
 const RESULTS = 100;
+/** How long typing pauses before the daemon searches a checkout too big to list whole. */
+const SEARCH_DELAY_MS = 150;
 
 /** The folders open in each session's tree, kept while the app runs. */
 const openFolders = new Map<string, Set<string>>();
@@ -133,10 +136,11 @@ function FileBrowser({
   const [active, setActive] = useState(0);
   const tree = useMemo(() => buildTree(list?.files ?? []), [list]);
   const rows = useMemo(() => visibleRows(tree, open), [tree, open]);
+  const searched = useSearchedFiles(conversationId, list?.truncated ?? false, query.trim());
   const results = useMemo(() => {
     const want = query.trim();
     if (!want || !list) return null;
-    return list.files
+    return (searched ?? list.files)
       .flatMap((path) => {
         // The name counts first; a match only in its folders comes after.
         const byName = fuzzyMatch(baseName(path), want);
@@ -147,7 +151,7 @@ function FileBrowser({
       .toSorted((a, b) => a.rank - b.rank || a.path.length - b.path.length)
       .slice(0, RESULTS)
       .map((result) => result.path);
-  }, [list, query]);
+  }, [list, searched, query]);
 
   const toggle = (path: string) => {
     const next = new Set(open);
@@ -235,6 +239,32 @@ function FileBrowser({
       </div>
     </div>
   );
+}
+
+/**
+ * When the checkout has more files than the list holds, the files matching `query` from the
+ * whole checkout, searched by the daemon once typing pauses; null otherwise, or until then.
+ */
+function useSearchedFiles(conversationId: string, truncated: boolean, query: string): string[] | null {
+  const [found, setFound] = useState<{ conversationId: string; query: string; files: string[] } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!truncated || !query) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      listFiles(conversationId, query)
+        .then(({ files }) => live && setFound({ conversationId, query, files }))
+        .catch(() => undefined);
+    }, SEARCH_DELAY_MS);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [conversationId, truncated, query]);
+  return truncated && found?.conversationId === conversationId && found.query === query
+    ? found.files
+    : null;
 }
 
 const TreeRow = memo(function TreeRow({

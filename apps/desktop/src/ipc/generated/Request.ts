@@ -22,7 +22,12 @@ import type { TaskId } from "./TaskId";
 /**
  * Commands and queries.
  */
-export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, } | { "method": "readFile", conversationId: ConversationId, 
+export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, 
+/**
+ * Only the files whose path has these letters in order (ignoring case), searched in
+ * the whole checkout: how the Files tab finds files past the listed ones.
+ */
+query: string | null, } | { "method": "readFile", conversationId: ConversationId, 
 /**
  * Relative to the checkout's root.
  */

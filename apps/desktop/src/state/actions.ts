@@ -207,11 +207,15 @@ export async function getRepoInfo(path: string): Promise<RepoInfo> {
   return repo;
 }
 
-/** A session checkout's files, for the composer's @-mentions. */
+/**
+ * A session checkout's files, for the composer's @-mentions and the Files tab; with `query`,
+ * those whose path has its letters in order, from the whole checkout.
+ */
 export async function listFiles(
   conversationId: string,
+  query: string | null = null,
 ): Promise<{ files: string[]; truncated: boolean }> {
-  const { files, truncated } = await request({ method: "listFiles", conversationId });
+  const { files, truncated } = await request({ method: "listFiles", conversationId, query });
   return { files, truncated };
 }
 
