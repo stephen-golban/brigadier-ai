@@ -103,7 +103,9 @@ impl SessionManager {
             }
             OrchestratorCall::MessageWorker(args) => {
                 let task = self.find_task(id, &args.task).await?;
-                let reply = self.message_worker(id, &task, args.text).await?;
+                let reply = self.message_worker(id, &task, args.text.clone()).await?;
+                self.update_task(id, &task.id, |task| task.messages.push(args.text))
+                    .await?;
                 self.orchestrator_step(id, OrchestratorStepKind::Messaged { task_id: task.id })
                     .await;
                 Ok(reply)

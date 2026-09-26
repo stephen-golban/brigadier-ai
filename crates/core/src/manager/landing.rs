@@ -344,6 +344,14 @@ impl SessionManager {
             "\n\nThe task it implements (task-{}):\n{}",
             subject.number, subject.spec
         );
+        if !subject.messages.is_empty() {
+            text.push_str(
+                "\n\nWhat the orchestrator told the worker after that, oldest first (it changes the task where it differs):",
+            );
+            for message in &subject.messages {
+                text.push_str(&format!("\n---\n{message}"));
+            }
+        }
         if let Some(report) = &subject.report {
             text.push_str(&format!(
                 "\n\nThe worker's report:\n{}\n{}",
