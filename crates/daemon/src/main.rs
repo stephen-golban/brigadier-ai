@@ -20,6 +20,7 @@
 //!   ([`gate`]).
 
 mod bridge;
+mod dictation;
 mod gate;
 mod logging;
 mod metrics;
@@ -92,6 +93,13 @@ fn main() -> ExitCode {
     // `brigadierd mcp`: the stdio MCP bridge a CLI session starts.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "mcp") {
         return bridge::run(std::env::args_os().skip(2));
+    }
+    // `brigadierd transcribe <model>`: one dictation's speech engine (see `dictation`).
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "transcribe")
+    {
+        return dictation::transcribe_main(std::env::args_os().skip(2));
     }
     let args = match parse_args() {
         Ok(args) => args,
@@ -254,6 +262,9 @@ async fn run(
         closing.clone(),
         quit_tx,
         drained_rx,
+        Arc::new(dictation::Dictation::new(
+            platform.paths().data_dir.join("models"),
+        )),
     ));
     supervisor.spawn_critical(
         "ipc accept loop",

@@ -12,7 +12,7 @@ use brigadier_core::runtime::{Runtime, StartRaw};
 use brigadier_core::{ConversationId, Core, MAX_ATTACHMENT_BYTES};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
-    ArtifactText, ClientFrame, ClientInfo, DaemonInfo, DictationStatus, ErrorCode, EventEnvelope,
+    ArtifactText, ClientFrame, ClientInfo, DaemonInfo, DictationUpdate, ErrorCode, EventEnvelope,
     IpcError, Outcome, RawJson, Request, Response, SendOutcome, ServerFrame, TerminalOutput,
 };
 use brigadier_ipc::{Accepted, Connection, Listener, Reader, Token, Writer};
@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::dictation::Dictation;
 use crate::metrics::Metrics;
 use crate::supervisor::Supervisor;
 use crate::terminals::Terminals;
@@ -56,6 +57,8 @@ pub struct Daemon {
     pub connections: TaskTracker,
     /// The sessions' terminals (the side panel's Terminal tab).
     pub terminals: Terminals,
+    /// The composer's dictation: its speech model and running dictations.
+    pub dictation: Arc<Dictation>,
     next_connection: AtomicU64,
 }
 
@@ -72,6 +75,7 @@ impl Daemon {
         closing: CancellationToken,
         quit: mpsc::Sender<()>,
         drained: watch::Receiver<bool>,
+        dictation: Arc<Dictation>,
     ) -> Self {
         Self {
             info,
@@ -86,6 +90,7 @@ impl Daemon {
             drained,
             connections: TaskTracker::new(),
             terminals: Terminals::new(),
+            dictation,
             next_connection: AtomicU64::new(1),
         }
     }
@@ -155,6 +160,8 @@ async fn serve(daemon: Arc<Daemon>, connection: Connection, client: ClientInfo) 
         metrics: None,
         terminal_feed: None,
         terminals: HashSet::new(),
+        dictation_feed: None,
+        dictations: HashSet::new(),
     };
     if let Err(err) = session.run(connection.reader).await {
         tracing::debug!(connection = id, error = %err, "connection ended with an error");
@@ -178,6 +185,10 @@ struct Session {
     terminal_feed: Option<broadcast::Receiver<TerminalOutput>>,
     /// The terminals this connection opened: only their output is forwarded.
     terminals: HashSet<String>,
+    /// Dictation updates, once this connection dictated or downloaded the speech model.
+    dictation_feed: Option<broadcast::Receiver<DictationUpdate>>,
+    /// The dictations this connection started: only their text is forwarded.
+    dictations: HashSet<String>,
 }
 
 enum Flow {
@@ -271,6 +282,21 @@ impl Session {
                         }
                     }
                 }
+                update = next_dictation_update(&mut self.dictation_feed) => {
+                    if let Some(update) = update {
+                        let ours = match &update {
+                            DictationUpdate::Transcribed { dictation_id, .. }
+                            | DictationUpdate::Failed { dictation_id, .. } => {
+                                self.dictations.remove(dictation_id)
+                            }
+                            // The model is one for everyone.
+                            _ => true,
+                        };
+                        if ours {
+                            self.writer.write(&ServerFrame::Dictation { update }).await?;
+                        }
+                    }
+                }
             }
         };
         reader_task.abort();
@@ -292,6 +318,50 @@ impl Session {
                 cols,
                 rows,
             } => self.open_terminal(&conversation_id, cols, rows),
+            Request::GetDictation => Ok(Response::GetDictation {
+                dictation: self.daemon.dictation.status(),
+            }),
+            Request::DownloadDictationModel => {
+                self.follow_dictation();
+                self.daemon.dictation.download();
+                Ok(Response::DownloadDictationModel)
+            }
+            Request::CancelDictationDownload => {
+                self.daemon.dictation.cancel_download();
+                Ok(Response::CancelDictationDownload)
+            }
+            Request::StartDictation => {
+                self.follow_dictation();
+                self.daemon
+                    .dictation
+                    .start()
+                    .map(|dictation_id| {
+                        self.dictations.insert(dictation_id.clone());
+                        Response::StartDictation { dictation_id }
+                    })
+                    .map_err(IpcError::from)
+            }
+            Request::AppendDictation {
+                dictation_id,
+                audio,
+            } => self
+                .daemon
+                .dictation
+                .append(&dictation_id, &audio)
+                .await
+                .map(|()| Response::AppendDictation)
+                .map_err(IpcError::from),
+            Request::FinishDictation { dictation_id } => self
+                .daemon
+                .dictation
+                .finish(&dictation_id)
+                .map(|()| Response::FinishDictation)
+                .map_err(IpcError::from),
+            Request::CancelDictation { dictation_id } => {
+                self.daemon.dictation.cancel(&dictation_id);
+                self.dictations.remove(&dictation_id);
+                Ok(Response::CancelDictation)
+            }
             Request::Shutdown => {
                 // Stop admission and drain first; acknowledge only once writes are committed.
                 let _ = self.daemon.quit.try_send(());
@@ -339,6 +409,13 @@ impl Session {
             .open(&conversation_id.0, cwd, cols, rows)?;
         self.terminals.insert(terminal.id.clone());
         Ok(Response::OpenTerminal { terminal })
+    }
+
+    /// Forwards dictation updates to this connection from now on.
+    fn follow_dictation(&mut self) {
+        if self.dictation_feed.is_none() {
+            self.dictation_feed = Some(self.daemon.dictation.subscribe());
+        }
     }
 
     fn set_metrics(&mut self, enabled: bool) {
@@ -413,6 +490,23 @@ async fn next_terminal_output(
         Some(rx) => match rx.recv().await {
             Ok(output) => Some(output),
             // A connection that fell behind misses some output; the shell goes on.
+            Err(RecvError::Lagged(_)) => None,
+            Err(RecvError::Closed) => {
+                *feed = None;
+                None
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+async fn next_dictation_update(
+    feed: &mut Option<broadcast::Receiver<DictationUpdate>>,
+) -> Option<DictationUpdate> {
+    match feed {
+        Some(rx) => match rx.recv().await {
+            Ok(update) => Some(update),
+            // Progress is superseded by the next update; the ends are rare enough not to lag.
             Err(RecvError::Lagged(_)) => None,
             Err(RecvError::Closed) => {
                 *feed = None;
@@ -659,24 +753,15 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             daemon.terminals.close(&terminal_id);
             Response::CloseTerminal
         }
-        // This build has no speech engine yet: the app hides its Dictate button.
-        Request::GetDictation => Response::GetDictation {
-            dictation: DictationStatus {
-                available: false,
-                model: String::new(),
-                model_bytes: 0,
-                installed: false,
-                downloading: false,
-            },
-        },
-        Request::DownloadDictationModel
+        Request::GetDictation
+        | Request::DownloadDictationModel
         | Request::CancelDictationDownload
         | Request::StartDictation
         | Request::AppendDictation { .. }
         | Request::FinishDictation { .. }
         | Request::CancelDictation { .. } => {
             return Err(IpcError::from(brigadier_core::Error::Invalid(
-                "this build has no speech engine".into(),
+                "dictation runs on the connection that shows it".into(),
             )));
         }
         Request::RateMessage {
