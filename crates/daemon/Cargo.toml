@@ -23,13 +23,21 @@ brigadier-store.workspace = true
 interprocess = "2.4.4"
 portable-pty = "0.9.0"
 serde_json = { workspace = true, features = ["raw_value"] }
+# Dictation: the speech model's download and its check.
+sha2 = "0.11.0"
 sysinfo.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal", "process", "io-util"] }
 tokio-metrics = "0.5.2"
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+# Dictation's speech engine (whisper.cpp), run in a short-lived `brigadierd transcribe`.
+whisper-rs = "0.16.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
