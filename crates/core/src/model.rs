@@ -457,8 +457,6 @@ pub struct Settings {
     pub default_orchestrator: Option<ModelChoice>,
     /// Model for new Chats. Absent: as for the orchestrator.
     pub default_chat_model: Option<ModelChoice>,
-    /// Messages sent while a turn runs wait in the queue; off: they steer the running turn.
-    pub queue_enabled: bool,
     /// A conversation with nothing running hibernates after this many idle minutes.
     pub hibernate_after_minutes: u32,
     /// The composer shows how full the model's context is (a ring by the model picker).
@@ -472,7 +470,6 @@ impl Default for Settings {
             default_permission: PermissionLevel::default(),
             default_orchestrator: None,
             default_chat_model: None,
-            queue_enabled: false,
             hibernate_after_minutes: 30,
             show_context_usage: true,
         }

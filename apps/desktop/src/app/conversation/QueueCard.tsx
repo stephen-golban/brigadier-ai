@@ -34,9 +34,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { AttachmentRef, QueuedMessage } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
-import { deleteQueued, resumeQueue, updateSettings } from "@/state/actions";
+import { deleteQueued, resumeQueue } from "@/state/actions";
 import { useBoard } from "@/state/board";
-import { useApp } from "@/state/store";
 
 const NO_ITEMS: QueuedMessage[] = [];
 
@@ -113,7 +112,6 @@ export function QueueCard({ conversationId }: { conversationId: string }) {
   const pull = usePullQueued();
   // Pulling a message fills the composer, so only into an empty one.
   const composerEmpty = useAuiState((s) => s.composer.isEmpty);
-  const settings = useApp((s) => s.settings);
   const action = useAction();
   if (items.length === 0) return null;
 
@@ -251,13 +249,6 @@ export function QueueCard({ conversationId }: { conversationId: string }) {
                   >
                     <Pencil />
                     Edit message
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      action.run(() => updateSettings({ ...settings, queueEnabled: !settings.queueEnabled }))
-                    }
-                  >
-                    {settings.queueEnabled ? "Turn off queueing" : "Turn on queueing"}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

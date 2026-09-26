@@ -150,7 +150,6 @@ export const useApp = create<AppState>()(() => ({
     defaultPermission: "approveForMe",
     defaultOrchestrator: null,
     defaultChatModel: null,
-    queueEnabled: false,
     hibernateAfterMinutes: 30,
     showContextUsage: true,
   },

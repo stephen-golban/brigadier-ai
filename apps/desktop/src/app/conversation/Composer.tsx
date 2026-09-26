@@ -137,7 +137,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                 <div className="border-foreground/10 flex flex-col gap-1 border-t pt-2">
                   <ComposerAttachments />
                   <div className="flex items-center gap-1">
-                    <ComposerInput placeholder="Message Brigadier" autoFocus={false} running={target.running} line />
+                    <ComposerInput placeholder="Message Brigadier" autoFocus={false} line />
                     <SendControls running={target.running} onResume={target.onResume} />
                   </div>
                 </div>
@@ -159,7 +159,6 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                     : placeholder
               }
               autoFocus={autoFocus}
-              running={target.running}
             />
             <ComposerFooter owner={dictationOwner}>
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
@@ -344,21 +343,20 @@ function useEscToStop(canCancel: boolean): boolean {
   return armedAt !== null && canCancel;
 }
 
-type SendState = "starting" | "armed" | "stop" | "steer" | "queue" | "resume" | "send";
+type SendState = "starting" | "armed" | "stop" | "queue" | "resume" | "send";
 
 const SEND_TIPS: Record<SendState, string> = {
   starting: "Starting your task…",
   armed: "Press Esc again to stop",
   stop: "Stop",
-  steer: "Steer",
   queue: "Queue",
   resume: "Resume",
   send: "Send message",
 };
 
 /**
- * ChatGPT's one send button, which changes with the state: ↑ to send (its tip "Steer" or
- * "Queue" while the model works), ■ to stop, "Esc" once armed, ▶ to resume a stopped
+ * ChatGPT's one send button, which changes with the state: ↑ to send (its tip "Queue" while
+ * the model works: a Chat queues the message, a session's orchestrator sorts it), ■ to stop, "Esc" once armed, ▶ to resume a stopped
  * request, and a grey spinner while the conversation's model starts.
  */
 function SendControls({
@@ -370,7 +368,6 @@ function SendControls({
 }) {
   const target = useContext(ComposerTargetContext);
   const conversationId = target?.conversation?.id ?? null;
-  const queueEnabled = useApp((s) => s.settings.queueEnabled);
   const starting = useBoard(
     (s) => !!conversationId && s.board?.conversationId === conversationId && s.board.run === "starting",
   );
@@ -387,9 +384,7 @@ function SendControls({
           ? "starting"
           : "stop"
         : running && !empty
-          ? queueEnabled
-            ? "queue"
-            : "steer"
+          ? "queue"
           : !running && empty && onResume
             ? "resume"
             : "send";

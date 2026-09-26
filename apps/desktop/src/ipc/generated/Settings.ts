@@ -21,10 +21,6 @@ defaultOrchestrator: ModelChoice | null,
  */
 defaultChatModel: ModelChoice | null, 
 /**
- * Messages sent while a turn runs wait in the queue; off: they steer the running turn.
- */
-queueEnabled: boolean, 
-/**
  * A conversation with nothing running hibernates after this many idle minutes.
  */
 hibernateAfterMinutes: number, 

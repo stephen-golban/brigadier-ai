@@ -11,7 +11,6 @@ import {
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_DOWN_COMMAND,
-  KEY_ENTER_COMMAND,
   PASTE_COMMAND,
 } from "lexical";
 import { useCallback, useContext, useEffect, useMemo } from "react";
@@ -32,12 +31,10 @@ import {
 } from "@/components/assistant-ui/elements/composer-chips";
 import { registerInserter, startDictation, stopDictation, useDictation } from "@/state/dictation";
 import { NEW_CHAT_SCOPE } from "@/state/drafts";
-import { useApp } from "@/state/store";
 
 export type ComposerInputProps = {
   placeholder: string;
   autoFocus: boolean;
-  running: boolean;
   /** One line (under an action card): it doesn't grow, it scrolls. */
   line?: boolean;
 };
@@ -50,7 +47,6 @@ export type ComposerInputProps = {
 export default function ComposerEditor({
   placeholder,
   autoFocus,
-  running,
   line = false,
 }: ComposerInputProps) {
   const target = useContext(ComposerTargetContext);
@@ -81,7 +77,7 @@ export default function ComposerEditor({
       cancelOnEscape={false}
       aria-label="Message input"
     >
-      <ComposerKeys running={running} />
+      <ComposerKeys />
     </ChipComposerInput>
   );
 }
@@ -96,18 +92,16 @@ const mentionLook: MentionLook = ({ directiveType, directiveId, label }) => {
 
 /**
  * The composer's keys and paste: ↑ in an empty field edits the last queued message, else
- * walks back through the conversation's prompts (↓ forward); ⌘Enter while the model works
- * does the opposite of the queueing setting, for this message; a long paste becomes a
+ * walks back through the conversation's prompts (↓ forward); a long paste becomes a
  * "Pasted text" attachment and pasted files attach, as ChatGPT's do; ⌃⇧D starts dictating at
  * the caret and stops again. The `@` and `/` menus take their keys first.
  */
-function ComposerKeys({ running }: { running: boolean }) {
+function ComposerKeys() {
   const [editor] = useLexicalComposerContext();
   const aui = useAui();
   const pull = usePullQueued();
   const target = useContext(ComposerTargetContext);
   const history = usePromptHistory(target?.mentions ?? null);
-  const queueEnabled = useApp((s) => s.settings.queueEnabled);
   const owner = target?.conversation?.id ?? NEW_CHAT_SCOPE;
   const dictation = useDictation(owner);
   // Dictated text lands at the caret (or at the end, if the field never had one), spaced
@@ -156,18 +150,6 @@ function ComposerKeys({ running }: { running: boolean }) {
       editor.registerCommand(KEY_ARROW_UP_COMMAND, arrow("ArrowUp"), COMMAND_PRIORITY_NORMAL),
       editor.registerCommand(KEY_ARROW_DOWN_COMMAND, arrow("ArrowDown"), COMMAND_PRIORITY_NORMAL),
       editor.registerCommand(
-        KEY_ENTER_COMMAND,
-        (event) => {
-          if (!event?.metaKey || event.shiftKey || event.isComposing) return false;
-          event.preventDefault();
-          const composer = aui.composer();
-          // Queueing on: this one steers; off: this one queues.
-          if (running && composer.getState().canSend) composer.send({ steer: queueEnabled });
-          return true;
-        },
-        COMMAND_PRIORITY_NORMAL,
-      ),
-      editor.registerCommand(
         KEY_DOWN_COMMAND,
         (event) => {
           const dictate =
@@ -197,6 +179,6 @@ function ComposerKeys({ running }: { running: boolean }) {
         COMMAND_PRIORITY_NORMAL,
       ),
     );
-  }, [editor, aui, pull, history, running, queueEnabled, owner, canDictate, dictating]);
+  }, [editor, aui, pull, history, owner, canDictate, dictating]);
   return null;
 }
