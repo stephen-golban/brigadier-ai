@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::metrics::{BudgetId, DaemonMetrics, LatencySummary};
-use crate::protocol::{DaemonInfo, EventEnvelope, TerminalOutput};
+use crate::protocol::{DaemonInfo, DictationUpdate, EventEnvelope, TerminalOutput};
 
 /// Pushed from the shell to the webview.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -37,6 +37,10 @@ pub enum BridgeEvent {
     /// Output of a terminal the app opened.
     Terminal {
         output: TerminalOutput,
+    },
+    /// How a dictation or the speech model's download goes.
+    Dictation {
+        update: DictationUpdate,
     },
     /// The window was hidden or shown; pause sampling while hidden.
     WindowVisibility {

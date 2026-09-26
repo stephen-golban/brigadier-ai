@@ -133,6 +133,31 @@ pub enum Request {
     CloseTerminal {
         terminal_id: String,
     },
+    /// Whether dictation (the composer's Dictate button) can run, and its speech model.
+    GetDictation,
+    /// Downloads the speech model into the data folder. Answered at once; progress and the
+    /// end come to this connection as [`ServerFrame::Dictation`].
+    DownloadDictationModel,
+    /// Stops the model's download; what came so far is kept to resume from.
+    CancelDictationDownload,
+    /// Starts a dictation: the speech model loads while the user speaks. Its audio follows
+    /// with `appendDictation`, and its text comes to this connection as
+    /// [`ServerFrame::Dictation`].
+    StartDictation,
+    /// The next piece of a dictation's audio.
+    AppendDictation {
+        dictation_id: String,
+        /// 16 kHz mono 16-bit little-endian PCM, base64-encoded.
+        audio: String,
+    },
+    /// The dictation's audio is complete: transcribe it. Answered at once.
+    FinishDictation {
+        dictation_id: String,
+    },
+    /// Drops a dictation and its audio.
+    CancelDictation {
+        dictation_id: String,
+    },
     /// Rates an answer ("Good response" / "Bad response").
     RateMessage {
         conversation_id: ConversationId,
@@ -532,6 +557,17 @@ pub enum Response {
     WriteTerminal,
     ResizeTerminal,
     CloseTerminal,
+    GetDictation {
+        dictation: DictationStatus,
+    },
+    DownloadDictationModel,
+    CancelDictationDownload,
+    StartDictation {
+        dictation_id: String,
+    },
+    AppendDictation,
+    FinishDictation,
+    CancelDictation,
     RateMessage,
     GetSessionDiff {
         /// Absent for Chats and local-checkout sessions.
@@ -816,6 +852,11 @@ pub enum ServerFrame {
     Terminal {
         output: TerminalOutput,
     },
+    /// How a dictation or the speech model's download this connection started goes. Live
+    /// only: never stored.
+    Dictation {
+        update: DictationUpdate,
+    },
     /// The daemon is shutting down; the connection closes next.
     Closing,
 }
@@ -847,6 +888,45 @@ pub enum TerminalOutput {
     Exited {
         terminal_id: String,
         code: Option<u32>,
+    },
+}
+
+/// Whether dictation can run here, as `getDictation` returns it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationStatus {
+    /// This build has the speech engine.
+    pub available: bool,
+    /// The speech model's file name.
+    pub model: String,
+    /// Its size, in bytes.
+    pub model_bytes: u64,
+    /// It is downloaded and checked.
+    pub installed: bool,
+    /// Its download is under way.
+    pub downloading: bool,
+}
+
+/// A step of a dictation or of the speech model's download.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DictationUpdate {
+    /// Bytes of the speech model downloaded so far.
+    Download { received: u64, total: u64 },
+    /// The speech model is downloaded and checked.
+    Downloaded,
+    /// The download stopped: cancelled, or failed with `message`.
+    DownloadStopped { message: Option<String> },
+    /// What was said.
+    Transcribed { dictation_id: String, text: String },
+    /// The dictation failed.
+    Failed {
+        dictation_id: String,
+        message: String,
     },
 }
 
