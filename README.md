@@ -39,6 +39,13 @@ docs/          plan and design notes
   The crate is pinned to the release `tauri-runtime-wry` uses, since two copies of wry would
   register the same native classes. Linux has no embedded page: its tab opens pages in the
   system browser.
+- `objc2`, `objc2-foundation`, `objc2-web-kit`, `block2` (macOS, the releases wry is built on):
+  the Browser tab's page gets its own WebKit UI delegate, because wry's grants every camera and
+  microphone request. Ours denies them without a prompt, sends popups to the system browser and
+  leaves file uploads to wry's. This module, `apps/desktop/src-tauri/src/browser_ui.rs`, is the
+  one exception to the workspace's `unsafe_code = "deny"`: calling WebKit through objc2 needs
+  `unsafe`. The `#[allow(unsafe_code)]` sits on that module alone, and each `unsafe` in it says
+  why it holds. Windows' WebView2 asks the user itself.
 
 ## Develop
 

@@ -3,8 +3,9 @@
 //! It is a plain `wry` webview, not a Tauri one: Tauri gives each of its webviews the app's IPC
 //! bridge, init scripts and custom protocols, and a web page must get none of that. This one
 //! has no IPC handler, no scripts of ours and no custom protocols; it keeps its cookies and
-//! storage in memory only, separate from the app's own webview; it opens only web pages, and
-//! sends popups to the system browser. It is made when the tab first loads a page and dropped
+//! storage in memory only, separate from the app's own webview; it opens only web pages, sends
+//! popups to the system browser, and on macOS denies the page the camera and microphone (wry's
+//! own delegate would grant them; see `browser_ui`). It is made when the tab first loads a page and dropped
 //! when the tab closes. Linux has no embedded page (Tauri's window there is a GTK box a child
 //! can't be laid over); its tab opens pages in the system browser.
 
@@ -47,16 +48,35 @@ mod embedded {
     use tauri::ipc::Channel;
     use tauri::{AppHandle, Manager};
     use tauri_plugin_opener::OpenerExt;
+    #[cfg(target_os = "windows")]
+    use wry::NewWindowResponse;
     use wry::dpi::{LogicalPosition, LogicalSize};
-    use wry::{NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder};
+    use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
 
     use super::{allowed, failed, web_page};
     use crate::shell::MAIN_WINDOW;
 
+    /// A tab's page.
+    struct Tab {
+        webview: WebView,
+        /// The page's own WebKit UI delegate, which WebKit holds only weakly.
+        #[cfg(target_os = "macos")]
+        _ui: crate::browser_ui::BrowserUi,
+    }
+
     thread_local! {
-        /// The open tabs' webviews by tab. Tauri runs the (non-async) browser commands on the
+        /// The open tabs' pages by tab. Tauri runs the (non-async) browser commands on the
         /// main thread, the only one a webview may be used from.
-        static BROWSERS: RefCell<HashMap<String, WebView>> = RefCell::new(HashMap::new());
+        static BROWSERS: RefCell<HashMap<String, Tab>> = RefCell::new(HashMap::new());
+    }
+
+    /// A page's popup (`window.open`, `target=_blank`): a web page opens in the system
+    /// browser, anything else nowhere.
+    fn popup(app: &AppHandle, url: String) {
+        if web_page(&url) {
+            tracing::info!(%url, "Browser tab: popup sent to the system browser");
+            let _ = app.opener().open_url(url, None::<&str>);
+        }
     }
 
     fn rect(bounds: BrowserBounds) -> Rect {
@@ -95,7 +115,7 @@ mod embedded {
         let builder = WebViewBuilder::new_with_web_context(&mut context);
         #[cfg(not(target_os = "windows"))]
         let builder = WebViewBuilder::new();
-        let webview = builder
+        let builder = builder
             .with_url(&url)
             .with_bounds(rect(bounds))
             .with_incognito(true)
@@ -107,12 +127,6 @@ mod embedded {
                 }
                 ok
             })
-            .with_new_window_req_handler(move |url, _features| {
-                if web_page(&url) {
-                    let _ = opener.opener().open_url(url, None::<&str>);
-                }
-                NewWindowResponse::Deny
-            })
             .with_download_started_handler(move |url, _path| {
                 let _ = on_download.send(BrowserEvent::Blocked { url });
                 false
@@ -123,10 +137,22 @@ mod embedded {
             })
             .with_document_title_changed_handler(move |title| {
                 let _ = on_title.send(BrowserEvent::Title { title });
-            })
+            });
+        // macOS: `browser_ui`'s delegate takes the popups instead.
+        #[cfg(target_os = "windows")]
+        let builder = builder.with_new_window_req_handler(move |url, _features| {
+            popup(&opener, url);
+            NewWindowResponse::Deny
+        });
+        let webview = builder
             .build_as_child(&window)
             .map_err(|err| failed(format!("could not make the browser: {err}")))?;
-        BROWSERS.with_borrow_mut(|browsers| browsers.insert(id, webview));
+        let tab = Tab {
+            #[cfg(target_os = "macos")]
+            _ui: crate::browser_ui::install(&webview, move |url| popup(&opener, url)),
+            webview,
+        };
+        BROWSERS.with_borrow_mut(|browsers| browsers.insert(id, tab));
         Ok(())
     }
 
@@ -135,7 +161,7 @@ mod embedded {
         action: impl FnOnce(&WebView) -> wry::Result<()>,
     ) -> Result<(), IpcError> {
         BROWSERS.with_borrow(|browsers| match browsers.get(id) {
-            Some(webview) => action(webview).map_err(|err| failed(err.to_string())),
+            Some(tab) => action(&tab.webview).map_err(|err| failed(err.to_string())),
             // Nothing loaded yet: nothing to move or steer.
             None => Ok(()),
         })
@@ -143,9 +169,10 @@ mod embedded {
 
     pub fn navigate(id: &str, url: &str, bounds: BrowserBounds) -> Result<(), IpcError> {
         BROWSERS.with_borrow(|browsers| {
-            let webview = browsers
+            let webview = &browsers
                 .get(id)
-                .ok_or_else(|| failed("the browser's page is gone"))?;
+                .ok_or_else(|| failed("the browser's page is gone"))?
+                .webview;
             webview
                 .set_bounds(rect(bounds))
                 .and_then(|()| webview.set_visible(true))
