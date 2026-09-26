@@ -1,4 +1,4 @@
-import { Pause, Play, Stop } from "@openai/apps-sdk-ui/components/Icon";
+import { Branch, BranchAlt, Pause, Play, Stop } from "@openai/apps-sdk-ui/components/Icon";
 import { memo, type ReactNode, useState } from "react";
 
 import { ArtifactDialog } from "@/app/conversation/ArtifactDialog";
@@ -400,14 +400,20 @@ export function TaskDetails({
             </p>
           )}
           {workspace?.branch && (
-            <p className={mono}>
-              {workspace.branch}
-              {workspace.target && ` → ${workspace.target}`}
-              {workspace.base && ` (from ${short(workspace.base)})`}
+            <p className={cn(mono, "flex items-center gap-1.5")}>
+              <Branch aria-label="Branch" className="size-icon-xs shrink-0" />
+              <span className="min-w-0">
+                {workspace.branch}
+                {workspace.target && ` → ${workspace.target}`}
+                {workspace.base && ` (from ${short(workspace.base)})`}
+              </span>
             </p>
           )}
           {workspace?.worktree && (
-            <p className={cn(mono, "text-muted-foreground truncate")}>{workspace.worktree}</p>
+            <p className={cn(mono, "text-muted-foreground flex items-center gap-1.5")}>
+              <BranchAlt aria-label="Worktree" className="size-icon-xs shrink-0" />
+              <span className="min-w-0 truncate">{workspace.worktree}</span>
+            </p>
           )}
         </Section>
       )}
