@@ -8,6 +8,10 @@
 
 mod bridge;
 mod browser;
+// The one module allowed `unsafe` code (the workspace denies it): see its header and the README.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod browser_ui;
 mod launcher;
 mod shell;
 mod smoke;

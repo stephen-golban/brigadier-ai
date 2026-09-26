@@ -31,5 +31,12 @@ ts-rs.workspace = true
 # The Browser tab's page: the wry release Tauri itself runs on (a second copy would clash).
 wry = { version = "0.55.1", default-features = false }
 
+# The Browser tab's own WebKit UI delegate (src/browser_ui.rs): the releases wry is built on.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSURLRequest"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKFrameInfo", "WKNavigationAction", "WKOpenPanelParameters", "WKSecurityOrigin", "WKUIDelegate", "WKWebView", "WKWebViewConfiguration", "WKWindowFeatures"] }
+
 [lints]
 workspace = true

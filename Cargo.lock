@@ -364,9 +364,13 @@ dependencies = [
 name = "brigadier-desktop"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "brigadier-core",
  "brigadier-ipc",
  "brigadier-sandbox",
+ "objc2",
+ "objc2-foundation",
+ "objc2-web-kit",
  "serde",
  "serde_json",
  "tauri",
