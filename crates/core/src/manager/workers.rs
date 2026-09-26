@@ -1466,6 +1466,17 @@ impl SessionManager {
         if task.state.is_final() {
             return Err(Error::Invalid("the task has already ended".into()));
         }
+        // Its report stands until the orchestrator sends it back to work (message_worker):
+        // a second one would overwrite it and wake the orchestrator for nothing.
+        if !matches!(
+            task.state,
+            TaskState::Starting | TaskState::Running | TaskState::Blocked
+        ) {
+            return Err(Error::Invalid(format!(
+                "Your report for task-{} was already received and stands; nothing was changed. A new report is taken only after the orchestrator sends you back to work. End your turn now.",
+                task.number
+            )));
+        }
         let size = input.summary.len()
             + [
                 &input.changes,
