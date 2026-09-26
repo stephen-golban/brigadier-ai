@@ -157,7 +157,20 @@ impl SessionManager {
     pub(crate) async fn final_outputs(&self, task: &Task) -> Option<Vec<ArtifactRef>> {
         let scratch = PathBuf::from(&task.workspace.as_ref()?.scratch);
         let outputs = outputs_dir(&scratch);
-        let files = blocking(move || Ok(output_files(&outputs))).await.ok()?;
+        // As a report's outputs: a file over 8 MB is not read at all.
+        let files = blocking(move || {
+            let mut files = output_files(&outputs);
+            files.retain(|(path, _)| {
+                let small = std::fs::metadata(path).is_ok_and(|meta| meta.len() <= FILE_MAX_BYTES);
+                if !small {
+                    tracing::warn!(path = %path.display(), "an output over 8 MB was not kept");
+                }
+                small
+            });
+            Ok(files)
+        })
+        .await
+        .ok()?;
         if files.is_empty() {
             return None;
         }
@@ -340,6 +353,11 @@ fn collect(
                     Err(_) => problems.push(format!(
                         "your report mentions `{mention}`, which does not exist. Write the file, or don't mention it."
                     )),
+                    Ok(meta) if meta.is_file() && !inside(&places.scratch, &path) => {
+                        problems.push(format!(
+                            "`{mention}` links to a file outside your scratch folder, so it is not kept. Copy the file itself into your outputs folder and mention that copy instead."
+                        ));
+                    }
                     Ok(meta) if meta.is_file() && meta.len() > FILE_MAX_BYTES => {
                         problems.push(format!(
                             "`{mention}` is larger than 8 MB; save a smaller file."
@@ -416,8 +434,12 @@ fn collect(
 }
 
 /// Regular files in an outputs folder (resolved), with their paths inside it, in order.
-/// Hidden files and links are left out.
+/// Hidden files and links are left out, and so is the whole folder when the worker replaced
+/// it with a link: the daemon reads only what lies inside the scratch folder.
 fn output_files(outputs: &Path) -> Vec<(PathBuf, String)> {
+    if !std::fs::symlink_metadata(outputs).is_ok_and(|meta| meta.is_dir()) {
+        return Vec::new();
+    }
     let Ok(root) = std::fs::canonicalize(outputs) else {
         return Vec::new();
     };
