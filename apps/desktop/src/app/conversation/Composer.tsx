@@ -1,6 +1,23 @@
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import { ArrowUp, PlayTriangle, Spin, Stop } from "@openai/apps-sdk-ui/components/Icon";
-import { type FC, lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
+import {
+  ArrowUp,
+  Mic,
+  PlayTriangle,
+  Spin,
+  Stop,
+  Warning,
+  X,
+} from "@openai/apps-sdk-ui/components/Icon";
+import {
+  type FC,
+  lazy,
+  type ReactNode,
+  Suspense,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import { BranchPopover, ProjectCombobox, WorkInMenu } from "@/app/conversation/RailPickers";
@@ -34,6 +51,13 @@ import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
+import {
+  cancelDictation,
+  type DictationPhase,
+  startDictation,
+  stopDictation,
+  useDictation,
+} from "@/state/dictation";
 import { NEW_CHAT_SCOPE } from "@/state/drafts";
 import { useApp } from "@/state/store";
 
@@ -60,6 +84,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   if (!target) return null;
   const { conversation, resolved, targets } = target;
   const archived = conversation?.lifecycle === "archived";
+  const dictationOwner = conversation?.id ?? NEW_CHAT_SCOPE;
   const putAside = aside.conversationId === (conversation?.id ?? null) ? aside.ids : [];
   const waiting = pending.filter((entry) => !putAside.includes(entry.id));
   const current = archived ? undefined : waiting[0];
@@ -136,7 +161,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
               autoFocus={autoFocus}
               running={target.running}
             />
-            <div className="flex items-center gap-1">
+            <ComposerFooter owner={dictationOwner}>
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
                 <PlusMenu />
                 {conversation ? (
@@ -172,7 +197,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                 />
               )}
               <SendControls running={target.running} onResume={target.onResume} />
-            </div>
+            </ComposerFooter>
           </div>
           )}
           <ComposerHint target={target} />
@@ -352,6 +377,8 @@ function SendControls({
   const empty = useAuiState((s) => s.composer.isEmpty);
   const canCancel = useAuiState((s) => s.composer.canCancel);
   const armed = useEscToStop(canCancel);
+  const dictationOwner = conversationId ?? NEW_CHAT_SCOPE;
+  const dictation = useDictation(dictationOwner);
   const state: SendState =
     armed
       ? "armed"
@@ -393,6 +420,33 @@ function SendControls({
       </span>
     </TooltipIconButton>
   );
+  // The one-line field under an action card has no footer to give over to dictation.
+  if (dictationActive(dictation.phase)) return <DictationBar owner={dictationOwner} compact />;
+  // Idle and empty, the send button's place is the microphone's (ChatGPT's voice button).
+  if (state === "send" && empty && dictation.available) {
+    const failed = dictation.phase.type === "failed" ? dictation.phase.message : null;
+    return (
+      <div className="flex shrink-0 items-center gap-1">
+        <TooltipIconButton
+          tooltip={failed ? `Retry dictation: ${failed}` : "Dictate"}
+          side="bottom"
+          type="button"
+          variant="default"
+          size="icon-md"
+          data-state={failed ? "retry-dictation" : "dictate"}
+          className="aui-composer-dictate rounded-capsule"
+          onClick={() => void startDictation(dictationOwner)}
+        >
+          <span
+            key={failed ? "retry" : "dictate"}
+            className="animate-in fade-in zoom-in-75 flex items-center duration-200 motion-reduce:animate-none"
+          >
+            {failed ? <Warning className="size-icon-sm" /> : <Mic className="size-icon-sm" />}
+          </span>
+        </TooltipIconButton>
+      </div>
+    );
+  }
   return (
     <div className="flex shrink-0 items-center gap-1">
       {state === "resume" ? (
@@ -401,6 +455,116 @@ function SendControls({
         <ComposerPrimitive.Cancel asChild>{button}</ComposerPrimitive.Cancel>
       ) : (
         <ComposerPrimitive.Send asChild>{button}</ComposerPrimitive.Send>
+      )}
+    </div>
+  );
+}
+
+function dictationActive(phase: DictationPhase): boolean {
+  return phase.type !== "idle" && phase.type !== "failed";
+}
+
+/** The composer's footer row; while dictating, ChatGPT's dictation controls take all of it. */
+function ComposerFooter({ owner, children }: { owner: string; children: ReactNode }) {
+  const { phase } = useDictation(owner);
+  return (
+    <div className="flex items-center gap-1">
+      {dictationActive(phase) ? <DictationBar owner={owner} /> : children}
+    </div>
+  );
+}
+
+/**
+ * Dictation under way (ChatGPT's): Cancel, then the microphone's waveform while it records,
+ * Stop (the text goes to the caret) and "Transcribe and send"; a line saying what happens
+ * while the speech model downloads, the microphone opens or the text is worked out.
+ */
+function DictationBar({ owner, compact = false }: { owner: string; compact?: boolean }) {
+  const aui = useAui();
+  const { phase, levels } = useDictation(owner);
+  const note =
+    phase.type === "downloading"
+      ? `Downloading the speech model${phase.total > 0 ? ` · ${Math.floor((phase.received / phase.total) * 100)}%` : "…"}`
+      : phase.type === "starting"
+        ? "Starting dictation…"
+        : phase.type === "transcribing"
+          ? "Transcribing…"
+          : null;
+  return (
+    <div
+      data-slot="composer-dictation"
+      data-phase={phase.type}
+      className={cn("flex min-w-0 items-center gap-1", compact ? "shrink-0" : "flex-1")}
+    >
+      {phase.type !== "transcribing" && (
+        <TooltipIconButton
+          tooltip={phase.type === "downloading" ? "Cancel download" : "Cancel dictation"}
+          side="bottom"
+          type="button"
+          size="icon-md"
+          className="rounded-capsule"
+          onClick={cancelDictation}
+        >
+          <X className="size-icon-sm" />
+        </TooltipIconButton>
+      )}
+      {phase.type === "recording" ? (
+        <div
+          aria-hidden
+          className={cn(
+            "flex h-7 min-w-0 items-center justify-end gap-0.5 overflow-hidden px-1",
+            compact ? "w-24" : "flex-1",
+          )}
+        >
+          {levels.map((level, index) => (
+            <span
+              // Bars shift left as new ones arrive; their place is their identity.
+              // oxlint-disable-next-line react/no-array-index-key
+              key={index}
+              className="bg-foreground w-0.5 shrink-0 rounded-full"
+              style={{ height: `${Math.max(2, Math.round(level * 24))}px` }}
+            />
+          ))}
+        </div>
+      ) : (
+        <span className="text-muted-foreground min-w-0 flex-1 truncate px-1 text-sm">{note}</span>
+      )}
+      {phase.type === "recording" ? (
+        <>
+          <TooltipIconButton
+            tooltip="Stop dictation"
+            side="bottom"
+            type="button"
+            size="icon-md"
+            className="rounded-capsule"
+            onClick={() => void stopDictation()}
+          >
+            <Stop className="size-icon-sm" />
+          </TooltipIconButton>
+          <TooltipIconButton
+            tooltip="Transcribe and send"
+            side="bottom"
+            type="button"
+            variant="default"
+            size="icon-md"
+            className="rounded-capsule"
+            onClick={() => void stopDictation(() => aui.composer().send())}
+          >
+            <ArrowUp />
+          </TooltipIconButton>
+        </>
+      ) : (
+        <TooltipIconButton
+          tooltip={note ?? ""}
+          side="bottom"
+          type="button"
+          variant="secondary"
+          size="icon-md"
+          className="rounded-capsule"
+          disabled
+        >
+          <Spin className="size-icon-sm animate-spin motion-reduce:animate-none" />
+        </TooltipIconButton>
       )}
     </div>
   );
