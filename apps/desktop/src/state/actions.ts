@@ -33,6 +33,7 @@ import {
   updateBoard,
   useBoard,
   WORKER_ENTRIES,
+  workingRequest,
   type WorkerTranscript,
 } from "@/state/board";
 import {
@@ -293,8 +294,10 @@ export type SendLane = "auto" | "steer" | "queue";
  * Sends a user message to `to`, else the selected conversation. A draft first becomes a real
  * chat or session with the composer's setup; the message shows immediately and is replaced by
  * the daemon's copy once committed. While a turn runs the daemon queues it, unless queueing is off, in
- * which case it steers the running turn. `queueIndex` puts a message that waits back in its
- * old slot (a queued message pulled out to edit, or a deleted one restored).
+ * which case it steers the running turn. In a session, what is sent while the newest answer
+ * works waits in the queue while the orchestrator sorts it (it joins that answer or waits for
+ * its own turn); only an explicit Steer goes straight in. `queueIndex` puts a message that
+ * waits back in its old slot (a queued message pulled out to edit, or a deleted one restored).
  */
 export async function send(
   outgoing: Outgoing,
@@ -338,12 +341,14 @@ export async function send(
 
   const board = boardOf(conversationId);
   const running = board !== null && (board.run === "running" || board.run === "starting");
-  const steer = lane === "steer" || (lane === "auto" && running && !settings.queueEnabled);
+  const session = useApp.getState().conversations[conversationId]?.kind === "session";
+  const working = session && board !== null && workingRequest(board) !== null;
+  const steer = lane === "steer" || (lane === "auto" && running && !session && !settings.queueEnabled);
   const queue = board?.queue ?? null;
   // Asked to queue with no slot: last.
   const slot = steer ? null : (queueIndex ?? (lane === "queue" ? (queue?.items.length ?? 0) : null));
   // A message that waits shows in the queue, not the thread; a steered one arrives as an event.
-  const waits = running || (slot !== null && !!queue?.paused);
+  const waits = running || working || (slot !== null && !!queue?.paused);
   const localId = waits ? null : crypto.randomUUID();
   if (localId) {
     useApp.setState((state) => ({
