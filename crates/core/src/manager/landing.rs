@@ -533,6 +533,11 @@ impl SessionManager {
         else {
             return;
         };
+        // Only a task still waiting on this review goes back: one the user stopped meanwhile
+        // stays stopped.
+        if task.state != TaskState::Reviewing {
+            return;
+        }
         let task = self
             .set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
             .await
