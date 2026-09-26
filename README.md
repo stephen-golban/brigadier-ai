@@ -44,8 +44,8 @@ docs/          plan and design notes
   the Browser tab's page gets its own WebKit UI delegate, because wry's grants every camera and
   microphone request. Ours denies them without a prompt, sends popups to the system browser and
   leaves file uploads to wry's. This module, `apps/desktop/src-tauri/src/browser_ui.rs`, is the
-  one exception to the workspace's `unsafe_code = "deny"`: calling WebKit through objc2 needs
-  `unsafe`. The `#[allow(unsafe_code)]` sits on that module alone, and each `unsafe` in it says
+  app shell's one exception to the workspace's `unsafe_code = "deny"` (the sandbox crate's OS
+  calls are the only others): calling WebKit through objc2 needs `unsafe`. The `#[allow(unsafe_code)]` sits on that module alone, and each `unsafe` in it says
   why it holds. WebKit asks macOS for the microphone before it asks the delegate, so the page
   also gets a script, before any of its own and in every frame, that takes
   `navigator.mediaDevices`, `getUserMedia` and the speech-recognition APIs away for good
