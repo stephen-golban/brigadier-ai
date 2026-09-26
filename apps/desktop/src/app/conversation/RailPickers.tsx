@@ -1,6 +1,5 @@
 import { useAui } from "@assistant-ui/react";
 import {
-  ArrowUpRight,
   Branch,
   BranchAlt,
   Check,
@@ -287,7 +286,7 @@ export function ProjectCombobox({
 
 const PLACES: Record<EnvironmentKind, { label: string; icon: ReactNode }> = {
   localCheckout: { label: "Local checkout", icon: <Desktop /> },
-  newWorktree: { label: "New worktree", icon: <ArrowUpRight /> },
+  newWorktree: { label: "New worktree", icon: <BranchAlt /> },
 };
 
 /** A usage window as ChatGPT names it: "Weekly", "5h". */
@@ -614,7 +613,7 @@ export function BranchPopover({ resolved }: { resolved: ResolvedDraft }) {
                 onClick={() => pick(name)}
                 className={cn(ROW, at === index && ROW_ACTIVE)}
               >
-                <BranchAlt className="text-muted-foreground" />
+                <Branch className="text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 {name === picked && !(local && resolved.draft.newBranch) && <Check />}
               </button>
