@@ -292,6 +292,10 @@ pub struct Task {
     /// The user request it was delegated for.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// What the orchestrator sent the worker after its spec (`message_worker`), oldest first:
+    /// changes to the task that its review checks the work against too.
+    #[serde(default)]
+    pub messages: Vec<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

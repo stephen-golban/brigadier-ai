@@ -54,4 +54,9 @@ outputs: Array<ArtifactRef>,
 /**
  * The user request it was delegated for.
  */
-requestId: string | null, createdAtMs: number, updatedAtMs: number, };
+requestId: string | null, 
+/**
+ * What the orchestrator sent the worker after its spec (`message_worker`), oldest first:
+ * changes to the task that its review checks the work against too.
+ */
+messages: Array<string>, createdAtMs: number, updatedAtMs: number, };

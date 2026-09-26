@@ -373,6 +373,7 @@ impl SessionManager {
             kept: None,
             outputs: Vec::new(),
             request_id,
+            messages: Vec::new(),
             created_at_ms: now,
             updated_at_ms: now,
         };
