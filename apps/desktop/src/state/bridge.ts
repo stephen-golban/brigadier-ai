@@ -11,6 +11,7 @@ import { applyActivityEvents, loadActivity } from "@/state/activity";
 import { applyBoardEvents, sideBoardIds, useBoard } from "@/state/board";
 import { applyEvents, useApp } from "@/state/store";
 import { startMenuBar } from "@/state/menuBar";
+import { onDictationDisconnected, onDictationUpdate } from "@/state/dictation";
 import { emitTerminalOutput } from "@/state/terminals";
 
 let queued: EventEnvelope[] = [];
@@ -69,6 +70,7 @@ function onBridgeEvent(message: BridgeEvent) {
       });
       break;
     case "disconnected":
+      onDictationDisconnected();
       useApp.setState((state) => ({
         connection: {
           status: "disconnected",
@@ -89,6 +91,9 @@ function onBridgeEvent(message: BridgeEvent) {
       break;
     case "terminal":
       emitTerminalOutput(message.output);
+      break;
+    case "dictation":
+      onDictationUpdate(message.update);
       break;
     case "windowVisibility":
       setSamplingPaused(!message.visible);

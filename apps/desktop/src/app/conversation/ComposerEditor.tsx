@@ -3,9 +3,14 @@ import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext
 import { mergeRegister } from "@lexical/utils";
 import { Chat } from "@openai/apps-sdk-ui/components/Icon";
 import {
+  $getRoot,
+  $getSelection,
+  $isRangeSelection,
+  $isTextNode,
   COMMAND_PRIORITY_NORMAL,
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
+  KEY_DOWN_COMMAND,
   KEY_ENTER_COMMAND,
   PASTE_COMMAND,
 } from "lexical";
@@ -25,6 +30,8 @@ import {
   chipFormatter,
   type MentionLook,
 } from "@/components/assistant-ui/elements/composer-chips";
+import { registerInserter, startDictation, stopDictation, useDictation } from "@/state/dictation";
+import { NEW_CHAT_SCOPE } from "@/state/drafts";
 import { useApp } from "@/state/store";
 
 export type ComposerInputProps = {
@@ -91,8 +98,8 @@ const mentionLook: MentionLook = ({ directiveType, directiveId, label }) => {
  * The composer's keys and paste: ↑ in an empty field edits the last queued message, else
  * walks back through the conversation's prompts (↓ forward); ⌘Enter while the model works
  * does the opposite of the queueing setting, for this message; a long paste becomes a
- * "Pasted text" attachment and pasted files attach, as ChatGPT's do. The `@` and `/` menus
- * take their keys first.
+ * "Pasted text" attachment and pasted files attach, as ChatGPT's do; ⌃⇧D starts dictating at
+ * the caret and stops again. The `@` and `/` menus take their keys first.
  */
 function ComposerKeys({ running }: { running: boolean }) {
   const [editor] = useLexicalComposerContext();
@@ -101,6 +108,40 @@ function ComposerKeys({ running }: { running: boolean }) {
   const target = useContext(ComposerTargetContext);
   const history = usePromptHistory(target?.mentions ?? null);
   const queueEnabled = useApp((s) => s.settings.queueEnabled);
+  const owner = target?.conversation?.id ?? NEW_CHAT_SCOPE;
+  const dictation = useDictation(owner);
+  // Dictated text lands at the caret (or at the end, if the field never had one), spaced
+  // from the word before it.
+  useEffect(
+    () =>
+      registerInserter(
+        owner,
+        (text) =>
+          new Promise<void>((resolve) => {
+            editor.update(
+              () => {
+                let selection = $getSelection();
+                if (!$isRangeSelection(selection)) {
+                  $getRoot().selectEnd();
+                  selection = $getSelection();
+                }
+                if (!$isRangeSelection(selection)) return;
+                const node = selection.anchor.getNode();
+                const before = $isTextNode(node)
+                  ? node.getTextContent().slice(0, selection.anchor.offset)
+                  : "";
+                selection.insertText(before && !/\s$/.test(before) ? ` ${text}` : text);
+              },
+              // The composer has the text once the editor has updated.
+              { onUpdate: () => requestAnimationFrame(() => resolve()) },
+            );
+            editor.focus();
+          }),
+      ),
+    [editor, owner],
+  );
+  const dictating = dictation.phase.type === "recording";
+  const canDictate = dictation.available && dictation.phase.type !== "transcribing";
   useEffect(() => {
     const arrow = (key: "ArrowUp" | "ArrowDown") => (event: KeyboardEvent) => {
       if (event.isComposing) return false;
@@ -125,6 +166,19 @@ function ComposerKeys({ running }: { running: boolean }) {
         COMMAND_PRIORITY_NORMAL,
       ),
       editor.registerCommand(
+        KEY_DOWN_COMMAND,
+        (event) => {
+          const dictate =
+            event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyD";
+          if (!dictate || !canDictate) return false;
+          event.preventDefault();
+          if (dictating) void stopDictation();
+          else void startDictation(owner);
+          return true;
+        },
+        COMMAND_PRIORITY_NORMAL,
+      ),
+      editor.registerCommand(
         PASTE_COMMAND,
         (event) => {
           if (!(event instanceof ClipboardEvent) || !event.clipboardData) return false;
@@ -141,6 +195,6 @@ function ComposerKeys({ running }: { running: boolean }) {
         COMMAND_PRIORITY_NORMAL,
       ),
     );
-  }, [editor, aui, pull, history, running, queueEnabled]);
+  }, [editor, aui, pull, history, running, queueEnabled, owner, canDictate, dictating]);
   return null;
 }

@@ -2,7 +2,8 @@
 //!
 //! It is a plain `wry` webview, not a Tauri one: Tauri gives each of its webviews the app's IPC
 //! bridge, init scripts and custom protocols, and a web page must get none of that. This one
-//! has no IPC handler, no scripts of ours and no custom protocols; it keeps its cookies and
+//! has no IPC handler and no custom protocols, and its one script of ours only takes the
+//! microphone, camera and speech APIs away (`NO_CAPTURE`); it keeps its cookies and
 //! storage in memory only, separate from the app's own webview; it opens only web pages, sends
 //! popups to the system browser, and on macOS denies the page the camera and microphone (wry's
 //! own delegate would grant them; see `browser_ui`). It is made when the tab first loads a page and dropped
@@ -30,6 +31,30 @@ fn allowed(url: &str) -> bool {
     matches!(scheme.as_deref(), Some("http" | "https" | "about" | "blob"))
 }
 
+/// Run in every frame of the tab's pages before their own scripts: takes away the
+/// microphone, camera and speech recognition APIs. The app itself may use the microphone
+/// (dictation), and asking for it here would make the system ask the user on a page's behalf;
+/// a page that still asks is refused (macOS: `browser_ui`; Windows: WebView2 asks the user).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const NO_CAPTURE: &str = r#"(() => {
+  const gone = (target, name) => {
+    try {
+      Object.defineProperty(target, name, { get: () => undefined, configurable: false });
+    } catch {}
+  };
+  if (window.MediaDevices) {
+    for (const name of ["getUserMedia", "getDisplayMedia", "enumerateDevices"]) {
+      gone(MediaDevices.prototype, name);
+    }
+  }
+  for (const name of ["mediaDevices", "getUserMedia", "webkitGetUserMedia"]) {
+    gone(Navigator.prototype, name);
+  }
+  for (const name of ["MediaDevices", "SpeechRecognition", "webkitSpeechRecognition"]) {
+    gone(window, name);
+  }
+})();"#;
+
 /// Whether `url` is a web page, which the system browser may open.
 fn web_page(url: &str) -> bool {
     let scheme = url
@@ -53,7 +78,7 @@ mod embedded {
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
 
-    use super::{allowed, failed, web_page};
+    use super::{NO_CAPTURE, allowed, failed, web_page};
     use crate::shell::MAIN_WINDOW;
 
     /// A tab's page.
@@ -119,6 +144,7 @@ mod embedded {
             .with_url(&url)
             .with_bounds(rect(bounds))
             .with_incognito(true)
+            .with_initialization_script_for_main_only(NO_CAPTURE, false)
             .with_back_forward_navigation_gestures(true)
             .with_navigation_handler(move |url| {
                 let ok = allowed(&url);
