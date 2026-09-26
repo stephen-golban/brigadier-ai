@@ -38,6 +38,7 @@ import {
 } from "@/app/conversation/composerTarget";
 import { PendingActionCard, usePendingActions, WaitingReminder } from "@/app/conversation/ActionCards";
 import { QueueCard } from "@/app/conversation/QueueCard";
+import { shortcutLabel } from "@/app/conversation/SidePanel";
 import { useComposerDraft } from "@/app/conversation/composerDraft";
 import type { BlobAttachmentAdapter } from "@/app/conversation/attachments";
 import { StatusCard, StatusCardContext } from "@/app/conversation/StatusCard";
@@ -138,7 +139,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                   <ComposerAttachments />
                   <div className="flex items-center gap-1">
                     <ComposerInput placeholder="Message Brigadier" autoFocus={false} line />
-                    <SendControls running={target.running} onResume={target.onResume} />
+                    <SendControls running={target.running} onResume={target.onResume} compact />
                   </div>
                 </div>
               }
@@ -177,6 +178,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                 )}
                 <PlanChip />
               </div>
+              <DictationNote owner={dictationOwner} />
               {conversation && <ComposerContextRing />}
               {conversation ? (
                 <ConversationModelPicker
@@ -362,9 +364,12 @@ const SEND_TIPS: Record<SendState, string> = {
 function SendControls({
   running,
   onResume,
+  compact = false,
 }: {
   running: boolean;
   onResume: (() => void) | null;
+  /** The one-line field under an action card. */
+  compact?: boolean;
 }) {
   const target = useContext(ComposerTargetContext);
   const conversationId = target?.conversation?.id ?? null;
@@ -375,7 +380,7 @@ function SendControls({
   const canCancel = useAuiState((s) => s.composer.canCancel);
   const armed = useEscToStop(canCancel);
   const dictationOwner = conversationId ?? NEW_CHAT_SCOPE;
-  const dictation = useDictation(dictationOwner);
+  const { phase } = useDictation(dictationOwner);
   const state: SendState =
     armed
       ? "armed"
@@ -416,34 +421,10 @@ function SendControls({
     </TooltipIconButton>
   );
   // The one-line field under an action card has no footer to give over to dictation.
-  if (dictationActive(dictation.phase)) return <DictationBar owner={dictationOwner} compact />;
-  // Idle and empty, the send button's place is the microphone's (ChatGPT's voice button).
-  if (state === "send" && empty && dictation.available) {
-    const failed = dictation.phase.type === "failed" ? dictation.phase.message : null;
-    return (
-      <div className="flex shrink-0 items-center gap-1">
-        <TooltipIconButton
-          tooltip={failed ? `Retry dictation: ${failed}` : "Dictate"}
-          side="bottom"
-          type="button"
-          variant="default"
-          size="icon-md"
-          data-state={failed ? "retry-dictation" : "dictate"}
-          className="aui-composer-dictate rounded-capsule"
-          onClick={() => void startDictation(dictationOwner)}
-        >
-          <span
-            key={failed ? "retry" : "dictate"}
-            className="animate-in fade-in zoom-in-75 flex items-center duration-200 motion-reduce:animate-none"
-          >
-            {failed ? <Warning className="size-icon-sm" /> : <Mic className="size-icon-sm" />}
-          </span>
-        </TooltipIconButton>
-      </div>
-    );
-  }
+  if (phase.type === "recording" && compact) return <DictationBar owner={dictationOwner} compact />;
   return (
     <div className="flex shrink-0 items-center gap-1">
+      <DictateButton owner={dictationOwner} />
       {state === "resume" ? (
         button
       ) : state === "starting" || state === "armed" || state === "stop" ? (
@@ -455,112 +436,157 @@ function SendControls({
   );
 }
 
-function dictationActive(phase: DictationPhase): boolean {
-  return phase.type !== "idle" && phase.type !== "failed";
+/** What dictation is doing while it isn't recording: the model's download, starting, transcribing. */
+function dictationNote(phase: DictationPhase): string | null {
+  switch (phase.type) {
+    case "downloading":
+      return `Downloading the speech model${phase.total > 0 ? ` · ${Math.floor((phase.received / phase.total) * 100)}%` : "…"}`;
+    case "starting":
+      return "Starting dictation…";
+    case "transcribing":
+      return "Transcribing…";
+    default:
+      return null;
+  }
 }
 
-/** The composer's footer row; while dictating, ChatGPT's dictation controls take all of it. */
+/** The footer's line saying what dictation is doing, left of the model picker. */
+function DictationNote({ owner }: { owner: string }) {
+  const note = dictationNote(useDictation(owner).phase);
+  if (!note) return null;
+  return (
+    <span data-slot="composer-dictation-note" className="text-muted-foreground min-w-0 truncate px-1 text-xs">
+      {note}
+    </span>
+  );
+}
+
+/**
+ * ChatGPT's Dictate button, its own beside the send button: the microphone (or ⌃⇧D) starts
+ * dictating wherever the caret is, with or without text around it. It spins while the speech
+ * model downloads, the microphone opens (a click cancels either) and the text is worked out,
+ * and offers a retry after a failure. It keeps the field's focus, so the caret stays put.
+ */
+function DictateButton({ owner }: { owner: string }) {
+  const { available, phase } = useDictation(owner);
+  const mac = useApp((s) => s.info?.platform === "macos");
+  if (!available) return null;
+  const failed = phase.type === "failed" ? phase.message : null;
+  const busy = phase.type === "downloading" || phase.type === "starting" || phase.type === "transcribing";
+  const tooltip =
+    phase.type === "downloading"
+      ? "Cancel download"
+      : phase.type === "starting"
+        ? "Cancel dictation"
+        : phase.type === "transcribing"
+          ? "Transcribing…"
+          : failed
+            ? `Retry dictation: ${failed}`
+            : "Dictate";
+  return (
+    <TooltipIconButton
+      tooltip={tooltip}
+      shortcut={busy ? undefined : shortcutLabel("⌃⇧D", mac)}
+      aria-keyshortcuts="Control+Shift+D"
+      side="top"
+      type="button"
+      size="icon-md"
+      data-state={busy ? phase.type : failed ? "retry-dictation" : "dictate"}
+      className="aui-composer-dictate rounded-capsule group/dictate"
+      disabled={phase.type === "transcribing"}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={busy ? cancelDictation : () => void startDictation(owner)}
+    >
+      <span
+        key={busy ? "busy" : failed ? "retry" : "dictate"}
+        className="animate-in fade-in zoom-in-75 flex items-center duration-200 motion-reduce:animate-none"
+      >
+        {busy ? (
+          <>
+            <Spin className="size-icon-sm animate-spin group-hover/dictate:hidden motion-reduce:animate-none" />
+            <X className="size-icon-sm hidden group-hover/dictate:block" />
+          </>
+        ) : failed ? (
+          <Warning className="size-icon-sm" />
+        ) : (
+          <Mic className="size-icon-sm" />
+        )}
+      </span>
+    </TooltipIconButton>
+  );
+}
+
+/** The composer's footer row; while the microphone records, ChatGPT's dictation controls take all of it. */
 function ComposerFooter({ owner, children }: { owner: string; children: ReactNode }) {
   const { phase } = useDictation(owner);
   return (
     <div className="flex items-center gap-1">
-      {dictationActive(phase) ? <DictationBar owner={owner} /> : children}
+      {phase.type === "recording" ? <DictationBar owner={owner} /> : children}
     </div>
   );
 }
 
 /**
- * Dictation under way (ChatGPT's): Cancel, then the microphone's waveform while it records,
- * Stop (the text goes to the caret) and "Transcribe and send"; a line saying what happens
- * while the speech model downloads, the microphone opens or the text is worked out.
+ * Recording (ChatGPT's): Cancel, the microphone's waveform, Stop (the text goes to the caret)
+ * and "Transcribe and send".
  */
 function DictationBar({ owner, compact = false }: { owner: string; compact?: boolean }) {
   const aui = useAui();
-  const { phase, levels } = useDictation(owner);
-  const note =
-    phase.type === "downloading"
-      ? `Downloading the speech model${phase.total > 0 ? ` · ${Math.floor((phase.received / phase.total) * 100)}%` : "…"}`
-      : phase.type === "starting"
-        ? "Starting dictation…"
-        : phase.type === "transcribing"
-          ? "Transcribing…"
-          : null;
+  const { levels } = useDictation(owner);
   return (
     <div
       data-slot="composer-dictation"
-      data-phase={phase.type}
+      data-phase="recording"
       className={cn("flex min-w-0 items-center gap-1", compact ? "shrink-0" : "flex-1")}
     >
-      {phase.type !== "transcribing" && (
-        <TooltipIconButton
-          tooltip={phase.type === "downloading" ? "Cancel download" : "Cancel dictation"}
-          side="bottom"
-          type="button"
-          size="icon-md"
-          className="rounded-capsule"
-          onClick={cancelDictation}
-        >
-          <X className="size-icon-sm" />
-        </TooltipIconButton>
-      )}
-      {phase.type === "recording" ? (
-        <div
-          aria-hidden
-          className={cn(
-            "flex h-7 min-w-0 items-center justify-end gap-0.5 overflow-hidden px-1",
-            compact ? "w-24" : "flex-1",
-          )}
-        >
-          {levels.map((level, index) => (
-            <span
-              // Bars shift left as new ones arrive; their place is their identity.
-              // oxlint-disable-next-line react/no-array-index-key
-              key={index}
-              className="bg-foreground w-0.5 shrink-0 rounded-full"
-              style={{ height: `${Math.max(2, Math.round(level * 24))}px` }}
-            />
-          ))}
-        </div>
-      ) : (
-        <span className="text-muted-foreground min-w-0 flex-1 truncate px-1 text-sm">{note}</span>
-      )}
-      {phase.type === "recording" ? (
-        <>
-          <TooltipIconButton
-            tooltip="Stop dictation"
-            side="bottom"
-            type="button"
-            size="icon-md"
-            className="rounded-capsule"
-            onClick={() => void stopDictation()}
-          >
-            <Stop className="size-icon-sm" />
-          </TooltipIconButton>
-          <TooltipIconButton
-            tooltip="Transcribe and send"
-            side="bottom"
-            type="button"
-            variant="default"
-            size="icon-md"
-            className="rounded-capsule"
-            onClick={() => void stopDictation(() => aui.composer().send())}
-          >
-            <ArrowUp />
-          </TooltipIconButton>
-        </>
-      ) : (
-        <TooltipIconButton
-          tooltip={note ?? ""}
-          side="bottom"
-          type="button"
-          variant="secondary"
-          size="icon-md"
-          className="rounded-capsule"
-          disabled
-        >
-          <Spin className="size-icon-sm animate-spin motion-reduce:animate-none" />
-        </TooltipIconButton>
-      )}
+      <TooltipIconButton
+        tooltip="Cancel dictation"
+        side="bottom"
+        type="button"
+        size="icon-md"
+        className="rounded-capsule"
+        onClick={cancelDictation}
+      >
+        <X className="size-icon-sm" />
+      </TooltipIconButton>
+      <div
+        aria-hidden
+        className={cn(
+          "flex h-7 min-w-0 items-center justify-end gap-0.5 overflow-hidden px-1",
+          compact ? "w-24" : "flex-1",
+        )}
+      >
+        {levels.map((level, index) => (
+          <span
+            // Bars shift left as new ones arrive; their place is their identity.
+            // oxlint-disable-next-line react/no-array-index-key
+            key={index}
+            className="bg-foreground w-0.5 shrink-0 rounded-full"
+            style={{ height: `${Math.max(2, Math.round(level * 24))}px` }}
+          />
+        ))}
+      </div>
+      <TooltipIconButton
+        tooltip="Stop dictation"
+        side="bottom"
+        type="button"
+        size="icon-md"
+        className="rounded-capsule"
+        onClick={() => void stopDictation()}
+      >
+        <Stop className="size-icon-sm" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        tooltip="Transcribe and send"
+        side="bottom"
+        type="button"
+        variant="default"
+        size="icon-md"
+        className="rounded-capsule"
+        onClick={() => void stopDictation(() => aui.composer().send())}
+      >
+        <ArrowUp />
+      </TooltipIconButton>
     </div>
   );
 }
