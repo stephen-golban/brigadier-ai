@@ -1132,6 +1132,7 @@ impl Core {
     }
 
     /// Queues a message while a turn runs: last, or at `index` (clamped to the queue).
+    /// `deciding` while the orchestrator judges whether it joins the working answer.
     pub async fn enqueue(
         &self,
         id: &ConversationId,
@@ -1139,6 +1140,7 @@ impl Core {
         attachments: Vec<AttachmentRef>,
         mentions: Vec<Mention>,
         index: Option<u32>,
+        deciding: bool,
     ) -> Result<QueuedMessage> {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err(Error::Invalid("message is empty".into()));
@@ -1151,6 +1153,7 @@ impl Core {
             mentions,
             queued_at_ms: now_ms(),
             edited_at_ms: None,
+            deciding,
         };
         let queued = item.clone();
         self.change_queue(id, move |queue| {
@@ -1227,6 +1230,37 @@ impl Core {
         })
         .await?;
         taken.ok_or_else(|| Error::NotFound(format!("queued message {item_id}")))
+    }
+
+    /// Ends the orchestrator's judging of queued messages `item_ids`: those still in the queue
+    /// wait there for their turn. Returns the ones that were being judged.
+    pub async fn settle_queued(
+        &self,
+        id: &ConversationId,
+        item_ids: &[String],
+    ) -> Result<Vec<String>> {
+        let board = self.board(id).await?;
+        let judged: Vec<String> = board
+            .queue
+            .items
+            .iter()
+            .filter(|item| item.deciding && item_ids.contains(&item.id))
+            .map(|item| item.id.clone())
+            .collect();
+        if judged.is_empty() {
+            return Ok(judged);
+        }
+        let settled = judged.clone();
+        self.change_queue(id, move |queue| {
+            for item in &mut queue.items {
+                if settled.contains(&item.id) {
+                    item.deciding = false;
+                }
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(judged)
     }
 
     /// Takes the next message to send, unless the queue is paused or empty.

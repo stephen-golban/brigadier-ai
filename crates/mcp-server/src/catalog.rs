@@ -5,8 +5,8 @@ use std::sync::{Arc, OnceLock};
 
 use brigadier_core::tools::{
     AcceptTask, AskOrchestrator, AskUser, DelegateTask, FinishSession, MessageWorker,
-    OrchestratorCall, ProposePlan, QueryBrain, ReadArtifact, RequestApproval, Role, SubmitReport,
-    TaskRef, ToolCall, WorkerCall,
+    OrchestratorCall, ProposePlan, QueryBrain, ReadArtifact, RequestApproval, Role, RouteFollowUp,
+    SubmitReport, TaskRef, ToolCall, WorkerCall,
 };
 use rmcp::model::{JsonObject, Tool};
 use serde::de::DeserializeOwned;
@@ -25,6 +25,11 @@ worktree and land only through accept_task; the other kinds only read and report
 const MESSAGE_WORKER: &str = "Send text to a running worker: the answer to the question it \
 asked you (it is waiting for it), or an instruction that steers its current work. Returns once \
 delivered.";
+
+const ROUTE_FOLLOW_UP: &str = "Sort a [follow-up …] the user sent while you work on their \
+request. joins=true: it belongs to this work; it reaches you at once as the user's message, and \
+your final answer covers it too. joins=false: it is a request of its own; it waits in the user's \
+queue and reaches you once this work is done.";
 
 const STOP_WORKER: &str = "Stop a running worker, e.g. when its task is no longer needed or \
 went wrong. Nothing of it lands.";
@@ -97,6 +102,11 @@ fn orchestrator_tools() -> Vec<Tool> {
             "message_worker",
             MESSAGE_WORKER,
             input_schema::<MessageWorker>(),
+        ),
+        tool(
+            "route_follow_up",
+            ROUTE_FOLLOW_UP,
+            input_schema::<RouteFollowUp>(),
         ),
         tool("stop_worker", STOP_WORKER, input_schema::<TaskRef>()),
         tool("ask_user", ASK_USER, input_schema::<AskUser>()),
@@ -178,6 +188,7 @@ pub fn parse_call(
             let call = match name {
                 "delegate_task" => OrchestratorCall::DelegateTask(args(name, arguments)?),
                 "message_worker" => OrchestratorCall::MessageWorker(args(name, arguments)?),
+                "route_follow_up" => OrchestratorCall::RouteFollowUp(args(name, arguments)?),
                 "stop_worker" => OrchestratorCall::StopWorker(args(name, arguments)?),
                 "ask_user" => OrchestratorCall::AskUser(args(name, arguments)?),
                 "read_report" => OrchestratorCall::ReadReport(args(name, arguments)?),

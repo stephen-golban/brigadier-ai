@@ -10,7 +10,7 @@ use super::SessionManager;
 use super::conversation::Envelope;
 use super::prompts;
 use crate::board::Board;
-use crate::model::ConversationId;
+use crate::model::{ConversationId, ConversationKind};
 use crate::work::{CardState, PlanState, RequestState, Task, TaskId, TaskState};
 
 impl SessionManager {
@@ -60,6 +60,29 @@ impl SessionManager {
         (started(&running)? > started(own)?).then_some(running)
     }
 
+    /// The newest request, while the answer the thread shows for it still works or waits: it,
+    /// or a request it was steered into, has a turn, a worker or a card going. A follow-up
+    /// sent now may belong to that answer.
+    pub(crate) async fn working_request(&self, conversation_id: &ConversationId) -> Option<String> {
+        let board = self.core.board(conversation_id).await.ok()?;
+        let latest = board.latest_request()?;
+        let mut request = Some(latest);
+        // A steer chain is short; the bound only guards against a cycle in stored data.
+        for _ in 0..board.requests.len() {
+            let Some(of) = request else {
+                break;
+            };
+            if matches!(of.state, RequestState::Working | RequestState::Waiting) {
+                return Some(latest.id.clone());
+            }
+            request = of
+                .steered_into
+                .as_deref()
+                .and_then(|into| board.requests.get(into));
+        }
+        None
+    }
+
     /// Brings every request of the conversation up to date with what runs and waits.
     pub(crate) async fn settle_requests(&self, conversation_id: &ConversationId) {
         let Ok(board) = self.core.board(conversation_id).await else {
@@ -105,6 +128,16 @@ impl SessionManager {
             if let Err(err) = self.core.update_request(conversation_id, id, state).await {
                 tracing::debug!(conversation = %conversation_id, error = %err, "could not update a request");
             }
+        }
+        // A session's answer that ended with no turn after it (a worker the user stopped):
+        // the follow-up waiting for it goes now.
+        let waiting = conv.kind == ConversationKind::Session
+            && activity.running.is_none()
+            && activity.carried.is_empty()
+            && !board.queue.paused
+            && board.queue.items.first().is_some_and(|item| !item.deciding);
+        if waiting && self.working_request(conversation_id).await.is_none() {
+            self.kick(&conv);
         }
     }
 

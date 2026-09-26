@@ -508,7 +508,7 @@ pub struct Plan {
 
 // ----- the message queue --------------------------------------------------------------------
 
-/// A message waiting for the running turn to end.
+/// A message waiting for the running turn (or a session's working answer) to end.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedMessage {
@@ -518,6 +518,10 @@ pub struct QueuedMessage {
     pub mentions: Vec<Mention>,
     pub queued_at_ms: i64,
     pub edited_at_ms: Option<i64>,
+    /// Sent to a session while its answer works: the orchestrator is judging whether it
+    /// belongs to that answer (it joins it) or is a request of its own (it waits here).
+    #[serde(default)]
+    pub deciding: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -931,6 +935,8 @@ pub enum InjectionKind {
     Reseed,
     /// The user resumed a request they had stopped.
     Resume,
+    /// A follow-up the user sent while the answer worked, for the orchestrator to sort.
+    FollowUp,
 }
 
 /// One thing Brigadier put into the orchestrator's context, for the Inspector.

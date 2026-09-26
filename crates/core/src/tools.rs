@@ -126,6 +126,18 @@ pub struct MessageWorker {
     pub text: String,
 }
 
+/// `route_follow_up`: sorts a message the user sent while the orchestrator works on their
+/// request.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouteFollowUp {
+    /// The follow-up's id, from its [follow-up …] block.
+    pub follow_up: String,
+    /// True if it belongs to the work in progress (it joins it now); false if it is a request
+    /// of its own (it waits until this work is done).
+    pub joins: bool,
+}
+
 /// A task reference only (`stop_worker`, `read_report`).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -234,6 +246,7 @@ pub struct FinishSession {
 pub enum OrchestratorCall {
     DelegateTask(DelegateTask),
     MessageWorker(MessageWorker),
+    RouteFollowUp(RouteFollowUp),
     StopWorker(TaskRef),
     AskUser(AskUser),
     ReadReport(TaskRef),
@@ -252,6 +265,7 @@ impl OrchestratorCall {
         match self {
             Self::DelegateTask(_) => "delegate_task",
             Self::MessageWorker(_) => "message_worker",
+            Self::RouteFollowUp(_) => "route_follow_up",
             Self::StopWorker(_) => "stop_worker",
             Self::AskUser(_) => "ask_user",
             Self::ReadReport(_) => "read_report",
