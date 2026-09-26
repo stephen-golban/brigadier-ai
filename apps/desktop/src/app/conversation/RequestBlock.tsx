@@ -362,7 +362,8 @@ const ActivityRow: FC<{ requestIds: string[] }> = ({ requestIds }) => {
  * One request's answer, as ChatGPT shows a turn. While the request works (and after it was
  * stopped or failed) its work shows in place, in order: replies, workers and cards, then what
  * happens right now. Once it is done, everything before the answer folds into "Worked for
- * 3m 4s"; the cards that matter (decisions, failures, what needs the user) stay in view.
+ * 3m 4s"; the cards that matter (decisions, failures, what needs the user) and the user's
+ * follow-ups stay in view.
  */
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
@@ -420,6 +421,11 @@ export const RequestBlock: FC = () => {
               ))}
             </div>
           )}
+          {/* The user's own follow-ups stay in view when the work folds. */}
+          {!(open && foldable) &&
+            meta.steers.map((steer) => (
+              <SteerBubble key={`steer:${steer.position}`} text={steer.text} atMs={steer.atMs} />
+            ))}
           {kept.map((card) => (
             <CardEntry key={`${card.type}:${card.id}`} card={card} />
           ))}
