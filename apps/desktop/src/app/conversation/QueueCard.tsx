@@ -178,6 +178,7 @@ export function QueueCard({ conversationId }: { conversationId: string }) {
             <MessageQueueItem
               key={item.id}
               dragging={drag?.id === item.id}
+              deciding={item.deciding}
               grip={
                 items.length > 1 && (
                   <button
@@ -206,6 +207,14 @@ export function QueueCard({ conversationId }: { conversationId: string }) {
                   <span className="text-muted-foreground">{attached}</span>
                 )}
               </span>
+              {item.deciding && (
+                <span
+                  title="Brigadier is checking whether this belongs to the answer in progress"
+                  className="text-muted-foreground shimmer shrink-0 text-xs motion-reduce:animate-none"
+                >
+                  Deciding
+                </span>
+              )}
               <TooltipIconButton
                 tooltip="Submit without interrupting the model"
                 side="top"

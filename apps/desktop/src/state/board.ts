@@ -131,6 +131,31 @@ export function disposeSideBoard(store: BoardStore): void {
 }
 
 /** The board showing `conversationId`, the open one's or a side chat's, if any does. */
+/**
+ * The newest request, while the answer the thread shows for it still works or waits (it, or a
+ * request it was steered into, has a turn, a worker or a card going), as the daemon judges it:
+ * what a session's user sends now waits in the queue while the orchestrator sorts it.
+ */
+export function workingRequest(board: Board): string | null {
+  const requests = Object.values(board.requests);
+  const latest = requests.reduce<UserRequest | null>(
+    (newest, request) =>
+      !newest ||
+      request.startedAtMs > newest.startedAtMs ||
+      (request.startedAtMs === newest.startedAtMs && request.id > newest.id)
+        ? request
+        : newest,
+    null,
+  );
+  let request = latest;
+  // A steer chain is short; the bound only guards against a cycle in stored data.
+  for (let hops = 0; request && hops < requests.length; hops += 1) {
+    if (request.state.type === "working" || request.state.type === "waiting") return latest?.id ?? null;
+    request = request.steeredInto ? (board.requests[request.steeredInto] ?? null) : null;
+  }
+  return null;
+}
+
 export function boardOf(conversationId: string): Board | null {
   for (const store of [mainBoard, ...sideBoards]) {
     const { board } = store.getState();
