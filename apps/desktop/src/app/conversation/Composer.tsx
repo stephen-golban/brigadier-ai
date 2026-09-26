@@ -24,6 +24,7 @@ import { BranchPopover, ProjectCombobox, WorkInMenu } from "@/app/conversation/R
 import {
   ConversationModelPicker,
   ConversationPermissionPicker,
+  openPermissionsHelp,
   PermissionPicker,
   ProjectSettingsButton,
 } from "@/app/conversation/SetupPickers";
@@ -48,9 +49,13 @@ import { ComposerRail, ComposerRailItem } from "@/components/assistant-ui/elemen
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment";
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
 import { ContextRing } from "@/components/assistant-ui/context-ring";
+import { ShieldExclamation } from "@/components/glyphs/permission-glyphs";
+import { Button } from "@/components/ui/button";
+import type { Conversation } from "@/ipc/generated";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
+import { updateSettings } from "@/state/actions";
 import { useBoard } from "@/state/board";
 import {
   cancelDictation,
@@ -104,6 +109,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
         {conversation && (
           <Mentions conversation={conversation} targets={targets} />
         )}
+        {conversation && !archived && <FullAccessNotice conversation={conversation} />}
         <SlashCommands
           conversation={conversation}
           groups={resolved.groups}
@@ -257,6 +263,62 @@ function ComposerContextRing() {
   const usage = useBoard((s) => s.board?.context ?? null);
   if (!show || !usage) return null;
   return <ContextRing usage={usage} />;
+}
+
+/** Conversations whose Full access notice was closed, until the app restarts. */
+const closedNotices = new Set<string>();
+
+/**
+ * ChatGPT's "Full access is on" card above the composer, while a session's workers run
+ * without the OS sandbox. × closes it for this conversation; "Don't show again" turns it off
+ * in Settings, where it can be turned back on.
+ */
+function FullAccessNotice({ conversation }: { conversation: Conversation }) {
+  const show = useApp((s) => s.settings.showFullAccessNotice);
+  const [, setClosed] = useState(0);
+  const full = conversation.setup?.type === "session" && conversation.setup.permission === "fullAccess";
+  if (!show || !full || closedNotices.has(conversation.id)) return null;
+  const close = () => {
+    closedNotices.add(conversation.id);
+    setClosed((count) => count + 1);
+  };
+  return (
+    <section
+      aria-label="Full access is on"
+      data-slot="full-access-notice"
+      className="animate-rail-open bg-rail border-foreground/10 rounded-surface mb-2 flex items-center gap-3 border px-4 py-3 text-sm motion-reduce:animate-none"
+    >
+      <ShieldExclamation className="size-icon-md shrink-0" />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">Full access is on</p>
+        <p className="text-muted-foreground">
+          Brigadier’s workers can edit any file and run commands with internet access without
+          your approval. This increases the risk of data loss, exposed information, and
+          unexpected changes.{" "}
+          <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={openPermissionsHelp}>
+            Learn more
+          </button>{" "}
+          about elevated risks.
+        </p>
+      </div>
+      <div className="border-foreground/10 flex shrink-0 items-center gap-1 self-stretch border-s ps-3">
+        <Button
+          size="xs"
+          className="rounded-capsule"
+          onClick={() =>
+            void updateSettings({ ...useApp.getState().settings, showFullAccessNotice: false }).catch(
+              (error: unknown) => console.error("couldn't save the setting", error),
+            )
+          }
+        >
+          Don’t show again
+        </Button>
+        <TooltipIconButton tooltip="Close" side="bottom" className="rounded-capsule" onClick={close}>
+          <X />
+        </TooltipIconButton>
+      </div>
+    </section>
+  );
 }
 
 /** Whether a sideways-scrolling row has more past its right edge. */

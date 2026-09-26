@@ -461,6 +461,8 @@ pub struct Settings {
     pub hibernate_after_minutes: u32,
     /// The composer shows how full the model's context is (a ring by the model picker).
     pub show_context_usage: bool,
+    /// A notice above the composer while a conversation is in Full access.
+    pub show_full_access_notice: bool,
 }
 
 impl Default for Settings {
@@ -472,6 +474,7 @@ impl Default for Settings {
             default_chat_model: None,
             hibernate_after_minutes: 30,
             show_context_usage: true,
+            show_full_access_notice: true,
         }
     }
 }

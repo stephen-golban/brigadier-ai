@@ -189,6 +189,22 @@ to 200 kB go into the message itself (a Chat cannot read files); other attachmen
 `BRIGADIER_ROUTE_CHEAP=1` in the daemon's environment makes every worker use its vendor's
 cheapest model at low effort. It is for development and verification runs only.
 
+### Permission levels
+
+A session's permission level is picked in the composer; a project remembers the last one used.
+
+- **Ask for approval**: you approve every plan and every change before it lands.
+- **Approve for me**: Brigadier approves plans and changes on your behalf (a risky plan gets an
+  independent review first) and asks you only what only you can answer.
+- **Full access**: as Approve for me, but workers run without the OS sandbox. They can read,
+  create, change and delete any file your account can, run any command (install software,
+  change settings) and use the internet, without asking. The composer shows a notice while a
+  conversation is in Full access; Settings can turn it off.
+
+At the first two levels workers run in the OS sandbox: they can read the repository and use the
+network, but write only to their own worktree and scratch folder. Outward commands ask you at
+every level (below).
+
 ### Outward commands
 
 Pushes, publishes, deploys and cloud commands (`policy::ALWAYS_ASK`) ask you at every permission
