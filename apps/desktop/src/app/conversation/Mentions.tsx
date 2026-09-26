@@ -39,6 +39,18 @@ function label(mention: Mention, targets: readonly MentionTarget[]): string | nu
 }
 
 /**
+ * Whether `text` has `@name` whole, not as the start of a longer name (`@a.ts` in
+ * `@a.tsx`, `@src` in `@src/lib`); a sentence's full stop after it still counts.
+ */
+function hasMention(text: string, name: string): boolean {
+  const token = `@${name}`;
+  for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + 1)) {
+    if (!/^(?:[\w/-]|\.\w)/u.test(text.slice(at + token.length))) return true;
+  }
+  return false;
+}
+
+/**
  * What a message mentions: the workers it names as `@task-N`, and the files and
  * conversations picked from the menu (`known`) whose `@name` is still in the text.
  */
@@ -61,7 +73,7 @@ export function mentionsIn(
     if (mention.type === "task") continue;
     const name = label(mention, targets);
     const key = `${mention.type}:${mention.type === "file" ? mention.path : mention.id}`;
-    if (name && !seen.has(key) && text.includes(`@${name}`)) {
+    if (name && !seen.has(key) && hasMention(text, name)) {
       seen.add(key);
       mentions.push(mention);
     }

@@ -174,9 +174,13 @@ export const PlusMenu: FC = () => {
           style={{ width: placement.width }}
           className={`${floatingMenu} max-h-command-list`}
           onCloseAutoFocus={(event) => {
-            // Back to typing, as after picking from the `@` menu.
+            // Back to typing in this composer (a side chat has its own), as after picking
+            // from the `@` menu.
             event.preventDefault();
-            document.querySelector<HTMLElement>(COMPOSER_EDITABLE)?.focus();
+            trigger.current
+              ?.closest("[data-slot=composer]")
+              ?.querySelector<HTMLElement>(COMPOSER_EDITABLE)
+              ?.focus();
           }}
         >
           <Section>Add</Section>

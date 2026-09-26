@@ -107,10 +107,14 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
               more={waiting.length - 1}
               onDismiss={() => setAsideIds([...putAside, current.id])}
               message={
-                // The user can always talk to the orchestrator; this steers or queues as usual.
-                <div className="border-foreground/10 flex items-center gap-1 border-t pt-2">
-                  <ComposerInput placeholder="Message Brigadier" autoFocus={false} running={target.running} line />
-                  <SendControls running={target.running} onResume={target.onResume} />
+                // The user can always talk to the orchestrator; this steers or queues as usual,
+                // with the draft's attachments in view.
+                <div className="border-foreground/10 flex flex-col gap-1 border-t pt-2">
+                  <ComposerAttachments />
+                  <div className="flex items-center gap-1">
+                    <ComposerInput placeholder="Message Brigadier" autoFocus={false} running={target.running} line />
+                    <SendControls running={target.running} onResume={target.onResume} />
+                  </div>
                 </div>
               }
             />
