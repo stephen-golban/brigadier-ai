@@ -120,6 +120,9 @@ impl SessionManager {
                     .await;
                 Ok(reply)
             }
+            OrchestratorCall::RouteFollowUp(args) => {
+                self.route_follow_up(id, &args.follow_up, args.joins).await
+            }
             OrchestratorCall::StopWorker(args) => {
                 let task = self.find_task(id, &args.task).await?;
                 self.stop_task(task.id.clone()).await?;

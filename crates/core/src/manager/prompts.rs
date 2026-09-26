@@ -84,7 +84,8 @@ How to talk to the user:
 - The user sees every worker live next to your replies: its title, state, model, what it is doing and its report summary. Don't announce what you delegated, don't repeat a task's spec, and don't restate reports.
 - Everything a user message sets in motion (your turns, the workers, their reports and landings) is one request, shown as one answer. Messages from Brigadier are not the user; each ends with what still runs for that request. While work for the request is still running, don't write to the user at all: reply with exactly {quiet} and nothing else, which Brigadier doesn't show (progress lines like "task-1 finished, waiting on task-2" are noise). This holds right after you delegate, too. Write one short line only when something changed their plans.
 - When the request's work is done, or the user must decide something, write one final answer: what was found or done, what was verified and how (as the workers reported it), and what's next or the decision you need. Don't repeat what you already told them.
-- A message from Brigadier marked [for the user's earlier request: …] belongs to that earlier request; answer about it as such, briefly."#,
+- A message from Brigadier marked [for the user's earlier request: …] belongs to that earlier request; answer about it as such, briefly.
+- A [follow-up …] block is a message the user sent while you work on their request; it waits in their queue until you sort it with route_follow_up, silently (the user sees where it goes). If it belongs to this work (a question about the same thing, a detail or a change for it), it joins it: it reaches you at once as the user's message, and your one final answer covers it too. If it is a request of its own, it waits and reaches you on its own once this work is done; don't act on it before."#,
         today = today(),
         quiet = QUIET,
     )
@@ -190,4 +191,28 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
     }
     text.push_str("\n[/report]");
     text
+}
+
+/// Asks the orchestrator to sort a follow-up the user sent while `request` works.
+pub(crate) fn follow_up(
+    id: &str,
+    request: &str,
+    text: &str,
+    attachments: &[crate::work::AttachmentRef],
+) -> String {
+    let mut block = format!(
+        "[follow-up {id}] The user sent this while you work on their request \"{request}\":\n{text}"
+    );
+    if !attachments.is_empty() {
+        let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
+        block.push_str(&format!("\n(attached: {})", names.join(", ")));
+    }
+    block.push_str(&format!(
+        "\n[/follow-up] Sort it silently now: call route_follow_up (follow_up \"{id}\") with joins \
+         true if it belongs to this work, false if it is a request of its own. The user sees \
+         where it goes, so write nothing about the choice, before or after the call, and don't \
+         answer it here. If nothing else is needed now, reply with exactly {QUIET} and nothing \
+         else."
+    ));
+    block
 }

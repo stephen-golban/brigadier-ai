@@ -3,6 +3,11 @@ import type { AttachmentRef } from "./AttachmentRef";
 import type { Mention } from "./Mention";
 
 /**
- * A message waiting for the running turn to end.
+ * A message waiting for the running turn (or a session's working answer) to end.
  */
-export type QueuedMessage = { id: string, text: string, attachments: Array<AttachmentRef>, mentions: Array<Mention>, queuedAtMs: number, editedAtMs: number | null, };
+export type QueuedMessage = { id: string, text: string, attachments: Array<AttachmentRef>, mentions: Array<Mention>, queuedAtMs: number, editedAtMs: number | null, 
+/**
+ * Sent to a session while its answer works: the orchestrator is judging whether it
+ * belongs to that answer (it joins it) or is a request of its own (it waits here).
+ */
+deciding: boolean, };
