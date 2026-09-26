@@ -21,6 +21,7 @@ fn failed(message: impl Into<String>) -> IpcError {
 
 /// Whether the tab may show `url`: web pages, and the blank and blob pages they make.
 /// Everything else (files, the app's own schemes, `data:`, `javascript:`) is refused.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn allowed(url: &str) -> bool {
     let scheme = url
         .split_once(':')
