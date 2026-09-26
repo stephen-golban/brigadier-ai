@@ -29,7 +29,13 @@ import {
   chipFormatter,
   type MentionLook,
 } from "@/components/assistant-ui/elements/composer-chips";
-import { registerInserter, startDictation, stopDictation, useDictation } from "@/state/dictation";
+import {
+  cancelDictation,
+  registerInserter,
+  startDictation,
+  stopDictation,
+  useDictation,
+} from "@/state/dictation";
 import { NEW_CHAT_SCOPE } from "@/state/drafts";
 
 export type ComposerInputProps = {
@@ -94,7 +100,7 @@ const mentionLook: MentionLook = ({ directiveType, directiveId, label }) => {
  * The composer's keys and paste: ↑ in an empty field edits the last queued message, else
  * walks back through the conversation's prompts (↓ forward); a long paste becomes a
  * "Pasted text" attachment and pasted files attach, as ChatGPT's do; ⌃⇧D starts dictating at
- * the caret and stops again. The `@` and `/` menus take their keys first.
+ * the caret and stops (or cancels) again. The `@` and `/` menus take their keys first.
  */
 function ComposerKeys() {
   const [editor] = useLexicalComposerContext();
@@ -137,6 +143,8 @@ function ComposerKeys() {
     [editor, owner],
   );
   const dictating = dictation.phase.type === "recording";
+  // Pressed again while the model downloads or the microphone opens, it cancels (as the button does).
+  const opening = dictation.phase.type === "downloading" || dictation.phase.type === "starting";
   const canDictate = dictation.available && dictation.phase.type !== "transcribing";
   useEffect(() => {
     const arrow = (key: "ArrowUp" | "ArrowDown") => (event: KeyboardEvent) => {
@@ -157,6 +165,7 @@ function ComposerKeys() {
           if (!dictate || !canDictate) return false;
           event.preventDefault();
           if (dictating) void stopDictation();
+          else if (opening) cancelDictation();
           else void startDictation(owner);
           return true;
         },
@@ -179,6 +188,6 @@ function ComposerKeys() {
         COMMAND_PRIORITY_NORMAL,
       ),
     );
-  }, [editor, aui, pull, history, owner, canDictate, dictating]);
+  }, [editor, aui, pull, history, owner, canDictate, dictating, opening]);
   return null;
 }

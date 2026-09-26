@@ -8,10 +8,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 
 export type TooltipIconButtonProps = ComponentPropsWithRef<typeof Button> & {
   tooltip: string;
+  /** The button's keyboard shortcut, as a pill after the tip (ChatGPT's "Dictate ⌃⇧D"). */
+  shortcut?: string | undefined;
   side?: "top" | "bottom" | "left" | "right";
 };
 
@@ -20,7 +23,7 @@ export const TooltipIconButton = forwardRef<
   TooltipIconButtonProps
 >(
   (
-    { children, tooltip, side = "bottom", size = "icon-sm", className, ...rest },
+    { children, tooltip, shortcut, side = "bottom", size = "icon-sm", className, ...rest },
     ref,
   ) => {
     return (
@@ -38,7 +41,10 @@ export const TooltipIconButton = forwardRef<
               <span className="aui-sr-only sr-only">{tooltip}</span>
             </Button>
           </TooltipTrigger>
-          <TooltipContent side={side}>{tooltip}</TooltipContent>
+          <TooltipContent side={side}>
+            {tooltip}
+            {shortcut && <Kbd>{shortcut}</Kbd>}
+          </TooltipContent>
         </Tooltip>
       </TooltipProvider>
     );
