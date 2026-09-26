@@ -56,6 +56,22 @@ impl SessionManager {
         if point.role != MessageRole::Assistant {
             return Err(Error::Invalid("a chat is forked from an answer".into()));
         }
+        // A fork takes everything its requests did, so it starts at a request's last answer
+        // (as the thread's "Fork chat from here" does), never at one of its interim replies.
+        let later = messages.iter().any(|message| {
+            message.role == MessageRole::Assistant
+                && message.id != message_id
+                && message.request_id.is_some()
+                && message.request_id == point.request_id
+                && branch_of(&messages, &message.id)
+                    .iter()
+                    .any(|before| before.id == message_id)
+        });
+        if later {
+            return Err(Error::Invalid(
+                "fork from the request's last answer, not from an earlier reply".into(),
+            ));
+        }
         let path = branch_of(&messages, &message_id);
         let requests: HashSet<String> = path
             .iter()
@@ -188,6 +204,7 @@ impl SessionManager {
     ) -> Result<Vec<DomainEvent>> {
         let of =
             |request: &Option<String>| request.as_ref().is_some_and(|id| requests.contains(id));
+        let carried = |task: &TaskId| tasks.contains(&format!("task:{task}"));
         let mut kept = Vec::new();
         let mut after = 0;
         loop {
@@ -212,7 +229,9 @@ impl SessionManager {
                     DomainEvent::RequestUpdated { request } if requests.contains(&request.id) => {
                         DomainEvent::RequestUpdated { request }
                     }
-                    DomainEvent::TaskUpdated { mut task } if of(&task.request_id) => {
+                    // Only the tasks the fork carries: one a later request took over (it
+                    // re-accepted it) was filed under a copied request earlier on.
+                    DomainEvent::TaskUpdated { mut task } if carried(&task.id) => {
                         // The source's branches and worktrees stay the source's.
                         task.workspace = None;
                         task.kept = None;
@@ -227,7 +246,9 @@ impl SessionManager {
                     DomainEvent::PlanUpdated { plan } if of(&plan.request_id) => {
                         DomainEvent::PlanUpdated { plan }
                     }
-                    DomainEvent::WorkerStepped { step } if of(&step.request_id) => {
+                    DomainEvent::WorkerStepped { step }
+                        if of(&step.request_id) && carried(&step.task_id) =>
+                    {
                         DomainEvent::WorkerStepped { step }
                     }
                     DomainEvent::OrchestratorStepped { step } if of(&step.request_id) => {
