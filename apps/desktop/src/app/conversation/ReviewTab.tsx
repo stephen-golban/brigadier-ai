@@ -126,25 +126,24 @@ function useChangeKey(conversationId: string): string {
   });
 }
 
-/** The review of `scope`, refetched when the options, the board or `tick` change it. */
+/**
+ * The review of `scope`, refetched when the options, the board or `tick` change it. While a
+ * refetch loads, the last review stays only if it shows the same scope and options: another
+ * scope's patch must not sit under this one's label.
+ */
 function useReviewDiff(conversationId: string, scope: ReviewScope, options: ReviewOptions, tick: number) {
   const changeKey = useChangeKey(conversationId);
-  const key = JSON.stringify([
-    conversationId,
-    scope,
-    options.wholeFiles,
-    options.ignoreWhitespace,
-    tick,
-    changeKey,
-  ]);
+  const view = JSON.stringify([conversationId, scope, options.wholeFiles, options.ignoreWhitespace]);
+  const key = JSON.stringify([view, tick, changeKey]);
   const [state, setState] = useState<{
     key: string | null;
+    view: string | null;
     review: ReviewDiff | null;
     error: string | null;
-  }>({ key: null, review: null, error: null });
+  }>({ key: null, view: null, review: null, error: null });
   useEffect(() => {
     let live = true;
-    const [id, wanted, wholeFiles, ignoreWhitespace] = JSON.parse(key) as [
+    const [id, wanted, wholeFiles, ignoreWhitespace] = JSON.parse(view) as [
       string,
       ReviewScope,
       boolean,
@@ -158,12 +157,13 @@ function useReviewDiff(conversationId: string, scope: ReviewScope, options: Revi
       ignoreWhitespace,
     })
       .then(({ review }) => {
-        if (live) setState({ key, review, error: null });
+        if (live) setState({ key, view, review, error: null });
       })
       .catch((error: unknown) => {
         if (live) {
           setState({
             key,
+            view,
             review: null,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -172,8 +172,13 @@ function useReviewDiff(conversationId: string, scope: ReviewScope, options: Revi
     return () => {
       live = false;
     };
-  }, [key]);
-  return { review: state.review, error: state.error, loading: state.key !== key };
+  }, [key, view]);
+  const same = state.view === view;
+  return {
+    review: same ? state.review : null,
+    error: same ? state.error : null,
+    loading: state.key !== key,
+  };
 }
 
 export function ReviewTab({ conversationId }: { conversationId: string }) {
@@ -204,7 +209,12 @@ export function ReviewTab({ conversationId }: { conversationId: string }) {
   };
   const allCollapsed = files.length > 0 && files.every((file) => collapsed.has(file.path));
   const whole = review?.fullFiles ?? false;
-  const reviewContext = useMemo(() => ({ conversationId, whole }), [conversationId, whole]);
+  // Only these compare against the working tree, whose files the checkout holds as shown.
+  const checkout = scope.type === "uncommitted" || scope.type === "unstaged";
+  const reviewContext = useMemo(
+    () => ({ conversationId, whole, checkout }),
+    [conversationId, whole, checkout],
+  );
 
   return (
     <div data-slot="review-tab" className="flex min-h-0 flex-1 flex-col">
@@ -655,17 +665,18 @@ function newText(patch: PatchFile | undefined, whole: boolean): string | null {
 
 /**
  * "Enable rich preview": a Markdown file rendered as it reads after the change. The text
- * comes from the diff when it holds the whole file, else from the checkout.
+ * comes from the diff when it holds the whole file, else from the checkout when the scope's
+ * new side is the working tree; a staged or committed version needs the full files loaded.
  */
 const RichPreview: FC<{ file: ReviewFile; patch: PatchFile | undefined }> = ({ file, patch }) => {
-  const { conversationId, whole } = useContext(ReviewContext);
+  const { conversationId, whole, checkout } = useContext(ReviewContext);
   const fromPatch = newText(patch, whole);
   const [read, setRead] = useState<{ text: string | null; error: string | null }>({
     text: null,
     error: null,
   });
   useEffect(() => {
-    if (fromPatch !== null) return;
+    if (fromPatch !== null || !checkout) return;
     let live = true;
     request({ method: "readFile", conversationId, path: file.path })
       .then(({ file: found }) => live && setRead({ text: found.text ?? "", error: null }))
@@ -675,7 +686,14 @@ const RichPreview: FC<{ file: ReviewFile; patch: PatchFile | undefined }> = ({ f
     return () => {
       live = false;
     };
-  }, [conversationId, file.path, fromPatch]);
+  }, [conversationId, file.path, fromPatch, checkout]);
+  if (fromPatch === null && !checkout) {
+    return (
+      <p className="text-muted-foreground px-3 py-2 text-sm">
+        The full file isn't loaded for this version, so it can't be previewed.
+      </p>
+    );
+  }
   const text = fromPatch ?? read.text;
   if (read.error) return <p className="text-destructive px-3 py-2 text-sm">{read.error}</p>;
   if (text === null) return null;
@@ -686,10 +704,14 @@ const RichPreview: FC<{ file: ReviewFile; patch: PatchFile | undefined }> = ({ f
   );
 };
 
-/** What a file's diff needs from its tab: whose checkout, and whether whole files loaded. */
-const ReviewContext = createContext<{ conversationId: string; whole: boolean }>({
+/**
+ * What a file's diff needs from its tab: whose checkout, whether whole files loaded, and
+ * whether the scope's new side is the checkout's working tree.
+ */
+const ReviewContext = createContext<{ conversationId: string; whole: boolean; checkout: boolean }>({
   conversationId: "",
   whole: false,
+  checkout: false,
 });
 
 function failed(cause: unknown) {

@@ -27,14 +27,43 @@ export type PatchFile = {
 /** Unchanged lines kept in view on each side of a change, as ChatGPT's Review keeps one. */
 const KEEP = 1;
 
-/** Undoes git's C-style quoting of a path with unusual characters. */
+/** What git writes after `\` in a quoted path, other than octal bytes. */
+const ESCAPES: Readonly<Record<string, number>> = {
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+  '"': 34,
+  "\\": 92,
+};
+
+/**
+ * Undoes git's C-style quoting of a path with unusual characters: escapes, and a non-ASCII
+ * name's UTF-8 bytes in octal (`"caf\303\251.md"` is `café.md`).
+ */
 function unquote(path: string): string {
-  if (!path.startsWith('"')) return path;
-  try {
-    return JSON.parse(path) as string;
-  } catch {
-    return path.slice(1, -1);
+  if (path.length < 2 || !path.startsWith('"') || !path.endsWith('"')) return path;
+  const chars = Array.from(path.slice(1, -1));
+  const encoder = new TextEncoder();
+  const bytes: number[] = [];
+  for (let at = 0; at < chars.length; at++) {
+    const char = chars[at] as string;
+    const next = chars[at + 1] ?? "";
+    if (char !== "\\") {
+      bytes.push(...encoder.encode(char));
+    } else if (/[0-7]/.test(next)) {
+      const octal = /^[0-7]{1,3}/u.exec(chars.slice(at + 1, at + 4).join(""))?.[0] ?? "";
+      bytes.push(Number.parseInt(octal, 8));
+      at += octal.length;
+    } else {
+      bytes.push(ESCAPES[next] ?? next.charCodeAt(0));
+      at += 1;
+    }
   }
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 function stripPrefix(path: string): string {
