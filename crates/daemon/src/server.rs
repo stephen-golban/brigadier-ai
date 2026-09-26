@@ -12,8 +12,8 @@ use brigadier_core::runtime::{Runtime, StartRaw};
 use brigadier_core::{ConversationId, Core, MAX_ATTACHMENT_BYTES};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
-    ArtifactText, ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome,
-    RawJson, Request, Response, SendOutcome, ServerFrame, TerminalOutput,
+    ArtifactText, ClientFrame, ClientInfo, DaemonInfo, DictationStatus, ErrorCode, EventEnvelope,
+    IpcError, Outcome, RawJson, Request, Response, SendOutcome, ServerFrame, TerminalOutput,
 };
 use brigadier_ipc::{Accepted, Connection, Listener, Reader, Token, Writer};
 use brigadier_store::{Store, StoredEvent};
@@ -658,6 +658,26 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::CloseTerminal { terminal_id } => {
             daemon.terminals.close(&terminal_id);
             Response::CloseTerminal
+        }
+        // This build has no speech engine yet: the app hides its Dictate button.
+        Request::GetDictation => Response::GetDictation {
+            dictation: DictationStatus {
+                available: false,
+                model: String::new(),
+                model_bytes: 0,
+                installed: false,
+                downloading: false,
+            },
+        },
+        Request::DownloadDictationModel
+        | Request::CancelDictationDownload
+        | Request::StartDictation
+        | Request::AppendDictation { .. }
+        | Request::FinishDictation { .. }
+        | Request::CancelDictation { .. } => {
+            return Err(IpcError::from(brigadier_core::Error::Invalid(
+                "this build has no speech engine".into(),
+            )));
         }
         Request::RateMessage {
             conversation_id,

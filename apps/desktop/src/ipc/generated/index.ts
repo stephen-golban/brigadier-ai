@@ -42,6 +42,8 @@ export type { DaemonMetrics } from "./DaemonMetrics";
 export type { Decider } from "./Decider";
 export type { Density } from "./Density";
 export type { Diagnostics } from "./Diagnostics";
+export type { DictationStatus } from "./DictationStatus";
+export type { DictationUpdate } from "./DictationUpdate";
 export type { DiffStat } from "./DiffStat";
 export type { DomainEvent } from "./DomainEvent";
 export type { Environment } from "./Environment";

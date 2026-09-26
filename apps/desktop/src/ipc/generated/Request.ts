@@ -31,7 +31,11 @@ query: string | null, } | { "method": "readFile", conversationId: ConversationId
 /**
  * Relative to the checkout's root.
  */
-path: string, } | { "method": "openTerminal", conversationId: ConversationId, cols: number, rows: number, } | { "method": "openSideChat", conversationId: ConversationId, } | { "method": "writeTerminal", terminalId: string, data: string, } | { "method": "resizeTerminal", terminalId: string, cols: number, rows: number, } | { "method": "closeTerminal", terminalId: string, } | { "method": "rateMessage", conversationId: ConversationId, 
+path: string, } | { "method": "openTerminal", conversationId: ConversationId, cols: number, rows: number, } | { "method": "openSideChat", conversationId: ConversationId, } | { "method": "writeTerminal", terminalId: string, data: string, } | { "method": "resizeTerminal", terminalId: string, cols: number, rows: number, } | { "method": "closeTerminal", terminalId: string, } | { "method": "getDictation" } | { "method": "downloadDictationModel" } | { "method": "cancelDictationDownload" } | { "method": "startDictation" } | { "method": "appendDictation", dictationId: string, 
+/**
+ * 16 kHz mono 16-bit little-endian PCM, base64-encoded.
+ */
+audio: string, } | { "method": "finishDictation", dictationId: string, } | { "method": "cancelDictation", dictationId: string, } | { "method": "rateMessage", conversationId: ConversationId, 
 /**
  * A message id, or `task:<id>` for a worker's report.
  */
