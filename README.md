@@ -30,6 +30,7 @@ docs/          plan and design notes
 - Rust 1.98.1 (pinned in `rust-toolchain.toml`; rustup installs it on first use)
 - Node 24+ and pnpm 12.6.0 (`packageManager` in `package.json`)
 - Tauri 2 platform prerequisites: https://v2.tauri.app/start/prerequisites/
+- CMake 3.x or newer, to build whisper.cpp (dictation's engine; see below)
 
 ## Dependency notes
 
@@ -45,7 +46,19 @@ docs/          plan and design notes
   leaves file uploads to wry's. This module, `apps/desktop/src-tauri/src/browser_ui.rs`, is the
   one exception to the workspace's `unsafe_code = "deny"`: calling WebKit through objc2 needs
   `unsafe`. The `#[allow(unsafe_code)]` sits on that module alone, and each `unsafe` in it says
-  why it holds. Windows' WebView2 asks the user itself.
+  why it holds. WebKit asks macOS for the microphone before it asks the delegate, so the page
+  also gets a script, before any of its own and in every frame, that takes
+  `navigator.mediaDevices`, `getUserMedia` and the speech-recognition APIs away for good
+  (`NO_CAPTURE` in `browser.rs`). Windows' WebView2 asks the user itself.
+- `whisper-rs` (whisper.cpp), `ureq`, `sha2` (brigadierd): dictation turns speech into text on
+  this computer; the audio never leaves it. The composer's webview records the microphone and
+  streams 16 kHz PCM to the daemon, which feeds it to a short-lived `brigadierd transcribe`
+  process, so the daemon never holds the model. The model (whisper.cpp's `ggml-base-q5_1`,
+  60 MB) is downloaded from Hugging Face on first use, at a pinned revision, checked against its
+  SHA-256 and kept in the data directory under `models/whisper/`. `.cargo/config.toml` builds
+  whisper.cpp for any CPU of the target's kind (`GGML_NATIVE=OFF`) and with the crate's own
+  bindings, so building needs no libclang. The approach follows OpenWhispr (MIT); no code is
+  copied from it.
 
 ## Develop
 
