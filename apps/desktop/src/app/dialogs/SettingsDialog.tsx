@@ -54,7 +54,6 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const [orchestrator, setOrchestrator] = useState(initial.defaultOrchestrator);
   const [chatModel, setChatModel] = useState(initial.defaultChatModel);
   const [permission, setPermission] = useState(initial.defaultPermission);
-  const [queueEnabled, setQueueEnabled] = useState(initial.queueEnabled);
   const [showContext, setShowContext] = useState(initial.showContextUsage);
   const [hibernate, setHibernate] = useState(String(initial.hibernateAfterMinutes));
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +77,6 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         defaultOrchestrator: orchestrator,
         defaultChatModel: chatModel,
         defaultPermission: permission,
-        queueEnabled,
         showContextUsage: showContext,
         hibernateAfterMinutes: minutes,
       };
@@ -145,26 +143,6 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
               ),
             hint: PERMISSION_DETAILS[level],
           }))}
-        />
-      </Field>
-
-      <Field label="Follow-up behavior">
-        <RadioChoice<"queue" | "steer">
-          label="Follow-up behavior"
-          value={queueEnabled ? "queue" : "steer"}
-          onChange={(value) => setQueueEnabled(value === "queue")}
-          options={[
-            {
-              value: "queue",
-              label: "Queue",
-              hint: "A message sent while the model works waits until its turn ends.",
-            },
-            {
-              value: "steer",
-              label: "Steer",
-              hint: "A message sent while the model works goes into the running turn.",
-            },
-          ]}
         />
       </Field>
 

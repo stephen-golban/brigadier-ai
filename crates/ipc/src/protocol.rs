@@ -203,9 +203,9 @@ pub enum Request {
         attachments: Vec<AttachmentRef>,
         mentions: Vec<Mention>,
         steer: bool,
-        /// Queue it at this slot whenever it would wait (a turn runs, or the queue is paused),
-        /// whatever the queueing setting: a queued message pulled into the composer to edit, or
-        /// a deleted one restored, goes back where it was. Without `steer` only.
+        /// Queue it at this slot whenever it would wait (a turn runs, an answer works, or the
+        /// queue is paused): a queued message pulled into the composer to edit, or a deleted
+        /// one restored, goes back where it was. Without `steer` only.
         #[serde(default)]
         queue_index: Option<u32>,
     },

@@ -219,7 +219,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
   - **Steer** (send now into the running turn), delete, a ⋯ menu with edit, and drag to reorder;
   - an editing state and attachment summaries;
   - "Queue paused because you interrupted → Resume";
-  - a queueing on/off toggle.
+  - no Queue/Steer setting: a Chat queues what is sent while it replies (Steer sends one in now); a session's orchestrator sorts what is sent while an answer works, joining it to that answer or keeping it queued for its own turn.
 - **Chats:** plain conversations directly with the picked model, with web search, attachments, and fallback. Plugins and image generation are added in Phase 7, and memory in Phase 4.
 - **Cleanup and lifecycle:**
   - The cleanup ledger, and the pre-commit litter guard, which strips scratch notes, debug scripts, logs, and stray files unrelated to the task.

@@ -552,8 +552,7 @@ export function ConversationView({
       if (!text && refs.length === 0) return;
       setError(null);
       const known = [...mentions.known(), ...(slot?.mentions ?? [])];
-      // An edited queued message stays queued whatever the setting; only an explicit steer
-      // sends it in now.
+      // An edited queued message goes back to its slot; only an explicit steer sends it in now.
       const into = slot && lane === "auto" ? "queue" : lane;
       send(
         { text, attachments: refs, mentions: mentionsIn(text, targets, known) },
@@ -569,8 +568,7 @@ export function ConversationView({
   );
 
   // assistant-ui's queue over the daemon's: sends go through it so the composer stays usable
-  // while a turn runs (an explicit steer or queue is ⌘Enter's inversion of the setting), and
-  // the queue card's steer, move and delete come back through it.
+  // while a turn runs, and the queue card's steer, move and delete come back through it.
   const queue = useMemo<ExternalThreadQueueAdapter>(() => {
     const queued = queueItems ?? [];
     const states: QueueItemState[] = queued.map((item) => ({

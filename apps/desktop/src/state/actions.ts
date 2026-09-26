@@ -285,18 +285,18 @@ export type DraftTarget =
   | { kind: "session"; projectId: string; setup: SetupRequest | null };
 
 /**
- * Where a message sent while a turn runs goes: the queueing setting decides (`auto`), or the
- * user picked the other one for this message (⌘Enter).
+ * Where a message sent while a turn runs goes: the daemon decides (`auto`: a Chat queues it, a
+ * session's orchestrator sorts it), the user steers it in (a queued message's Steer), or it
+ * goes back into the queue (an edited queued message).
  */
 export type SendLane = "auto" | "steer" | "queue";
 
 /**
  * Sends a user message to `to`, else the selected conversation. A draft first becomes a real
  * chat or session with the composer's setup; the message shows immediately and is replaced by
- * the daemon's copy once committed. While a turn runs the daemon queues it, unless queueing is off, in
- * which case it steers the running turn. In a session, what is sent while the newest answer
- * works waits in the queue while the orchestrator sorts it (it joins that answer or waits for
- * its own turn); only an explicit Steer goes straight in. `queueIndex` puts a message that
+ * the daemon's copy once committed. While a turn runs the daemon queues it; in a session, what
+ * is sent while the newest answer works waits in the queue while the orchestrator sorts it (it
+ * joins that answer or waits for its own turn). Only an explicit Steer goes straight in. `queueIndex` puts a message that
  * waits back in its old slot (a queued message pulled out to edit, or a deleted one restored).
  */
 export async function send(
@@ -313,7 +313,7 @@ export async function send(
     to?: string | null;
   } = {},
 ): Promise<void> {
-  const { selection, settings } = useApp.getState();
+  const { selection } = useApp.getState();
   let conversationId: string;
   if (to) {
     conversationId = to;
@@ -343,7 +343,7 @@ export async function send(
   const running = board !== null && (board.run === "running" || board.run === "starting");
   const session = useApp.getState().conversations[conversationId]?.kind === "session";
   const working = session && board !== null && workingRequest(board) !== null;
-  const steer = lane === "steer" || (lane === "auto" && running && !session && !settings.queueEnabled);
+  const steer = lane === "steer";
   const queue = board?.queue ?? null;
   // Asked to queue with no slot: last.
   const slot = steer ? null : (queueIndex ?? (lane === "queue" ? (queue?.items.length ?? 0) : null));
@@ -567,10 +567,6 @@ export async function regenerate(conversationId: string, requestId: string): Pro
 /** Shows the branch of a Chat that ends at `head`. */
 export async function switchBranch(conversationId: string, head: string): Promise<void> {
   await request({ method: "switchBranch", conversationId, head });
-}
-
-export async function setQueueEnabled(queueEnabled: boolean): Promise<void> {
-  await updateSettings({ ...useApp.getState().settings, queueEnabled });
 }
 
 // ----- cards and workers -----------------------------------------------------------------

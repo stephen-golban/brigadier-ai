@@ -3,8 +3,8 @@
 //! One CLI session per conversation, started on the first turn and replaced whenever it is
 //! gone. Turns are non-blocking for everyone else:
 //!
-//! - A message sent while no turn runs starts one. While a turn runs it waits in the queue
-//!   (or is steered into the turn when the user asks, or when queueing is off).
+//! - A message sent while no turn runs starts one. While a turn runs it waits in the queue,
+//!   or is steered into the turn when the user asks (a queued message's Steer).
 //! - In a session, a message sent while the newest answer still works (its turn, a worker or
 //!   a card) is a follow-up: it waits in the queue, marked deciding, while the orchestrator
 //!   judges it with `route_follow_up`. One that belongs to that answer joins it (steered in,
@@ -371,7 +371,7 @@ impl SessionManager {
         let mut state = conv.state.lock().await;
         state.last_activity_ms = now_ms();
         if state.busy && !state.compacting {
-            if steer || (queue_index.is_none() && !self.core.settings().queue_enabled) {
+            if steer {
                 let message = self
                     .core
                     .append_user_message(id.clone(), text, attachments, mentions)
