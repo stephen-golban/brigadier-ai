@@ -170,7 +170,14 @@ const Link: FC<React.ComponentProps<"a">> = ({ className, href, children, ...pro
       href={href}
       onClick={(event) => {
         event.preventDefault();
-        if (href && /^https?:/i.test(href)) openUrl(href).catch(failed);
+        if (!href) return;
+        if (href.startsWith("#")) {
+          // A link within the answer: its target, when the answer has one by that id.
+          document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ block: "start" });
+        } else if (/^https?:/i.test(href)) {
+          // Only web pages: a model's link must not launch other handlers (mailto: included).
+          openUrl(href).catch(failed);
+        }
       }}
       className={cn(
         "aui-md-a text-link hover:text-link/80 underline-offset-2 hover:underline",
