@@ -132,8 +132,10 @@ function ComposerKeys({ running }: { running: boolean }) {
                   : "";
                 selection.insertText(before && !/\s$/.test(before) ? ` ${text}` : text);
               },
-              // The composer has the text once the editor has updated.
-              { onUpdate: () => requestAnimationFrame(() => resolve()) },
+              // The composer has the text once the editor has updated: Lexical runs its update
+              // listeners, assistant-ui's sync among them, before `onUpdate`. (Not a frame
+              // later, since a window in the background may not draw one.)
+              { onUpdate: () => resolve() },
             );
             editor.focus();
           }),
