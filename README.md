@@ -142,10 +142,11 @@ has an outputs folder in its scratch folder for files meant for the orchestrator
 findings, documents, generated images; a Codex worker's generated images are copied there as they
 are made). What it leaves there, and every file its report names or mentions by path, is stored
 with the report before the task's folders are removed, so the orchestrator can read it with
-`read_artifact` after the task ended. A report that names a file that doesn't exist, or one the
-worker wrote to a temp folder, is refused with what to do instead; a worker that writes its
-findings as a message rather than reporting them has that message kept and attached to its
-report. The task card lists the outputs and artifacts with Open and Save to….
+`read_artifact` after the task ended. A report that names a file that doesn't exist, one the
+worker wrote to a temp folder, or a link out of its scratch folder, is refused with what to do
+instead; a worker that writes its findings as a message rather than reporting them has that
+message kept and attached to its report. The task card lists the outputs and artifacts with Open
+and Save to….
 
 Each project can name gitignored env files (for example `.env.local`) as secrets: they are copied
 into each worker's worktree, never committed, and their values are redacted from everything
