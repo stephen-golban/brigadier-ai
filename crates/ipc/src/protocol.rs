@@ -92,9 +92,13 @@ pub enum Request {
     GetRepoInfo {
         path: String,
     },
-    /// The files of a session's checkout, for the composer's @-mentions.
+    /// The files of a session's checkout, for the composer's @-mentions and the Files tab.
     ListFiles {
         conversation_id: ConversationId,
+        /// Only the files whose path has these letters in order (ignoring case), searched in
+        /// the whole checkout: how the Files tab finds files past the listed ones.
+        #[serde(default)]
+        query: Option<String>,
     },
     /// One file of a session's checkout, for the side panel's Files tab.
     ReadFile {

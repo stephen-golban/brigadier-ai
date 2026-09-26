@@ -167,9 +167,13 @@ impl SessionManager {
     }
 
     /// The files of a session's checkout (its worktree, or the user's checkout), for the
-    /// composer's @-mentions: at most [`MENTION_FILES`], and whether there were more. A Chat
-    /// has none.
-    pub async fn list_files(&self, id: &ConversationId) -> Result<(Vec<String>, bool)> {
+    /// composer's @-mentions: at most [`MENTION_FILES`], and whether there were more; with
+    /// `query`, only those matching it. A Chat has none.
+    pub async fn list_files(
+        &self,
+        id: &ConversationId,
+        query: Option<String>,
+    ) -> Result<(Vec<String>, bool)> {
         let Some(Setup::Session {
             repo, environment, ..
         }) = self.core.conversation(id)?.setup
@@ -184,7 +188,7 @@ impl SessionManager {
         let git = self.git.clone();
         blocking(move || {
             git.open(Path::new(&path))
-                .and_then(|repo| repo.files(MENTION_FILES))
+                .and_then(|repo| repo.files(MENTION_FILES, query.as_deref()))
                 .map_err(git_error)
         })
         .await

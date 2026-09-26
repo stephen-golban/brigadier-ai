@@ -463,8 +463,9 @@ impl Repo {
     }
 
     /// The checkout's files, tracked and untracked but not ignored, relative to its root and
-    /// sorted: at most `limit`, and whether there were more.
-    pub fn files(&self, limit: usize) -> Result<(Vec<String>, bool)> {
+    /// sorted: at most `limit`, and whether there were more. With `query`, only the paths
+    /// that hold its letters in order, ignoring case.
+    pub fn files(&self, limit: usize, query: Option<&str>) -> Result<(Vec<String>, bool)> {
         let out = self.cmd(
             &[
                 "ls-files",
@@ -479,6 +480,7 @@ impl Repo {
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
             .map(|path| String::from_utf8_lossy(path).into_owned())
+            .filter(|path| query.is_none_or(|query| has_letters(path, query)))
             .collect();
         files.sort();
         files.dedup();
@@ -1216,6 +1218,16 @@ impl Repo {
             }
         }
     }
+}
+
+/// Whether `path` holds the letters of `query` in order, ignoring case (as the UI's fuzzy
+/// match finds a file).
+fn has_letters(path: &str, query: &str) -> bool {
+    let mut letters = path.chars().flat_map(char::to_lowercase);
+    query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|want| letters.any(|letter| letter == want))
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
