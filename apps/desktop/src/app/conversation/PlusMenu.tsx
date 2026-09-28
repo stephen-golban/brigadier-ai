@@ -11,9 +11,8 @@ import {
 } from "@/app/conversation/composerTarget";
 import { updateDraft } from "@/app/conversation/draftSetup";
 import { useAction } from "@/app/conversation/useAction";
-import { floatingMenu } from "@/components/assistant-ui/elements/surfaces";
+import { composerPill, floatingMenu } from "@/components/assistant-ui/elements/surfaces";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +26,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Mention } from "@/ipc/generated";
 import { tokenPx } from "@/lib/tokens";
+import { cn } from "@/lib/utils";
 import { select, updateSetup } from "@/state/actions";
 import { useApp } from "@/state/store";
 
@@ -88,7 +88,7 @@ const Row: FC<{ icon: ReactNode; title: string; detail?: string | undefined }> =
   </>
 );
 
-/** Where the menu goes: over the whole composer, just above it, as the `@` menu does. */
+/** Where the menu goes: as wide as the composer card, just above it (over the rail). */
 type Placement = { width: number; alignOffset: number; sideOffset: number };
 
 /**
@@ -128,7 +128,10 @@ export const PlusMenu: FC = () => {
 
   const onOpenChange = (open: boolean) => {
     const button = trigger.current;
-    const composer = button?.closest<HTMLElement>("[data-slot=composer]");
+    // ChatGPT's sits on the card itself, covering the rail (hidden meanwhile).
+    const composer =
+      button?.closest<HTMLElement>("[data-slot=aui_composer-shell]") ??
+      button?.closest<HTMLElement>("[data-slot=composer]");
     if (!open || !button || !composer) {
       setPlacement(null);
       return;
@@ -138,7 +141,7 @@ export const PlusMenu: FC = () => {
     setPlacement({
       width: to.width,
       alignOffset: to.left - from.left,
-      sideOffset: from.top - to.top + 2 * tokenPx("--spacing"),
+      sideOffset: from.top - to.top + tokenPx("--spacing"),
     });
   };
 
@@ -157,7 +160,8 @@ export const PlusMenu: FC = () => {
           tooltip="Add files and more"
           side="bottom"
           size="icon-md"
-          className="text-muted-foreground data-[state=open]:bg-foreground/10 rounded-capsule"
+          data-slot="plus-trigger"
+          className="hover:bg-foreground/8 data-[state=open]:bg-foreground/8 rounded-capsule"
         >
           <Plus />
         </TooltipIconButton>
@@ -254,17 +258,16 @@ export const PlanChip: FC = () => {
       <span aria-hidden className="bg-foreground/15 mx-1 h-icon-md w-px" />
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
+          <button
+            type="button"
             aria-pressed
-            className="text-muted-foreground rounded-capsule"
+            className={cn(composerPill, "text-muted-foreground")}
             disabled={action.busy}
             onClick={() => action.run(() => plan.set(false))}
           >
             <Lightbulb />
             Plan
-          </Button>
+          </button>
         </TooltipTrigger>
         <TooltipContent side="bottom">Turn plan mode off</TooltipContent>
       </Tooltip>

@@ -21,5 +21,14 @@ export const mono = "font-mono text-2xs tracking-tight";
 /** Something live (running, streaming). */
 export const live = "text-success";
 
-/** A floating menu anchored to the composer (mentions). */
-export const floatingMenu = "bg-popover text-popover-foreground rounded-surface border p-1";
+/** A floating menu anchored to the composer (mentions), on ChatGPT's round menu surface. */
+export const floatingMenu =
+  "bg-popover text-popover-foreground rounded-menu shadow-menu border p-1";
+
+/**
+ * ChatGPT's composer controls (the `+`, permission, model, the rail's project and branch): a
+ * text-sm ghost at the height of a control, fully round, filled with a light wash while
+ * hovered or open.
+ */
+export const composerPill =
+  "h-control-sm rounded-capsule hover:bg-foreground/8 data-[state=open]:bg-foreground/8 inline-flex min-w-0 shrink-0 items-center gap-1.5 px-2 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-icon-md [&_svg]:shrink-0";

@@ -60,6 +60,7 @@ import {
 } from "@/components/assistant-ui/elements/attachment-tile";
 import { OpenFileContext } from "@/components/assistant-ui/markdown-text";
 import { Thread, type ThreadComponents } from "@/components/assistant-ui/thread";
+import { BrigadierGlyph } from "@/components/glyphs/brand-glyph";
 import { Button } from "@/components/ui/button";
 import type {
   AttachmentRef,
@@ -790,8 +791,8 @@ export function ConversationView({
   );
 }
 
-/** ChatGPT's hero over a new chat: "What should we build in {project}?". A side chat says
- * what it is for instead. */
+/** ChatGPT's hero over a new chat: a faint mark over "What should we build in {project}?".
+ * A side chat says what it is for instead. */
 const Welcome: FC = () => {
   const { selection, embedded } = useContext(ViewContext);
   const project = useApp((s) =>
@@ -801,21 +802,24 @@ const Welcome: FC = () => {
   );
   if (embedded) {
     return (
-      <p className="text-muted-foreground mb-6 px-2 text-center text-sm">
+      <p className="text-muted-foreground px-2 text-center text-sm">
         Ask about this conversation without adding to it
       </p>
     );
   }
   return (
-    <h1 className="font-display tracking-hero mb-6 px-2 text-center text-2xl">
-      {project ? (
-        <>
-          What should we build in <ProjectCombobox project={project} inHeading />?
-        </>
-      ) : (
-        "What should we build?"
-      )}
-    </h1>
+    <div className="flex flex-col items-center gap-6 select-none">
+      <BrigadierGlyph className="text-foreground size-14 opacity-30" />
+      <h1 className="font-display tracking-hero text-hero px-2 text-center font-normal">
+        {project ? (
+          <>
+            What should we build in <ProjectCombobox project={project} inHeading />?
+          </>
+        ) : (
+          "What should we build?"
+        )}
+      </h1>
+    </div>
   );
 };
 

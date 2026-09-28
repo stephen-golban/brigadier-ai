@@ -42,7 +42,7 @@ function DropdownMenuContent({
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         className={cn(
-          "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 bg-popover text-popover-foreground data-[state=closed]:animate-out data-[state=open]:animate-in ring-foreground/10 min-w-menu rounded-surface z-50 max-h-(--radix-dropdown-menu-content-available-height) origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto p-1 ring-1 duration-100",
+          "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 bg-popover text-popover-foreground data-[state=closed]:animate-out data-[state=open]:animate-in ring-foreground/10 min-w-menu rounded-menu shadow-menu z-50 max-h-(--radix-dropdown-menu-content-available-height) origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto p-1 ring-1 duration-100",
           className,
         )}
         {...props}
@@ -60,7 +60,7 @@ function DropdownMenuGroup({
 }
 
 const itemBase =
-  "focus:bg-foreground/5 h-control-sm rounded-control relative flex cursor-default items-center gap-2 px-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-icon-md";
+  "focus:bg-foreground/8 h-control-sm rounded-capsule relative flex cursor-default items-center gap-2 px-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-icon-md";
 
 function DropdownMenuItem({
   className,
@@ -218,7 +218,7 @@ function DropdownMenuSubTrigger({
       data-inset={inset}
       className={cn(
         itemBase,
-        "data-[state=open]:bg-foreground/5 [&_svg:not([class*='text-'])]:text-muted-foreground data-[inset]:ps-8",
+        "data-[state=open]:bg-foreground/8 [&_svg:not([class*='text-'])]:text-muted-foreground data-[inset]:ps-8",
         className,
       )}
       {...props}
@@ -237,7 +237,7 @@ function DropdownMenuSubContent({
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
       className={cn(
-        "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 bg-popover text-popover-foreground data-[state=closed]:animate-out data-[state=open]:animate-in ring-foreground/10 min-w-menu rounded-surface z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden p-1 ring-1",
+        "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 bg-popover text-popover-foreground data-[state=closed]:animate-out data-[state=open]:animate-in ring-foreground/10 min-w-menu rounded-menu shadow-menu z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden p-1 ring-1",
         className,
       )}
       {...props}

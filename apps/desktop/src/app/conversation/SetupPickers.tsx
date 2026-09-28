@@ -15,6 +15,7 @@ import {
   ModelSelector,
   type ModelGroup,
 } from "@/components/assistant-ui/elements/model-selector";
+import { composerPill } from "@/components/assistant-ui/elements/surfaces";
 import { ShieldExclamation, ShieldTerminal } from "@/components/glyphs/permission-glyphs";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,7 +67,6 @@ export function ProjectSettingsButton({ project }: { project: Project }) {
   );
 }
 
-const pickerTrigger = "text-muted-foreground min-w-0 max-w-xs justify-between";
 
 // ----- permission ------------------------------------------------------------------------
 
@@ -104,20 +104,19 @@ export function PermissionPicker({
     <>
       <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="xs"
+          <button
+            type="button"
             aria-label="Permission level"
             data-slot="permission-picker"
             className={cn(
-              pickerTrigger,
-              "rounded-capsule hover:bg-foreground/10 data-[state=open]:bg-foreground/10",
-              full && "text-full-access hover:text-full-access data-[state=open]:text-full-access",
+              composerPill,
+              "text-muted-foreground max-w-xs",
+              full && "text-full-access",
             )}
           >
             <Icon />
             <span className="truncate @max-md/composer:hidden">{PERMISSION_LABELS[value]}</span>
-          </Button>
+          </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
           side="top"
@@ -155,7 +154,7 @@ export function PermissionPicker({
                   value={level}
                   indicator={<Check className="size-icon-md" />}
                   className={cn(
-                    "h-auto gap-3 py-1.5 pe-9",
+                    "h-auto gap-3 rounded-xl py-1.5 pe-9",
                     orange && "text-full-access focus:text-full-access",
                   )}
                 >

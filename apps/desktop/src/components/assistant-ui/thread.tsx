@@ -161,14 +161,13 @@ const ThreadRoot: FC<{
           data-slot="aui_thread-viewport"
           className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
         >
-          <div
-            className={cn(
-              "max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4",
-              isEmpty && "justify-center",
-            )}
-          >
+          <div className="max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4">
+            {/* ChatGPT's new chat: the hero ends a little above the middle, the composer sits
+                at the bottom; each takes half the height. */}
             <AuiIf condition={isNewChatView}>
-              <Welcome />
+              <div className="flex min-h-fit grow basis-0 flex-col items-center justify-end pb-11">
+                <Welcome />
+              </div>
             </AuiIf>
             <AuiIf condition={isHistoryLoadingView}>
               <ThreadHistorySkeleton />
@@ -187,7 +186,9 @@ const ThreadRoot: FC<{
             <ThreadPrimitive.ViewportFooter
               className={cn(
                 "aui-thread-viewport-footer group/footer bg-background flex flex-col gap-4 overflow-visible pb-4",
-                isEmpty ? "relative" : "rounded-t-thread sticky bottom-0 mt-auto",
+                isEmpty
+                  ? "relative min-h-fit grow basis-0 justify-end"
+                  : "rounded-t-thread sticky bottom-0 mt-auto",
               )}
             >
               <ThreadScrollToBottom />

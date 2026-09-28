@@ -34,7 +34,13 @@ export const TooltipIconButton = forwardRef<
               variant="ghost"
               size={size}
               {...rest}
-              className={cn("aui-button-icon active:scale-90", className)}
+              className={cn(
+                "aui-button-icon active:scale-90",
+                // ChatGPT's quiet controls: a light wash while hovered or open.
+                (rest.variant ?? "ghost") === "ghost" &&
+                  "hover:bg-foreground/8 data-[state=open]:bg-foreground/8",
+                className,
+              )}
               ref={ref}
             >
               <Slot.Slottable>{children}</Slot.Slottable>

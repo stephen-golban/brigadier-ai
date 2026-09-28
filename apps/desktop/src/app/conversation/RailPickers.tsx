@@ -27,6 +27,7 @@ import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import { resetsAt, windowName } from "@/app/conversation/StatusCard";
 import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
 import { NameDialog } from "@/app/NameDialog";
+import { composerPill } from "@/components/assistant-ui/elements/surfaces";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -53,12 +54,12 @@ import { useApp } from "@/state/store";
 const DEFAULT_BRANCH_PREFIX = "brigadier/";
 
 /** ChatGPT's menu surface, shared by the rail's menus. */
-const MENU = "rounded-2xl p-1";
+const MENU = "rounded-menu p-1";
 const ROW =
-  "rounded-xl min-h-control-md flex w-full items-center gap-2 px-2 text-start text-sm outline-none transition-colors [&_svg]:size-icon-md [&_svg]:shrink-0";
-const ROW_ACTIVE = "bg-foreground/10";
+  "rounded-capsule min-h-control-sm flex w-full items-center gap-2 px-2 text-start text-sm outline-none transition-colors [&_svg]:size-icon-md [&_svg]:shrink-0";
+const ROW_ACTIVE = "bg-foreground/8";
 
-/** A rail trigger: a ghost pill, its value dim until hovered or open. */
+/** A rail trigger: ChatGPT's composer pill, in the rail's bright text. */
 const RailPill = forwardRef<
   HTMLButtonElement,
   { icon: ReactNode; label: string; title?: string; children: ReactNode }
@@ -68,7 +69,7 @@ const RailPill = forwardRef<
     type="button"
     aria-label={label}
     title={title}
-    className="text-muted-foreground hover:text-foreground data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground rounded-capsule h-control-sm flex max-w-xs min-w-0 shrink-0 items-center gap-1.5 px-2 text-sm transition-colors [&_svg]:size-icon-md [&_svg]:shrink-0"
+    className={cn(composerPill, "text-foreground max-w-xs")}
     {...props}
   >
     {icon}
@@ -195,7 +196,7 @@ export function ProjectCombobox({
             <button
               type="button"
               aria-label="Project"
-              className="decoration-muted-foreground hover:decoration-foreground underline decoration-dotted underline-offset-4 transition-colors"
+              className="decoration-muted-foreground hover:text-muted-foreground cursor-pointer underline decoration-dotted underline-offset-4 transition-colors"
             >
               {project?.name}
             </button>
@@ -309,7 +310,7 @@ function UsageRemaining({ provider }: { provider: string }) {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className={cn(ROW, "hover:bg-foreground/10")}
+        className={cn(ROW, "hover:bg-foreground/8")}
       >
         <SpeedometerLatencySpeed />
         <span className="flex-1">Usage remaining</span>
@@ -367,7 +368,7 @@ export function WorkInMenu({ resolved }: { resolved: ResolvedDraft }) {
               updateDraft(projectId, { environment: kind });
               setOpen(false);
             }}
-            className={cn(ROW, "hover:bg-foreground/10")}
+            className={cn(ROW, "hover:bg-foreground/8")}
           >
             {PLACES[kind].icon}
             <span className="flex-1">{PLACES[kind].label}</span>
@@ -625,7 +626,7 @@ export function BranchPopover({ resolved }: { resolved: ResolvedDraft }) {
                 <button
                   type="button"
                   onClick={() => updateDraft(projectId, { newBranch: null })}
-                  className={cn(ROW, "hover:bg-foreground/10")}
+                  className={cn(ROW, "hover:bg-foreground/8")}
                 >
                   <X />
                   <span className="min-w-0 flex-1 truncate">

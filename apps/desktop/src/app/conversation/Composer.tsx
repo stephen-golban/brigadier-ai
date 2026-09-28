@@ -115,8 +115,8 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
           groups={resolved.groups}
           onOpenModel={() => setModelOpen(true)}
         />
-        {/* Hidden, not unmounted, while the slash menu is open over it, as ChatGPT's is. */}
-        <ComposerRail className="transition-[opacity,visibility] group-has-[[data-slot=composer-commands]]/composer:invisible group-has-[[data-slot=composer-commands]]/composer:opacity-0">
+        {/* Hidden, not unmounted, while the slash or + menu is open over it, as ChatGPT's is. */}
+        <ComposerRail className="transition-[opacity,visibility] group-has-[[data-slot=composer-commands]]/composer:invisible group-has-[[data-slot=composer-commands]]/composer:opacity-0 group-has-[[data-slot=plus-trigger][data-state=open]]/composer:invisible group-has-[[data-slot=plus-trigger][data-state=open]]/composer:opacity-0">
           {!conversation && <UtilityBar resolved={resolved} />}
           {/* ChatGPT's order: /status on top, then the cards below it. */}
           {conversation && statusCard.open && (
