@@ -19,8 +19,14 @@ import type { BrainGraph, BrainOverview, NodeFilter, NodeKind } from "@/ipc/gene
 import { getBrainGraph, projectOf } from "@/state/brain";
 import { useApp } from "@/state/store";
 
-// sigma and graphology load only when the graph is first shown.
-const BrainGraphCanvas = lazy(() => import("@/app/inspector/brain/BrainGraphCanvas"));
+// sigma and graphology load only once the Brain tab is open (see `preloadGraphCanvas`).
+const loadGraphCanvas = () => import("@/app/inspector/brain/BrainGraphCanvas");
+const BrainGraphCanvas = lazy(loadGraphCanvas);
+
+/** Loads the graph's libraries ahead of time, so showing the graph doesn't also evaluate them. */
+export function preloadGraphCanvas() {
+  void loadGraphCanvas();
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

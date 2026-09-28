@@ -192,72 +192,80 @@ export default function BrainGraphCanvas({
     };
     refocus();
 
-    const sigma = new Sigma<NodeAttributes>(graph, element, {
-      allowInvalidContainer: true,
-      labelFont: getComputedStyle(element).fontFamily,
-      labelSize: tokenPx("--text-2xs"),
-      labelWeight: "normal",
-      labelColor: { color: palette.foreground },
-      labelRenderedSizeThreshold: unit * 2,
-      defaultEdgeColor: palette.edge,
-      defaultDrawNodeLabel: labelDrawer(palette),
-      defaultDrawNodeHover: hoverDrawer(palette),
-      zIndex: true,
-      nodeReducer: (id, attributes) => {
-        const shown: Partial<NodeDisplayData> & { stale?: boolean } = { ...attributes };
-        if (attributes.stale) shown.forceLabel = true;
-        if (focus) {
-          if (id === focus.id) {
-            shown.highlighted = true;
-            shown.zIndex = 2;
-          } else if (focus.around.has(id)) {
-            shown.forceLabel = true;
-            shown.zIndex = 1;
-          } else {
-            shown.color = mix(attributes.color, palette.background, 0.6);
-            shown.label = "";
+    let sigma: Sigma<NodeAttributes> | null = null;
+    let frame = 0;
+    const draw = () => {
+      sigma = new Sigma<NodeAttributes>(graph, element, {
+        allowInvalidContainer: true,
+        labelFont: getComputedStyle(element).fontFamily,
+        labelSize: tokenPx("--text-2xs"),
+        labelWeight: "normal",
+        labelColor: { color: palette.foreground },
+        labelRenderedSizeThreshold: unit * 2,
+        defaultEdgeColor: palette.edge,
+        defaultDrawNodeLabel: labelDrawer(palette),
+        defaultDrawNodeHover: hoverDrawer(palette),
+        zIndex: true,
+        nodeReducer: (id, attributes) => {
+          const shown: Partial<NodeDisplayData> & { stale?: boolean } = { ...attributes };
+          if (attributes.stale) shown.forceLabel = true;
+          if (focus) {
+            if (id === focus.id) {
+              shown.highlighted = true;
+              shown.zIndex = 2;
+            } else if (focus.around.has(id)) {
+              shown.forceLabel = true;
+              shown.zIndex = 1;
+            } else {
+              shown.color = mix(attributes.color, palette.background, 0.6);
+              shown.label = "";
+            }
           }
-        }
-        return shown;
-      },
-      edgeReducer: (edge, attributes) => {
-        if (!focus) return attributes;
-        const touches = graph.source(edge) === focus.id || graph.target(edge) === focus.id;
-        return touches ? { ...attributes, color: palette.foreground, zIndex: 1 } : { ...attributes, hidden: true };
-      },
-    });
-    sigmaRef.current = sigma;
-    sigma.on("clickNode", ({ node }) => onSelectRef.current(node));
-    sigma.on("clickStage", () => onSelectRef.current(null));
-    sigma.on("enterNode", () => {
-      element.style.cursor = "pointer";
-    });
-    sigma.on("leaveNode", () => {
-      element.style.cursor = "";
-    });
-    refocusRef.current = refocus;
+          return shown;
+        },
+        edgeReducer: (edge, attributes) => {
+          if (!focus) return attributes;
+          const touches = graph.source(edge) === focus.id || graph.target(edge) === focus.id;
+          return touches ? { ...attributes, color: palette.foreground, zIndex: 1 } : { ...attributes, hidden: true };
+        },
+      });
+      sigmaRef.current = sigma;
+      sigma.on("clickNode", ({ node }) => onSelectRef.current(node));
+      sigma.on("clickStage", () => onSelectRef.current(null));
+      sigma.on("enterNode", () => {
+        element.style.cursor = "pointer";
+      });
+      sigma.on("leaveNode", () => {
+        element.style.cursor = "";
+      });
+      refocusRef.current = refocus;
 
-    // Lay the graph out a few iterations per frame; sigma redraws as positions change.
-    const settings = {
-      ...forceAtlas2.inferSettings(graph),
-      barnesHutOptimize: graph.order > 400,
-      // Keeps unlinked nodes near the rest instead of drifting to the edges.
-      strongGravityMode: true,
-      gravity: 5,
+      // Lay the graph out a few iterations per frame; sigma redraws as positions change.
+      const settings = {
+        ...forceAtlas2.inferSettings(graph),
+        barnesHutOptimize: graph.order > 400,
+        // Keeps unlinked nodes near the rest instead of drifting to the edges.
+        strongGravityMode: true,
+        gravity: 5,
+      };
+      let done = 0;
+      frame = requestAnimationFrame(function step() {
+        const started = performance.now();
+        while (done < LAYOUT_ITERATIONS && performance.now() - started < FRAME_BUDGET_MS) {
+          forceAtlas2.assign(graph, { iterations: 5, settings });
+          done += 5;
+        }
+        if (done < LAYOUT_ITERATIONS && graph.order > 1) frame = requestAnimationFrame(step);
+      });
     };
-    let done = 0;
-    let frame = requestAnimationFrame(function step() {
-      const started = performance.now();
-      while (done < LAYOUT_ITERATIONS && performance.now() - started < FRAME_BUDGET_MS) {
-        forceAtlas2.assign(graph, { iterations: 5, settings });
-        done += 5;
-      }
-      if (done < LAYOUT_ITERATIONS && graph.order > 1) frame = requestAnimationFrame(step);
-    });
+    // Drawn a frame later: creating sigma's WebGL contexts is the costly part, and after a click
+    // React runs this effect in the same task as its commit, which together would run past
+    // 50 ms.
+    frame = requestAnimationFrame(draw);
 
     return () => {
       cancelAnimationFrame(frame);
-      sigma.kill();
+      sigma?.kill();
       sigmaRef.current = null;
     };
   }, [data]);

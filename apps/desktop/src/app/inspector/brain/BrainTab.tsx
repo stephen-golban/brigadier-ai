@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { BrainGraphPanel } from "@/app/inspector/brain/BrainGraphPanel";
+import { BrainGraphPanel, preloadGraphCanvas } from "@/app/inspector/brain/BrainGraphPanel";
 import { BrainOverviewView } from "@/app/inspector/brain/BrainOverview";
 import { BrainSearch } from "@/app/inspector/brain/BrainSearch";
 import { Picker } from "@/app/inspector/providers/Picker";
@@ -10,6 +10,9 @@ import { loadBrain, PERSONAL, selectBrain, useBrain } from "@/state/brain";
 import { selectedConversation, useApp } from "@/state/store";
 
 type View = "overview" | "search" | "graph";
+
+/** How long after the tab opens the graph's libraries start loading. */
+const GRAPH_PRELOAD_MS = 500;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -63,6 +66,12 @@ export function BrainTab() {
     ],
     [projects],
   );
+
+  // The graph's libraries load in the background once the tab has painted.
+  useEffect(() => {
+    const timer = window.setTimeout(preloadGraphCanvas, GRAPH_PRELOAD_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Read the overview now and keep it current while the tab shows: often while something
   // moves (index progress and downloads have no events), rarely otherwise.
