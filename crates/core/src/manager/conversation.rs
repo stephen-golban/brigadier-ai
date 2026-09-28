@@ -1066,6 +1066,7 @@ impl SessionManager {
         let mut input = self
             .turn_input(&conv, &users, &[user_notes, notes.clone()].concat())
             .await;
+        let mut reborn = None;
         if let Some(plan) = briefing {
             let (text, mut record) = self
                 .briefing(
@@ -1086,14 +1087,7 @@ impl SessionManager {
             )
             .await;
             input.text = format!("{text}\n\n{}", input.text);
-            tracing::info!(conversation = %conv.id, generation = record.generation, tokens = record.briefing_tokens, trigger = ?record.trigger, "orchestrator reborn");
-            self.log_orchestrator(
-                &conv.id,
-                OrchestratorEntry::Rebirth {
-                    record: Box::new(record),
-                },
-            )
-            .await;
+            reborn = Some((plan, record));
         } else if reseed {
             let transcript = self.reseed_text(&conv.id, &users).await;
             if !transcript.is_empty() {
@@ -1124,8 +1118,23 @@ impl SessionManager {
         self.set_run_for(&conv.id, RunState::Running, None, request)
             .await;
         if let Err(err) = cli.session.send(input).await {
+            // The briefing goes with the next try.
+            if let Some((plan, _)) = reborn {
+                conv.state.lock().await.briefing = Some(plan);
+            }
             let message = format!("The CLI did not take the turn: {err}");
             self.fail_turn(&conv, users, envelopes, &message).await;
+            return;
+        }
+        if let Some((_, record)) = reborn {
+            tracing::info!(conversation = %conv.id, generation = record.generation, tokens = record.briefing_tokens, trigger = ?record.trigger, "orchestrator reborn");
+            self.log_orchestrator(
+                &conv.id,
+                OrchestratorEntry::Rebirth {
+                    record: Box::new(record),
+                },
+            )
+            .await;
         }
     }
 
@@ -1784,16 +1793,14 @@ impl SessionManager {
     }
 
     /// A request is over: if the user saw no reply for it, the last one the narration filter
-    /// hid goes into the thread after all, so an answer is never left empty.
+    /// hid goes into the thread after all, so an answer is never left empty. Its bookkeeping
+    /// goes with it.
     pub(super) async fn release_narration(&self, conv: &ConvLive, request: &str) {
         let narration = {
             let mut state = conv.state.lock().await;
             let narration = state.narration.remove(request);
-            if state.spoke.contains(request) {
+            if state.spoke.remove(request) {
                 return;
-            }
-            if narration.is_some() {
-                state.spoke.insert(request.to_owned());
             }
             narration
         };
@@ -2048,6 +2055,11 @@ impl SessionManager {
                 .unwrap_or_else(|| "The model did not finish compacting".into()),
         };
         self.end_compaction(conv, unfinished).await;
+        // Before the next turn may start: a turn admitted in between would still run on this
+        // CLI, past the swap threshold.
+        if conv.kind == ConversationKind::Session {
+            self.consider_rebirth(conv, cli).await;
+        }
         let (limit_hit, carried, asked) = {
             let mut state = conv.state.lock().await;
             state.busy = false;
@@ -2089,9 +2101,6 @@ impl SessionManager {
             self.spawn(async move { manager.chat_fallback(&conv, &cli, next, carried).await });
             return;
         }
-        if conv.kind == ConversationKind::Session {
-            self.consider_rebirth(conv, cli).await;
-        }
         self.set_run(&conv.id, RunState::Idle, None).await;
         self.settle_requests(&conv.id).await;
         self.kick(conv);
@@ -2129,15 +2138,22 @@ impl SessionManager {
         }
     }
 
-    /// Between turns: an orchestrator whose handoff note is ready, or whose rebirth is due,
-    /// is reborn. Its CLI closes; the next one starts fresh from a briefing.
+    /// Between turns: an orchestrator whose handoff note is ready, or whose rebirth is due and
+    /// cannot wait for it ([`rebirth::swap_now`]), is reborn. Its CLI closes; the next one
+    /// starts fresh from a briefing.
     async fn rebirth_if_ready(&self, conv: &Arc<ConvLive>) {
         let (prep, cli) = {
             let mut state = conv.state.lock().await;
             let Some(prep) = state.rebirth.clone() else {
                 return;
             };
-            if state.busy || state.closing || !(prep.ready() || prep.is_due()) {
+            let now = prep.ready()
+                || (prep.is_due()
+                    && rebirth::swap_now(
+                        state.cli.as_ref().map(|cli| cli.provider),
+                        state.context,
+                    ));
+            if state.busy || state.closing || !now {
                 return;
             }
             // Nothing else starts a turn meanwhile.

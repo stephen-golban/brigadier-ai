@@ -64,6 +64,43 @@ pub(crate) struct ProjectBrain {
     indexing: AtomicBool,
 }
 
+/// Session decisions a briefing's ledger reads at most. Their lines alone would fill a model's
+/// whole context long before this.
+pub(crate) const LEDGER_MAX: u32 = 10_000;
+
+/// One Brain write of a conversation in flight; a briefing waits for it
+/// ([`SessionManager::learned`]).
+struct Learning {
+    manager: Arc<SessionManager>,
+    id: ConversationId,
+}
+
+impl Learning {
+    fn start(manager: Arc<SessionManager>, id: &ConversationId) -> Self {
+        *manager.brains.learning().entry(id.clone()).or_default() += 1;
+        Self {
+            manager,
+            id: id.clone(),
+        }
+    }
+}
+
+impl Drop for Learning {
+    fn drop(&mut self) {
+        let brains = &self.manager.brains;
+        {
+            let mut learning = brains.learning();
+            if let Some(count) = learning.get_mut(&self.id) {
+                *count -= 1;
+                if *count == 0 {
+                    learning.remove(&self.id);
+                }
+            }
+        }
+        brains.learned.notify_waiters();
+    }
+}
+
 /// A full scan's size and time, for the static index budget.
 #[derive(Debug, Clone)]
 pub struct IndexRunStats {
@@ -93,6 +130,9 @@ pub(crate) struct Brains {
     downloading: AtomicBool,
     cancel_download: Arc<AtomicBool>,
     pub(super) jobs: BrainJobs,
+    /// Per conversation: Brain writes still running (reports, the user's decisions).
+    learning: Mutex<HashMap<ConversationId, usize>>,
+    learned: tokio::sync::Notify,
 }
 
 impl Brains {
@@ -108,7 +148,13 @@ impl Brains {
             downloading: AtomicBool::new(false),
             cancel_download: Arc::new(AtomicBool::new(false)),
             jobs: BrainJobs::new(),
+            learning: Mutex::new(HashMap::new()),
+            learned: tokio::sync::Notify::new(),
         }
+    }
+
+    fn learning(&self) -> MutexGuard<'_, HashMap<ConversationId, usize>> {
+        self.learning.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn projects(&self) -> MutexGuard<'_, HashMap<ProjectId, Arc<ProjectBrain>>> {
@@ -829,8 +875,10 @@ impl SessionManager {
     /// and to the modules it touched.
     pub(crate) fn learn_report(&self, task: &Task, report: &Report) {
         let manager = self.arc();
+        let learning = Learning::start(self.arc(), &task.conversation_id);
         let (task, report) = (task.clone(), report.clone());
         self.spawn(async move {
+            let _learning = learning;
             if let Err(err) = manager.record_report(&task, &report).await {
                 tracing::warn!(task = %task.id, error = %err, "the Brain could not keep a report");
             }
@@ -938,8 +986,10 @@ impl SessionManager {
         body: String,
     ) {
         let manager = self.arc();
+        let learning = Learning::start(self.arc(), id);
         let id = id.clone();
         self.spawn(async move {
+            let _learning = learning;
             let Some(project) = manager.project_of(&id) else {
                 return;
             };
@@ -972,6 +1022,73 @@ impl SessionManager {
         });
     }
 
+    /// Waits, at most `limit`, until the conversation's Brain writes in flight are done.
+    pub(crate) async fn learned(&self, id: &ConversationId, limit: Duration) {
+        let settled = async {
+            loop {
+                let notified = self.brains.learned.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if !self.brains.learning().contains_key(id) {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        if tokio::time::timeout(limit, settled).await.is_err() {
+            tracing::warn!(conversation = %id, "Brain writes still running for a briefing");
+        }
+    }
+
+    /// Decisions a handoff note lists that were never kept with `remember`: each becomes a
+    /// decision node of the conversation, so this briefing's ledger and every later one carry
+    /// it with an id. Returns how many it kept.
+    pub(crate) async fn keep_note_decisions(
+        &self,
+        id: &ConversationId,
+        lines: Vec<String>,
+        generation: u32,
+    ) -> Result<u32> {
+        let Some(project) = self.project_of(id) else {
+            return Ok(0);
+        };
+        if lines.is_empty() {
+            return Ok(0);
+        }
+        let project = self.project_brain(&project).await?;
+        let commit = self.head_commit(id).await;
+        let nodes: Vec<NewNode> = lines
+            .into_iter()
+            .map(|line| NewNode {
+                kind: NodeKind::Decision,
+                key: Some(format!("handoff:{}:{}", id.0, blake_key(&line))),
+                title: one_line(&line, 240),
+                body: format!("{line}\n(from the handoff note before rebirth {generation})"),
+                provenance: Provenance {
+                    origin: Origin::Orchestrator,
+                    session_id: Some(id.0.clone()),
+                    task_id: None,
+                    job_id: None,
+                    worker: None,
+                    commit: commit.clone(),
+                    recorded_at_ms: now_ms(),
+                },
+                files: Vec::new(),
+                expires_at_ms: None,
+            })
+            .collect();
+        let brain = project.brain.clone();
+        blocking(move || {
+            let mut kept = 0;
+            for node in nodes {
+                brain.record(node).map_err(brain_error)?;
+                kept += 1;
+            }
+            Ok(kept)
+        })
+        .await
+    }
+
     /// The session checkout's HEAD commit, for provenance.
     async fn head_commit(&self, id: &ConversationId) -> Option<String> {
         let Some(Setup::Session { repo, .. }) = self.core.conversation(id).ok()?.setup else {
@@ -1000,7 +1117,7 @@ impl SessionManager {
                     session_id: Some(session),
                     current_only: true,
                     text: None,
-                    limit: Some(10_000),
+                    limit: Some(LEDGER_MAX),
                 })
                 .map_err(brain_error)
         })

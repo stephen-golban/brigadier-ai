@@ -1,8 +1,8 @@
 //! Orchestrator rebirth (PLAN.md §2, §6 Phase 4): the orchestrator never compacts. When its
 //! context passes the prepare threshold, the outgoing CLI's session is forked in the
 //! background and the fork writes a handoff note while the orchestrator keeps serving the user.
-//! Between two turns (once the note is ready, and at the latest when the context passes the
-//! swap threshold), its CLI is closed and the next turn starts a fresh one with a briefing
+//! Between two turns (once the note is ready, or sooner when the context passes the swap
+//! threshold with too little room left to wait), its CLI is closed and the next turn starts a fresh one with a briefing
 //! prepended: the note, this conversation's decision ledger from the Brain, the live board, a
 //! Brain digest and the last messages verbatim.
 //!
@@ -24,7 +24,7 @@ use brigadier_providers::{
 };
 use tokio::sync::watch;
 
-use super::brains::{brain_error, cut, one_line};
+use super::brains::{LEDGER_MAX, brain_error, cut, one_line};
 use super::{SessionManager, blocking, prompts};
 use crate::knowledge::{BriefingSection, RebirthRecord, RebirthTrigger};
 use crate::model::{
@@ -54,24 +54,41 @@ const BRAIN_BUDGET: usize = 5_000 * BYTES_PER_TOKEN;
 const MIN_EXCHANGES: usize = 6;
 /// … and, only when the briefing overflows, at least this many.
 const MIN_EXCHANGES_OVERFLOW: usize = 3;
-/// A single message is carried up to this size.
+/// A single reply or Brigadier message is carried up to this size …
 const MESSAGE_BYTES: usize = 6_000;
+/// … and a user message up to this one (a long paste is cut, with a marker).
+const USER_MESSAGE_BYTES: usize = 16_000;
 /// Messages of the branch looked at for the verbatim tail.
 const RECENT_SCAN: usize = 200;
 /// How long the fork may take to write its note.
 const HANDOFF_TIME: Duration = Duration::from_secs(180);
-/// A turn past the swap threshold waits this long for a note still being written.
-pub(super) const HANDOFF_WAIT: Duration = Duration::from_secs(120);
+/// A turn that cannot run on the old CLI any more waits this long for a note still being
+/// written, then starts without it.
+pub(super) const HANDOFF_WAIT: Duration = Duration::from_secs(30);
+/// Room a context past the swap threshold must keep for one more large turn on its old CLI.
+const TURN_ROOM: i64 = 40_000;
 /// Orchestrator log events read per page while counting generations.
 const LOG_PAGE: u32 = 500;
 
 const HANDOFF_PROMPT: &str = "[Brigadier] Your context is nearly full, so a fresh orchestrator \
 will continue this conversation from a briefing. Brigadier already gives it every decision \
-recorded in the Project Brain, the live board (tasks, plan, open cards, queued messages) and the \
-last messages verbatim. Write the handoff note it needs beyond that, in plain text under these \
-headings: Goal and open threads; Decisions and user preferences from this conversation (one line \
-each, with the reason); Promises made to the user; What to do next (and what you are waiting \
-for). At most about 1,500 words. Don't call any tool. Reply with the note only.";
+recorded in the Project Brain (everything you kept with remember, plan approvals and the user's \
+answers to cards), the live board (tasks, plan, open cards, queued messages) and the last messages \
+verbatim. Write the handoff note it needs beyond that, in plain text under these headings: Goal \
+and open threads; Decisions not kept yet (every decision or user preference settled in this \
+conversation that is not in the Brain yet, one line each with the reason, or None); Promises made \
+to the user; What to do next (and what you are waiting for). At most about 1,500 words. Don't \
+call any tool. Reply with the note only.";
+
+/// The note's headings, lowercase, as [`note_decisions`] finds them.
+const NOTE_HEADINGS: &[&str] = &[
+    "goal and open threads",
+    "decisions not kept yet",
+    "promises made to the user",
+    "what to do next",
+];
+/// How long a briefing waits for the conversation's Brain writes in flight.
+const LEARN_WAIT: Duration = Duration::from_secs(10);
 
 const FRAMING: &str = "[Brigadier briefing: only you see this] You are the orchestrator of this \
 Brigadier session, continuing the conversation summarized below. Brigadier replaced your earlier \
@@ -87,7 +104,7 @@ pub(crate) struct RebirthPrep {
     pub at_tokens: i64,
     pub window: Option<i64>,
     pub old_native_id: Option<String>,
-    /// The context passed the swap threshold: the next turn waits for the note.
+    /// The context passed the swap threshold.
     pub due: AtomicBool,
     note: watch::Receiver<Option<Option<String>>>,
 }
@@ -174,6 +191,12 @@ impl SessionManager {
                 None => None,
             };
             tracing::info!(conversation = %id, bytes = written.as_ref().map_or(0, String::len), "handoff note written");
+            // Its decisions are kept now, even if a swap that could not wait went ahead
+            // without the note: every later briefing carries them.
+            if let Some(note) = &written {
+                let generation = manager.rebirths(&id).await + 1;
+                manager.keep_handoff_decisions(&id, note, generation).await;
+            }
             let _ = done.send(Some(written));
         });
         prep
@@ -278,9 +301,18 @@ impl SessionManager {
         plan: &BriefingPlan,
         carried: &[Message],
     ) -> (String, RebirthRecord) {
+        let generation = self.rebirths(id).await + 1;
         let handoff = match &plan.prep {
             Some(prep) => prep.note(Duration::ZERO).await,
             None => None,
+        };
+        // The ledger misses nothing: writes in flight (a report, a card's answer) land first,
+        // and what the note settled beyond the Brain is a decision node already (kept again
+        // here in case that failed).
+        self.learned(id, LEARN_WAIT).await;
+        let from_note = match &handoff {
+            Some(note) => self.keep_handoff_decisions(id, note, generation).await,
+            None => 0,
         };
         let mut handoff_part = Part::new("handoff", String::new(), 0);
         if let Some(note) = &handoff {
@@ -291,7 +323,12 @@ impl SessionManager {
             handoff_part.items = 1;
             handoff_part.truncated = note.len() > HANDOFF_BUDGET;
         }
-        let (decisions, decisions_in_full) = self.decision_part(id).await;
+        let (mut decisions, decisions_in_full) = self.decision_part(id).await;
+        if from_note > 0
+            && let Some(note) = &mut decisions.note
+        {
+            note.push_str(&format!("; {from_note} kept from the handoff note"));
+        }
         let state = self.state_part(id).await;
         let search = Part::new(
             "search",
@@ -413,7 +450,7 @@ impl SessionManager {
                 .prep
                 .as_ref()
                 .map_or_else(|| uuid::Uuid::now_v7().to_string(), |prep| prep.id.clone()),
-            generation: self.rebirths(id).await + 1,
+            generation,
             trigger: plan.trigger,
             provider,
             model,
@@ -440,10 +477,51 @@ impl SessionManager {
         (text, record)
     }
 
+    /// Keeps the decisions a handoff note lists as nodes of the conversation (idempotent: a
+    /// line's node is keyed by its text). Returns how many it kept.
+    async fn keep_handoff_decisions(
+        &self,
+        id: &ConversationId,
+        note: &str,
+        generation: u32,
+    ) -> u32 {
+        match self
+            .keep_note_decisions(id, note_decisions(note), generation)
+            .await
+        {
+            Ok(kept) => kept,
+            Err(err) => {
+                tracing::warn!(conversation = %id, error = %err, "could not keep the handoff note's decisions");
+                0
+            }
+        }
+    }
+
     /// Every settled decision of this conversation as a line with its node id; full bodies,
     /// newest first, while the budget lasts.
     async fn decision_part(&self, id: &ConversationId) -> (Part, u32) {
-        let nodes = self.session_decisions(id).await.unwrap_or_default();
+        let mut read = self.session_decisions(id).await;
+        for pause in [100, 500] {
+            if read.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(pause)).await;
+            read = self.session_decisions(id).await;
+        }
+        let nodes = match read {
+            Ok(nodes) => nodes,
+            Err(err) => {
+                tracing::warn!(conversation = %id, error = %err, "could not read the decision ledger");
+                let mut part = Part::new(
+                    "decisions",
+                    "[Decisions settled in this conversation] The ledger could not be read just now. Before acting on anything settled earlier, look it up with query_brain or search_transcript.".into(),
+                    0,
+                );
+                part.truncated = true;
+                part.note = Some(format!("ledger unreadable: {err}"));
+                return (part, 0);
+            }
+        };
         if nodes.is_empty() {
             return (Part::new("decisions", String::new(), 0), 0);
         }
@@ -479,8 +557,13 @@ impl SessionManager {
         let mut part = Part::new("decisions", text.trim_end().to_owned(), nodes.len() as u32);
         part.truncated = in_full < nodes.len();
         part.note = Some(format!(
-            "{in_full} of {} in full; the rest as lines (query_brain by id)",
-            nodes.len()
+            "{in_full} of {} in full; the rest as lines (query_brain by id){}",
+            nodes.len(),
+            if nodes.len() >= LEDGER_MAX as usize {
+                "; the ledger's newest lines only"
+            } else {
+                ""
+            }
         ));
         (part, in_full as u32)
     }
@@ -768,7 +851,12 @@ impl SessionManager {
                 close(&mut current, &mut exchanges);
             }
             let full = self.full_text(message).await;
-            current.push(format!("{who}: {}", cut(&full, MESSAGE_BYTES)));
+            let max = if message.role == MessageRole::User {
+                USER_MESSAGE_BYTES
+            } else {
+                MESSAGE_BYTES
+            };
+            current.push(format!("{who}: {}", carried_text(&full, max)));
         }
         if !current.is_empty() {
             close(&mut current, &mut exchanges);
@@ -831,6 +919,75 @@ fn briefing_budget() -> (usize, usize) {
     (BRIEFING_TARGET, BRIEFING_MAX)
 }
 
+/// A message carried verbatim, up to `max` bytes; a longer one says it was cut.
+fn carried_text(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    format!(
+        "{}\n[cut here: {} more bytes; search_transcript finds the rest]",
+        cut(text, max),
+        text.len() - max
+    )
+}
+
+/// The lines under a handoff note's "Decisions not kept yet" heading, without list markers
+/// ("None" is no decision).
+fn note_decisions(note: &str) -> Vec<String> {
+    let mut decisions = Vec::new();
+    let mut inside = false;
+    for line in note.lines() {
+        let item = list_item(line.trim());
+        let bare = item
+            .trim_start_matches(['#', '*', '_', ' '])
+            .trim_end_matches(['*', '_', ':', ' '])
+            .to_lowercase();
+        if NOTE_HEADINGS
+            .iter()
+            .any(|heading| bare.starts_with(heading))
+        {
+            inside = bare.starts_with(NOTE_HEADINGS[1]);
+            continue;
+        }
+        if !inside || item.is_empty() || says_none(item) {
+            continue;
+        }
+        decisions.push(item.to_owned());
+    }
+    decisions
+}
+
+/// Whether a note's line says there is nothing to list ("None.", "None that I know of …",
+/// "Nothing new").
+fn says_none(item: &str) -> bool {
+    let lower = item.to_lowercase();
+    ["none", "nothing", "no new ", "no other ", "no further "]
+        .iter()
+        .any(|word| {
+            lower.strip_prefix(word).is_some_and(|rest| {
+                word.ends_with(' ') || !rest.starts_with(|c: char| c.is_alphanumeric())
+            })
+        })
+}
+
+/// A line without its list marker ("- ", "* ", "• ", "1. ", "2) ").
+fn list_item(line: &str) -> &str {
+    for marker in ["- ", "* ", "• ", "+ "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return rest.trim();
+        }
+    }
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0
+        && let Some(rest) = line[digits..]
+            .strip_prefix(". ")
+            .or_else(|| line[digits..].strip_prefix(") "))
+    {
+        return rest.trim();
+    }
+    line
+}
+
 /// A decision as one briefing line: its node id, what it says, where it came from.
 fn decision_line(node: &Node) -> String {
     let origin = match node.provenance.origin {
@@ -862,8 +1019,25 @@ pub(super) fn rebirth_needed(
     )
 }
 
+/// Whether a context past the swap threshold must be reborn before the next turn even though
+/// its note is still being written. A Claude CLI (auto-compaction off) with room for one more
+/// large turn keeps working until the note is ready; Codex compacts on its own near its limit,
+/// so it is reborn at the threshold.
+pub(super) fn swap_now(
+    provider: Option<ProviderKind>,
+    context: Option<(i64, Option<i64>)>,
+) -> bool {
+    match (provider, context) {
+        (Some(ProviderKind::Claude), Some((used, Some(window)))) => {
+            window - used < TURN_ROOM.max(window / 5)
+        }
+        _ => true,
+    }
+}
+
 impl RebirthPrep {
-    /// Marks the rebirth due: the next turn waits for the note.
+    /// Marks the rebirth due: the next turn is reborn once the note is ready, or at once when
+    /// [`swap_now`] says the context cannot wait.
     pub fn set_due(&self) {
         self.due.store(true, Ordering::Release);
     }
