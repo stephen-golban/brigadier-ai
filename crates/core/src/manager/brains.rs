@@ -257,6 +257,7 @@ impl SessionManager {
             self.brains
                 .jobs
                 .stop_for(&project.id, "the project's repository changed");
+            self.brains.jobs.forget_tries(&project.id);
             stop_watchers(old.take_watcher().into_iter().collect()).await;
             // What the index, the skeleton pass and enrichment learned describes the old
             // repository: it goes before the new one is scanned, and the skeleton pass maps
@@ -910,10 +911,18 @@ impl SessionManager {
     /// index may not have seen that commit yet: with the hashes from before it, the report
     /// would go stale as soon as the watcher caught up with the task's own change. Files the
     /// index doesn't track stay untracked; one the commit lacks or git can't read is left out
-    /// of staleness rather than guessed.
+    /// of staleness rather than guessed, and so is every file when the repository can't be
+    /// read.
     async fn as_landed(&self, task: &Task, landed: &str, files: Vec<FileRef>) -> Vec<FileRef> {
+        let unhashed: Vec<FileRef> = files
+            .iter()
+            .map(|file| FileRef {
+                path: file.path.clone(),
+                hash: None,
+            })
+            .collect();
         let Ok(repo) = self.task_repo(task) else {
-            return files;
+            return unhashed;
         };
         let (git, commit) = (self.git.clone(), brigadier_git::Oid(landed.to_owned()));
         blocking(move || {
@@ -932,7 +941,7 @@ impl SessionManager {
                 .collect())
         })
         .await
-        .unwrap_or_default()
+        .unwrap_or(unhashed)
     }
 
     async fn record_report(&self, task: &Task, report: &Report) -> Result<()> {

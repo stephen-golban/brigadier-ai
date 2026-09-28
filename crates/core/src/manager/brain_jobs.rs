@@ -113,6 +113,14 @@ impl BrainJobs {
         let _ = self.skeletons.send(project);
     }
 
+    /// The project moved to another repository: its skeleton pass gets its tries again.
+    pub(crate) fn forget_tries(&self, project: &ProjectId) {
+        self.tried
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(project);
+    }
+
     /// Stops the running job, if any.
     pub(crate) fn stop(&self, reason: &str) {
         if let Some(live) = self.live().as_mut() {
