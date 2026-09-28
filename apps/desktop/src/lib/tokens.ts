@@ -12,3 +12,24 @@ export function tokenPx(name: `--${string}`): number {
   }
   return amount;
 }
+
+/**
+ * Resolves a color token from styles/tokens.css (`--glyph-1`, `--background`) to `#rrggbbaa`,
+ * for canvas and WebGL APIs that cannot read CSS colors themselves.
+ */
+export function tokenColor(name: `--${string}`): string {
+  const probe = document.createElement("span");
+  probe.style.color = `var(${name})`;
+  document.body.append(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("no 2D canvas to resolve colors with");
+  context.fillStyle = resolved;
+  context.fillRect(0, 0, 1, 1);
+  const channels = Array.from(context.getImageData(0, 0, 1, 1).data);
+  return `#${channels.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}

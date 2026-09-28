@@ -1,5 +1,6 @@
 import { X } from "@openai/apps-sdk-ui/components/Icon";
 
+import { BrainTab } from "@/app/inspector/brain/BrainTab";
 import { EventsTab } from "@/app/inspector/EventsTab";
 import { OrchestratorTab } from "@/app/inspector/OrchestratorTab";
 import { PerformanceTab } from "@/app/inspector/PerformanceTab";
@@ -15,6 +16,7 @@ function isTab(value: string): value is InspectorTab {
   return (
     value === "events" ||
     value === "orchestrator" ||
+    value === "brain" ||
     value === "processes" ||
     value === "performance" ||
     value === "providers"
@@ -22,7 +24,8 @@ function isTab(value: string): value is InspectorTab {
 }
 
 /**
- * Developer view: live event stream, the open session's orchestrator context, processes,
+ * Developer view: live event stream, the open session's orchestrator context, the Project
+ * Brains, processes,
  * metrics against the §4 budgets, and raw provider sessions.
  */
 export function Inspector() {
@@ -32,7 +35,7 @@ export function Inspector() {
       aria-label="Inspector"
       className={cn(
         "bg-sidebar flex h-full shrink-0 flex-col border-s",
-        tab === "providers" ? "w-inspector-wide" : "w-inspector",
+        tab === "providers" || tab === "brain" ? "w-inspector-wide" : "w-inspector",
       )}
     >
       <Tabs
@@ -47,6 +50,7 @@ export function Inspector() {
           <TabsList className="flex-1">
             <TabsTrigger value="events">Events</TabsTrigger>
             <TabsTrigger value="orchestrator">Orchestrator</TabsTrigger>
+            <TabsTrigger value="brain">Brain</TabsTrigger>
             <TabsTrigger value="processes">Processes</TabsTrigger>
             <TabsTrigger value="performance">Performance</TabsTrigger>
             <TabsTrigger value="providers">Providers</TabsTrigger>
@@ -65,6 +69,9 @@ export function Inspector() {
         </TabsContent>
         <TabsContent value="orchestrator" className="flex min-h-0 flex-col">
           <OrchestratorTab />
+        </TabsContent>
+        <TabsContent value="brain" className="flex min-h-0 flex-col">
+          <BrainTab />
         </TabsContent>
         <TabsContent value="processes" className="min-h-0 overflow-y-auto">
           <ProcessesTab />

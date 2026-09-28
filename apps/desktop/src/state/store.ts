@@ -87,7 +87,13 @@ export type Thread = {
   fullText: Record<string, string>;
 };
 
-export type InspectorTab = "events" | "orchestrator" | "processes" | "performance" | "providers";
+export type InspectorTab =
+  | "events"
+  | "orchestrator"
+  | "brain"
+  | "processes"
+  | "performance"
+  | "providers";
 
 /** Newest inspector events kept in memory. */
 export const INSPECTOR_EVENTS = 500;
