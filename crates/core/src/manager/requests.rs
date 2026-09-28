@@ -125,8 +125,12 @@ impl SessionManager {
             } else {
                 RequestState::Done
             };
+            let over = !matches!(state, RequestState::Working | RequestState::Waiting);
             if let Err(err) = self.core.update_request(conversation_id, id, state).await {
                 tracing::debug!(conversation = %conversation_id, error = %err, "could not update a request");
+            }
+            if over {
+                self.release_narration(&conv, id).await;
             }
         }
         // A session's answer that ended with no turn after it (a worker the user stopped):

@@ -144,6 +144,12 @@ struct ConvState {
     /// Replies that were streaming when a message was steered in, and the request they
     /// answer (the one before the steer).
     replying_for: HashMap<String, String>,
+    /// Per request: the last reply the narration filter kept out of the thread, which the
+    /// thread gets after all if the request ends with nothing else said (see
+    /// [`SessionManager::release_narration`]).
+    narration: HashMap<String, Narration>,
+    /// Requests the user saw a reply for.
+    spoke: HashSet<String>,
     /// The next CLI session starts fresh and must be given the transcript so far.
     reseed: bool,
     /// A Chat that hit a usage limit continues on this model (the saved choice is untouched).
@@ -1658,6 +1664,7 @@ impl SessionManager {
                             // never sees it (the orchestrator log keeps it).
                             Some(true) => {
                                 if let Some(reply) = held.take() {
+                                    self.hide_narration(&conv, &cli, &reply).await;
                                     self.log_provider(&conv.id, cli.provider, reply).await;
                                 }
                             }
@@ -1749,6 +1756,65 @@ impl SessionManager {
         }
     }
 
+    /// Keeps a reply the narration filter hid, under its request, in case the request ends
+    /// with nothing else said.
+    async fn hide_narration(&self, conv: &ConvLive, cli: &Cli, reply: &ProviderEvent) {
+        let ProviderEvent::Message { item_id, text, .. } = reply else {
+            return;
+        };
+        let mut state = conv.state.lock().await;
+        let Some(request) = state
+            .replying_for
+            .get(item_id)
+            .cloned()
+            .or_else(|| state.request.clone())
+        else {
+            return;
+        };
+        if !state.spoke.contains(&request) {
+            state.narration.insert(
+                request,
+                Narration {
+                    item_id: item_id.clone(),
+                    text: text.clone(),
+                    model: cli.model.clone(),
+                },
+            );
+        }
+    }
+
+    /// A request is over: if the user saw no reply for it, the last one the narration filter
+    /// hid goes into the thread after all, so an answer is never left empty.
+    pub(super) async fn release_narration(&self, conv: &ConvLive, request: &str) {
+        let narration = {
+            let mut state = conv.state.lock().await;
+            let narration = state.narration.remove(request);
+            if state.spoke.contains(request) {
+                return;
+            }
+            if narration.is_some() {
+                state.spoke.insert(request.to_owned());
+            }
+            narration
+        };
+        let Some(narration) = narration else {
+            return;
+        };
+        if let Err(err) = self
+            .core
+            .append_assistant_message(
+                conv.id.clone(),
+                narration.item_id,
+                narration.text,
+                Some(narration.model),
+                Some(request.to_owned()),
+            )
+            .await
+        {
+            tracing::warn!(conversation = %conv.id, error = %err, "could not store a reply");
+        }
+    }
+
     async fn on_conversation_event(
         &self,
         conv: &Arc<ConvLive>,
@@ -1773,8 +1839,13 @@ impl SessionManager {
                 } else {
                     Some(text.as_str())
                 };
-                if let Some(text) = shown
-                    && let Err(err) = self
+                if let Some(text) = shown {
+                    if let Some(request) = &request {
+                        let mut state = conv.state.lock().await;
+                        state.spoke.insert(request.clone());
+                        state.narration.remove(request);
+                    }
+                    if let Err(err) = self
                         .core
                         .append_assistant_message(
                             conv.id.clone(),
@@ -1784,8 +1855,9 @@ impl SessionManager {
                             request,
                         )
                         .await
-                {
-                    tracing::warn!(conversation = %conv.id, error = %err, "could not store a reply");
+                    {
+                        tracing::warn!(conversation = %conv.id, error = %err, "could not store a reply");
+                    }
                 }
             }
             ProviderEvent::ApprovalRequested { request } => {
@@ -2437,18 +2509,22 @@ impl Quiet {
             .collect()
     }
 
-    /// Whether `event` is a complete reply none of which was shown yet: it is held until the
-    /// next event says whether it was narration.
+    /// Whether `event` is a complete reply none of which was shown yet, short enough to be
+    /// narration: it is held until the next event says whether it was. A question is never
+    /// held.
     fn holds_whole(&mut self, event: &ProviderEvent) -> bool {
         let ProviderEvent::Message {
             item_id,
             role: ProviderRole::Assistant,
-            ..
+            text,
         } = event
         else {
             return false;
         };
-        let whole = self.enabled && !self.released.contains(item_id);
+        let whole = self.enabled
+            && !self.released.contains(item_id)
+            && text.len() < NARRATION_BYTES
+            && !text.contains('?');
         if whole {
             self.forget(event);
         }
@@ -2467,14 +2543,36 @@ impl Quiet {
 /// Replies shorter than this are held back until the turn shows whether they were narration.
 const NARRATION_BYTES: usize = 400;
 
+/// Tools whose call a short reply before it may only have announced ("I'll ask a scout.",
+/// "Let me read the report."): the user sees the call's result anyway.
+const ANNOUNCED_TOOLS: &[&str] = &[
+    "delegate_task",
+    "read_report",
+    "read_artifact",
+    "query_brain",
+    "search_transcript",
+    "list_tasks",
+];
+
+/// A held reply, kept out of the thread for its request.
+struct Narration {
+    item_id: String,
+    text: String,
+    model: ModelChoice,
+}
+
 /// What `event`, following a held short reply in the same turn, makes of it: `Some(true)` when
-/// it is a tool call that does the work the reply announced ("Accepting it.", "I'll ask a
-/// scout."), `Some(false)` when the reply stands (the turn ended, another reply followed, or a
-/// silent bookkeeping call came after an answer), `None` when it cannot tell yet.
+/// it is a call that only looks something up or hands work out ([`ANNOUNCED_TOOLS`]), which
+/// the reply announced; `Some(false)` when the reply stands: the turn ended, another reply
+/// followed, or the call acts on the user's behalf (accepting or rejecting work, a plan, a
+/// card, an answer to a worker), so the reply may carry a decision or its reason. `None` when
+/// it cannot tell yet.
 fn narration(event: &ProviderEvent) -> Option<bool> {
     match event {
         ProviderEvent::ToolCall { name, .. } => {
-            Some(!(name.ends_with("remember") || name.ends_with("route_follow_up")))
+            let tool = name.rsplit("__").next().unwrap_or(name);
+            let tool = tool.rsplit('.').next().unwrap_or(tool);
+            Some(ANNOUNCED_TOOLS.contains(&tool))
         }
         ProviderEvent::TurnCompleted { .. }
         | ProviderEvent::Exited { .. }
