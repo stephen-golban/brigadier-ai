@@ -290,6 +290,24 @@ impl SessionManager {
         }
     }
 
+    /// A project is being removed: its Brain and index close, their Brain job and watcher
+    /// stop, and their files (`brains/<project>/`) are deleted. The repository is not touched.
+    pub(crate) async fn delete_project_brain(&self, id: &ProjectId) -> Result<()> {
+        self.brains.jobs.stop_for(id, "the project was removed");
+        self.brains.jobs.forget_tries(id);
+        let open = self.brains.projects().remove(id);
+        if let Some(open) = open {
+            stop_watchers(open.take_watcher().into_iter().collect()).await;
+        }
+        let dir = self.brains.root.join(&id.0);
+        blocking(move || match std::fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(Error::Invalid(format!("removing {}: {err}", dir.display()))),
+        })
+        .await
+    }
+
     /// The project's Brain and index, opened (and its indexing started) on first use.
     pub(crate) async fn project_brain(&self, id: &ProjectId) -> Result<Arc<ProjectBrain>> {
         if let Some(open) = self.brains.projects().get(id) {

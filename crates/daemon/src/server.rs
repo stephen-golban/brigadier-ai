@@ -1052,6 +1052,18 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::Restore { id } => Response::Restore {
             conversation: Box::new(sessions.restore(id).await?),
         },
+        Request::RemoveProject {
+            id,
+            delete_branches,
+        } => {
+            for conversation in core.catalog().conversations {
+                if conversation.project_id.as_ref() == Some(&id) {
+                    daemon.terminals.close_conversation(&conversation.id.0);
+                }
+            }
+            sessions.remove_project(id, delete_branches).await?;
+            Response::RemoveProject
+        }
         Request::Delete {
             id,
             delete_branches,

@@ -900,6 +900,10 @@ pub enum DomainEvent {
     ConversationDeleted {
         id: ConversationId,
     },
+    /// Removed from Brigadier (its conversations were deleted first). Its repository is untouched.
+    ProjectRemoved {
+        id: ProjectId,
+    },
     /// Assistant text as it streams. The final `messageAppended` with the same id replaces it.
     MessageDelta {
         conversation_id: ConversationId,
@@ -1018,6 +1022,7 @@ impl DomainEvent {
             Self::ConversationSetUp { .. } => "conversation.setUp",
             Self::ConversationLifecycleChanged { .. } => "conversation.lifecycle",
             Self::ConversationDeleted { .. } => "conversation.deleted",
+            Self::ProjectRemoved { .. } => "project.removed",
             Self::MessageDelta { .. } => "message.delta",
             Self::RunStateChanged { .. } => "conversation.run",
             Self::RequestUpdated { .. } => "request.updated",

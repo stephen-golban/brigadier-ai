@@ -402,6 +402,11 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
       const { [event.id]: _deleted, ...conversations } = slice.conversations;
       return { ...slice, conversations };
     }
+    case "projectRemoved": {
+      if (!slice.projects[event.id]) return slice;
+      const { [event.id]: _removed, ...projects } = slice.projects;
+      return { ...slice, projects };
+    }
     case "settingsChanged":
       applyDensity(event.settings.density);
       return { ...slice, settings: event.settings };

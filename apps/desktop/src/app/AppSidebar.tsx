@@ -22,6 +22,7 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { DeleteDialog } from "@/app/dialogs/DeleteDialog";
 import { errorText } from "@/app/dialogs/fields";
 import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
+import { RemoveProjectDialog } from "@/app/dialogs/RemoveProjectDialog";
 import { SettingsDialog } from "@/app/dialogs/SettingsDialog";
 import { NameDialog } from "@/app/NameDialog";
 import { SearchDialog } from "@/app/SearchDialog";
@@ -163,6 +164,7 @@ export function AppSidebar() {
   const inspectorOpen = useApp((s) => s.inspector.open);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [deleting, setDeleting] = useState<Conversation | null>(null);
+  const [removing, setRemoving] = useState<Project | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -266,6 +268,7 @@ export function AppSidebar() {
                   drafting={draftProjectId === project.id}
                   actions={actions}
                   onSettings={onProjectSettings}
+                  onRemove={setRemoving}
                 />
               ))}
             </SidebarMenu>
@@ -355,6 +358,10 @@ export function AppSidebar() {
         conversation={deleting}
         onOpenChange={(open) => !open && setDeleting(null)}
       />
+      <RemoveProjectDialog
+        project={removing}
+        onOpenChange={(open) => !open && setRemoving(null)}
+      />
       <NameDialog
         open={dialog?.type === "rename"}
         onOpenChange={(open) => !open && setDialog(null)}
@@ -391,6 +398,7 @@ const ProjectRow = memo(function ProjectRow({
   drafting,
   actions,
   onSettings,
+  onRemove,
 }: {
   project: Project;
   sessions: Conversation[];
@@ -398,6 +406,7 @@ const ProjectRow = memo(function ProjectRow({
   drafting: boolean;
   actions: RowActions;
   onSettings: (project: Project) => void;
+  onRemove: (project: Project) => void;
 }) {
   const expanded = useApp((s) => s.expandedProjects[project.id] ?? true);
   const mac = useApp((s) => s.info?.platform === "macos");
@@ -459,6 +468,11 @@ const ProjectRow = memo(function ProjectRow({
                 Export conventions to AGENTS.md…
               </DropdownMenuItem>
             )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => onRemove(project)}>
+              <Trash />
+              Remove project…
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         <CollapsibleContent>

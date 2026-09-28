@@ -52,6 +52,9 @@ impl Projection {
             DomainEvent::ConversationDeleted { id } => {
                 self.conversations.remove(id);
             }
+            DomainEvent::ProjectRemoved { id } => {
+                self.projects.remove(id);
+            }
             DomainEvent::ConversationCreated { conversation } => {
                 self.conversations
                     .insert(conversation.id.clone(), conversation.clone());

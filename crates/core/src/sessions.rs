@@ -369,6 +369,17 @@ impl Core {
         self.conversation(&id)
     }
 
+    /// Removes a project from the catalog. Its conversations are deleted by the caller first.
+    pub async fn forget_project(&self, id: ProjectId) -> Result<()> {
+        self.project(&id)?;
+        self.record(vec![(
+            streams::CATALOG.into(),
+            DomainEvent::ProjectRemoved { id },
+        )])
+        .await?;
+        Ok(())
+    }
+
     /// Removes a conversation from the catalog. Its streams are purged by the caller.
     pub async fn forget_conversation(&self, id: ConversationId) -> Result<()> {
         self.conversation(&id)?;

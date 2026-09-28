@@ -477,6 +477,14 @@ pub enum Request {
     Restore {
         id: ConversationId,
     },
+    /// Removes a project from Brigadier: its conversations are deleted (as `Delete` does,
+    /// without forgetting the Personal Brain), then its Brain and code index. Its repository's
+    /// files and the user's own branches are never touched.
+    RemoveProject {
+        id: ProjectId,
+        /// Also delete its sessions' unmerged Brigadier branches (otherwise they are kept).
+        delete_branches: bool,
+    },
     /// Permanently removes a conversation and its transcript.
     Delete {
         id: ConversationId,
@@ -791,6 +799,7 @@ pub enum Response {
     Restore {
         conversation: Box<Conversation>,
     },
+    RemoveProject,
     Delete,
     RenameConversation {
         conversation: Box<Conversation>,

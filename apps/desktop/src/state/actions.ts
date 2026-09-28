@@ -761,6 +761,35 @@ export async function deleteConversation(
   });
 }
 
+/**
+ * Removes a project from Brigadier: its conversations are deleted and its Brain and code
+ * index go; its repository is untouched.
+ */
+export async function removeProject(id: string, deleteBranches: boolean): Promise<void> {
+  const gone = Object.values(useApp.getState().conversations)
+    .filter((conversation) => conversation.projectId === id)
+    .map((conversation) => conversation.id);
+  await request({ method: "removeProject", id, deleteBranches });
+  for (const conversation of gone) forgetDraft(conversation);
+  const { selection } = useApp.getState();
+  if (
+    (selection.type === "conversation" && gone.includes(selection.id)) ||
+    (selection.type === "draft" && selection.kind === "session" && selection.projectId === id)
+  ) {
+    select({ type: "draft", kind: "chat" });
+  }
+  useApp.setState((state) => {
+    const { [id]: _removed, ...projects } = state.projects;
+    const conversations = { ...state.conversations };
+    const threads = { ...state.threads };
+    for (const conversation of gone) {
+      delete conversations[conversation];
+      delete threads[conversation];
+    }
+    return { projects, conversations, threads };
+  });
+}
+
 // ----- orchestrator log (Inspector) ------------------------------------------------------
 
 /** Orchestrator log entries fetched per page. */

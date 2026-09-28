@@ -50,6 +50,7 @@ function summary(event: DomainEvent): string {
     case "conversationLifecycleChanged":
       return event.lifecycle;
     case "conversationDeleted":
+    case "projectRemoved":
       return "deleted";
     case "messageDelta":
       return event.text.slice(0, 120).replace(/\s+/g, " ");

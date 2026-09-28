@@ -197,6 +197,13 @@ it conflicts). A task branch with no work of its own, and an
 archived session's branch that its base already contains, are deleted too. Anything that could
 not be removed is retried at the next launch.
 
+A project's menu in the sidebar has **Remove project…**. After a confirmation that says what
+goes and what stays, its sessions are deleted with the same cleanup (workers stopped, worktrees,
+scratch, CLI session files and processes removed), its Brain job stops, and its Brain and code
+index are deleted from the data directory. Brigadier's unmerged session and task branches are
+kept unless you choose to delete them, as when deleting a session. The repository itself (its
+files, commits and your own branches) is never touched; adding the folder again starts afresh.
+
 A Chat is a plain conversation with one model and no tools but web search. Text attachments up
 to 200 kB go into the message itself (a Chat cannot read files); other attachments are noted.
 

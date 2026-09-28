@@ -56,7 +56,11 @@ before: number | null, limit: number, } | { "method": "listOrchestratorLog", con
 /**
  * Absolute path.
  */
-path: string, } | { "method": "openArtifact", id: string, fileName: string, } | { "method": "hibernate", id: ConversationId, } | { "method": "archive", id: ConversationId, } | { "method": "restore", id: ConversationId, } | { "method": "delete", id: ConversationId, 
+path: string, } | { "method": "openArtifact", id: string, fileName: string, } | { "method": "hibernate", id: ConversationId, } | { "method": "archive", id: ConversationId, } | { "method": "restore", id: ConversationId, } | { "method": "removeProject", id: ProjectId, 
+/**
+ * Also delete its sessions' unmerged Brigadier branches (otherwise they are kept).
+ */
+deleteBranches: boolean, } | { "method": "delete", id: ConversationId, 
 /**
  * Also delete its unmerged branches (otherwise they are kept).
  */

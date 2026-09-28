@@ -21,7 +21,8 @@ use std::time::Duration;
 use super::conversation::Envelope;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{
-    Conversation, ConversationId, ConversationKind, Environment, Lifecycle, Setup, streams,
+    Conversation, ConversationId, ConversationKind, Environment, Lifecycle, ProjectId, Setup,
+    streams,
 };
 use crate::work::{InjectionKind, TaskState};
 use crate::{Error, Result, now_ms};
@@ -450,6 +451,40 @@ impl SessionManager {
             }
             Err(err) => tracing::warn!(conversation = %id, error = %err, "could not collect blobs"),
         }
+        Ok(())
+    }
+
+    /// Removes a project from Brigadier: each of its conversations is deleted as
+    /// [`Self::delete`] does (workers stopped, worktrees, CLI files and processes removed;
+    /// Brigadier's own unmerged branches only with `delete_branches`), then its Brain and code
+    /// index are deleted. The repository's files and the user's own branches are never touched.
+    pub async fn remove_project(&self, id: ProjectId, delete_branches: bool) -> Result<()> {
+        self.core.project(&id)?;
+        let conversations: Vec<ConversationId> = self
+            .core
+            .catalog()
+            .conversations
+            .into_iter()
+            .filter(|c| c.project_id.as_ref() == Some(&id))
+            .map(|c| c.id)
+            .collect();
+        for conversation in conversations {
+            // A side chat went with its parent.
+            if self.core.conversation(&conversation).is_err() {
+                continue;
+            }
+            self.delete(conversation, delete_branches, false).await?;
+        }
+        self.delete_project_brain(&id).await?;
+        // Its task worktrees lived here; the ledger removed them with their conversations.
+        let worktrees = self.owned_dir("worktrees", &id.0);
+        let _ = blocking(move || {
+            let _ = std::fs::remove_dir(&worktrees);
+            Ok(())
+        })
+        .await;
+        self.core.forget_project(id.clone()).await?;
+        tracing::info!(project = %id, "project removed");
         Ok(())
     }
 }
