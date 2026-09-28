@@ -27,7 +27,7 @@ use brigadier_providers::codex;
 use brigadier_providers::policy::{self, ApprovalMode, Route as PolicyRoute};
 use brigadier_providers::{
     Access, ApprovalDecision, Origin as SessionOrigin, ProviderEvent, ProviderKind, QuotaSnapshot,
-    SessionSpec, Started, ToolSet, TurnInput,
+    SessionSpec, Started, ToolSet, TurnInput, TurnStatus,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -174,6 +174,17 @@ impl SessionManager {
         });
     }
 
+    /// Whether the project's Brain still holds nodes a skeleton pass wrote.
+    async fn skeleton_kept(&self, project: &ProjectId) -> bool {
+        let Ok(open) = self.project_brain(project).await else {
+            return true;
+        };
+        let brain = open.brain.clone();
+        blocking(move || brain.holds_origin(Origin::Skeleton).map_err(brain_error))
+            .await
+            .unwrap_or(true)
+    }
+
     /// Runs the project's skeleton pass unless one succeeded before (or this daemon run
     /// already tried it twice).
     async fn skeleton_if_needed(&self, project: ProjectId) {
@@ -195,9 +206,11 @@ impl SessionManager {
             ended.ended_at_ms = Some(now_ms());
             self.record_job(&ended).await;
         }
+        // Done, unless what it wrote is gone (the project moved to another repository).
         if jobs
             .iter()
             .any(|job| job.kind == BrainJobKind::Skeleton && job.state == BrainJobState::Done)
+            && self.skeleton_kept(&project).await
         {
             return;
         }
@@ -307,6 +320,8 @@ impl SessionManager {
                     .runtime
                     .overview(kind)
                     .and_then(|overview| overview.quota);
+                // A window that has reset since it was reported counts as unused.
+                let now = now_ms();
                 let left = quota
                     .as_ref()
                     .filter(|quota| !quota.windows.is_empty())
@@ -315,12 +330,16 @@ impl SessionManager {
                             - quota
                                 .windows
                                 .iter()
+                                .filter(|window| window.resets_at_ms.is_none_or(|at| at > now))
                                 .map(|window| window.used_percent)
                                 .fold(0.0, f64::max)
                     });
                 match (left, known_only) {
                     (None, true) => None,
                     (None, false) => Some((kind, 50.0)),
+                    // Used up: a job would only fail on the limit (the skeleton pass asks again
+                    // later).
+                    (Some(left), _) if left <= 0.0 => None,
                     (Some(left), _) => Some((kind, left)),
                 }
             })
@@ -554,7 +573,18 @@ impl SessionManager {
                             };
                             let _ = session.answer(request.id, decision).await;
                         }
-                        ProviderEvent::TurnCompleted { .. } => return Ok(()),
+                        ProviderEvent::TurnCompleted { status, .. } => {
+                            // A turn cut short leaves the job incomplete, whatever it recorded.
+                            return match status {
+                                TurnStatus::Completed => Ok(()),
+                                TurnStatus::Failed => {
+                                    Err(Error::Provider("the job's turn failed".into()))
+                                }
+                                TurnStatus::Interrupted => {
+                                    Err(Error::Provider("the job's turn was interrupted".into()))
+                                }
+                            };
+                        }
                         ProviderEvent::Exited { .. } => {
                             return Err(Error::Provider("the job's CLI exited".into()));
                         }
@@ -879,12 +909,6 @@ impl SessionManager {
         let Some(project) = self.enrichment_project(resets_at).await else {
             return;
         };
-        self.brains
-            .jobs
-            .enriched
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(project.clone(), resets_at);
         match self
             .start_brain_job(
                 &project,
@@ -895,6 +919,14 @@ impl SessionManager {
             .await
         {
             Ok(id) => {
+                // Once per usage window, counted from a job that started: one that could not
+                // (user work began, another job took the slot) leaves the window to try again.
+                self.brains
+                    .jobs
+                    .enriched
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(project.clone(), resets_at);
                 tracing::info!(project = %project, job = %id, provider = %provider, "enrichment started on spare quota")
             }
             Err(err) => {

@@ -594,6 +594,70 @@ impl SessionManager {
         let Ok(board) = self.core.board(id).await else {
             return Part::new("state", text, 0);
         };
+        // What waits on the user comes first: the task list is what a long board cuts.
+        for question in board
+            .questions
+            .values()
+            .filter(|question| question.answer.is_none())
+        {
+            items += 1;
+            text.push_str(&format!(
+                "Waiting for the user's answer: {}\n",
+                one_line(&question.text, 300)
+            ));
+        }
+        for approval in board
+            .approvals
+            .values()
+            .filter(|approval| approval.state == CardState::Pending)
+        {
+            items += 1;
+            let what = match &approval.subject {
+                ApprovalSubject::Cli { request } => format!("a worker's {} request", request.tool),
+                ApprovalSubject::OutwardCommand { argv, .. } => {
+                    format!("running `{}`", argv.join(" "))
+                }
+                ApprovalSubject::Landing { branch, .. } => format!("landing a task on `{branch}`"),
+                ApprovalSubject::FinishSession { branch, base, .. } => {
+                    format!("merging `{branch}` into `{base}`")
+                }
+                ApprovalSubject::Action { action, .. } => action.clone(),
+            };
+            text.push_str(&format!(
+                "Waiting for the user's approval: {}\n",
+                one_line(&what, 300)
+            ));
+        }
+        if !board.queue.items.is_empty() {
+            text.push_str("The user's queued messages (they reach you later, one by one):\n");
+            for item in &board.queue.items {
+                items += 1;
+                text.push_str(&format!("- {}\n", one_line(&item.text, 300)));
+            }
+        }
+        let mut plans = board.sorted_plans();
+        plans.retain(|plan| matches!(plan.state, PlanState::Proposed | PlanState::Approved { .. }));
+        if let Some(plan) = plans.last() {
+            items += 1;
+            text.push_str(&format!(
+                "Plan \"{}\" ({}):\n",
+                plan.title,
+                if plan.state == PlanState::Proposed {
+                    "waiting for the user"
+                } else {
+                    "approved"
+                }
+            ));
+            for (number, step) in plan.steps.iter().enumerate() {
+                let task = step
+                    .task_id
+                    .as_ref()
+                    .and_then(|task| board.tasks.get(task))
+                    .map(|task| format!(" → task-{}", task.number))
+                    .unwrap_or_default();
+                text.push_str(&format!("  {}. {}{task}\n", number + 1, step.title));
+            }
+        }
         let mut tasks: Vec<_> = board.tasks.values().collect();
         tasks.sort_by_key(|task| task.number);
         if !tasks.is_empty() {
@@ -635,69 +699,6 @@ impl SessionManager {
             text.push_str(&format!(
                 "({skip_finished} earlier finished tasks not listed)\n"
             ));
-        }
-        let mut plans = board.sorted_plans();
-        plans.retain(|plan| matches!(plan.state, PlanState::Proposed | PlanState::Approved { .. }));
-        if let Some(plan) = plans.last() {
-            items += 1;
-            text.push_str(&format!(
-                "Plan \"{}\" ({}):\n",
-                plan.title,
-                if plan.state == PlanState::Proposed {
-                    "waiting for the user"
-                } else {
-                    "approved"
-                }
-            ));
-            for (number, step) in plan.steps.iter().enumerate() {
-                let task = step
-                    .task_id
-                    .as_ref()
-                    .and_then(|task| board.tasks.get(task))
-                    .map(|task| format!(" → task-{}", task.number))
-                    .unwrap_or_default();
-                text.push_str(&format!("  {}. {}{task}\n", number + 1, step.title));
-            }
-        }
-        for question in board
-            .questions
-            .values()
-            .filter(|question| question.answer.is_none())
-        {
-            items += 1;
-            text.push_str(&format!(
-                "Waiting for the user's answer: {}\n",
-                one_line(&question.text, 300)
-            ));
-        }
-        for approval in board
-            .approvals
-            .values()
-            .filter(|approval| approval.state == CardState::Pending)
-        {
-            items += 1;
-            let what = match &approval.subject {
-                ApprovalSubject::Cli { request } => format!("a worker's {} request", request.tool),
-                ApprovalSubject::OutwardCommand { argv, .. } => {
-                    format!("running `{}`", argv.join(" "))
-                }
-                ApprovalSubject::Landing { branch, .. } => format!("landing a task on `{branch}`"),
-                ApprovalSubject::FinishSession { branch, base, .. } => {
-                    format!("merging `{branch}` into `{base}`")
-                }
-                ApprovalSubject::Action { action, .. } => action.clone(),
-            };
-            text.push_str(&format!(
-                "Waiting for the user's approval: {}\n",
-                one_line(&what, 300)
-            ));
-        }
-        if !board.queue.items.is_empty() {
-            text.push_str("The user's queued messages (they reach you later, one by one):\n");
-            for item in &board.queue.items {
-                items += 1;
-                text.push_str(&format!("- {}\n", one_line(&item.text, 300)));
-            }
         }
         let mut part = Part::new("state", cut(text.trim_end(), STATE_BUDGET), items);
         part.truncated = text.len() > STATE_BUDGET;

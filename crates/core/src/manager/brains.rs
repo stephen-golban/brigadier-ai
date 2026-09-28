@@ -258,6 +258,21 @@ impl SessionManager {
                 .jobs
                 .stop_for(&project.id, "the project's repository changed");
             stop_watchers(old.take_watcher().into_iter().collect()).await;
+            // What the index, the skeleton pass and enrichment learned describes the old
+            // repository: it goes before the new one is scanned, and the skeleton pass maps
+            // the new one. Sessions' decisions and reports stay.
+            if old.root.is_some() {
+                let brain = old.brain.clone();
+                let forgotten = blocking(move || {
+                    brain
+                        .forget_origins(&[Origin::Index, Origin::Skeleton, Origin::Enrichment])
+                        .map_err(brain_error)
+                })
+                .await;
+                if let Err(err) = forgotten {
+                    tracing::warn!(project = %project.id, error = %err, "could not forget the old repository's structure");
+                }
+            }
         }
         match self.project_brain(&project.id).await {
             Ok(_) => self.ensure_embedder(),
@@ -670,8 +685,14 @@ impl SessionManager {
         let replaces = args.replaces;
         let node_id = blocking(move || {
             let node_id = brain.record(node).map_err(brain_error)?;
-            if let Some(old) = replaces {
-                brain.supersede(&old, &node_id).map_err(brain_error)?;
+            if let Some(old) = replaces
+                && let Err(err) = brain.supersede(&old, &node_id)
+            {
+                // Nothing is kept from a call that failed.
+                if let Err(err) = brain.delete(&node_id) {
+                    tracing::warn!(node = %node_id, error = %err, "could not take back a memory");
+                }
+                return Err(brain_error(err));
             }
             Ok(node_id)
         })
@@ -885,6 +906,35 @@ impl SessionManager {
         });
     }
 
+    /// A landed task's files with the hashes of their content in the commit that landed. The
+    /// index may not have seen that commit yet: with the hashes from before it, the report
+    /// would go stale as soon as the watcher caught up with the task's own change. Files the
+    /// index doesn't track stay untracked; one the commit lacks or git can't read is left out
+    /// of staleness rather than guessed.
+    async fn as_landed(&self, task: &Task, landed: &str, files: Vec<FileRef>) -> Vec<FileRef> {
+        let Ok(repo) = self.task_repo(task) else {
+            return files;
+        };
+        let (git, commit) = (self.git.clone(), brigadier_git::Oid(landed.to_owned()));
+        blocking(move || {
+            let repo = git.open(&repo).map_err(super::git_error)?;
+            Ok(files
+                .into_iter()
+                .map(|file| {
+                    let hash = file.hash.as_ref().and_then(|_| {
+                        repo.file_at(&commit, &file.path)
+                            .ok()
+                            .flatten()
+                            .and_then(|content| brigadier_index::content_hash(&file.path, &content))
+                    });
+                    FileRef { hash, ..file }
+                })
+                .collect())
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     async fn record_report(&self, task: &Task, report: &Report) -> Result<()> {
         if task.kind == TaskKind::Review {
             return Ok(());
@@ -897,7 +947,10 @@ impl SessionManager {
         paths.extend(mentioned_paths(&report.summary));
         paths.sort();
         paths.dedup();
-        let files = file_refs(project.index.as_ref(), &paths).await;
+        let mut files = file_refs(project.index.as_ref(), &paths).await;
+        if let Some(landed) = &task.landed {
+            files = self.as_landed(task, landed, files).await;
+        }
         let provenance = Provenance {
             origin: Origin::Report,
             session_id: Some(task.conversation_id.0.clone()),
@@ -1471,7 +1524,7 @@ fn learn_structure(brain: &Brain, index: &CodeIndex) {
             .flatten()
             .is_some_and(|node| node.provenance.origin != Origin::Index)
     };
-    let mut edges = Vec::new();
+    let (mut sources, mut edges) = (Vec::new(), Vec::new());
     for module in &map.modules {
         let key = format!("module:{}", module.path);
         if described(NodeKind::Module, &key) {
@@ -1509,6 +1562,7 @@ fn learn_structure(brain: &Brain, index: &CodeIndex) {
             tracing::warn!(error = %err, "could not record a module");
             continue;
         }
+        sources.push(format!("key:{key}"));
         for dependency in &module.depends_on {
             if let Some(other) = map.modules.iter().find(|m| &m.name == dependency) {
                 edges.push(Edge {
@@ -1553,6 +1607,7 @@ fn learn_structure(brain: &Brain, index: &CodeIndex) {
             tracing::warn!(error = %err, "could not record a service");
             continue;
         }
+        sources.push(format!("key:{key}"));
         for dependency in &service.depends_on {
             if map.services.iter().any(|s| &s.name == dependency) {
                 edges.push(Edge {
@@ -1572,8 +1627,9 @@ fn learn_structure(brain: &Brain, index: &CodeIndex) {
             });
         }
     }
-    if !edges.is_empty()
-        && let Err(err) = brain.link(edges)
+    // Replaced, not added to: a dependency a manifest dropped goes too.
+    if !sources.is_empty()
+        && let Err(err) = brain.relink_structure(sources, edges)
     {
         tracing::warn!(error = %err, "could not link the project's modules");
     }

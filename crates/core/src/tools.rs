@@ -196,9 +196,11 @@ pub struct QueryBrain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum MemoryKind {
-    /// Something the user settled, or you decided, that later work must respect.
+    /// Something the user settled, or you decided, that later work must respect, including a
+    /// rule the user sets for this session only.
     Decision,
-    /// How this project does things (naming, structure, style, commit messages).
+    /// How this project always does things (naming, structure, style, commit messages),
+    /// shared with its other sessions; not a rule for this session only.
     Convention,
     /// What the user likes in general, across projects.
     Preference,
