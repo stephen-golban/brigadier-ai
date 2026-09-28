@@ -898,6 +898,7 @@ impl Core {
             ratings: board.ratings.clone(),
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),
+            memories: board.memories.clone(),
         })
     }
 

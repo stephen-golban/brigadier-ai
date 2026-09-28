@@ -574,6 +574,9 @@ pub struct ConversationView {
     pub streaming: Option<StreamingMessage>,
     /// The latest notices (environment problems, fallbacks), newest last.
     pub notices: Vec<Notice>,
+    /// What a Chat's model saved to the Personal Brain (its Memory chips): the latest change
+    /// per memory, in the order they were saved; one the user removed is `forgotten`.
+    pub memories: Vec<crate::knowledge::MemoryChange>,
 }
 
 /// A branch, for the composer's branch picker.

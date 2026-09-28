@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use crate::knowledge::MemoryChange;
 use crate::model::ConversationId;
 use crate::model::{DomainEvent, MessageRole, Notice, Rating, StreamingMessage};
 use crate::work::{
@@ -28,6 +29,7 @@ pub(crate) const KINDS: &[&str] = &[
     "compaction.updated",
     "message.rated",
     "conversation.branch",
+    "memory.updated",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -51,6 +53,8 @@ pub(crate) struct Board {
     pub(crate) head: Option<(String, i64)>,
     pub(crate) streaming: Option<StreamingMessage>,
     pub(crate) notices: Vec<Notice>,
+    /// A Chat's saved memories, the latest change per node, in the order first saved.
+    pub(crate) memories: Vec<MemoryChange>,
 }
 
 impl Board {
@@ -154,6 +158,20 @@ impl Board {
                 let mut step = step.clone();
                 step.position = stream_seq;
                 self.orchestrator_steps.push(step);
+            }
+            DomainEvent::MemoryUpdated { memory, .. } => {
+                match self
+                    .memories
+                    .iter_mut()
+                    .find(|known| known.node_id == memory.node_id)
+                {
+                    // A removal keeps the chip where the turn saved it.
+                    Some(known) => {
+                        known.forgotten = memory.forgotten;
+                        known.text.clone_from(&memory.text);
+                    }
+                    None => self.memories.push(memory.clone()),
+                }
             }
             DomainEvent::CompactionUpdated { compaction } => {
                 let position = self
