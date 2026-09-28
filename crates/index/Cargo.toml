@@ -8,9 +8,33 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+blake3.workspace = true
+ignore = "0.4.33"
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+rusqlite.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+toml = "1.1.6"
+tracing.workspace = true
+tree-sitter = "0.27.0"
+tree-sitter-c = "0.24.2"
+tree-sitter-c-sharp = "0.23.5"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-go = "0.25.0"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-php = "0.24.2"
+tree-sitter-python = "0.25.0"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-rust = "0.24.2"
+tree-sitter-swift = "0.7.3"
+tree-sitter-tags = "0.27.0"
+tree-sitter-typescript = "0.23.2"
 ts-rs.workspace = true
+yaml-rust2 = "0.13.0"
 
 [lints]
 workspace = true
