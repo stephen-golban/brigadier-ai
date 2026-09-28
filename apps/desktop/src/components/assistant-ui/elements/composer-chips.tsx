@@ -24,9 +24,12 @@ import {
   COMMAND_PRIORITY_NORMAL,
   DELETE_CHARACTER_COMMAND,
   HISTORY_MERGE_TAG,
+  KEY_ARROW_LEFT_COMMAND,
+  KEY_ARROW_RIGHT_COMMAND,
   KEY_BACKSPACE_COMMAND,
   type LexicalEditor,
   PASTE_TAG,
+  type PointType,
   TextNode,
 } from "lexical";
 import {
@@ -180,20 +183,46 @@ const isTextChip = (node: DirectiveNode) => {
   return type === CODE || type === URL_CHIP;
 };
 
+/** The chip right before (or after) `point`, if any. */
+function $chipBeside(point: PointType, backward: boolean): DirectiveNode | null {
+  const node = point.getNode();
+  const beside = $isTextNode(node)
+    ? backward
+      ? point.offset === 0
+        ? node.getPreviousSibling()
+        : null
+      : point.offset === node.getTextContentSize()
+        ? node.getNextSibling()
+        : null
+    : $isElementNode(node)
+      ? node.getChildAtIndex(backward ? point.offset - 1 : point.offset)
+      : null;
+  return $isDirectiveNode(beside) ? beside : null;
+}
+
 /** The chip just before a collapsed caret, if any. */
 function $chipBeforeCaret(): DirectiveNode | null {
   const selection = $getSelection();
   if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
-  const { anchor } = selection;
-  const node = anchor.getNode();
-  const before = $isTextNode(node)
-    ? anchor.offset === 0
-      ? node.getPreviousSibling()
-      : null
-    : $isElementNode(node)
-      ? node.getChildAtIndex(anchor.offset - 1)
-      : null;
-  return $isDirectiveNode(before) ? before : null;
+  return $chipBeside(selection.anchor, true);
+}
+
+/**
+ * ← and → step over a chip as over one character (⇧ extends the selection over it). Lexical
+ * stops the caret at a chip, since the input's chips are isolated nodes, which left no way past
+ * one by keyboard: the caret stayed before it and what was typed next went in there.
+ */
+function $stepOverChip(event: KeyboardEvent, backward: boolean): boolean {
+  if (event.isComposing || event.altKey || event.metaKey || event.ctrlKey) return false;
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || (!event.shiftKey && !selection.isCollapsed())) return false;
+  const chip = $chipBeside(selection.focus, backward);
+  if (!chip) return false;
+  const { key, offset, type } = selection.anchor;
+  const moved = backward ? chip.selectPrevious() : chip.selectNext(0, 0);
+  if (event.shiftKey) moved.anchor.set(key, offset, type);
+  event.preventDefault();
+  return true;
 }
 
 /**
@@ -244,6 +273,7 @@ function completedTokens(text: string, caret: number | null): Token[] {
  * Turns `` `code` `` and links into chips: as they're typed, when the character completing one
  * (the closing backtick, the space after a link) goes in at the caret, and everywhere in a
  * paste. So a chip turned back into text stays text while it's edited. Never mid-composition.
+ * It also keeps the system's text substitutions out of the field, and lets ← and → past chips.
  */
 function ChipsPlugin({
   formatter,
@@ -260,6 +290,14 @@ function ChipsPlugin({
   useEffect(
     () =>
       mergeRegister(
+        // What's typed is what's sent: macOS turns "..." into "…", quotes into curly ones,
+        // "--" into a dash and capitalizes words as part of its text checking, which only
+        // `spellcheck="false"` turns off in the webview (`autocorrect="off"` does nothing there).
+        editor.registerRootListener((root) => {
+          root?.setAttribute("spellcheck", "false");
+          root?.setAttribute("autocorrect", "off");
+          root?.setAttribute("autocapitalize", "off");
+        }),
         editor.registerNodeTransform(TextNode, (node) => {
           if (editor.isComposing() || !node.isSimpleText()) return;
           const selection = $getSelection();
@@ -284,6 +322,16 @@ function ChipsPlugin({
           target.replace(chip);
           if (after) chip.selectNext(0, 0);
         }),
+        editor.registerCommand(
+          KEY_ARROW_LEFT_COMMAND,
+          (event) => $stepOverChip(event, true),
+          COMMAND_PRIORITY_NORMAL,
+        ),
+        editor.registerCommand(
+          KEY_ARROW_RIGHT_COMMAND,
+          (event) => $stepOverChip(event, false),
+          COMMAND_PRIORITY_NORMAL,
+        ),
         editor.registerCommand(
           KEY_BACKSPACE_COMMAND,
           (event) => {
