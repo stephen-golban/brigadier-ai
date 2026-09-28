@@ -41,6 +41,10 @@ pub enum Command {
         services: Vec<(String, String)>,
         reply: Sender<Result<()>>,
     },
+    /// Empties every table, for a rebuild.
+    Clear {
+        reply: Sender<Result<()>>,
+    },
 }
 
 fn db_error(error: impl std::fmt::Display) -> Error {
@@ -103,6 +107,9 @@ pub fn open(path: &Path) -> Result<(Sender<Command>, Vec<std::sync::Mutex<Connec
                         reply,
                     } => {
                         let _ = reply.send(metadata(&mut connection, manifests, scripts, services));
+                    }
+                    Command::Clear { reply } => {
+                        let _ = reply.send(clear(&mut connection));
                     }
                 }
             }
@@ -249,6 +256,24 @@ pub fn send_metadata(
             services,
             reply: tx,
         })
+        .map_err(|_| Error::Closed)?;
+    rx.recv().map_err(|_| Error::Closed)?
+}
+
+fn clear(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction().map_err(db_error)?;
+    tx.execute_batch(
+        "DELETE FROM files; DELETE FROM symbols; DELETE FROM manifests; DELETE FROM scripts;
+         DELETE FROM services; DELETE FROM popular; DELETE FROM file_fts; DELETE FROM symbol_fts;",
+    )
+    .map_err(db_error)?;
+    tx.commit().map_err(db_error)
+}
+
+pub fn send_clear(sender: &Sender<Command>) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    sender
+        .send(Command::Clear { reply: tx })
         .map_err(|_| Error::Closed)?;
     rx.recv().map_err(|_| Error::Closed)?
 }

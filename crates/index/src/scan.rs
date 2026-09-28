@@ -61,8 +61,12 @@ struct Outcome {
 }
 
 impl CodeIndex {
-    pub(crate) fn scan_impl(&self) -> Result<ScanStats> {
+    /// Scans under the scan lock; with `clear`, forgets everything indexed first.
+    pub(crate) fn scan_impl(&self, clear: bool) -> Result<ScanStats> {
         let _guard = self.inner.scan_lock.lock().map_err(|_| Error::Closed)?;
+        if clear {
+            db::send_clear(&self.inner.writer)?;
+        }
         let start = Instant::now();
         let root = &self.inner.root;
         {

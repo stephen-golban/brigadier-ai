@@ -456,7 +456,13 @@ impl CodeIndex {
 
     /// Brings the index up to date with the files. Blocks until done.
     pub fn scan(&self) -> Result<ScanStats> {
-        self.scan_impl()
+        self.scan_impl(false)
+    }
+
+    /// Forgets everything indexed and scans the files again. Blocks until done. The database
+    /// is emptied in place, so every handle to this index stays valid.
+    pub fn rebuild(&self) -> Result<ScanStats> {
+        self.scan_impl(true)
     }
 
     /// Watches the repository and keeps the index current.

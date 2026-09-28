@@ -608,6 +608,7 @@ impl SessionManager {
             ended: CancellationToken::new(),
             granted: Default::default(),
         });
+        self.brains.jobs.user_work(provider);
         {
             let mut state = live.state.lock().await;
             state.cli = Some(cli.clone());
@@ -1542,7 +1543,10 @@ impl SessionManager {
             })
             .await?;
         live.state.lock().await.nudged = true;
-        self.learn_report(&task, &report);
+        // A write task's claims are knowledge only once its work lands (see `landed`).
+        if !task.kind.writes() {
+            self.learn_report(&task, &report);
+        }
         if task.kind == TaskKind::Review && self.review_in_landing(&task).await {
             self.review_reported(&task).await;
         } else {

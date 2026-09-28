@@ -171,7 +171,7 @@ impl SessionManager {
             closing.spawn(async move { conv.close_cli().await });
         }
         closing.join_all().await;
-        self.brains.shutdown();
+        brains::stop_watchers(self.brains.shutdown()).await;
         self.background.close();
     }
 

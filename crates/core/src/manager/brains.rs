@@ -113,6 +113,11 @@ impl Brains {
         self.projects.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The project's Brain, if it is open.
+    pub(super) fn open_project(&self, id: &ProjectId) -> Option<Arc<ProjectBrain>> {
+        self.projects().get(id).cloned()
+    }
+
     /// The projects whose Brains are open.
     pub(super) fn open_projects(&self) -> Vec<(ProjectId, Arc<ProjectBrain>)> {
         self.projects()
@@ -139,18 +144,36 @@ impl Brains {
         }
     }
 
-    /// Stops what runs on the Brains' own threads (a download; watchers stop with their
-    /// projects when dropped).
-    pub(crate) fn shutdown(&self) {
+    /// Stops what runs on the Brains' own threads: a download, a Brain job, and the watchers,
+    /// which the caller drops off the async runtime (stopping one joins its thread, which may
+    /// be in the middle of a rescan).
+    pub(crate) fn shutdown(&self) -> Vec<brigadier_index::Watcher> {
         self.cancel_download.store(true, Ordering::Release);
         self.jobs.stop("Brigadier is shutting down");
-        for project in self.projects().values() {
-            project
-                .watcher
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-        }
+        self.projects()
+            .values()
+            .filter_map(|project| project.take_watcher())
+            .collect()
+    }
+}
+
+impl ProjectBrain {
+    fn take_watcher(&self) -> Option<brigadier_index::Watcher> {
+        self.watcher
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+}
+
+/// Stops watchers off the async runtime.
+pub(super) async fn stop_watchers(watchers: Vec<brigadier_index::Watcher>) {
+    if !watchers.is_empty() {
+        let _ = blocking(move || {
+            drop(watchers);
+            Ok(())
+        })
+        .await;
     }
 }
 
@@ -181,7 +204,12 @@ impl SessionManager {
             None
         };
         if let Some(old) = old {
-            old.watcher.lock().unwrap_or_else(|p| p.into_inner()).take();
+            // A running job keeps the old repository's root and commit: it ends here, and
+            // anything it still sends is refused (see `brain_job_call`).
+            self.brains
+                .jobs
+                .stop_for(&project.id, "the project's repository changed");
+            stop_watchers(old.take_watcher().into_iter().collect()).await;
         }
         match self.project_brain(&project.id).await {
             Ok(_) => self.ensure_embedder(),
@@ -235,7 +263,7 @@ impl SessionManager {
                 .or_insert_with(|| Arc::new(opened))
                 .clone()
         };
-        self.start_indexing(id, &opened);
+        self.start_indexing(id, &opened, false);
         Ok(opened)
     }
 
@@ -266,20 +294,47 @@ impl SessionManager {
         Ok(personal.get_or_insert(brain).clone())
     }
 
-    /// Scans the project's repository on a thread of its own, records its structure, then
-    /// watches it.
-    fn start_indexing(&self, id: &ProjectId, project: &Arc<ProjectBrain>) {
+    /// Watches the project's repository and scans it (from scratch with `rebuild`) on a thread
+    /// of its own, then records its structure. Returns false when indexing already runs.
+    ///
+    /// The watcher starts first, so a file changed during the scan is picked up by a rescan
+    /// once it ends (the index runs one scan at a time).
+    fn start_indexing(&self, id: &ProjectId, project: &Arc<ProjectBrain>, rebuild: bool) -> bool {
         let Some(index) = project.index.clone() else {
-            return;
+            return false;
         };
         if project.indexing.swap(true, Ordering::AcqRel) {
-            return;
+            return false;
         }
+        let flag = project.clone();
         let (manager, project, id) = (self.me.clone(), project.clone(), id.clone());
         let spawned = std::thread::Builder::new()
             .name(format!("brigadier-index-{}", id.0))
             .spawn(move || {
-                let scanned = index.scan();
+                let mut watcher = project.watcher.lock().unwrap_or_else(|p| p.into_inner());
+                if watcher.is_none() {
+                    let brain = project.brain.clone();
+                    let watched = index.clone();
+                    let sink: brigadier_index::ChangeSink =
+                        Arc::new(move |changes: Vec<FileChange>| {
+                            files_changed(&brain, &changes);
+                            if changes.iter().any(|change| is_manifest(&change.path)) {
+                                learn_structure(&brain, &watched);
+                            }
+                        });
+                    match index.watch(sink) {
+                        Ok(started) => *watcher = Some(started),
+                        Err(err) => {
+                            tracing::warn!(project = %id, error = %err, "could not watch the repository");
+                        }
+                    }
+                }
+                drop(watcher);
+                let scanned = if rebuild {
+                    index.rebuild()
+                } else {
+                    index.scan()
+                };
                 let Some(manager) = manager.upgrade() else {
                     return;
                 };
@@ -305,27 +360,15 @@ impl SessionManager {
                         tracing::warn!(project = %id, error = %err, "code index scan failed");
                     }
                 }
-                let brain = project.brain.clone();
-                let watched = index.clone();
-                let sink: brigadier_index::ChangeSink = Arc::new(move |changes: Vec<FileChange>| {
-                    files_changed(&brain, &changes);
-                    if changes.iter().any(|change| is_manifest(&change.path)) {
-                        learn_structure(&brain, &watched);
-                    }
-                });
-                match index.watch(sink) {
-                    Ok(watcher) => {
-                        *project.watcher.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(watcher);
-                    }
-                    Err(err) => {
-                        tracing::warn!(project = %id, error = %err, "could not watch the repository");
-                    }
-                }
                 project.indexing.store(false, Ordering::Release);
             });
-        if let Err(err) = spawned {
-            tracing::warn!(error = %err, "could not start indexing");
+        match spawned {
+            Ok(_) => true,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not start indexing");
+                flag.indexing.store(false, Ordering::Release);
+                false
+            }
         }
     }
 
@@ -751,15 +794,6 @@ impl SessionManager {
             .ok_or_else(|| Error::Invalid("this project has no repository to index".into()))
     }
 
-    /// A project's code index, for a Brain job's tools.
-    pub(crate) async fn project_index(&self, id: &ProjectId) -> Result<CodeIndex> {
-        self.project_brain(id)
-            .await?
-            .index
-            .clone()
-            .ok_or_else(|| Error::Invalid("this project has no repository to index".into()))
-    }
-
     /// `code_search`.
     pub(crate) async fn code_search_tool(
         &self,
@@ -785,8 +819,9 @@ impl SessionManager {
 
     // ----- what the Brain learns ------------------------------------------------------------
 
-    /// A worker reported: its report becomes a node (the task's question with its answer),
-    /// each of its decisions another, linked to the report and to the modules it touched.
+    /// A read-only task reported, or a write task landed: its report becomes a node (the
+    /// task's question with its answer), each of its decisions another, linked to the report
+    /// and to the modules it touched.
     pub(crate) fn learn_report(&self, task: &Task, report: &Report) {
         let manager = self.arc();
         let (task, report) = (task.clone(), report.clone());
@@ -819,6 +854,7 @@ impl SessionManager {
                 provider: task.route.choice.provider.binary().into(),
                 model: task.route.choice.model.clone(),
             }),
+            // A landed write task's commit; what a read-only task looked at.
             commit: task
                 .landed
                 .clone()
@@ -1199,32 +1235,20 @@ impl SessionManager {
         .await
     }
 
-    /// Rebuilds a project's code index from its files.
+    /// Rebuilds a project's code index from its files, in the background. The index is
+    /// emptied in place, so tool calls and jobs holding it keep a valid handle, and its
+    /// watcher keeps running.
     pub async fn rebuild_index(&self, id: ProjectId) -> Result<()> {
-        let old = self.brains.projects().remove(&id);
-        if let Some(old) = old {
-            old.watcher.lock().unwrap_or_else(|p| p.into_inner()).take();
-            let path = self.brains.root.join(&id.0).join("index.sqlite");
-            drop(old);
-            blocking(move || {
-                for suffix in ["", "-wal", "-shm"] {
-                    let file = PathBuf::from(format!("{}{suffix}", path.display()));
-                    match std::fs::remove_file(&file) {
-                        Ok(()) => {}
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(err) => {
-                            return Err(Error::Invalid(format!(
-                                "removing {}: {err}",
-                                file.display()
-                            )));
-                        }
-                    }
-                }
-                Ok(())
-            })
-            .await?;
+        let project = self.project_brain(&id).await?;
+        if project.index.is_none() {
+            return Err(Error::Invalid("this project has no repository".into()));
         }
-        self.project_brain(&id).await.map(|_| ())
+        if !self.start_indexing(&id, &project, true) {
+            return Err(Error::Invalid(
+                "the index is being built; rebuild it once that ends".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

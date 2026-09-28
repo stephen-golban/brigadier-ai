@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use brigadier_brain::{
@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::brains::{
-    blake_key, brain_error, code_refs, code_search, file_refs, one_line, project_map,
+    ProjectBrain, blake_key, brain_error, code_refs, code_search, file_refs, one_line, project_map,
 };
 use super::{SessionManager, blocking, git_error, secrets};
 use crate::knowledge::{BrainJob, BrainJobKind, BrainJobState, MemoryChange};
@@ -49,6 +49,8 @@ const ENRICH_TIME: Duration = Duration::from_secs(10 * 60);
 const DIGEST_BYTES: usize = 20_000;
 /// A job's Brigadier tools answer within this.
 const JOB_TOOL_TIMEOUT_SECS: u64 = 120;
+/// How long a skeleton pass that could not start waits before it is asked for again.
+const SKELETON_RETRY: Duration = Duration::from_secs(5 * 60);
 /// Enrichment waits until a provider has run none of the user's work for this long.
 const ENRICH_IDLE_MS: i64 = 10 * 60 * 1000;
 /// … and a usage window resets within this …
@@ -84,6 +86,9 @@ struct JobLive {
     /// For enrichment the scheduler started: the usage window it spends, which it yields at.
     window_resets_at_ms: Option<i64>,
     commit: Option<String>,
+    /// The project's Brain and index as the job started: its findings go there, and only while
+    /// the project still has them open (a changed repository replaces them).
+    project: Arc<ProjectBrain>,
 }
 
 impl BrainJobs {
@@ -111,6 +116,34 @@ impl BrainJobs {
     /// Stops the running job, if any.
     pub(crate) fn stop(&self, reason: &str) {
         if let Some(live) = self.live().as_mut() {
+            live.stop.get_or_insert_with(|| reason.to_owned());
+            live.cancel.cancel();
+        }
+    }
+
+    /// The user's work started on `provider`: it is no longer idle, and an enrichment job on it
+    /// yields now rather than at the next upkeep tick.
+    pub(crate) fn user_work(&self, provider: ProviderKind) {
+        self.idle_since
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(provider, now_ms());
+        if let Some(live) = self.live().as_mut().filter(|live| {
+            live.job.kind == BrainJobKind::Enrichment && live.job.provider == provider
+        }) {
+            live.stop
+                .get_or_insert_with(|| format!("your work started on {provider}"));
+            live.cancel.cancel();
+        }
+    }
+
+    /// Stops the running job if it works on `project`.
+    pub(crate) fn stop_for(&self, project: &ProjectId, reason: &str) {
+        if let Some(live) = self
+            .live()
+            .as_mut()
+            .filter(|live| live.job.project_id == *project)
+        {
             live.stop.get_or_insert_with(|| reason.to_owned());
             live.cancel.cancel();
         }
@@ -168,18 +201,8 @@ impl SessionManager {
         {
             return;
         }
-        {
-            let mut tried = self
-                .brains
-                .jobs
-                .tried
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let tries = tried.entry(project.clone()).or_default();
-            if *tries >= 2 {
-                return;
-            }
-            *tries += 1;
+        if self.skeleton_tries(&project) >= 2 {
+            return;
         }
         // One job at a time: wait for a running one to end.
         while self.brains.jobs.live().is_some() {
@@ -189,7 +212,8 @@ impl SessionManager {
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
         let Some(provider) = self.job_provider(false) else {
-            tracing::info!(project = %project, "no provider can run the skeleton pass now");
+            tracing::info!(project = %project, "no provider can run the skeleton pass now; asking again later");
+            self.retry_skeleton(project);
             return;
         };
         match self
@@ -197,6 +221,15 @@ impl SessionManager {
             .await
         {
             Ok(id) => {
+                // Only a pass that started counts as an attempt.
+                *self
+                    .brains
+                    .jobs
+                    .tried
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(project.clone())
+                    .or_default() += 1;
                 // A failed pass is retried once in this daemon run.
                 let ended = loop {
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -219,9 +252,33 @@ impl SessionManager {
                 }
             }
             Err(err) => {
-                tracing::warn!(project = %project, error = %err, "could not start the skeleton pass");
+                tracing::warn!(project = %project, error = %err, "could not start the skeleton pass; asking again later");
+                self.retry_skeleton(project);
             }
         }
+    }
+
+    /// How many skeleton passes this daemon run started for the project.
+    fn skeleton_tries(&self, project: &ProjectId) -> u32 {
+        self.brains
+            .jobs
+            .tried
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(project)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Asks for the project's skeleton pass again after [`SKELETON_RETRY`].
+    fn retry_skeleton(&self, project: ProjectId) {
+        let manager = self.me.clone();
+        self.spawn(async move {
+            tokio::time::sleep(SKELETON_RETRY).await;
+            if let Some(manager) = manager.upgrade() {
+                manager.brains.jobs.want_skeleton(project);
+            }
+        });
     }
 
     /// Starts a Brain job now (the Inspector's "Enrich now", a skeleton pass redone).
@@ -337,6 +394,30 @@ impl SessionManager {
             },
         };
         let cancel = CancellationToken::new();
+        // Enrichment the scheduler chose is checked once more as it starts: the user's work
+        // may have begun, or the window run hot, since it looked.
+        if window_resets_at_ms.is_some() {
+            let now = now_ms();
+            let idle_since = self
+                .brains
+                .jobs
+                .idle_since
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&provider)
+                .copied()
+                .unwrap_or(now);
+            let hot = self
+                .runtime
+                .overview(provider)
+                .and_then(|overview| overview.quota)
+                .is_some_and(|quota| hottest(&quota) >= ENRICH_HOT);
+            if now - idle_since < ENRICH_IDLE_MS || hot {
+                return Err(Error::Invalid(format!(
+                    "{provider} is no longer idle with quota to spare"
+                )));
+            }
+        }
         {
             let mut live = self.brains.jobs.live();
             if live.is_some() {
@@ -348,6 +429,7 @@ impl SessionManager {
                 stop: None,
                 window_resets_at_ms,
                 commit,
+                project: brain.clone(),
             });
         }
         self.record_job(&job).await;
@@ -511,21 +593,33 @@ impl SessionManager {
             .live()
             .as_ref()
             .filter(|live| live.job.id == job_id && live.job.project_id == project)
-            .map(|live| (live.job.clone(), live.commit.clone()));
-        let Some((job, commit)) = live else {
+            .filter(|live| {
+                self.brains
+                    .open_project(&project)
+                    .is_some_and(|open| Arc::ptr_eq(&open, &live.project))
+            })
+            .map(|live| (live.job.clone(), live.commit.clone(), live.project.clone()));
+        let Some((job, commit, brain)) = live else {
             return ToolReply::error("This Brain job has ended.");
         };
+        let index = brain
+            .index
+            .clone()
+            .ok_or_else(|| Error::Invalid("this project has no repository".into()));
         let result = match call {
-            JobCall::RecordNodes(args) => self.record_job_nodes(&job, commit, args.nodes).await,
-            JobCall::CodeSearch(args) => match self.project_index(&project).await {
+            JobCall::RecordNodes(args) => {
+                self.record_job_nodes(&job, &brain, commit, args.nodes)
+                    .await
+            }
+            JobCall::CodeSearch(args) => match index {
                 Ok(index) => code_search(index, args).await,
                 Err(err) => Err(err),
             },
-            JobCall::CodeRefs(args) => match self.project_index(&project).await {
+            JobCall::CodeRefs(args) => match index {
                 Ok(index) => code_refs(index, args).await,
                 Err(err) => Err(err),
             },
-            JobCall::ProjectMap => match self.project_index(&project).await {
+            JobCall::ProjectMap => match index {
                 Ok(index) => project_map(index).await,
                 Err(err) => Err(err),
             },
@@ -540,13 +634,13 @@ impl SessionManager {
     async fn record_job_nodes(
         &self,
         job: &BrainJob,
+        project: &ProjectBrain,
         commit: Option<String>,
         inputs: Vec<NodeInput>,
     ) -> Result<String> {
         if inputs.is_empty() {
             return Err(Error::Invalid("pass at least one node in `nodes`".into()));
         }
-        let project = self.project_brain(&job.project_id).await?;
         let modules: Vec<String> = match project.index.clone() {
             Some(index) => blocking(move || {
                 Ok(index
@@ -886,6 +980,10 @@ impl SessionManager {
     }
 
     /// `save_memory`: a preference in the Personal Brain, and a Memory chip in the Chat.
+    ///
+    /// Keyed per Chat: saving it again in the same Chat updates it in place, while the same
+    /// memory saved in another Chat is a node of its own, so forgetting one Chat's never
+    /// removes what another Chat saved.
     async fn save_memory(&self, id: &ConversationId, args: SaveMemory) -> Result<String> {
         let text = one_line(&args.memory, 240);
         if text.is_empty() {
@@ -894,7 +992,11 @@ impl SessionManager {
         let brain = self.personal_brain().await?;
         let node = NewNode {
             kind: NodeKind::Preference,
-            key: Some(format!("preference:{}", blake_key(&text.to_lowercase()))),
+            key: Some(format!(
+                "preference:{}:{}",
+                id.0,
+                blake_key(&text.to_lowercase())
+            )),
             title: text.clone(),
             body: String::new(),
             provenance: Provenance {
@@ -933,10 +1035,12 @@ impl SessionManager {
     }
 
     /// The user's memories, newest first, within `max_bytes`, as lines for instructions.
+    /// The same memory saved in several Chats is one line.
     pub(super) async fn memory_lines(&self, max_bytes: usize) -> Vec<String> {
         let Ok(memories) = self.list_memories().await else {
             return Vec::new();
         };
+        let mut seen = std::collections::HashSet::new();
         let mut used = 0;
         memories
             .into_iter()
@@ -944,6 +1048,7 @@ impl SessionManager {
                 "" => node.title,
                 body => format!("{}: {}", node.title, one_line(body, 300)),
             })
+            .filter(|line| seen.insert(line.to_lowercase()))
             .take_while(|line| {
                 used += line.len() + 3;
                 used <= max_bytes

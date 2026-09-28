@@ -741,11 +741,17 @@ impl SessionManager {
     }
 
     async fn landed(&self, task: &Task, target: &str, new_tip: &Oid) {
-        let _ = self
+        let updated = self
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.landed = Some(new_tip.0.clone());
             })
             .await;
+        // Its report enters the Brain now, at the commit that landed.
+        if let Ok(updated) = &updated
+            && let Some(report) = &updated.report
+        {
+            self.learn_report(updated, report);
+        }
         // The task branch is fully on the target now; it was Brigadier's, so it goes too.
         let branch = task.workspace.as_ref().and_then(|w| w.branch.clone());
         self.dispose_task(task, TaskState::Landed).await;

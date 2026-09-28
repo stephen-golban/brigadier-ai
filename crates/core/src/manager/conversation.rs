@@ -1038,6 +1038,7 @@ impl SessionManager {
                 return;
             }
         };
+        self.brains.jobs.user_work(cli.provider);
         let (reseed, briefing) = {
             let mut state = conv.state.lock().await;
             let reseed = std::mem::take(&mut state.reseed);
