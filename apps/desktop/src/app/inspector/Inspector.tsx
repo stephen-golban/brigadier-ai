@@ -1,4 +1,5 @@
 import { X } from "@openai/apps-sdk-ui/components/Icon";
+import { useEffect, useRef } from "react";
 
 import { BrainTab } from "@/app/inspector/brain/BrainTab";
 import { EventsTab } from "@/app/inspector/EventsTab";
@@ -30,6 +31,13 @@ function isTab(value: string): value is InspectorTab {
  */
 export function Inspector() {
   const tab = useApp((s) => s.inspector.tab);
+  const tabs = useRef<HTMLDivElement>(null);
+  // The narrow Inspector cannot fit every tab; the strip scrolls and keeps the open one in view.
+  useEffect(() => {
+    tabs.current
+      ?.querySelector(`[role="tab"][id$="-trigger-${tab}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab]);
   return (
     <aside
       aria-label="Inspector"
@@ -47,7 +55,10 @@ export function Inspector() {
           data-tauri-drag-region
           className="h-titlebar flex shrink-0 items-center gap-2 border-b px-2"
         >
-          <TabsList className="flex-1">
+          <TabsList
+            ref={tabs}
+            className="hide-scrollbar min-w-0 flex-1 justify-start overflow-x-auto"
+          >
             <TabsTrigger value="events">Events</TabsTrigger>
             <TabsTrigger value="orchestrator">Orchestrator</TabsTrigger>
             <TabsTrigger value="brain">Brain</TabsTrigger>
