@@ -12,7 +12,19 @@
 //! reads, which answer in milliseconds.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use rusqlite::{Connection, OptionalExtension};
+
+mod db;
+mod manifests;
+mod parse;
+mod reads;
+mod scan;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -310,41 +322,96 @@ pub struct FolderCount {
 
 /// A running watcher; dropping it stops watching.
 pub struct Watcher {
-    _private: (),
+    debouncer: Option<
+        notify_debouncer_full::Debouncer<
+            notify::RecommendedWatcher,
+            notify_debouncer_full::RecommendedCache,
+        >,
+    >,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+    status: Arc<Mutex<IndexStatus>>,
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.debouncer.take();
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        if let Ok(mut status) = self.status.lock() {
+            status.watching = false;
+        }
+    }
+}
+
+struct Inner {
+    root: PathBuf,
+    threads: usize,
+    writer: mpsc::Sender<db::Command>,
+    readers: Vec<Mutex<Connection>>,
+    next_reader: AtomicUsize,
+    status: Arc<Mutex<IndexStatus>>,
+    scan_lock: Mutex<()>,
 }
 
 /// The code index of one repository. Cheap to clone (a handle).
 #[derive(Clone)]
 pub struct CodeIndex {
-    _private: Arc<()>,
+    inner: Arc<Inner>,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(i64::MAX as u128) as i64)
+}
+
+fn is_metadata_path(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        name,
+        "Cargo.toml"
+            | "package.json"
+            | "pnpm-workspace.yaml"
+            | "pyproject.toml"
+            | "go.mod"
+            | "Gemfile"
+            | "composer.json"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "Makefile"
+            | "justfile"
+            | "Dockerfile"
+            | "Procfile"
+    ) || name.starts_with("requirements") && name.ends_with(".txt")
+        || name.starts_with("Dockerfile.")
+        || (name.starts_with("docker-compose") || name.starts_with("compose"))
+            && (name.ends_with(".yml") || name.ends_with(".yaml"))
+        || path.starts_with(".github/workflows/")
+            && (name.ends_with(".yml") || name.ends_with(".yaml"))
 }
 
 impl CodeIndex {
-    /// Opens (creating or rebuilding) the index database and starts its writer thread. Does not
-    /// scan.
+    /// Opens (creating or rebuilding) the index database and starts its writer thread. Does not scan.
     pub fn open(config: IndexConfig) -> Result<Self> {
-        let _ = config;
-        Err(Error::Invalid("the code index is not built yet".into()))
-    }
-
-    /// Brings the index up to date with the files: walks the repository (honouring its
-    /// ignore files), re-parses what is new or changed (mtime and size first, then the content
-    /// hash) and drops what is gone. Blocks until done; progress shows in [`Self::status`].
-    pub fn scan(&self) -> Result<ScanStats> {
-        Err(Error::Closed)
-    }
-
-    /// Watches the repository and keeps the index current. `sink` gets each batch of changed
-    /// files after they were re-indexed. Events the platform dropped trigger a rescan.
-    pub fn watch(&self, sink: ChangeSink) -> Result<Watcher> {
-        let _ = sink;
-        Err(Error::Closed)
-    }
-
-    /// The index at a glance; cheap (no I/O).
-    pub fn status(&self) -> IndexStatus {
-        IndexStatus {
-            root: String::new(),
+        let root = config.root.canonicalize().map_err(|e| Error::Io {
+            path: config.root.display().to_string(),
+            message: e.to_string(),
+        })?;
+        if !root.is_dir() {
+            return Err(Error::Invalid("index root must be a directory".into()));
+        }
+        let (writer, readers) = db::open(&config.db_path)?;
+        let threads = if config.threads == 0 {
+            thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).max(1))
+        } else {
+            config.threads
+        };
+        let status = IndexStatus {
+            root: root.display().to_string(),
             state: IndexState::New,
             files: 0,
             symbols: 0,
@@ -355,36 +422,171 @@ impl CodeIndex {
             last_scan_ms: None,
             last_scan_parsed: None,
             updated_at_ms: None,
+        };
+        let index = Self {
+            inner: Arc::new(Inner {
+                root,
+                threads,
+                writer,
+                readers,
+                next_reader: AtomicUsize::new(0),
+                status: Arc::new(Mutex::new(status)),
+                scan_lock: Mutex::new(()),
+            }),
+        };
+        index.refresh_status()?;
+        Ok(index)
+    }
+
+    fn with_read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let i = self.inner.next_reader.fetch_add(1, Ordering::Relaxed) % self.inner.readers.len();
+        let conn = self.inner.readers[i].lock().map_err(|_| Error::Closed)?;
+        f(&conn)
+    }
+
+    fn refresh_status(&self) -> Result<()> {
+        let (files, symbols, references, languages) = self.with_read(reads::counts)?;
+        let mut status = self.inner.status.lock().map_err(|_| Error::Closed)?;
+        status.files = files;
+        status.symbols = symbols;
+        status.references = references;
+        status.languages = languages;
+        Ok(())
+    }
+
+    /// Brings the index up to date with the files. Blocks until done.
+    pub fn scan(&self) -> Result<ScanStats> {
+        self.scan_impl()
+    }
+
+    /// Watches the repository and keeps the index current.
+    pub fn watch(&self, sink: ChangeSink) -> Result<Watcher> {
+        let (tx, rx) = mpsc::channel::<notify_debouncer_full::DebounceEventResult>();
+        let mut debouncer =
+            notify_debouncer_full::new_debouncer(Duration::from_millis(500), None, move |result| {
+                let _ = tx.send(result);
+            })
+            .map_err(|e| Error::Watch(e.to_string()))?;
+        debouncer
+            .watch(&self.inner.root, notify::RecursiveMode::Recursive)
+            .map_err(|e| Error::Watch(e.to_string()))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let index = self.clone();
+        let handle = thread::Builder::new()
+            .name("index-watcher".into())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::SeqCst) {
+                    let Ok(result) = rx.recv_timeout(Duration::from_millis(200)) else {
+                        continue;
+                    };
+                    let relevant = match &result {
+                        Ok(events) => events.iter().any(|event| {
+                            event.event.need_rescan()
+                                || event.paths.iter().any(|path| {
+                                    let Ok(relative) = path.strip_prefix(&index.inner.root) else {
+                                        return false;
+                                    };
+                                    let rel = relative.to_string_lossy().replace('\\', "/");
+                                    if rel == ".git/HEAD" {
+                                        return true;
+                                    }
+                                    if rel.starts_with(".git/") {
+                                        return false;
+                                    }
+                                    let mut builder = ignore::WalkBuilder::new(&index.inner.root);
+                                    builder.hidden(false);
+                                    builder.build_matchers().into_iter().next().is_none_or(
+                                        |mut matcher| {
+                                            !matcher.matched(relative, path.is_dir()).is_ignore()
+                                        },
+                                    )
+                                })
+                        }),
+                        Err(_) => true,
+                    };
+                    if relevant {
+                        match index.scan() {
+                            Ok(stats) => {
+                                if !stats.changed.is_empty() {
+                                    sink(stats.changed);
+                                }
+                            }
+                            Err(error) => tracing::warn!(%error,"watcher rescan failed"),
+                        }
+                    }
+                }
+            })
+            .map_err(|e| Error::Watch(e.to_string()))?;
+        if let Ok(mut status) = self.inner.status.lock() {
+            status.watching = true;
         }
+        Ok(Watcher {
+            debouncer: Some(debouncer),
+            stop,
+            thread: Some(handle),
+            status: self.inner.status.clone(),
+        })
+    }
+
+    /// The index at a glance; cheap (no I/O).
+    pub fn status(&self) -> IndexStatus {
+        self.inner.status.lock().map_or_else(
+            |_| IndexStatus {
+                root: self.inner.root.display().to_string(),
+                state: IndexState::Failed {
+                    error: "status unavailable".into(),
+                },
+                files: 0,
+                symbols: 0,
+                references: 0,
+                languages: Vec::new(),
+                watching: false,
+                last_scan_at_ms: None,
+                last_scan_ms: None,
+                last_scan_parsed: None,
+                updated_at_ms: None,
+            },
+            |s| s.clone(),
+        )
     }
 
     /// Symbols and files matching `query`.
     pub fn search(&self, query: &CodeQuery) -> Result<Vec<CodeHit>> {
-        let _ = query;
-        Err(Error::Closed)
+        self.with_read(|c| reads::search(c, query))
     }
 
     /// Where `name` is defined and referenced (at most `limit` references).
     pub fn refs(&self, name: &str, limit: u32) -> Result<SymbolRefs> {
-        let _ = (name, limit);
-        Err(Error::Closed)
+        self.with_read(|c| reads::refs(c, name, limit))
     }
 
     /// Modules, manifests, scripts, services and top-level folders.
     pub fn project_map(&self) -> Result<ProjectMap> {
-        Err(Error::Closed)
+        self.with_read(reads::project_map)
     }
 
     /// The indexed content hash of each path (`None`: not indexed), for node provenance.
     pub fn file_hashes(&self, paths: &[String]) -> Result<Vec<(String, Option<String>)>> {
-        let _ = paths;
-        Err(Error::Closed)
+        self.with_read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT hash FROM files WHERE path=?1")
+                .map_err(|e| Error::Db(e.to_string()))?;
+            paths
+                .iter()
+                .map(|path| {
+                    let hash: Option<String> = stmt
+                        .query_row([path], |r| r.get(0))
+                        .optional()
+                        .map_err(|e| Error::Db(e.to_string()))?;
+                    Ok((path.clone(), hash.filter(|h| !h.is_empty())))
+                })
+                .collect()
+        })
     }
 
-    /// A compact text overview for a model (folders, modules, manifests, scripts, services and
-    /// the most referenced symbols per module), at most `max_bytes`.
+    /// A compact text overview for a model, at most `max_bytes`.
     pub fn digest(&self, max_bytes: usize) -> Result<String> {
-        let _ = max_bytes;
-        Err(Error::Closed)
+        self.with_read(|c| reads::digest(c, max_bytes))
     }
 }
