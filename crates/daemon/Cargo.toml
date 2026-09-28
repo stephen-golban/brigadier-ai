@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 base64.workspace = true
 brigadier-core.workspace = true
+brigadier-index.workspace = true
 brigadier-ipc.workspace = true
 brigadier-mcp-server.workspace = true
 brigadier-providers.workspace = true

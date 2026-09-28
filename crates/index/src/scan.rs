@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Instant, UNIX_EPOCH};
 
 use crate::db::{self, FileRow};
+use crate::helper::CHANGED_PER_SLICE;
 use crate::parse::{self, Parser};
 use crate::{CodeIndex, Error, FileChange, IndexState, Result, ScanStats};
 use ignore::{WalkBuilder, WalkState};
@@ -61,19 +62,31 @@ struct Outcome {
 }
 
 impl CodeIndex {
-    /// Scans under the scan lock; with `clear`, forgets everything indexed first.
-    pub(crate) fn scan_impl(&self, clear: bool) -> Result<ScanStats> {
+    /// Scans under the scan lock, in the scan helper if there is one; with `clear`, forgets
+    /// everything indexed first. The changed files go to `changed` in slices, not into the
+    /// stats.
+    pub(crate) fn scan_impl(
+        &self,
+        clear: bool,
+        changed: &mut dyn FnMut(Vec<FileChange>),
+    ) -> Result<ScanStats> {
         let _guard = self.inner.scan_lock.lock().map_err(|_| Error::Closed)?;
-        if clear {
-            db::send_clear(&self.inner.writer)?;
-        }
-        let start = Instant::now();
-        let root = &self.inner.root;
         {
             let mut status = self.inner.status.lock().map_err(|_| Error::Closed)?;
             status.state = IndexState::Scanning { done: 0, total: 0 };
         }
-        let result = self.run_scan(start, root);
+        let result = match &self.inner.scan_helper {
+            Some(helper) => self.scan_in_helper(helper, clear, changed),
+            None => self.scan_here(clear).map(|mut stats| {
+                let mut files = std::mem::take(&mut stats.changed);
+                while !files.is_empty() {
+                    let rest = files.split_off(files.len().min(CHANGED_PER_SLICE));
+                    changed(files);
+                    files = rest;
+                }
+                stats
+            }),
+        };
         if let Err(error) = &result
             && let Ok(mut status) = self.inner.status.lock()
         {
@@ -82,6 +95,13 @@ impl CodeIndex {
             };
         }
         result
+    }
+
+    fn scan_here(&self, clear: bool) -> Result<ScanStats> {
+        if clear {
+            db::send_clear(&self.inner.writer)?;
+        }
+        self.run_scan(Instant::now(), &self.inner.root)
     }
 
     fn run_scan(&self, start: Instant, root: &Path) -> Result<ScanStats> {

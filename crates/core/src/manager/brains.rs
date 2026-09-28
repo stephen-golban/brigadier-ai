@@ -26,7 +26,9 @@ use brigadier_brain::{
     NewNode, Node, NodeFilter, NodeKind, NodeState, Origin, Provenance, Scope, TranscriptEntry,
     WorkerRef,
 };
-use brigadier_index::{CodeHit, CodeIndex, CodeQuery, FileChange, IndexConfig, SearchKind};
+use brigadier_index::{
+    CodeHit, CodeIndex, CodeQuery, FileChange, IndexConfig, ScanHelper, SearchKind,
+};
 use brigadier_store::StreamPage;
 
 use super::brain_jobs::BrainJobs;
@@ -228,6 +230,11 @@ impl SessionManager {
         let dir = self.brains.root.join(&id.0);
         let root = project.repos.first().map(|repo| PathBuf::from(&repo.path));
         let embedder = self.brains.embedder.clone();
+        // Scans run in `brigadierd index-scan`, so their memory leaves with that process.
+        let scan_helper = ScanHelper {
+            program: self.config.daemon_exe.clone(),
+            args: vec!["index-scan".into()],
+        };
         let opened = {
             let root = root.clone();
             blocking(move || {
@@ -241,6 +248,7 @@ impl SessionManager {
                             db_path: dir.join("index.sqlite"),
                             root: root.clone(),
                             threads: 0,
+                            scan_helper: Some(scan_helper),
                         })
                         .map_err(index_error)?,
                     ),
@@ -330,11 +338,9 @@ impl SessionManager {
                     }
                 }
                 drop(watcher);
-                let scanned = if rebuild {
-                    index.rebuild()
-                } else {
-                    index.scan()
-                };
+                let brain = project.brain.clone();
+                let scanned =
+                    index.scan_into(rebuild, &mut |changed| files_changed(&brain, &changed));
                 let Some(manager) = manager.upgrade() else {
                     return;
                 };
@@ -352,7 +358,6 @@ impl SessionManager {
                             at_ms: now_ms(),
                         });
                         tracing::info!(project = %id, files = stats.files, parsed = stats.parsed, ms = stats.duration_ms, "code index scanned");
-                        files_changed(&project.brain, &stats.changed);
                         learn_structure(&project.brain, &index);
                         manager.brains.jobs.want_skeleton(id.clone());
                     }

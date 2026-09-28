@@ -7,7 +7,8 @@
 //! from the files.
 //!
 //! Threads: every method here blocks (SQLite, the file system, parsing). The index runs its own
-//! writer thread, a bounded parse pool during [`CodeIndex::scan`] and the watcher's threads;
+//! writer thread, a bounded parse pool during [`CodeIndex::scan`] (or a [`ScanHelper`] process
+//! that does the scan) and the watcher's threads;
 //! callers on an async runtime use a dedicated thread for `scan` and `spawn_blocking` for the
 //! reads, which answer in milliseconds.
 
@@ -21,6 +22,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension};
 
 mod db;
+mod helper;
 mod manifests;
 mod parse;
 mod reads;
@@ -28,6 +30,8 @@ mod scan;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+pub use helper::{ScanHelper, scan_helper_main};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -55,6 +59,8 @@ pub struct IndexConfig {
     pub root: PathBuf,
     /// Parse threads for a scan; 0 means one less than the machine's cores (at least 1).
     pub threads: usize,
+    /// Runs scans in a process of their own (see [`ScanHelper`]); `None` scans in this one.
+    pub scan_helper: Option<ScanHelper>,
 }
 
 /// A file whose content changed since the index last saw it, as the watcher and scans report
@@ -325,7 +331,7 @@ pub struct Watcher {
     debouncer: Option<
         notify_debouncer_full::Debouncer<
             notify::RecommendedWatcher,
-            notify_debouncer_full::RecommendedCache,
+            notify_debouncer_full::NoCache,
         >,
     >,
     stop: Arc<AtomicBool>,
@@ -348,7 +354,9 @@ impl Drop for Watcher {
 
 struct Inner {
     root: PathBuf,
+    db_path: PathBuf,
     threads: usize,
+    scan_helper: Option<ScanHelper>,
     writer: mpsc::Sender<db::Command>,
     readers: Vec<Mutex<Connection>>,
     next_reader: AtomicUsize,
@@ -426,7 +434,9 @@ impl CodeIndex {
         let index = Self {
             inner: Arc::new(Inner {
                 root,
+                db_path: config.db_path,
                 threads,
+                scan_helper: config.scan_helper,
                 writer,
                 readers,
                 next_reader: AtomicUsize::new(0),
@@ -456,22 +466,48 @@ impl CodeIndex {
 
     /// Brings the index up to date with the files. Blocks until done.
     pub fn scan(&self) -> Result<ScanStats> {
-        self.scan_impl(false)
+        self.scan_collecting(false)
     }
 
     /// Forgets everything indexed and scans the files again. Blocks until done. The database
     /// is emptied in place, so every handle to this index stays valid.
     pub fn rebuild(&self) -> Result<ScanStats> {
-        self.scan_impl(true)
+        self.scan_collecting(true)
     }
 
-    /// Watches the repository and keeps the index current.
+    /// [`Self::scan`] (or with `rebuild`, [`Self::rebuild`]) that hands the changed files to
+    /// `changed` in slices as they are found instead of collecting them in the stats: a first
+    /// scan of a large repository changes every file.
+    pub fn scan_into(
+        &self,
+        rebuild: bool,
+        changed: &mut dyn FnMut(Vec<FileChange>),
+    ) -> Result<ScanStats> {
+        self.scan_impl(rebuild, changed)
+    }
+
+    fn scan_collecting(&self, rebuild: bool) -> Result<ScanStats> {
+        let mut all = Vec::new();
+        let mut stats = self.scan_impl(rebuild, &mut |mut files| all.append(&mut files))?;
+        stats.changed = all;
+        Ok(stats)
+    }
+
+    /// Watches the repository and keeps the index current. An event only says that something
+    /// changed (the scan finds what), so no file-id cache is kept: on macOS the default one
+    /// walks and remembers every path under the root, ignored ones included.
     pub fn watch(&self, sink: ChangeSink) -> Result<Watcher> {
         let (tx, rx) = mpsc::channel::<notify_debouncer_full::DebounceEventResult>();
         let mut debouncer =
-            notify_debouncer_full::new_debouncer(Duration::from_millis(500), None, move |result| {
-                let _ = tx.send(result);
-            })
+            notify_debouncer_full::new_debouncer_opt::<_, notify::RecommendedWatcher, _>(
+                Duration::from_millis(500),
+                None,
+                move |result| {
+                    let _ = tx.send(result);
+                },
+                notify_debouncer_full::NoCache,
+                notify::Config::default(),
+            )
             .map_err(|e| Error::Watch(e.to_string()))?;
         debouncer
             .watch(&self.inner.root, notify::RecursiveMode::Recursive)
@@ -511,15 +547,10 @@ impl CodeIndex {
                         }),
                         Err(_) => true,
                     };
-                    if relevant {
-                        match index.scan() {
-                            Ok(stats) => {
-                                if !stats.changed.is_empty() {
-                                    sink(stats.changed);
-                                }
-                            }
-                            Err(error) => tracing::warn!(%error,"watcher rescan failed"),
-                        }
+                    if relevant
+                        && let Err(error) = index.scan_into(false, &mut |changed| sink(changed))
+                    {
+                        tracing::warn!(%error, "watcher rescan failed");
                     }
                 }
             })

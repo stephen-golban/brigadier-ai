@@ -101,6 +101,15 @@ fn main() -> ExitCode {
     {
         return dictation::transcribe_main(std::env::args_os().skip(2));
     }
+    // `brigadierd index-scan <db> <root> <threads>`: one code index scan (see
+    // `brigadier_index::ScanHelper`).
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "index-scan")
+    {
+        let code = brigadier_index::scan_helper_main(std::env::args_os().skip(2));
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
     let args = match parse_args() {
         Ok(args) => args,
         Err(err) => {
