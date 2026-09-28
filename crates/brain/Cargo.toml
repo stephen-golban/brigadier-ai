@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+memmap2 = "0.9.11"
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
 safetensors = "0.8.0"

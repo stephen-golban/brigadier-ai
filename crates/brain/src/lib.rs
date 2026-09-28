@@ -16,12 +16,26 @@
 //! `spawn_blocking` (reads, writes) or a dedicated thread (downloads, backfills). A query never
 //! waits for the embedding model to load.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+use crate::vectors::Vectors;
+
+mod db;
+mod download;
+mod embed;
+mod format;
+mod retrieve;
+mod schema;
+mod transcript;
+mod vectors;
+mod write;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -361,182 +375,493 @@ pub struct EmbedderStatus {
 /// The local embedding model (Model2Vec static embeddings), shared by every Brain. Loaded on
 /// demand, quantized in memory, and unloaded when idle.
 pub struct Embedder {
-    _private: (),
+    inner: Arc<embed::Inner>,
 }
 
 impl Embedder {
     /// An embedder whose model files live in `models_dir` (e.g. `<data>/models/embeddings`).
     /// Does no I/O.
     pub fn new(models_dir: PathBuf) -> Arc<Self> {
-        let _ = models_dir;
-        Arc::new(Self { _private: () })
+        Arc::new(Self {
+            inner: embed::Inner::new(models_dir),
+        })
     }
 
     pub fn status(&self) -> EmbedderStatus {
-        EmbedderStatus {
-            model: String::new(),
-            model_bytes: 0,
-            dimensions: 0,
-            state: EmbedderState::NotInstalled,
-        }
+        self.inner.status()
     }
 
     /// Downloads the pinned model and checks its SHA-256 (resuming a partial download).
-    /// Blocks; `cancel` stops it and keeps the partial file.
+    /// Blocks; `cancel` stops it and keeps the partial file. Already installed, it returns at
+    /// once.
     pub fn download(&self, cancel: &AtomicBool) -> Result<()> {
-        let _ = cancel;
-        Err(Error::Model("the embedder is not built yet".into()))
+        self.inner.download(cancel)
     }
 
     /// Loads the model if it is installed and not loaded yet, on the embedder's own thread;
-    /// returns at once.
-    pub fn request_load(&self) {}
+    /// returns at once. A load that failed is retried a minute later at the soonest.
+    pub fn request_load(&self) {
+        self.inner.request_load();
+    }
 
     /// Embeds `texts` if the model is loaded (normalized vectors); `None` otherwise.
     pub fn embed(&self, texts: &[&str]) -> Option<Vec<Vec<f32>>> {
-        let _ = texts;
-        None
+        self.inner.embed(texts)
     }
 
-    /// Frees the model if it has not been used for `idle`.
+    /// Frees the model if it has not been used for `idle`, and every Brain's vector cache
+    /// with it.
     pub fn unload_if_idle(&self, idle: std::time::Duration) {
-        let _ = idle;
+        self.inner.unload_if_idle(idle);
     }
 }
 
 /// A Brain: the project's (or the user's) knowledge graph. Cheap to clone (a handle).
 #[derive(Clone)]
 pub struct Brain {
-    _private: Arc<()>,
+    inner: Arc<BrainInner>,
+}
+
+struct BrainInner {
+    path: PathBuf,
+    scope: Scope,
+    writer: db::Writer,
+    readers: db::Readers,
+    vectors: Arc<Vectors>,
+    embedder: Arc<Embedder>,
+}
+
+/// Nodes embedded per batch by [`Brain::embed_pending`].
+const EMBED_BATCH: usize = 64;
+
+fn scope_str(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Project => "project",
+        Scope::Personal => "personal",
+    }
+}
+
+/// What a node's embedding is computed from.
+fn embed_text(title: &str, body: &str) -> String {
+    format!("{title}\n{body}")
 }
 
 impl Brain {
     /// Opens (creating and migrating) the Brain database at `path` and starts its writer
-    /// thread.
+    /// thread. A database made for the other scope is refused. Open each file once and share
+    /// clones of the handle: its writer and vector cache belong to the handle.
     pub fn open(path: &Path, scope: Scope, embedder: Arc<Embedder>) -> Result<Self> {
-        let _ = (path, scope, embedder);
-        Err(Error::Invalid("the brain is not built yet".into()))
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|err| Error::Db(format!("couldn't make {}: {err}", dir.display())))?;
+        }
+        let writer = db::Writer::spawn(path)?;
+        let stored = writer.run(
+            move |tx| {
+                tx.execute(
+                    "INSERT OR IGNORE INTO meta (key, value) VALUES ('scope', ?1)",
+                    [scope_str(scope)],
+                )?;
+                Ok(
+                    tx.query_row("SELECT value FROM meta WHERE key = 'scope'", [], |row| {
+                        row.get::<_, String>(0)
+                    })?,
+                )
+            },
+            |_| {},
+        )?;
+        if stored != scope_str(scope) {
+            return Err(Error::Invalid(format!(
+                "{} holds a {stored} brain, not a {} one",
+                path.display(),
+                scope_str(scope)
+            )));
+        }
+        let readers = db::Readers::open(path)?;
+        let vectors = Arc::new(Vectors::default());
+        embedder.inner.register(&vectors);
+        Ok(Self {
+            inner: Arc::new(BrainInner {
+                path: path.to_owned(),
+                scope,
+                writer,
+                readers,
+                vectors,
+                embedder,
+            }),
+        })
+    }
+
+    pub fn scope(&self) -> Scope {
+        self.inner.scope
+    }
+
+    /// Runs `write` in one transaction on the writer thread; its vector changes apply once it
+    /// commits.
+    fn write<T: Send + 'static>(
+        &self,
+        write: impl FnOnce(&rusqlite::Transaction, &mut Vec<vectors::Change>) -> Result<T>
+        + Send
+        + 'static,
+    ) -> Result<T> {
+        let vectors = self.inner.vectors.clone();
+        self.inner
+            .writer
+            .run(
+                move |tx| {
+                    let mut changes = Vec::new();
+                    let value = write(tx, &mut changes)?;
+                    Ok((value, changes))
+                },
+                move |(_, changes)| vectors.apply(changes),
+            )
+            .map(|(value, _)| value)
+    }
+
+    fn read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> Result<T>) -> Result<T> {
+        self.inner.readers.run(read)
     }
 
     /// Records a node (see [`NewNode`] for updates by key) and returns its id. It is embedded
     /// now if the model is loaded, later by [`Self::embed_pending`] otherwise.
     pub fn record(&self, node: NewNode) -> Result<String> {
-        let _ = node;
-        Err(Error::Closed)
+        if node.title.trim().is_empty() {
+            return Err(Error::Invalid("a node needs a title".into()));
+        }
+        if node.key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+            return Err(Error::Invalid("a node's key can't be empty".into()));
+        }
+        let embedding = self
+            .inner
+            .embedder
+            .embed(&[&embed_text(&node.title, &node.body)])
+            .and_then(|mut vectors| vectors.pop())
+            .map(|vector| vectors::encode(&vector));
+        let now = db::now_ms();
+        self.write(move |tx, changes| write::record(tx, &node, embedding, now, changes))
     }
 
     /// Records edges; an endpoint may be a node id or `key:<node key>`. Unknown endpoints are
     /// an error; an edge that exists already is kept once.
     pub fn link(&self, edges: Vec<NewEdge>) -> Result<()> {
-        let _ = edges;
-        Err(Error::Closed)
+        self.write(move |tx, _| write::link(tx, &edges))
     }
 
-    /// Marks `old` superseded by `new` (and links them).
+    /// Marks `old` superseded by `new` (and links them). Either may be `key:<node key>`.
     pub fn supersede(&self, old: &str, new: &str) -> Result<()> {
-        let _ = (old, new);
-        Err(Error::Closed)
+        let (old, new) = (old.to_owned(), new.to_owned());
+        self.write(move |tx, changes| write::supersede(tx, &old, &new, changes))
     }
 
-    /// Deletes a node and its edges.
+    /// Deletes a node and its edges. Nodes it superseded are current again.
     pub fn delete(&self, id: &str) -> Result<()> {
-        let _ = id;
-        Err(Error::Closed)
+        let id = id.to_owned();
+        self.write(move |tx, changes| write::delete(tx, &id, changes))
     }
 
     /// Deletes every node learned in `session_id`, and its transcript ("forget what the Brain
     /// learned from this session" on delete). Returns how many nodes went.
     pub fn forget_session(&self, session_id: &str) -> Result<u64> {
-        let _ = session_id;
-        Err(Error::Closed)
+        let session = session_id.to_owned();
+        self.write(move |tx, changes| write::forget_session(tx, &session, changes))
     }
 
     /// Files changed (each with its new content hash, `None` when deleted): every fresh node
     /// recorded against another hash of one of them goes stale. Returns the ids of the nodes
     /// that went stale.
     pub fn files_changed(&self, changes: &[FileRef]) -> Result<Vec<String>> {
-        let _ = changes;
-        Err(Error::Closed)
+        let changes = changes.to_vec();
+        let now = db::now_ms();
+        self.write(move |tx, _| write::files_changed(tx, &changes, now))
     }
 
-    /// Research nodes past their TTL go stale. Returns how many.
+    /// Nodes past their TTL (research) go stale. Returns how many.
     pub fn expire(&self, now_ms: i64) -> Result<u64> {
-        let _ = now_ms;
-        Err(Error::Closed)
+        self.write(move |tx, _| write::expire(tx, now_ms))
     }
 
-    /// Embeds up to `limit` nodes that have no embedding from the current model (the model must
-    /// be loaded). Returns how many were embedded.
+    /// Embeds up to `limit` nodes that have no embedding from the current model, newest first.
+    /// The model must be loaded: until it is, this asks for it and embeds nothing. Returns how
+    /// many were embedded.
     pub fn embed_pending(&self, limit: u32) -> Result<u32> {
-        let _ = limit;
-        Err(Error::Closed)
+        let embedder = &self.inner.embedder;
+        if !embedder.inner.loaded() {
+            embedder.request_load();
+            return Ok(0);
+        }
+        let pending: Vec<(String, String, String)> = self.read(|conn| {
+            let mut statement = conn.prepare_cached(
+                "SELECT id, title, body FROM nodes \
+                 WHERE embedding IS NULL OR embed_model IS NOT ?1 \
+                 ORDER BY updated_ms DESC LIMIT ?2",
+            )?;
+            let rows = statement.query_map(rusqlite::params![embed::MODEL_ID, limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })?;
+        let mut stored = 0;
+        for batch in pending.chunks(EMBED_BATCH) {
+            let texts: Vec<String> = batch
+                .iter()
+                .map(|(_, title, body)| embed_text(title, body))
+                .collect();
+            let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+            // Unloaded meanwhile: the rest waits for the next call.
+            let Some(embeddings) = embedder.embed(&texts) else {
+                break;
+            };
+            let embedded: Vec<write::Embedded> = batch
+                .iter()
+                .zip(embeddings)
+                .map(|((id, title, body), vector)| write::Embedded {
+                    id: id.clone(),
+                    title: title.clone(),
+                    body: body.clone(),
+                    blob: vectors::encode(&vector),
+                })
+                .collect();
+            stored +=
+                self.write(move |tx, changes| write::set_embeddings(tx, embedded, changes))?;
+        }
+        Ok(stored)
     }
 
     /// Hybrid retrieval: FTS5 and embeddings fused, plus linked decisions and conventions.
     /// Stale nodes are included and marked.
     pub fn query(&self, query: &BrainQuery) -> Result<BrainAnswer> {
-        let _ = query;
-        Err(Error::Closed)
+        let started = std::time::Instant::now();
+        let limit = query.limit.unwrap_or(12).clamp(1, 100) as usize;
+        let budget =
+            query.max_tokens.unwrap_or(1500).clamp(50, 100_000) as usize * format::BYTES_PER_TOKEN;
+        let embedder = &self.inner.embedder;
+        let embedding = if query.text.trim().is_empty() {
+            None
+        } else {
+            match embedder.embed(&[query.text.as_str()]) {
+                Some(mut vectors) => vectors.pop(),
+                None => {
+                    // Never wait for the model: this query is full-text only.
+                    embedder.request_load();
+                    None
+                }
+            }
+        };
+        let hits = self.read(|conn| {
+            retrieve::hits(
+                conn,
+                &self.inner.vectors,
+                query,
+                embedding.as_deref(),
+                limit,
+            )
+        })?;
+        let text = format::answer(&hits, budget);
+        Ok(BrainAnswer {
+            hits,
+            text,
+            semantic: embedding.is_some(),
+            took_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        })
     }
 
     pub fn node(&self, id: &str) -> Result<Option<Node>> {
-        let _ = id;
-        Err(Error::Closed)
+        self.read(|conn| Ok(db::nodes_by_id(conn, &[id.to_owned()])?.pop()))
     }
 
     /// The node with this key and kind.
     pub fn node_by_key(&self, kind: NodeKind, key: &str) -> Result<Option<Node>> {
-        let _ = (kind, key);
-        Err(Error::Closed)
+        self.read(|conn| {
+            let node = conn
+                .prepare_cached(&format!(
+                    "SELECT {} FROM nodes WHERE kind = ?1 AND key = ?2",
+                    db::NODE_COLUMNS
+                ))?
+                .query_row(rusqlite::params![db::kind_str(kind), key], db::node_row)
+                .optional()?;
+            let mut nodes: Vec<Node> = node.into_iter().collect();
+            db::attach_files(conn, &mut nodes)?;
+            Ok(nodes.pop())
+        })
     }
 
     pub fn nodes(&self, filter: &NodeFilter) -> Result<Vec<Node>> {
-        let _ = filter;
-        Err(Error::Closed)
+        self.read(|conn| list_nodes(conn, filter, 0))
     }
 
     /// Edges touching any of `ids`.
     pub fn edges(&self, ids: &[String]) -> Result<Vec<Edge>> {
-        let _ = ids;
-        Err(Error::Closed)
+        self.read(|conn| edges_touching(conn, ids))
     }
 
     /// Nodes matching `filter` and the edges among them.
     pub fn graph(&self, filter: &NodeFilter) -> Result<BrainGraph> {
-        let _ = filter;
-        Err(Error::Closed)
+        self.read(|conn| {
+            // One snapshot for the nodes and their edges.
+            let tx = conn.unchecked_transaction()?;
+            let limit = filter_limit(filter);
+            let mut nodes = list_nodes(&tx, filter, 1)?;
+            let truncated = nodes.len() > limit;
+            nodes.truncate(limit);
+            let ids: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();
+            let among: HashSet<&str> = ids.iter().map(String::as_str).collect();
+            let edges = edges_touching(&tx, &ids)?
+                .into_iter()
+                .filter(|edge| {
+                    among.contains(edge.from.as_str()) && among.contains(edge.to.as_str())
+                })
+                .collect();
+            Ok(BrainGraph {
+                nodes,
+                edges,
+                truncated,
+            })
+        })
     }
 
     pub fn stats(&self) -> Result<BrainStats> {
-        Err(Error::Closed)
+        let mut stats = self.read(|conn| {
+            let count = |sql: &str, args: &[&str]| -> Result<u64> {
+                let count: i64 = conn
+                    .prepare_cached(sql)?
+                    .query_row(rusqlite::params_from_iter(args), |row| row.get(0))?;
+                Ok(count.max(0) as u64)
+            };
+            let mut kinds = Vec::new();
+            let mut statement = conn
+                .prepare_cached("SELECT kind, COUNT(*) FROM nodes GROUP BY kind ORDER BY kind")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let kind: String = row.get(0)?;
+                if let Some(kind) = db::parse_kind(&kind) {
+                    kinds.push(KindCount {
+                        kind,
+                        nodes: row.get::<_, i64>(1)?.max(0) as u64,
+                    });
+                }
+            }
+            Ok(BrainStats {
+                nodes: count("SELECT COUNT(*) FROM nodes", &[])?,
+                edges: count("SELECT COUNT(*) FROM edges", &[])?,
+                stale: count("SELECT COUNT(*) FROM nodes WHERE state = 'stale'", &[])?,
+                unembedded: count(
+                    "SELECT COUNT(*) FROM nodes WHERE embedding IS NULL OR embed_model IS NOT ?1",
+                    &[embed::MODEL_ID],
+                )?,
+                kinds,
+                transcript_entries: count("SELECT COUNT(*) FROM transcript", &[])?,
+                bytes_on_disk: 0,
+            })
+        })?;
+        let mut wal = self.inner.path.clone().into_os_string();
+        wal.push("-wal");
+        stats.bytes_on_disk = [self.inner.path.as_os_str(), wal.as_os_str()]
+            .iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .sum();
+        Ok(stats)
     }
 
     /// Adds transcript entries (idempotent by conversation and seq).
     pub fn index_transcript(&self, entries: Vec<TranscriptEntry>) -> Result<()> {
-        let _ = entries;
-        Err(Error::Closed)
+        self.write(move |tx, _| transcript::index(tx, &entries))
     }
 
     /// The highest seq indexed for a conversation, to resume a backfill.
     pub fn transcript_watermark(&self, conversation_id: &str) -> Result<Option<i64>> {
-        let _ = conversation_id;
-        Err(Error::Closed)
+        self.read(|conn| transcript::watermark(conn, conversation_id))
     }
 
-    /// Full-text search over one conversation's transcript, best matches first.
+    /// Full-text search over one conversation's transcript, best matches first (then the most
+    /// recent).
     pub fn search_transcript(
         &self,
         conversation_id: &str,
         query: &str,
         limit: u32,
     ) -> Result<Vec<TranscriptHit>> {
-        let _ = (conversation_id, query, limit);
-        Err(Error::Closed)
+        self.read(|conn| transcript::search(conn, conversation_id, query, limit))
     }
 
     /// Drops a conversation's transcript entries.
     pub fn forget_transcript(&self, conversation_id: &str) -> Result<()> {
-        let _ = conversation_id;
-        Err(Error::Closed)
+        let conversation = conversation_id.to_owned();
+        self.write(move |tx, _| transcript::forget(tx, &conversation))
     }
+}
+
+fn filter_limit(filter: &NodeFilter) -> usize {
+    filter.limit.unwrap_or(200).clamp(1, 10_000) as usize
+}
+
+/// Nodes matching `filter`, newest first: its limit plus `extra`.
+fn list_nodes(conn: &rusqlite::Connection, filter: &NodeFilter, extra: usize) -> Result<Vec<Node>> {
+    use rusqlite::types::Value;
+    let mut sql = format!("SELECT {} FROM nodes WHERE 1 = 1", db::NODE_COLUMNS);
+    let mut args: Vec<Value> = Vec::new();
+    if !filter.kinds.is_empty() {
+        sql.push_str(&format!(
+            " AND kind IN ({})",
+            db::placeholders(filter.kinds.len())
+        ));
+        args.extend(
+            filter
+                .kinds
+                .iter()
+                .map(|kind| Value::Text(db::kind_str(*kind).to_owned())),
+        );
+    }
+    if let Some(session) = &filter.session_id {
+        sql.push_str(" AND session_id = ?");
+        args.push(Value::Text(session.clone()));
+    }
+    if filter.current_only {
+        sql.push_str(" AND state != 'superseded'");
+    }
+    if let Some(text) = filter.text.as_deref().filter(|text| !text.is_empty()) {
+        let escaped: String = text
+            .chars()
+            .flat_map(|c| match c {
+                '%' | '_' | '\\' => vec!['\\', c],
+                c => vec![c],
+            })
+            .collect();
+        let pattern = format!("%{escaped}%");
+        sql.push_str(" AND (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')");
+        args.push(Value::Text(pattern.clone()));
+        args.push(Value::Text(pattern));
+    }
+    sql.push_str(" ORDER BY updated_ms DESC, rid DESC LIMIT ?");
+    args.push(Value::Integer((filter_limit(filter) + extra) as i64));
+    let mut statement = conn.prepare_cached(&sql)?;
+    let mut nodes = statement
+        .query_map(rusqlite::params_from_iter(args), db::node_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    db::attach_files(conn, &mut nodes)?;
+    Ok(nodes)
+}
+
+fn edges_touching(conn: &rusqlite::Connection, ids: &[String]) -> Result<Vec<Edge>> {
+    let mut seen = HashSet::new();
+    let mut edges = Vec::new();
+    for chunk in ids.chunks(250) {
+        let marks = db::placeholders(chunk.len());
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT from_id, to_id, kind FROM edges WHERE from_id IN ({marks}) \
+             UNION SELECT from_id, to_id, kind FROM edges WHERE to_id IN ({marks})"
+        ))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(chunk.iter().chain(chunk)))?;
+        while let Some(row) = rows.next()? {
+            let (from, to, kind): (String, String, String) =
+                (row.get(0)?, row.get(1)?, row.get(2)?);
+            let Some(kind) = db::parse_edge_kind(&kind) else {
+                continue;
+            };
+            if seen.insert((from.clone(), to.clone(), kind)) {
+                edges.push(Edge { from, to, kind });
+            }
+        }
+    }
+    Ok(edges)
 }
