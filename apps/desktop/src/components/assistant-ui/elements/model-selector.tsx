@@ -49,7 +49,12 @@ export type ModelGroup = {
 export function findModel(groups: readonly ModelGroup[], choice: ModelChoice): ModelInfo | null {
   const group = groups.find((entry) => entry.provider === choice.provider);
   if (!group) return null;
-  const named = choice.model === null ? undefined : group.models.find((model) => model.id === choice.model);
+  // A concrete id ("claude-sonnet-5-5") names the alias that resolves to it ("sonnet").
+  const named =
+    choice.model === null
+      ? undefined
+      : (group.models.find((model) => model.id === choice.model) ??
+        group.models.find((model) => model.resolved === choice.model));
   if (named) return named;
   return choice.model === null || choice.model === "default"
     ? (group.models.find((model) => model.isDefault) ?? null)

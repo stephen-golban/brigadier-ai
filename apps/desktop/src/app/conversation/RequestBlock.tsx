@@ -481,7 +481,7 @@ const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }
   picked,
 }) => {
   const groups = useModelGroups();
-  if (!model || !picked || sameModel(picked, model)) return null;
+  if (!model || !picked || sameModel(groups, picked, model)) return null;
   return (
     <p className="text-muted-foreground text-sm">
       Model changed from {modelName(groups, picked)} to {modelName(groups, model)}.

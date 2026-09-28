@@ -157,6 +157,10 @@ export function modelName(groups: readonly ModelGroup[], choice: ModelChoice): s
   );
 }
 
-export function sameModel(a: ModelChoice, b: ModelChoice): boolean {
-  return a.provider === b.provider && a.model === b.model;
+/** Whether two choices name the same model, an alias and the id it resolves to included. */
+export function sameModel(groups: readonly ModelGroup[], a: ModelChoice, b: ModelChoice): boolean {
+  if (a.provider !== b.provider) return false;
+  if (a.model === b.model) return true;
+  const model = findModel(groups, a);
+  return model !== null && model === findModel(groups, b);
 }
