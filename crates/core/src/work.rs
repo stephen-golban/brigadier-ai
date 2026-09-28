@@ -954,6 +954,8 @@ pub enum InjectionKind {
     FollowUp,
     /// The briefing a reborn orchestrator starts with.
     Briefing,
+    /// Brigadier asks for an answer the orchestrator left out.
+    Reminder,
 }
 
 /// One thing Brigadier put into the orchestrator's context, for the Inspector.

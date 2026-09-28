@@ -150,6 +150,9 @@ struct ConvState {
     narration: HashMap<String, Narration>,
     /// Requests the user saw a reply for.
     spoke: HashSet<String>,
+    /// Requests in which the orchestrator sent a worker back and the user has seen nothing
+    /// since: such a request must not end with nothing said.
+    sent_back: HashMap<String, Unanswered>,
     /// The next CLI session starts fresh and must be given the transcript so far.
     reseed: bool,
     /// A Chat that hit a usage limit continues on this model (the saved choice is untouched).
@@ -171,6 +174,22 @@ struct ConvState {
     /// The next orchestrator CLI session starts from this briefing.
     briefing: Option<BriefingPlan>,
 }
+
+/// Where a request the orchestrator sent a worker back in stands, while the user has seen no
+/// reply since.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unanswered {
+    Armed,
+    /// It ended with nothing said; checked again after [`UNANSWERED_GRACE`].
+    Checking,
+    /// The orchestrator was asked for its answer.
+    Reminded,
+}
+
+/// How long a request may look over with nothing said before the orchestrator is asked for its
+/// answer: a task's end and the envelope that tells of it are not one step (a landing removes
+/// a worktree in between).
+const UNANSWERED_GRACE: Duration = Duration::from_secs(10);
 
 /// A conversation's live state.
 pub(crate) struct ConvLive {
@@ -302,6 +321,17 @@ impl ConvLive {
     }
 
     /// What the driver holds for each request right now.
+    /// The orchestrator sent a worker of `request` back to work: what the user saw of the
+    /// request so far is not its answer.
+    pub async fn sent_back(&self, request: &str) {
+        let mut state = self.state.lock().await;
+        state.spoke.remove(request);
+        state
+            .sent_back
+            .entry(request.to_owned())
+            .or_insert(Unanswered::Armed);
+    }
+
     pub(super) async fn request_activity(&self) -> RequestActivity {
         let state = self.state.lock().await;
         RequestActivity {
@@ -918,29 +948,40 @@ impl SessionManager {
         envelope: Envelope,
         request: Option<String>,
     ) {
-        let Ok(conv) = self.conv(id) else {
+        let Some(conv) = self.queue_envelope(id, envelope, request).await else {
             return;
         };
+        // The request works again until the orchestrator has read it.
+        self.settle_requests(id).await;
+        self.kick(&conv);
+    }
+
+    /// Puts an envelope in the inbox without starting a turn (see [`Self::deliver_for`]): the
+    /// conversation, unless it is gone, archived or no longer takes the envelope's task.
+    pub(crate) async fn queue_envelope(
+        &self,
+        id: &ConversationId,
+        envelope: Envelope,
+        request: Option<String>,
+    ) -> Option<Arc<ConvLive>> {
+        let conv = self.conv(id).ok()?;
         if matches!(
             self.core.conversation(id).map(|c| c.lifecycle),
             Ok(Lifecycle::Archived)
         ) {
-            return;
+            return None;
         }
+        let mut state = conv.state.lock().await;
+        if envelope
+            .task_id
+            .as_ref()
+            .is_some_and(|task| state.withdrawn.contains(task))
         {
-            let mut state = conv.state.lock().await;
-            if envelope
-                .task_id
-                .as_ref()
-                .is_some_and(|task| state.withdrawn.contains(task))
-            {
-                return;
-            }
-            state.inbox.push((envelope, request));
+            return None;
         }
-        // The request works again until the orchestrator has read it.
-        self.settle_requests(id).await;
-        self.kick(&conv);
+        state.inbox.push((envelope, request));
+        drop(state);
+        Some(conv)
     }
 
     /// Starts the next turn if none runs and there is something to say.
@@ -1799,16 +1840,48 @@ impl SessionManager {
 
     /// A request is over: if the user saw no reply for it, the last one the narration filter
     /// hid goes into the thread after all, so an answer is never left empty. Its bookkeeping
-    /// goes with it.
-    pub(super) async fn release_narration(&self, conv: &ConvLive, request: &str) {
-        let narration = {
+    /// goes with it. A request done with nothing said at all after a worker was sent back
+    /// (the orchestrator waited for a report, then answered it with [`prompts::QUIET`]) asks
+    /// the orchestrator for its answer once, then says there was none.
+    pub(super) async fn release_narration(&self, conv: &Arc<ConvLive>, request: &str, done: bool) {
+        let (narration, unanswered) = {
             let mut state = conv.state.lock().await;
             let narration = state.narration.remove(request);
-            if state.spoke.remove(request) {
+            let spoke = state.spoke.remove(request);
+            if spoke || narration.is_some() || !done {
+                state.sent_back.remove(request);
+            }
+            if spoke {
                 return;
             }
-            narration
+            let unanswered = match state.sent_back.get_mut(request) {
+                Some(stage @ Unanswered::Armed) => {
+                    *stage = Unanswered::Checking;
+                    Some(Unanswered::Checking)
+                }
+                Some(Unanswered::Reminded) => state.sent_back.remove(request),
+                _ => None,
+            };
+            (narration, unanswered)
         };
+        match unanswered {
+            Some(Unanswered::Checking) => {
+                let (manager, conv, request) = (self.arc(), conv.clone(), request.to_owned());
+                self.spawn(async move {
+                    tokio::time::sleep(UNANSWERED_GRACE).await;
+                    manager.remind_unanswered(&conv, &request).await;
+                });
+            }
+            Some(_) => {
+                self.notice(
+                    &conv.id,
+                    brigadier_providers::NoticeLevel::Warning,
+                    "The orchestrator ended this request without an answer. Ask it again for one.",
+                )
+                .await;
+            }
+            None => {}
+        }
         let Some(narration) = narration else {
             return;
         };
@@ -1825,6 +1898,62 @@ impl SessionManager {
         {
             tracing::warn!(conversation = %conv.id, error = %err, "could not store a reply");
         }
+    }
+
+    /// A request still over with nothing said a while after it ended (see
+    /// [`Self::release_narration`]): the orchestrator is asked for its answer. One that works
+    /// again waits for its next end.
+    async fn remind_unanswered(&self, conv: &Arc<ConvLive>, request: &str) {
+        let over = self.core.board(&conv.id).await.ok().is_some_and(|board| {
+            board
+                .requests
+                .get(request)
+                .is_some_and(|of| of.state == RequestState::Done)
+        });
+        let archived = matches!(
+            self.core.conversation(&conv.id).map(|c| c.lifecycle),
+            Ok(Lifecycle::Archived)
+        );
+        {
+            let mut state = conv.state.lock().await;
+            if state.sent_back.get(request) != Some(&Unanswered::Checking) {
+                return;
+            }
+            if archived {
+                state.sent_back.remove(request);
+                return;
+            }
+            let carried = state
+                .inbox
+                .iter()
+                .any(|(_, of)| of.as_deref() == Some(request));
+            let running = state.busy && state.request.as_deref() == Some(request);
+            let stage = if !over || carried || running {
+                Unanswered::Armed
+            } else {
+                Unanswered::Reminded
+            };
+            state.sent_back.insert(request.to_owned(), stage);
+            if stage == Unanswered::Armed {
+                return;
+            }
+            state.inbox.push((
+                Envelope {
+                    kind: InjectionKind::Reminder,
+                    label: "no answer".into(),
+                    task_id: None,
+                    text: format!(
+                        "[Nothing runs for this request any more, and the user has seen no answer \
+                         to it. Answer them now: what the workers found or changed, and what is \
+                         left. Don't reply {}.]",
+                        prompts::QUIET
+                    ),
+                },
+                Some(request.to_owned()),
+            ));
+        }
+        // The turn it starts settles the request.
+        self.kick(conv);
     }
 
     async fn on_conversation_event(

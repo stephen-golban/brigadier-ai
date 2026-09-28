@@ -618,6 +618,7 @@ impl SessionManager {
             state.outputs = Some(outputs);
             state.redactor = redactor;
             state.busy = true;
+            state.nudged = false;
             state.stopping = false;
         }
         let manager = self.arc();
@@ -659,7 +660,9 @@ impl SessionManager {
                 files: Vec::new(),
             },
         )
-        .await
+        .await?;
+        self.sent_back(task).await;
+        Ok(())
     }
 
     async fn last_worker_native_id(&self, id: &TaskId) -> Option<String> {
@@ -1525,6 +1528,7 @@ impl SessionManager {
             artifacts.push(message);
         }
         let outputs = files.outputs;
+        let reviewing = task.kind == TaskKind::Review && self.review_in_landing(&task).await;
         let report = Report {
             summary: self.redact_for(&live, &input.summary).await,
             changes: input.changes.clone(),
@@ -1535,33 +1539,40 @@ impl SessionManager {
             artifacts,
             submitted_at_ms: now_ms(),
         };
-        let task = self
-            .update_task(conversation_id, task_id, |task| {
-                task.report = Some(report.clone());
-                task.outputs = outputs;
-                task.state = TaskState::Reported;
-                task.blocked_reason = None;
-            })
-            .await?;
+        let reported = |task: &mut Task| {
+            task.report = Some(report.clone());
+            task.outputs.clone_from(&outputs);
+            task.state = TaskState::Reported;
+            task.blocked_reason = None;
+        };
+        // The report is in the orchestrator's inbox before the task counts as reported, so
+        // its request never looks over in between.
+        let queued = if reviewing {
+            None
+        } else {
+            let mut shown = task.clone();
+            reported(&mut shown);
+            let envelope = Envelope {
+                kind: InjectionKind::Report,
+                label: format!("report task-{}", task.number),
+                task_id: Some(task.id.clone()),
+                text: prompts::report_envelope(&shown, &report, &route_label(&shown)),
+            };
+            let request = self.request_for(conversation_id, Some(task_id)).await;
+            self.queue_envelope(conversation_id, envelope, request)
+                .await
+        };
+        let task = self.update_task(conversation_id, task_id, reported).await?;
         live.state.lock().await.nudged = true;
         // A write task's claims are knowledge only once its work lands (see `landed`).
         if !task.kind.writes() {
             self.learn_report(&task, &report);
         }
-        if task.kind == TaskKind::Review && self.review_in_landing(&task).await {
+        if reviewing {
             self.review_reported(&task).await;
-        } else {
-            let route = route_label(&task);
-            self.deliver(
-                conversation_id,
-                Envelope {
-                    kind: InjectionKind::Report,
-                    label: format!("report task-{}", task.number),
-                    task_id: Some(task.id.clone()),
-                    text: prompts::report_envelope(&task, &report, &route),
-                },
-            )
-            .await;
+        } else if let Some(conv) = queued {
+            self.settle_requests(conversation_id).await;
+            self.kick(&conv);
         }
         Ok("Report received. Your part is done: end your turn now.".into())
     }
@@ -1685,33 +1696,58 @@ impl SessionManager {
             text: format!("Message from the orchestrator:\n{text}"),
             files: Vec::new(),
         };
+        // A worker still in the turn that reported is sent back all the same: its next
+        // report must be taken, and its end of turn must not finish the task. The task is
+        // reopened before that turn can end (the end waits for this lock).
+        let working = matches!(
+            task.state,
+            TaskState::Starting | TaskState::Running | TaskState::Blocked
+        );
         if state.busy {
             cli.session
                 .steer(input)
                 .await
                 .map_err(|err| Error::Provider(err.to_string()))?;
-            return Ok(format!("Sent to task-{} (it is working).", task.number));
+            if working {
+                return Ok(format!("Sent to task-{} (it is working).", task.number));
+            }
+        } else {
+            state.busy = true;
+            cli.session
+                .send(input)
+                .await
+                .map_err(|err| Error::Provider(err.to_string()))?;
         }
-        if task.state.is_final() {
-            return Err(Error::Invalid(format!("task-{} has ended", task.number)));
-        }
-        state.busy = true;
         state.nudged = false;
+        self.reopen_task(conversation_id, task).await?;
         drop(state);
-        cli.session
-            .send(input)
-            .await
-            .map_err(|err| Error::Provider(err.to_string()))?;
-        self.update_task(conversation_id, &task.id, |task| {
-            task.state = TaskState::Running;
-            task.candidate = None;
-            task.review = None;
-        })
-        .await?;
         Ok(format!(
             "task-{} is working on it; a new report will follow.",
             task.number
         ))
+    }
+
+    /// A reported task goes back to work: its candidate and review are void, and its request
+    /// works again until the new report is answered.
+    async fn reopen_task(&self, conversation_id: &ConversationId, task: &Task) -> Result<()> {
+        let task = self
+            .update_task(conversation_id, &task.id, |task| {
+                task.state = TaskState::Running;
+                task.candidate = None;
+                task.review = None;
+            })
+            .await?;
+        self.sent_back(&task).await;
+        Ok(())
+    }
+
+    /// Its request must not end without an answer the user sees.
+    async fn sent_back(&self, task: &Task) {
+        if let Some(request) = &task.request_id
+            && let Ok(conv) = self.conv(&task.conversation_id)
+        {
+            conv.sent_back(request).await;
+        }
     }
 
     /// Stops a worker for good (`stop_worker`, or the user's stop button). Unfinished changes

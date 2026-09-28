@@ -169,7 +169,11 @@ your checked-out branch (local checkout) or on the session branch `brigadier/<se
 a fast-forward only; if you switched branches, the tip moved unexpectedly or an untracked or
 ignored file would be overwritten, the task waits as "ready to land" and nothing changes.
 
-Workers report through `submit_report`; the orchestrator never sees their messages. Each worker
+Workers report through `submit_report`; the orchestrator never sees their messages. It can send
+a worker back to fix something (`message_worker`), even while the worker is still finishing
+the turn it reported in: the task reopens and its next report is taken. If an answer that sent a
+worker back ends with nothing said, Brigadier asks the orchestrator for it once, and says so in
+the thread if it still gives none. Each worker
 has an outputs folder in its scratch folder for files meant for the orchestrator or you (full
 findings, documents, generated images; a Codex worker's generated images are copied there as they
 are made). What it leaves there, and every file its report names or mentions by path, is stored
