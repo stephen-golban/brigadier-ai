@@ -452,6 +452,9 @@ const TOOL_DOING: Readonly<Record<string, string>> = {
   read_report: "Reading a report",
   read_artifact: "Reading a report",
   query_brain: "Checking the project notes",
+  search_transcript: "Looking back through the conversation",
+  // Remembering is silent by design.
+  remember: "Thinking",
   propose_plan: "Writing a plan",
   request_approval: "Asking for your approval",
   accept_task: "Accepting a worker's change",
