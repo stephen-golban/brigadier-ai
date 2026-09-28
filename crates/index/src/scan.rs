@@ -38,6 +38,20 @@ fn skip_name(path: &str) -> bool {
         || name.ends_with(".map")
 }
 
+/// Larger files keep their place in the tree but are not read.
+const MAX_FILE_BYTES: u64 = 1_048_576;
+
+/// The content hash the index records for a file at `path` holding `content`, or `None` for
+/// a file it does not read (see [`crate::content_hash`]).
+pub(crate) fn indexed_hash(path: &str, content: &[u8]) -> Option<String> {
+    (content.len() as u64 <= MAX_FILE_BYTES && !skip_name(path) && acceptable(content))
+        .then(|| hash_of(content))
+}
+
+fn hash_of(content: &[u8]) -> String {
+    blake3::hash(content).to_hex().to_string()
+}
+
 fn acceptable(content: &[u8]) -> bool {
     if content.iter().take(8192).any(|b| *b == 0) {
         return false;
@@ -59,6 +73,7 @@ struct Outcome {
     row: Option<FileRow>,
     changed: Option<FileChange>,
     skipped: bool,
+    touched: Option<db::Touched>,
 }
 
 impl CodeIndex {
@@ -213,7 +228,7 @@ impl CodeIndex {
                 scope.spawn(move || {
                     let mut parser = Parser::new();
                     while let Some(job) = queue.lock().ok().and_then(|mut q| q.pop_front()) {
-                        let excluded = job.size > 1_048_576 || skip_name(&job.path);
+                        let excluded = job.size > MAX_FILE_BYTES || skip_name(&job.path);
                         let bytes = if excluded {
                             None
                         } else {
@@ -221,12 +236,19 @@ impl CodeIndex {
                         };
                         let outcome = match bytes {
                             Some(bytes) if acceptable(&bytes) => {
-                                let hash = blake3::hash(&bytes).to_hex().to_string();
+                                let hash = hash_of(&bytes);
                                 if job.old_hash.as_deref() == Some(hash.as_str()) {
+                                    // Only its size or time moved: kept, so the next scan's
+                                    // fast path skips it again.
                                     Outcome {
                                         row: None,
                                         changed: None,
                                         skipped: false,
+                                        touched: Some(db::Touched {
+                                            path: job.path,
+                                            size: job.size,
+                                            mtime_ns: job.mtime_ns,
+                                        }),
                                     }
                                 } else {
                                     let detected = parse::language(&job.path);
@@ -249,6 +271,7 @@ impl CodeIndex {
                                         }),
                                         changed: Some(change),
                                         skipped: false,
+                                        touched: None,
                                     }
                                 }
                             }
@@ -272,6 +295,7 @@ impl CodeIndex {
                                     }),
                                     changed,
                                     skipped: true,
+                                    touched: None,
                                 }
                             }
                         };
@@ -283,6 +307,7 @@ impl CodeIndex {
             }
             drop(tx);
             let mut batch = Vec::with_capacity(256);
+            let mut touched = Vec::new();
             for outcome in rx {
                 done += 1;
                 if outcome.skipped {
@@ -293,6 +318,12 @@ impl CodeIndex {
                 }
                 if let Some(row) = outcome.row {
                     batch.push(row);
+                }
+                if let Some(file) = outcome.touched {
+                    touched.push(file);
+                }
+                if touched.len() >= 2_048 {
+                    db::send_touch(&self.inner.writer, std::mem::take(&mut touched))?;
                 }
                 if batch.len() >= 256 {
                     db::send_apply(&self.inner.writer, std::mem::take(&mut batch), Vec::new())?;
@@ -305,6 +336,9 @@ impl CodeIndex {
                         total: total.load(Ordering::Relaxed),
                     };
                 }
+            }
+            if !touched.is_empty() {
+                db::send_touch(&self.inner.writer, touched)?;
             }
             db::send_apply(&self.inner.writer, batch, removed.clone())
         })?;

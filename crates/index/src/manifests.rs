@@ -154,23 +154,39 @@ pub fn extract(path: &str, text: &str) -> (Option<Manifest>, Vec<Script>, Vec<Se
             m.name = text
                 .lines()
                 .find_map(|l| l.trim().strip_prefix("module ").map(str::to_owned));
+            // `require x v1` or a `require ( … )` block; `replace`, `exclude` and `retract`
+            // (single or in blocks) name no dependencies of their own.
+            let mut block: Option<&str> = None;
             for line in text.lines() {
-                let l = line.trim();
-                if let Some(rest) = l.strip_prefix("require ").or_else(|| {
-                    if l.starts_with(|c: char| c.is_ascii_alphabetic()) && l.contains(" v") {
-                        Some(l)
-                    } else {
+                let l = line.split("//").next().unwrap_or_default().trim();
+                if l.is_empty() {
+                    continue;
+                }
+                let required = match block {
+                    Some(_) if l == ")" => {
+                        block = None;
                         None
                     }
-                }) {
-                    let mut p = rest.split_whitespace();
-                    if let Some(n) = p.next() {
-                        m.dependencies.push(Dependency {
-                            name: n.into(),
-                            requirement: p.next().map(str::to_owned),
-                            dev: false,
-                        });
+                    Some(directive) => (directive == "require").then_some(l),
+                    None => {
+                        let (directive, rest) =
+                            l.split_once(char::is_whitespace).unwrap_or((l, ""));
+                        let rest = rest.trim();
+                        if rest == "(" {
+                            block = Some(directive);
+                            None
+                        } else {
+                            (directive == "require").then_some(rest)
+                        }
                     }
+                };
+                let mut p = required.unwrap_or_default().split_whitespace();
+                if let Some(n) = p.next() {
+                    m.dependencies.push(Dependency {
+                        name: n.into(),
+                        requirement: p.next().map(str::to_owned),
+                        dev: false,
+                    });
                 }
             }
             Some(m)
@@ -196,8 +212,8 @@ pub fn extract(path: &str, text: &str) -> (Option<Manifest>, Vec<Script>, Vec<Se
         }
         "pom.xml" => {
             let mut m = base(path, "maven");
-            m.name = xml_tag(text, "artifactId");
-            m.version = xml_tag(text, "version");
+            m.name = xml_child(text, "artifactId");
+            m.version = xml_child(text, "version");
             Some(m)
         }
         "build.gradle" | "build.gradle.kts" => {
@@ -426,11 +442,35 @@ fn deps_json(m: &mut Manifest, v: Option<&serde_json::Value>, dev: bool) {
         }
     }
 }
-fn xml_tag(text: &str, tag: &str) -> Option<String> {
-    let start = format!("<{tag}>");
-    let end = format!("</{tag}>");
-    text.split_once(&start)?
-        .1
-        .split_once(&end)
-        .map(|x| x.0.trim().into())
+/// The text of `tag` directly inside the document's root element: a POM's own `artifactId`,
+/// not its `<parent>`'s or a dependency's.
+fn xml_child(text: &str, tag: &str) -> Option<String> {
+    let mut depth = 0usize;
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.split_once("-->").map_or("", |(_, after)| after);
+            continue;
+        }
+        let end = rest.find('>')?;
+        let inner = &rest[1..end];
+        rest = &rest[end + 1..];
+        if inner.starts_with(['?', '!']) || inner.ends_with('/') {
+            continue;
+        }
+        if inner.starts_with('/') {
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        let name = inner.split(char::is_whitespace).next().unwrap_or_default();
+        if depth == 1 && name == tag {
+            return rest
+                .split_once('<')
+                .map(|(value, _)| value.trim().to_owned())
+                .filter(|value| !value.is_empty());
+        }
+        depth += 1;
+    }
+    None
 }

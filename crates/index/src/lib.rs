@@ -33,6 +33,14 @@ use ts_rs::TS;
 
 pub use helper::{ScanHelper, scan_helper_main};
 
+/// The content hash the index records, and [`CodeIndex::file_hashes`] reports, for a file at
+/// the repository-relative `path` holding `content`: `None` for a file the index does not read
+/// (too large, binary, minified or a lockfile). For content not on disk yet, such as a file as
+/// a commit left it.
+pub fn content_hash(path: &str, content: &[u8]) -> Option<String> {
+    scan::indexed_hash(path, content)
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]

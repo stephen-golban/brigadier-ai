@@ -83,6 +83,20 @@ fn fts_expression(needle: &str, fuzzy: bool) -> String {
     grams.join(" OR ")
 }
 
+/// `text` inside a `LIKE … ESCAPE '\'` pattern: `%` and `_` match only themselves.
+fn like_literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// SQL that holds when `column` is the folder (or file) in parameter `?n`, or inside it; the
+/// empty folder is the repository root. Compared as text, so `_` and `%` are literal and
+/// `src` doesn't take in `src-old/`.
+fn under_folder(column: &str, n: u8) -> String {
+    format!("(?{n} = '' OR {column} = ?{n} OR substr({column}, 1, length(?{n}) + 1) = ?{n} || '/')")
+}
+
 fn distance(a: &str, b: &str) -> u32 {
     let (a, b) = (a.to_lowercase(), b.to_lowercase());
     let b: Vec<char> = b.chars().collect();
@@ -107,6 +121,12 @@ pub fn search(conn: &Connection, query: &CodeQuery) -> Result<Vec<CodeHit>> {
         return Ok(Vec::new());
     }
     let limit = query.limit.unwrap_or(30).clamp(1, 200) as usize;
+    // The folder (or file) the search is limited to; the root means no limit.
+    let folder = query
+        .path
+        .as_deref()
+        .map(|path| path.trim().trim_start_matches("./").trim_end_matches('/'))
+        .filter(|path| !path.is_empty());
     let mut hits = Vec::<(u32, u32, String, CodeHit)>::new();
     if query.kind != SearchKind::File {
         let long = needle.chars().count() >= 3;
@@ -114,30 +134,30 @@ pub fn search(conn: &Connection, query: &CodeQuery) -> Result<Vec<CodeHit>> {
             if fuzzy && (!long || hits.len() >= limit) {
                 break;
             }
-            let sql = if long {
-                "SELECT s.name,s.kind,s.file,s.line,s.end_line,s.signature,s.doc,f.lang FROM symbol_fts JOIN symbols s ON s.rowid=symbol_fts.rowid JOIN files f ON f.path=s.file WHERE symbol_fts MATCH ?1 LIMIT 2000"
+            let matches = if long {
+                "symbol_fts JOIN symbols s ON s.rowid=symbol_fts.rowid JOIN files f ON f.path=s.file WHERE symbol_fts MATCH ?1"
             } else {
-                "SELECT s.name,s.kind,s.file,s.line,s.end_line,s.signature,s.doc,f.lang FROM symbols s JOIN files f ON f.path=s.file WHERE s.is_def=1 AND s.name LIKE ?1 LIMIT 2000"
+                "symbols s JOIN files f ON f.path=s.file WHERE s.is_def=1 AND s.name LIKE ?1 ESCAPE '\\'"
             };
+            // Filtered before the limit, so a match past the first candidates still counts.
+            let sql = format!(
+                "SELECT s.name,s.kind,s.file,s.line,s.end_line,s.signature,s.doc,f.lang FROM {matches} AND (?2 IS NULL OR f.lang=?2) AND (?3 IS NULL OR {}) LIMIT 2000",
+                under_folder("s.file", 3)
+            );
             let pattern = if long {
                 fts_expression(needle, fuzzy)
             } else {
-                format!("%{needle}%")
+                format!("%{}%", like_literal(needle))
             };
             if pattern.is_empty() {
                 continue;
             }
-            let mut stmt = conn.prepare(sql).map_err(err)?;
+            let mut stmt = conn.prepare(&sql).map_err(err)?;
             let rows = stmt
-                .query_map([pattern], |r| Ok((symbol(r)?, r.get::<_, String>(7)?)))
+                .query_map(params![pattern, query.language, folder], symbol)
                 .map_err(err)?;
             for row in rows {
-                let (s, lang) = row.map_err(err)?;
-                if query.language.as_ref().is_some_and(|v| v != &lang)
-                    || query.path.as_ref().is_some_and(|p| !s.path.starts_with(p))
-                {
-                    continue;
-                }
+                let s = row.map_err(err)?;
                 let rank = rank(needle, &s.name);
                 if fuzzy && rank < 3 {
                     continue;
@@ -157,22 +177,26 @@ pub fn search(conn: &Connection, query: &CodeQuery) -> Result<Vec<CodeHit>> {
             if fuzzy && (!long || hits.len() >= limit) {
                 break;
             }
-            let sql = if long {
-                "SELECT f.path,f.lang,f.size FROM file_fts JOIN files f ON f.rowid=file_fts.rowid WHERE file_fts MATCH ?1 LIMIT 2000"
+            let matches = if long {
+                "file_fts JOIN files f ON f.rowid=file_fts.rowid WHERE file_fts MATCH ?1"
             } else {
-                "SELECT path,lang,size FROM files WHERE path LIKE ?1 LIMIT 2000"
+                "files f WHERE f.path LIKE ?1 ESCAPE '\\'"
             };
+            let sql = format!(
+                "SELECT f.path,f.lang,f.size FROM {matches} AND (?2 IS NULL OR f.lang=?2) AND (?3 IS NULL OR {}) LIMIT 2000",
+                under_folder("f.path", 3)
+            );
             let pattern = if long {
                 fts_expression(needle, fuzzy)
             } else {
-                format!("%{needle}%")
+                format!("%{}%", like_literal(needle))
             };
             if pattern.is_empty() {
                 continue;
             }
-            let mut stmt = conn.prepare(sql).map_err(err)?;
+            let mut stmt = conn.prepare(&sql).map_err(err)?;
             let rows = stmt
-                .query_map([pattern], |r| {
+                .query_map(params![pattern, query.language, folder], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -182,11 +206,6 @@ pub fn search(conn: &Connection, query: &CodeQuery) -> Result<Vec<CodeHit>> {
                 .map_err(err)?;
             for row in rows {
                 let (path, language, bytes) = row.map_err(err)?;
-                if query.language.as_ref().is_some_and(|v| v != &language)
-                    || query.path.as_ref().is_some_and(|p| !path.starts_with(p))
-                {
-                    continue;
-                }
                 let rank = rank(needle, &path);
                 if fuzzy && rank < 3 {
                     continue;
@@ -312,18 +331,14 @@ pub fn project_map(conn: &Connection) -> Result<ProjectMap> {
     for m in &map.manifests {
         let Some(name) = &m.name else { continue };
         let folder = m.path.rsplit_once('/').map(|x| x.0).unwrap_or("");
-        let pattern = if folder.is_empty() {
-            "%".to_owned()
-        } else {
-            format!("{folder}/%")
-        };
         let mut stmt = conn
-            .prepare(
-                "SELECT lang,count(*) FROM files WHERE path LIKE ?1 GROUP BY lang ORDER BY lang",
-            )
+            .prepare(&format!(
+                "SELECT lang,count(*) FROM files WHERE {} GROUP BY lang ORDER BY lang",
+                under_folder("path", 1)
+            ))
             .map_err(err)?;
         let languages = stmt
-            .query_map([pattern], |r| {
+            .query_map([folder], |r| {
                 Ok(LanguageCount {
                     language: r.get(0)?,
                     files: r.get::<_, i64>(1)? as u64,

@@ -35,6 +35,11 @@ pub enum Command {
     Popular {
         reply: Sender<Result<()>>,
     },
+    /// Files read again whose content had not changed: only their size and time moved.
+    Touch {
+        files: Vec<Touched>,
+        reply: Sender<Result<()>>,
+    },
     Metadata {
         manifests: Vec<(String, String)>,
         scripts: Vec<(String, String, String)>,
@@ -100,6 +105,9 @@ pub fn open(path: &Path) -> Result<(Sender<Command>, Vec<std::sync::Mutex<Connec
                     let result = connection.execute_batch("DELETE FROM popular; INSERT INTO popular(name,file,refs) SELECT s.name,s.file,c.n FROM symbols s JOIN (SELECT name,count(*) AS n FROM symbols WHERE is_def=0 GROUP BY name) c ON c.name=s.name WHERE s.is_def=1 ORDER BY c.n DESC LIMIT 2000;").map_err(db_error);
                     let _=reply.send(result);
                 }
+                Command::Touch { files, reply } => {
+                        let _ = reply.send(touch(&mut connection, files));
+                    }
                 Command::Metadata {
                         manifests,
                         scripts,
@@ -123,6 +131,24 @@ pub fn open(path: &Path) -> Result<(Sender<Command>, Vec<std::sync::Mutex<Connec
         reads.push(std::sync::Mutex::new(conn));
     }
     Ok((tx, reads))
+}
+
+/// A file whose size or time changed but not its content.
+pub struct Touched {
+    pub path: String,
+    pub size: u64,
+    pub mtime_ns: i64,
+}
+
+fn touch(conn: &mut Connection, files: Vec<Touched>) -> Result<()> {
+    let tx = conn.transaction().map_err(db_error)?;
+    for file in &files {
+        tx.prepare_cached("UPDATE files SET size=?2, mtime_ns=?3 WHERE path=?1")
+            .map_err(db_error)?
+            .execute(params![file.path, file.size as i64, file.mtime_ns])
+            .map_err(db_error)?;
+    }
+    tx.commit().map_err(db_error)
 }
 
 fn apply(conn: &mut Connection, files: Vec<FileRow>, removed: Vec<String>) -> Result<()> {
@@ -274,6 +300,14 @@ pub fn send_clear(sender: &Sender<Command>) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     sender
         .send(Command::Clear { reply: tx })
+        .map_err(|_| Error::Closed)?;
+    rx.recv().map_err(|_| Error::Closed)?
+}
+
+pub fn send_touch(sender: &Sender<Command>, files: Vec<Touched>) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    sender
+        .send(Command::Touch { files, reply: tx })
         .map_err(|_| Error::Closed)?;
     rx.recv().map_err(|_| Error::Closed)?
 }
