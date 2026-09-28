@@ -145,6 +145,11 @@ impl Pending {
                 if protocol != PROTOCOL_VERSION {
                     return Err(Error::Unauthorized("unsupported protocol version"));
                 }
+                if peer_confined(&stream) {
+                    return Err(Error::Unauthorized(
+                        "a sandboxed process presented the token",
+                    ));
+                }
                 Ok(Accepted::Client {
                     connection: Connection::new(stream),
                     client,
@@ -186,6 +191,23 @@ impl GateCheck {
         self.stream.flush().await?;
         Ok(())
     }
+}
+
+/// Whether the peer runs in an OS sandbox this daemon is not in (see
+/// [`brigadier_sandbox::peer_confined`]): the token alone never lets a confined CLI session
+/// act as the app.
+#[cfg(unix)]
+fn peer_confined(stream: &Stream) -> bool {
+    use std::os::fd::AsFd as _;
+    match stream {
+        Stream::UdSocket(socket) => brigadier_sandbox::peer_confined(socket.as_fd()),
+    }
+}
+
+/// Named pipes admit only the current user; Windows sandboxing is not built yet.
+#[cfg(windows)]
+fn peer_confined(_stream: &Stream) -> bool {
+    false
 }
 
 /// Reads one length-prefixed frame straight from the stream, without read-ahead.

@@ -196,6 +196,66 @@ fn child_pids(pid: u32) -> Vec<u32> {
     }
 }
 
+/// The kernel's `audit_token_t`: who a process is, fixed for its lifetime (unlike a pid).
+#[repr(C)]
+struct AuditToken {
+    val: [u32; 8],
+}
+
+// libsystem_sandbox. With no operation, both ask whether the process is sandboxed at all
+// (1 when it is). Declared in its private header; stable since macOS 10.7 and 10.9.
+#[allow(unsafe_code)]
+unsafe extern "C" {
+    fn sandbox_check(
+        pid: libc::pid_t,
+        operation: *const libc::c_char,
+        filter: libc::c_int,
+        ...
+    ) -> libc::c_int;
+    fn sandbox_check_by_audit_token(
+        token: AuditToken,
+        operation: *const libc::c_char,
+        filter: libc::c_int,
+        ...
+    ) -> libc::c_int;
+}
+
+/// `SANDBOX_FILTER_NONE`: the check names no path or service.
+const SANDBOX_FILTER_NONE: libc::c_int = 0;
+
+/// See [`crate::peer_confined`]. The peer is named by the audit token the kernel recorded when
+/// it connected, so a pid reused since cannot stand in for it.
+pub(crate) fn peer_confined(socket: std::os::fd::BorrowedFd<'_>) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut token = AuditToken { val: [0; 8] };
+    let mut len = std::mem::size_of::<AuditToken>() as libc::socklen_t;
+    // SAFETY: `token` is a writable buffer of `len` bytes, which is what LOCAL_PEERTOKEN
+    // fills; the result and the length written are checked before the token is used.
+    #[allow(unsafe_code)]
+    let read = unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERTOKEN,
+            (&raw mut token).cast(),
+            &mut len,
+        )
+    };
+    if read != 0 || len as usize != std::mem::size_of::<AuditToken>() {
+        return false;
+    }
+    // SAFETY: plain queries with a null operation and no variadic arguments, as documented for
+    // SANDBOX_FILTER_NONE; they read nothing but their arguments.
+    #[allow(unsafe_code)]
+    let (peer, own) = unsafe {
+        (
+            sandbox_check_by_audit_token(token, std::ptr::null(), SANDBOX_FILTER_NONE),
+            sandbox_check(libc::getpid(), std::ptr::null(), SANDBOX_FILTER_NONE),
+        )
+    };
+    peer == 1 && own != 1
+}
+
 struct Keychain;
 
 /// `errSecItemNotFound`

@@ -252,7 +252,10 @@ Claude's sandbox lets network traffic out only as HTTP(S) through its proxy, so 
   jobs), which get a Codex permission profile denying it; a Brain job never runs on Codex
   without one. A Codex worker that writes in a worktree keeps Codex's older sandbox, which
   cannot deny reads (a permission profile there would make Codex trust your checkout in
-  `~/.codex/config.toml`), so a hostile one could read the token and act as the UI.
+  `~/.codex/config.toml`), so a hostile one can read the token. It still cannot act as the UI
+  on macOS: the daemon refuses the token from any sandboxed process (it asks the kernel who
+  connected), unless the daemon runs in a sandbox itself. On Linux and Windows, whose worker
+  sandbox is not built yet, nothing refuses it.
 - A process that detaches and moves out of Brigadier's folders escapes the cleanup.
 - A Codex orchestrator runs read-only with every approval declined. It still has: exec
   (JavaScript in an isolate that can only call its tools), `apply_patch` (each patch is an

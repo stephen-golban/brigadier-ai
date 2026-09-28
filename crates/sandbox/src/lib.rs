@@ -174,6 +174,24 @@ pub fn native(options: PlatformOptions) -> Result<Arc<dyn Platform>> {
     return Ok(Arc::new(windows::Windows::new(paths)));
 }
 
+/// Whether the process at the other end of a connected local socket runs inside an OS sandbox
+/// while this process does not: a confined CLI session (a worker, a Brain job), which may
+/// never act as the app, even if it managed to read the IPC token (a Codex worker in a
+/// worktree keeps a sandbox that cannot deny reads). A daemon that is itself sandboxed (one
+/// started from inside another Brigadier's worker) accepts its sandboxed app.
+///
+/// Only macOS can tell; elsewhere, or when the socket's peer cannot be read, `false`.
+#[cfg(unix)]
+pub fn peer_confined(socket: std::os::fd::BorrowedFd<'_>) -> bool {
+    #[cfg(target_os = "macos")]
+    return macos::peer_confined(socket);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = socket;
+        false
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn unsupported<T>(what: &'static str, platform: &'static str) -> Result<T> {
     Err(Error::Unsupported { what, platform })
