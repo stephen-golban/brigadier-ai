@@ -104,6 +104,9 @@ pub(crate) struct TaskLive {
     pub id: TaskId,
     pub conversation_id: ConversationId,
     state: tokio::sync::Mutex<TaskLiveState>,
+    /// Held while the worker's report is recorded and while it is stopped, so a stop and a
+    /// report never both take effect.
+    settle: tokio::sync::Mutex<()>,
 }
 
 impl TaskLive {
@@ -112,6 +115,7 @@ impl TaskLive {
             id,
             conversation_id,
             state: tokio::sync::Mutex::new(TaskLiveState::default()),
+            settle: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -1545,6 +1549,12 @@ impl SessionManager {
             task.state = TaskState::Reported;
             task.blocked_reason = None;
         };
+        let settled = live.settle.lock().await;
+        // Stopped while its report was being stored: the stop stands.
+        let task = self.task_by_id(conversation_id, task_id).await?;
+        if task.state.is_final() {
+            return Err(Error::Invalid("the task has already ended".into()));
+        }
         // The report is in the orchestrator's inbox before the task counts as reported, so
         // its request never looks over in between.
         let queued = if reviewing {
@@ -1563,6 +1573,7 @@ impl SessionManager {
                 .await
         };
         let task = self.update_task(conversation_id, task_id, reported).await?;
+        drop(settled);
         live.state.lock().await.nudged = true;
         // A write task's claims are knowledge only once its work lands (see `landed`).
         if !task.kind.writes() {
@@ -1754,14 +1765,32 @@ impl SessionManager {
     /// are kept on the task branch as a WIP commit.
     pub async fn stop_task(&self, task_id: TaskId) -> Result<()> {
         let conversation_id = self.conversation_of_task(&task_id).await?;
+        let live = self.existing_task_live(&task_id);
+        // A report being recorded right now is recorded first (or not at all).
+        let settled = match &live {
+            Some(live) => Some(live.settle.lock().await),
+            None => None,
+        };
         let task = self.task_by_id(&conversation_id, &task_id).await?;
         if task.state.is_final() {
             return Ok(());
         }
-        if let Some(live) = self.existing_task_live(&task_id) {
+        // A reviewer that gave its verdict already has its outcome under way (a landing).
+        let reviewing = task.kind == TaskKind::Review
+            && task.report.is_none()
+            && self.review_in_landing(&task).await;
+        if let Some(live) = &live {
             live.close_cli().await;
         }
         self.dispose_task(&task, TaskState::Stopped).await;
+        drop(settled);
+        // A landing's or plan's reviewer stopped before its verdict releases what it was
+        // reviewing, as one that failed does: otherwise it would wait for a verdict that never
+        // comes.
+        if reviewing {
+            self.review_failed(&task, "It was stopped before it gave a verdict.")
+                .await;
+        }
         Ok(())
     }
 

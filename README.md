@@ -167,7 +167,9 @@ write task is reviewed by the other vendor, then lands as one commit (with your 
 your checked-out branch (local checkout) or on the session branch `brigadier/<session>/session`
 (new worktree), which lands on its base when the session finishes. Landing into your checkout is
 a fast-forward only; if you switched branches, the tip moved unexpectedly or an untracked or
-ignored file would be overwritten, the task waits as "ready to land" and nothing changes.
+ignored file would be overwritten, the task waits as "ready to land" and nothing changes. A
+review that fails or is stopped lands nothing: the task goes back to reported, and the
+orchestrator is told so it can accept it again.
 
 Workers report through `submit_report`; the orchestrator never sees their messages. It can send
 a worker back to fix something (`message_worker`), even while the worker is still finishing
