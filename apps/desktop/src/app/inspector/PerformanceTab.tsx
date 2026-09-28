@@ -26,6 +26,9 @@ function useUiPerf(): UiPerf {
   return perf;
 }
 
+/** The repository size the static index budget is stated for (PLAN.md §4). */
+const STATIC_INDEX_FILES = 100_000;
+
 type Evaluation = {
   measured: string;
   status: "pass" | "fail" | "pending" | "na";
@@ -95,6 +98,33 @@ function evaluate(
             `p95 ${formatMs(metrics.schedulerDelay.p95Ms)} over ${metrics.schedulerDelay.samples} heartbeats`,
           )
         : judge(null, "");
+    case "brainQuery": {
+      const query = metrics?.brain.query;
+      if (!query) return judge(null, "");
+      if (query.samples === 0) {
+        return { measured: "—", status: "na", detail: "no query_brain calls yet" };
+      }
+      return judge(
+        query.p95Ms,
+        formatMs(query.p95Ms),
+        `${query.samples} query_brain calls, max ${formatMs(query.maxMs)}`,
+      );
+    }
+    case "staticIndex": {
+      if (!metrics) return judge(null, "");
+      const run = metrics.brain.largestIndexRun;
+      if (!run) return { measured: "—", status: "na", detail: "no full index scan yet" };
+      const scanned = `${run.files.toLocaleString()} files in ${formatMs(run.durationMs)}`;
+      // The budget speaks of a 100k-file repo; a smaller scan says nothing about it.
+      if (run.files < STATIC_INDEX_FILES) {
+        return {
+          measured: formatMs(run.durationMs),
+          status: "na",
+          detail: `largest scan: ${scanned}, under ${STATIC_INDEX_FILES.toLocaleString()} files`,
+        };
+      }
+      return judge(run.durationMs, formatMs(run.durationMs), `largest scan: ${scanned}`);
+    }
     default:
       return { measured: "—", status: "pending", detail: "not measured" };
   }
@@ -193,6 +223,9 @@ function DaemonDetails({ metrics }: { metrics: DaemonMetrics | null }) {
         <Detail label="Last batch">{store.lastBatchCommands} commands</Detail>
         <Detail label="WAL size">{formatBytes(store.walBytes)}</Detail>
         <Detail label="Checkpoints">{store.checkpoints}</Detail>
+        <Detail label="Embedding model">
+          {metrics.brain.embedderLoaded ? "loaded" : "not loaded"}
+        </Detail>
       </dl>
     </section>
   );
