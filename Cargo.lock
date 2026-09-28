@@ -377,6 +377,7 @@ name = "brigadier-brain"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "rusqlite_migration",
  "safetensors",
  "serde",
  "serde_json",
