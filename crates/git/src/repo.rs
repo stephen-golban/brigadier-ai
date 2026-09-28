@@ -489,6 +489,28 @@ impl Repo {
         Ok((files, truncated))
     }
 
+    /// A repo-relative file's content as `commit` has it; `None` when the commit has no such
+    /// file (deleted, never added, or a folder).
+    pub fn file_at(&self, commit: &Oid, path: &str) -> Result<Option<Vec<u8>>> {
+        valid_oid(commit)?;
+        valid_path(path)?;
+        let listed = self.cmd(&["ls-tree", "-z", &commit.0, "--", path], true)?;
+        // `<mode> <type> <object>\t<path>`
+        let entry = listed.split(|byte| *byte == 0).next().unwrap_or_default();
+        let fields: Vec<&[u8]> = entry
+            .split(|byte| *byte == b'\t')
+            .next()
+            .unwrap_or_default()
+            .split(|byte| *byte == b' ')
+            .collect();
+        let [_, b"blob", object] = fields.as_slice() else {
+            return Ok(None);
+        };
+        let object = Oid(String::from_utf8_lossy(object).into_owned());
+        valid_oid(&object)?;
+        self.cmd(&["cat-file", "blob", &object.0], true).map(Some)
+    }
+
     /// Whether a repo-relative file is ignored (tracked files are not ignored).
     pub fn is_ignored(&self, path: &str) -> Result<bool> {
         valid_path(path)?;
