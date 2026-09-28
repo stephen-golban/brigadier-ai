@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const binariesDir = resolve(here, "../src-tauri/binaries");
+// Where cargo puts its output: CARGO_TARGET_DIR (relative to the repo, where cargo runs) or target/.
+const targetDir = resolve(repoRoot, process.env.CARGO_TARGET_DIR || "target");
 const name = "brigadierd";
 
 const args = process.argv.slice(2);
@@ -48,7 +50,7 @@ function build(triple) {
   if (crossTarget) cargoArgs.push("--target", triple);
   run("cargo", cargoArgs);
   const exe = triple.includes("windows") ? ".exe" : "";
-  return join(repoRoot, "target", crossTarget ? triple : "", profile, `${name}${exe}`);
+  return join(targetDir, crossTarget ? triple : "", profile, `${name}${exe}`);
 }
 
 function stage(source, triple) {
