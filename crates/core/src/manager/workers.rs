@@ -589,6 +589,7 @@ impl SessionManager {
             record_to: None,
             redactor: redactor.clone(),
             owned_cwd: true,
+            auto_compact: true,
         };
         let Started { session, events } =
             match self.runtime.start_hosted(&owner, provider, spec).await {

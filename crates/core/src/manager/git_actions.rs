@@ -190,6 +190,7 @@ impl SessionManager {
             record_to: None,
             redactor: None,
             owned_cwd: true,
+            auto_compact: true,
         };
         let shown: String = patch.chars().take(PATCH_CHARS).collect();
         let cut = if shown.len() < patch.len() {

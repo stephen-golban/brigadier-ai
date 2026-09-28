@@ -620,6 +620,10 @@ pub struct SessionSpec {
     /// undo what the CLI persists about that exact folder in the user's own configuration
     /// (Codex's project trust entry). Raw sessions in the user's folders are never owned.
     pub owned_cwd: bool,
+    /// The CLI may compact its context on its own as it fills up. Off for orchestrators,
+    /// which are reborn instead (PLAN.md §2): Claude's auto-compact is switched off; Codex's
+    /// cannot be, so its limit is raised as far as Codex allows (90% of the window).
+    pub auto_compact: bool,
 }
 
 /// Something a session created that must be removed when it is disposed of. Recorded in the

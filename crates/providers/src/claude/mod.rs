@@ -631,6 +631,9 @@ impl Provider for Claude {
                 };
                 env.push(("CLAUDE_CODE_TMPDIR".into(), dir));
             }
+            if !spec.auto_compact {
+                env.push(("DISABLE_AUTO_COMPACT".into(), "1".into()));
+            }
             crate::cli::apply_session_env(&mut process_spec, &env, &spec.path_prepend);
             let process::Spawned { process, stdout } = process::spawn(
                 self.platform.clone(),

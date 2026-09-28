@@ -39,6 +39,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::SessionManager;
 use super::prompts;
+use super::rebirth::{self, BriefingPlan, RebirthPrep};
+use crate::knowledge::RebirthTrigger;
 use crate::model::{
     ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Mention, Message,
     MessageRole, ModelChoice, Notice, Setup, streams,
@@ -154,6 +156,14 @@ struct ConvState {
     /// The compaction running now (a Chat's).
     compaction: Option<Compaction>,
     last_activity_ms: i64,
+    /// The context the CLI last reported: tokens used, and its model's window.
+    context: Option<(i64, Option<i64>)>,
+    /// An orchestrator's rebirth being prepared (its handoff note is being written).
+    rebirth: Option<Arc<RebirthPrep>>,
+    /// The next CLI session starts fresh, not resuming the last one.
+    fresh: bool,
+    /// The next orchestrator CLI session starts from this briefing.
+    briefing: Option<BriefingPlan>,
 }
 
 /// A conversation's live state.
@@ -936,6 +946,9 @@ impl SessionManager {
 
     async fn next_turn(self: Arc<Self>, conv: Arc<ConvLive>) {
         self.retire_changed_cli(&conv).await;
+        if conv.kind == ConversationKind::Session {
+            self.rebirth_if_ready(&conv).await;
+        }
         let session = conv.kind == ConversationKind::Session;
         // A session's queued message goes once the requests have settled (no answer works).
         let mut sent_queued = false;
@@ -1025,14 +1038,56 @@ impl SessionManager {
                 return;
             }
         };
-        let reseed = std::mem::take(&mut conv.state.lock().await.reseed);
+        let (reseed, briefing) = {
+            let mut state = conv.state.lock().await;
+            let reseed = std::mem::take(&mut state.reseed);
+            let briefing = state.briefing.take();
+            // A session that cannot resume its CLI starts from a Recovery briefing.
+            let briefing = briefing.or_else(|| {
+                (reseed && session).then(|| BriefingPlan {
+                    trigger: RebirthTrigger::Recovery,
+                    prep: None,
+                    at_tokens: state.context.map_or(0, |(used, _)| used),
+                    window: state.context.and_then(|(_, window)| window),
+                })
+            });
+            (reseed, briefing)
+        };
         let notes = self
             .request_notes(&conv.id, &envelopes, request.as_deref())
             .await;
         let mut input = self
             .turn_input(&conv, &users, &[user_notes, notes.clone()].concat())
             .await;
-        if reseed {
+        if let Some(plan) = briefing {
+            let (text, mut record) = self
+                .briefing(
+                    &conv.id,
+                    cli.provider,
+                    cli.model.model.clone(),
+                    &plan,
+                    &users,
+                )
+                .await;
+            record.new_native_id = Some(cli.session.native_id());
+            self.log_injection(
+                &conv.id,
+                InjectionKind::Briefing,
+                format!("briefing (rebirth {})", record.generation),
+                None,
+                text.len(),
+            )
+            .await;
+            input.text = format!("{text}\n\n{}", input.text);
+            tracing::info!(conversation = %conv.id, generation = record.generation, tokens = record.briefing_tokens, trigger = ?record.trigger, "orchestrator reborn");
+            self.log_orchestrator(
+                &conv.id,
+                OrchestratorEntry::Rebirth {
+                    record: Box::new(record),
+                },
+            )
+            .await;
+        } else if reseed {
             let transcript = self.reseed_text(&conv.id, &users).await;
             if !transcript.is_empty() {
                 self.log_injection(
@@ -1210,8 +1265,13 @@ impl SessionManager {
         };
 
         let grant_redactor = super::secrets::redactor(grant_values);
-        let resume = self.last_native_id(&conv.id, choice.provider).await;
-        let reseed_needed = resume.is_none() && self.has_history(&conv.id).await;
+        let fresh = std::mem::take(&mut conv.state.lock().await.fresh);
+        let resume = if fresh {
+            None
+        } else {
+            self.last_native_id(&conv.id, choice.provider).await
+        };
+        let reseed_needed = !fresh && resume.is_none() && self.has_history(&conv.id).await;
         let mut spec = SessionSpec {
             cwd: dir.clone(),
             model: choice.model.clone(),
@@ -1235,6 +1295,8 @@ impl SessionManager {
             record_to: None,
             redactor: grant_redactor.clone(),
             owned_cwd: true,
+            // An orchestrator is reborn, never compacted.
+            auto_compact: conv.kind == ConversationKind::Chat,
         };
         let started = match self
             .runtime
@@ -1488,7 +1550,7 @@ impl SessionManager {
         lines
     }
 
-    async fn full_text(&self, message: &Message) -> String {
+    pub(super) async fn full_text(&self, message: &Message) -> String {
         match &message.blob {
             Some(hash) => self
                 .core
@@ -1571,6 +1633,8 @@ impl SessionManager {
         let mut deltas: Vec<ProviderEvent> = Vec::new();
         let mut deadline: Option<tokio::time::Instant> = None;
         let mut quiet = Quiet::new(conv.kind == ConversationKind::Session);
+        // A short orchestrator reply, held until what follows it shows whether it is narration.
+        let mut held: Option<ProviderEvent> = None;
         loop {
             let flush_at = async {
                 match deadline {
@@ -1588,8 +1652,29 @@ impl SessionManager {
                         deadline = None;
                         self.store_deltas(&conv.id, quiet.pass(std::mem::take(&mut deltas))).await;
                         let exited = matches!(event, ProviderEvent::Exited { .. });
-                        quiet.forget(&event);
-                        self.on_conversation_event(&conv, &cli, event).await;
+                        match narration(&event) {
+                            // The held reply only announced the work this call does: the user
+                            // never sees it (the orchestrator log keeps it).
+                            Some(true) => {
+                                if let Some(reply) = held.take() {
+                                    self.log_provider(&conv.id, cli.provider, reply).await;
+                                }
+                            }
+                            Some(false) => {
+                                if let Some(reply) = held.take() {
+                                    self.on_conversation_event(&conv, &cli, reply).await;
+                                }
+                            }
+                            None => {}
+                        }
+                        if quiet.holds_whole(&event) {
+                            if let Some(reply) = held.replace(event) {
+                                self.on_conversation_event(&conv, &cli, reply).await;
+                            }
+                        } else {
+                            quiet.forget(&event);
+                            self.on_conversation_event(&conv, &cli, event).await;
+                        }
                         if exited {
                             break;
                         }
@@ -1603,6 +1688,9 @@ impl SessionManager {
             }
         }
         self.store_deltas(&conv.id, quiet.pass(deltas)).await;
+        if let Some(reply) = held.take() {
+            self.on_conversation_event(&conv, &cli, reply).await;
+        }
         self.grants.revoke_owner(&cli.owner);
         let (was_busy, closing) = {
             let mut state = conv.state.lock().await;
@@ -1758,6 +1846,30 @@ impl SessionManager {
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
             }
+            ProviderEvent::ContextSize {
+                used_tokens,
+                window_tokens,
+            } => {
+                let mut state = conv.state.lock().await;
+                let window = window_tokens.or(state.context.and_then(|(_, window)| window));
+                state.context = Some((*used_tokens, window));
+            }
+            ProviderEvent::CompactionStarted { automatic }
+                if conv.kind == ConversationKind::Session =>
+            {
+                // PLAN.md §2: an orchestrator is reborn, never compacted.
+                self.log_orchestrator(
+                    &conv.id,
+                    OrchestratorEntry::ContractBreach {
+                        message: format!(
+                            "The orchestrator's {} CLI compacted its context{}.",
+                            cli.provider,
+                            if *automatic { " on its own" } else { "" }
+                        ),
+                    },
+                )
+                .await;
+            }
             ProviderEvent::CompactionStarted { automatic }
                 if conv.kind == ConversationKind::Chat =>
             {
@@ -1904,9 +2016,80 @@ impl SessionManager {
             self.spawn(async move { manager.chat_fallback(&conv, &cli, next, carried).await });
             return;
         }
+        if conv.kind == ConversationKind::Session {
+            self.consider_rebirth(conv, cli).await;
+        }
         self.set_run(&conv.id, RunState::Idle, None).await;
         self.settle_requests(&conv.id).await;
         self.kick(conv);
+    }
+
+    /// After an orchestrator's turn: past the prepare threshold its handoff note is started;
+    /// past the swap threshold the next turn is reborn.
+    async fn consider_rebirth(&self, conv: &Arc<ConvLive>, cli: &Arc<Cli>) {
+        let Some((used, window)) = conv.state.lock().await.context else {
+            return;
+        };
+        let (prepare, due) = rebirth::rebirth_needed(cli.provider, used, window);
+        if !prepare {
+            return;
+        }
+        let prep = conv.state.lock().await.rebirth.clone();
+        let prep = match prep {
+            Some(prep) => prep,
+            None => {
+                let prep = self.prepare_rebirth(
+                    &conv.id,
+                    cli.provider,
+                    cli.model.clone(),
+                    Some(cli.session.native_id()),
+                    used,
+                    window,
+                );
+                tracing::info!(conversation = %conv.id, used, "preparing the orchestrator's rebirth");
+                conv.state.lock().await.rebirth = Some(prep.clone());
+                prep
+            }
+        };
+        if due {
+            prep.set_due();
+        }
+    }
+
+    /// Between turns: an orchestrator whose handoff note is ready, or whose rebirth is due,
+    /// is reborn. Its CLI closes; the next one starts fresh from a briefing.
+    async fn rebirth_if_ready(&self, conv: &Arc<ConvLive>) {
+        let (prep, cli) = {
+            let mut state = conv.state.lock().await;
+            let Some(prep) = state.rebirth.clone() else {
+                return;
+            };
+            if state.busy || state.closing || !(prep.ready() || prep.is_due()) {
+                return;
+            }
+            // Nothing else starts a turn meanwhile.
+            state.closing = true;
+            (prep, state.cli.take())
+        };
+        if !prep.ready() {
+            prep.note(rebirth::HANDOFF_WAIT).await;
+        }
+        if let Some(cli) = cli {
+            cli.session.close().await;
+            cli.ended.cancelled().await;
+        }
+        let mut state = conv.state.lock().await;
+        state.closing = false;
+        state.rebirth = None;
+        state.context = None;
+        state.fresh = true;
+        state.reseed = false;
+        state.briefing = Some(BriefingPlan {
+            trigger: RebirthTrigger::Threshold,
+            at_tokens: prep.at_tokens,
+            window: prep.window,
+            prep: Some(prep),
+        });
     }
 
     /// The model a Chat continues on after `cli`'s vendor hit a usage limit.
@@ -2227,7 +2410,7 @@ impl Quiet {
     }
 
     /// The deltas the user may see: a reply's text is released, whole, once it can no longer
-    /// be [`prompts::QUIET`].
+    /// be [`prompts::QUIET`] nor a short line of narration (see [`narration`]).
     fn pass(&mut self, deltas: Vec<ProviderEvent>) -> Vec<ProviderEvent> {
         if !self.enabled {
             return deltas;
@@ -2241,7 +2424,7 @@ impl Quiet {
                     }
                     let so_far = self.held.entry(item_id.clone()).or_default();
                     so_far.push_str(&text);
-                    if prompts::QUIET.starts_with(so_far.trim()) {
+                    if prompts::QUIET.starts_with(so_far.trim()) || so_far.len() < NARRATION_BYTES {
                         return None;
                     }
                     let text = self.held.remove(&item_id).unwrap_or_default();
@@ -2253,12 +2436,50 @@ impl Quiet {
             .collect()
     }
 
+    /// Whether `event` is a complete reply none of which was shown yet: it is held until the
+    /// next event says whether it was narration.
+    fn holds_whole(&mut self, event: &ProviderEvent) -> bool {
+        let ProviderEvent::Message {
+            item_id,
+            role: ProviderRole::Assistant,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let whole = self.enabled && !self.released.contains(item_id);
+        if whole {
+            self.forget(event);
+        }
+        whole
+    }
+
     /// Forgets a reply once it is complete.
     fn forget(&mut self, event: &ProviderEvent) {
         if let ProviderEvent::Message { item_id, .. } = event {
             self.held.remove(item_id);
             self.released.remove(item_id);
         }
+    }
+}
+
+/// Replies shorter than this are held back until the turn shows whether they were narration.
+const NARRATION_BYTES: usize = 400;
+
+/// What `event`, following a held short reply in the same turn, makes of it: `Some(true)` when
+/// it is a tool call that does the work the reply announced ("Accepting it.", "I'll ask a
+/// scout."), `Some(false)` when the reply stands (the turn ended, another reply followed, or a
+/// silent bookkeeping call came after an answer), `None` when it cannot tell yet.
+fn narration(event: &ProviderEvent) -> Option<bool> {
+    match event {
+        ProviderEvent::ToolCall { name, .. } => {
+            Some(!(name.ends_with("remember") || name.ends_with("route_follow_up")))
+        }
+        ProviderEvent::TurnCompleted { .. }
+        | ProviderEvent::Exited { .. }
+        | ProviderEvent::Message { .. }
+        | ProviderEvent::Error { .. } => Some(false),
+        _ => None,
     }
 }
 

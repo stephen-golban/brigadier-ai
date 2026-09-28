@@ -59,6 +59,9 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
+/// `model_auto_compact_token_limit` for a session that must not compact: far above any window,
+/// so Codex uses its own ceiling.
+const NO_AUTO_COMPACT_TOKENS: i64 = 1_000_000_000;
 /// The first version seen to serve `thread/compact/start`.
 const COMPACT_SINCE: &str = "0.156.1";
 
@@ -858,6 +861,13 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
 
     let mut config = Map::new();
     config.insert("mcp_servers".into(), Value::Object(servers));
+    if !spec.auto_compact {
+        // Codex clamps the limit to 90% of the model's window.
+        config.insert(
+            "model_auto_compact_token_limit".into(),
+            json!(NO_AUTO_COMPACT_TOKENS),
+        );
+    }
     match spec.tools {
         ToolSet::Default => {}
         ToolSet::None => {

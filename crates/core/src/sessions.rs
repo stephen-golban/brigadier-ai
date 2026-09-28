@@ -780,7 +780,7 @@ impl Core {
         before: Option<i64>,
         limit: u32,
     ) -> Result<OrchestratorPage> {
-        self.conversation(id)?;
+        let conversation = self.conversation(id)?;
         let (events, has_more) = self
             .read_page(
                 streams::orchestrator(id),
@@ -803,10 +803,23 @@ impl Core {
                 Err(err) => Some(Err(err)),
             })
             .collect::<Result<_>>()?;
+        let thresholds = match &conversation.setup {
+            Some(Setup::Session { orchestrator, .. }) => {
+                let window = self
+                    .context_usage(id)
+                    .await?
+                    .and_then(|usage| usage.window_tokens);
+                Some(crate::knowledge::rebirth_thresholds(
+                    orchestrator.provider,
+                    window,
+                ))
+            }
+            _ => None,
+        };
         Ok(OrchestratorPage {
             entries,
             has_more,
-            thresholds: None,
+            thresholds,
         })
     }
 

@@ -165,3 +165,39 @@ pub struct ConventionsExport {
     /// The file did not exist before.
     pub created: bool,
 }
+
+/// The context window assumed when a CLI has not said its model's.
+const DEFAULT_WINDOW: i64 = 200_000;
+
+/// When an orchestrator on `provider` with a `window`-token model prepares its rebirth and when
+/// it must happen (PLAN.md §6 Phase 4: at about 150–200k tokens).
+///
+/// Claude's auto-compact is off for orchestrators, so only the window bounds the swap. Codex
+/// compacts on its own at 90% of the window whatever it is told, so a Codex orchestrator is
+/// reborn well below that, with room left for one large turn.
+///
+/// A debug build takes `BRIGADIER_REBIRTH_TOKENS` as the prepare threshold (the swap follows a
+/// quarter above it), so rebirths can be tried on a small budget.
+pub fn rebirth_thresholds(provider: ProviderKind, window: Option<i64>) -> RebirthThresholds {
+    let size = window.filter(|size| *size > 0).unwrap_or(DEFAULT_WINDOW);
+    let (prepare_share, swap_share) = match provider {
+        ProviderKind::Claude => (0.75, 0.90),
+        ProviderKind::Codex => (0.65, 0.80),
+    };
+    let mut prepare_tokens = 150_000.min((size as f64 * prepare_share) as i64);
+    let mut swap_tokens = 190_000.min((size as f64 * swap_share) as i64);
+    if cfg!(debug_assertions)
+        && let Some(tokens) = std::env::var("BRIGADIER_REBIRTH_TOKENS")
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .filter(|tokens| *tokens > 0)
+    {
+        prepare_tokens = tokens.min(prepare_tokens);
+        swap_tokens = (tokens + tokens / 4).min(swap_tokens);
+    }
+    RebirthThresholds {
+        prepare_tokens,
+        swap_tokens,
+        window_tokens: window,
+    }
+}

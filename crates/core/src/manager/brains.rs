@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 
 use brigadier_brain::{
     Brain, BrainAnswer, BrainGraph, BrainQuery, Edge, EdgeKind, Embedder, EmbedderState, FileRef,
-    NewNode, Node, NodeFilter, NodeKind, Origin, Provenance, Scope, TranscriptEntry, WorkerRef,
+    NewNode, Node, NodeFilter, NodeKind, NodeState, Origin, Provenance, Scope, TranscriptEntry,
+    WorkerRef,
 };
 use brigadier_index::{CodeHit, CodeIndex, CodeQuery, FileChange, IndexConfig, SearchKind};
 use brigadier_store::StreamPage;
@@ -328,16 +329,15 @@ impl SessionManager {
         }
     }
 
-    /// Downloads the embedding model if it is missing, on a thread of its own, then loads it.
+    /// Downloads the embedding model if it is missing, on a thread of its own. It is loaded on
+    /// first use (a query, or nodes waiting for embeddings at the next upkeep).
     fn ensure_embedder(&self) {
         let embedder = self.brains.embedder.clone();
-        match embedder.status().state {
-            EmbedderState::NotInstalled | EmbedderState::Failed { .. } => {}
-            EmbedderState::Installed => {
-                embedder.request_load();
-                return;
-            }
-            _ => return,
+        if !matches!(
+            embedder.status().state,
+            EmbedderState::NotInstalled | EmbedderState::Failed { .. }
+        ) {
+            return;
         }
         if self.brains.downloading.swap(true, Ordering::AcqRel) {
             return;
@@ -346,11 +346,8 @@ impl SessionManager {
         let spawned = std::thread::Builder::new()
             .name("brigadier-embedder-download".into())
             .spawn(move || {
-                match embedder.download(&cancel) {
-                    Ok(()) => embedder.request_load(),
-                    Err(err) => {
-                        tracing::warn!(error = %err, "could not download the embedding model")
-                    }
+                if let Err(err) = embedder.download(&cancel) {
+                    tracing::warn!(error = %err, "could not download the embedding model");
                 }
                 if let Some(manager) = manager.upgrade() {
                     manager.brains.downloading.store(false, Ordering::Release);
@@ -445,6 +442,32 @@ impl SessionManager {
             None => None,
         };
         let personal = self.personal_brain().await.ok();
+        // A node id (from a briefing's decision lines): that node in full.
+        if let Ok(node_id) = uuid::Uuid::parse_str(text.trim()) {
+            let (node_id, brains) = (
+                node_id.to_string(),
+                project
+                    .iter()
+                    .map(|project| project.brain.clone())
+                    .chain(personal.clone())
+                    .collect::<Vec<_>>(),
+            );
+            let found = blocking(move || {
+                for brain in brains {
+                    if let Some(node) = brain.node(&node_id).map_err(brain_error)? {
+                        return Ok(Some(node));
+                    }
+                }
+                Ok(None)
+            })
+            .await?;
+            self.brains
+                .note_query(started.elapsed().as_secs_f64() * 1000.0);
+            return Ok(match found {
+                Some(node) => node_text(&node),
+                None => format!("No Brain node has the id {}.", text.trim()),
+            });
+        }
         let query = text.clone();
         let (answer, preferences) = blocking(move || {
             let answer = match &project {
@@ -922,6 +945,29 @@ impl SessionManager {
         .ok()
     }
 
+    /// The decisions settled in a conversation, oldest first (the rebirth ledger).
+    pub(crate) async fn session_decisions(&self, id: &ConversationId) -> Result<Vec<Node>> {
+        let Some(project) = self.project_of(id) else {
+            return Ok(Vec::new());
+        };
+        let project = self.project_brain(&project).await?;
+        let (brain, session) = (project.brain.clone(), id.0.clone());
+        let mut nodes = blocking(move || {
+            brain
+                .nodes(&NodeFilter {
+                    kinds: vec![NodeKind::Decision, NodeKind::Convention, NodeKind::Contract],
+                    session_id: Some(session),
+                    current_only: true,
+                    text: None,
+                    limit: Some(10_000),
+                })
+                .map_err(brain_error)
+        })
+        .await?;
+        nodes.sort_by_key(|node| node.created_at_ms);
+        Ok(nodes)
+    }
+
     /// A conversation was deleted: its transcript index goes, and with `forget` so does what
     /// the project's Brain and the Personal Brain learned in it.
     pub(crate) async fn forget_brain_conversation(
@@ -1180,6 +1226,32 @@ impl SessionManager {
         }
         self.project_brain(&id).await.map(|_| ())
     }
+}
+
+/// A node in full, as `query_brain` returns one asked for by id.
+fn node_text(node: &Node) -> String {
+    let state = match &node.state {
+        NodeState::Fresh => String::new(),
+        NodeState::Stale { reason, .. } => format!(" [may be outdated: {reason}]"),
+        NodeState::Superseded { by } => format!(" [replaced by {by}]"),
+    };
+    let files: Vec<&str> = node.files.iter().map(|file| file.path.as_str()).collect();
+    let mut text = format!(
+        "[{}] {:?}: {}{state}\n{}",
+        node.id,
+        node.kind,
+        node.title,
+        node.body.trim()
+    );
+    if !files.is_empty() {
+        text.push_str(&format!("\nFiles: {}", files.join(", ")));
+    }
+    text.push_str(&format!(
+        "\n(from {:?}, {})",
+        node.provenance.origin,
+        crate::manager::prompts::date_of(node.provenance.recorded_at_ms)
+    ));
+    text
 }
 
 /// Hands changed files to the Brain (on the index's threads).

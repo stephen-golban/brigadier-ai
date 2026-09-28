@@ -1093,6 +1093,7 @@ fn spec_for(session: &RawSession, origin: Origin, record_to: Option<PathBuf>) ->
         record_to,
         redactor: None,
         owned_cwd: false,
+        auto_compact: true,
     }
 }
 

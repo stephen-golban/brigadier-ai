@@ -29,6 +29,7 @@ mod lifecycle;
 mod outputs;
 mod prompts;
 mod pull_request;
+mod rebirth;
 mod requests;
 mod review;
 mod secrets;
