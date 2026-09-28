@@ -414,7 +414,33 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 
 **Done when:** Public v1.0 release on all three OSes, with the auto-updater verified end to end on macOS.
 
-## 7. Risks and open items
+## 7. Token economy (planned, not yet scheduled)
+
+**Goal:** Teams that use AI all day stop running out of Claude and Codex usage, without losing context or slowing down. Brigadier does this automatically in every session, so nobody has to change how they work.
+
+**Rules**
+- **No budgets or caps.** Nothing stops, throttles or interrupts work to save usage.
+- **No shortening sessions.** Earlier compaction, smaller context windows and ending sessions sooner all lose context and invite hallucination. They are not the fix.
+- **Lossless.** Whatever leaves the model's view stays exactly retrievable, and the model is told where it is. Nothing is cut silently.
+- **Judged per completed task.** A change ships only if usage per successfully completed task goes down at equal quality. Fewer tokens in one call that cause extra calls later are a loss.
+
+**What the usage is made of** (measured 2026-09-28 on one heavy user's machine: 30 days, 15,830 Claude Code calls, weighted by Anthropic's API price ratios; neither vendor publishes how its subscription limits weigh each token type)
+- Every call re-sends the whole conversation. 73% of usage is those cache reads; 16% is cache writes and 11% output. 62% of usage came from calls made at 200k–500k tokens of context.
+- The re-read context is about one third fixed or uncounted (system prompt, tools, instructions, images), one third the model's own earlier output, and one third tool results.
+- The model's output is 65% thinking, 21% shell commands, 9% written files and 3.7% visible prose. Earlier thinking stays in the context and is re-read on every later call.
+- The costly tool results are successful file reads through the shell (`cat` 21%, `sed` 20%, `grep` 8% of the shell-output cost). Failed commands are 2% of it, build and test logs very little, and exact repeats almost none.
+- Codex shows the same shape (59.5M cached input tokens against 3.4M uncached).
+
+**Work, in order**
+1. **Precise, batched reads.** Worker tools backed by the static code index (Phase 4) return only what is needed: a file's outline, one symbol's source, references with their lines. A batched read returns several files or searches in one call, with a result per item. This makes each read smaller and removes model calls, which cost a full re-read of the context each.
+2. **Thinking.** Choose the effort level per step. Research whether the CLIs can keep old thinking out of the re-read context without losing anything the model concluded (Anthropic's API has `clear_thinking_20251015`; no Claude Code setting for it was found in 2.1.283).
+3. **Terse orchestrator voice.** The orchestrator's chat and internal notes follow the caveman skill ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman); its skill text is MIT and is bundled with its notice; the setting gets its own name, since the project restricts use of its name). Worker task specs stay structured and complete: goal, scope, constraints, relevant files, acceptance checks. Visible prose is only 3.7% of output, so the direct saving is small.
+4. **Log store.** Large build, test and CI logs are stored in the blob store under the owning session's cleanup-ledger entry. The model sees the exit status, the failures with their locations, and an ID it can read exact lines or search through. For Claude this uses a `PostToolUse` hook's `updatedToolOutput`, verified on Claude Code 2.1.283. That hook does not run for commands that fail, and Codex hooks cannot replace output, so Codex gets it as a Brigadier tool. File contents a model asked for are never replaced.
+5. **Measure it.** Record usage per task, model and step, the context size at each call, and the cache hit rate per CLI version, so each change above can be checked and a CLI release that breaks caching is caught.
+
+---
+
+## 8. Risks and open items
 
 | Risk | Mitigation |
 |---|---|
@@ -426,7 +452,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 | Windows sandboxing is weaker | Sandbox trait from Phase 1. Use WSL for Claude where required. Clearly document Windows limitations. |
 | WebKitGTK quirks on Linux | CI launch checks from Phase 1 and a dedicated compatibility pass in Phase 10. |
 
-## 8. Decision log (grilling session, 2026-09-23)
+## 9. Decision log (grilling session, 2026-09-23)
 
 | # | Decision |
 |---|---|
@@ -458,3 +484,4 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 | Q26 | One permission picker combining autonomy and sandbox; outward actions always ask (levels finalized in Q27) |
 | Q27 | Levels: Ask for approval / Approve for me (default; stricter fusion review approves big plans on your behalf; stops only for questions only you can answer) / Full access (no sandbox, orange pill) |
 | — | Additions (2026-09-24): leave-no-litter cleanup ledger and litter guard; BB-parity composer; message queue (steer, edit, reorder, pause/resume); a sidebar with Projects and Chats; assistant-ui design system + elements as the full UI kit; dark-only theme with Compact / Normal density, everything token-driven |
+| — | Token economy (2026-09-28): no budgets and no shortening sessions; lossless reductions judged per completed task; precise and batched reads, thinking, a terse orchestrator voice (caveman), a log store and measurement, in that order (§7) |
