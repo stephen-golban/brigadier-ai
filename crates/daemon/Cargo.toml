@@ -23,6 +23,8 @@ brigadier-sandbox.workspace = true
 brigadier-store.workspace = true
 interprocess = "2.4.4"
 portable-pty = "0.9.0"
+# Only to cap SQLite's memory for the whole process; the stores open their own connections.
+rusqlite.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 # Dictation: the speech model's download and its check.
 sha2 = "0.11.0"

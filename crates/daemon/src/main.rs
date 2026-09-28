@@ -55,6 +55,11 @@ const EXIT_FATAL: u8 = 70;
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const READERS: usize = 4;
 const RUNTIME_WORKERS: usize = 2;
+/// What all of the daemon's SQLite connections may hold together, most of it page cache. Each
+/// connection would otherwise keep up to 2 MB of it, and a daemon with a project open has about
+/// twenty (event store, Brains, code index), which filled keep it above the idle budget (PLAN.md
+/// §4: < 60 MB) long after the work that read them.
+const SQLITE_HEAP_BYTES: i64 = 16 * 1024 * 1024;
 
 struct Args {
     data_dir: Option<PathBuf>,
@@ -168,6 +173,10 @@ fn start(platform: Arc<dyn Platform>) -> anyhow::Result<ExitCode> {
         "brigadierd starting"
     );
 
+    // Process-wide: it covers every connection opened after it, whichever crate opens it.
+    rusqlite::Connection::open_in_memory()
+        .and_then(|conn| conn.pragma_update(None, "soft_heap_limit", SQLITE_HEAP_BYTES))
+        .context("limiting SQLite's memory")?;
     // Opening and migrating the store is blocking work; do it before the runtime exists.
     let store = Store::open(StoreConfig {
         db_path: paths.db_path.clone(),
