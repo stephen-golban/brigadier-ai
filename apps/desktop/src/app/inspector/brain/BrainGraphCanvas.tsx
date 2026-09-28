@@ -101,11 +101,15 @@ function buildGraph(
       graph.addEdge(edge.from, edge.to, { kind: edge.kind });
     }
   }
-  // Better-linked nodes are bigger.
+  sizeNodes(graph, unit);
+  return graph;
+}
+
+/** Better-linked nodes are bigger; `unit` is the density's spacing token. */
+function sizeNodes(graph: MultiDirectedGraph<NodeAttributes>, unit: number) {
   graph.forEachNode((id) => {
     graph.setNodeAttribute(id, "size", unit * (1 + Math.sqrt(graph.degree(id)) * 0.6));
   });
-  return graph;
 }
 
 type LabelData = PartialButFor<NodeDisplayData, "x" | "y" | "size" | "label" | "color"> & {
@@ -290,8 +294,10 @@ export default function BrainGraphCanvas({
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma) return;
+    const unit = tokenPx("--spacing");
+    sizeNodes(sigma.getGraph(), unit);
     sigma.setSetting("labelSize", tokenPx("--text-2xs"));
-    sigma.setSetting("labelRenderedSizeThreshold", tokenPx("--spacing") * 2);
+    sigma.setSetting("labelRenderedSizeThreshold", unit * 2);
     // The tokens are re-read when density switches them.
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [density]);
