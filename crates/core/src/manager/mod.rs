@@ -14,6 +14,8 @@
 //! Every CLI session is disposable: the conversation stream is the truth, and a session that
 //! is gone (hibernated with its files cleaned up, archived, crashed) is started again from it.
 
+mod brain_jobs;
+mod brains;
 mod branches;
 mod cards;
 mod conversation;
@@ -54,6 +56,7 @@ use crate::tools::{GateAnswer, Grants, Role, ToolCall, ToolHost, ToolReply};
 use crate::work::{DiffStat, TaskId};
 use crate::{Core, Error, Result};
 
+pub use brains::{BrainCounters, IndexRunStats};
 pub use conversation::SendOutcome;
 
 use self::cards::Waiters;
@@ -87,6 +90,7 @@ pub struct SessionManager {
     waiters: Waiters,
     admitting: AtomicBool,
     background: TaskTracker,
+    brains: brains::Brains,
 }
 
 impl SessionManager {
@@ -119,6 +123,7 @@ impl SessionManager {
             })
             .await;
         }
+        let brains = brains::Brains::new(&data_dir);
         let manager = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             core,
@@ -134,9 +139,11 @@ impl SessionManager {
             waiters: Waiters::default(),
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),
+            brains,
         });
         manager.install_worktree_remover();
         manager.recover().await;
+        manager.open_brains().await;
         manager.start_hibernation_timer();
         Ok(manager)
     }
@@ -163,6 +170,7 @@ impl SessionManager {
             closing.spawn(async move { conv.close_cli().await });
         }
         closing.join_all().await;
+        self.brains.shutdown();
         self.background.close();
     }
 
@@ -386,6 +394,12 @@ impl ToolHost for SessionManager {
                     },
                     ToolCall::Worker(call),
                 ) => manager.worker_call(conversation_id, task_id, call).await,
+                (Role::BrainJob { project_id, job_id }, ToolCall::Job(call)) => {
+                    manager.job_call(project_id, job_id, call).await
+                }
+                (Role::Chat { conversation_id }, ToolCall::Chat(call)) => {
+                    manager.chat_call(conversation_id, call).await
+                }
                 _ => ToolReply::error("This tool is not available to this session."),
             }
         })

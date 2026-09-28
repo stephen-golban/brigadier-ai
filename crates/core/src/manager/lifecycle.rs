@@ -141,6 +141,7 @@ impl SessionManager {
                     return;
                 }
                 manager.hibernate_idle().await;
+                manager.brain_upkeep().await;
             }
         });
     }
@@ -391,8 +392,14 @@ impl SessionManager {
     }
 
     /// Deletes a conversation for good. Branches Brigadier created for it (task branches, a
-    /// `brigadier/` session branch) go only if asked; the user's own branches never do.
-    pub async fn delete(&self, id: ConversationId, delete_branches: bool) -> Result<()> {
+    /// `brigadier/` session branch) go only if asked; the user's own branches never do. What
+    /// the Brain learned in it stays unless `forget_brain` (its transcript index always goes).
+    pub async fn delete(
+        &self,
+        id: ConversationId,
+        delete_branches: bool,
+        forget_brain: bool,
+    ) -> Result<()> {
         let conversation = self.core.conversation(&id)?;
         self.delete_side_chats(&id).await;
         self.wind_down(&conversation).await;
@@ -431,6 +438,8 @@ impl SessionManager {
             streams::draft(&id.to_string()),
         ];
         purge.extend(tasks.iter().map(|task| streams::task(&task.id)));
+        self.forget_brain_conversation(&id, conversation.project_id.clone(), forget_brain)
+            .await;
         self.core.forget_conversation(id.clone()).await?;
         self.convs_lock().remove(&id);
         let store = self.core.store().clone();

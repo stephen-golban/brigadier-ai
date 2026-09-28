@@ -55,6 +55,8 @@ use crate::{Error, Result, now_ms};
 const DELTA_WINDOW: Duration = Duration::from_millis(30);
 /// How long a blocking MCP call may take for the orchestrator (its tools return at once).
 const ORCHESTRATOR_TOOL_TIMEOUT_SECS: u64 = 120;
+/// A Chat's Brigadier tools (saving a memory) answer within this.
+const CHAT_TOOL_TIMEOUT_SECS: u64 = 60;
 /// Messages carried verbatim when a conversation's CLI session is started over.
 const RESEED_MESSAGES: usize = 40;
 /// Bytes of transcript carried when a conversation's CLI session is started over.
@@ -265,6 +267,16 @@ impl ConvLive {
     /// A note for the next turn that carries user messages, starting no turn of its own.
     pub(super) async fn note(&self, note: String) {
         self.state.lock().await.notes.push(note);
+    }
+
+    /// The provider of the running turn's CLI, while a turn runs (a Brain job yields to it).
+    pub(super) async fn busy_provider(&self) -> Option<ProviderKind> {
+        let state = self.state.lock().await;
+        state
+            .cli
+            .as_ref()
+            .filter(|_| state.busy)
+            .map(|cli| cli.provider)
     }
 
     /// The request the running turn serves.
@@ -1143,7 +1155,8 @@ impl SessionManager {
                     .project_id
                     .as_ref()
                     .and_then(|id| self.core.project(id).ok());
-                let prompt = prompts::orchestrator(&conversation, project.as_ref());
+                let preferences = self.memory_lines(super::brain_jobs::MEMORY_BYTES).await;
+                let prompt = prompts::orchestrator(&conversation, project.as_ref(), &preferences);
                 let grant = self.grants.issue(
                     &owner,
                     Role::Orchestrator {
@@ -1157,23 +1170,39 @@ impl SessionManager {
                     vec![self.brigadier_server(grant, ORCHESTRATOR_TOOL_TIMEOUT_SECS)],
                 )
             }
-            (Some(Setup::Chat { model }), _) => (
-                fallback.unwrap_or_else(|| model.clone()),
-                prompts::chat(),
-                Vec::new(),
-            ),
-            (None, ConversationKind::Chat) => {
-                let model = self
-                    .core
-                    .settings()
-                    .default_chat_model
-                    .unwrap_or(ModelChoice {
-                        provider: ProviderKind::Claude,
-                        model: None,
-                        effort: None,
-                        fast: None,
-                    });
-                (fallback.unwrap_or(model), prompts::chat(), Vec::new())
+            (Some(Setup::Chat { .. }) | None, ConversationKind::Chat) => {
+                let model = match &conversation.setup {
+                    Some(Setup::Chat { model }) => model.clone(),
+                    _ => self
+                        .core
+                        .settings()
+                        .default_chat_model
+                        .unwrap_or(ModelChoice {
+                            provider: ProviderKind::Claude,
+                            model: None,
+                            effort: None,
+                            fast: None,
+                        }),
+                };
+                // A Chat may save what it learns about the user to the Personal Brain.
+                let memories = self.memory_lines(super::brain_jobs::MEMORY_BYTES).await;
+                let grant = self.grants.issue(
+                    &owner,
+                    Role::Chat {
+                        conversation_id: conv.id.clone(),
+                    },
+                );
+                grant_values.push(grant.clone());
+                (
+                    fallback.unwrap_or(model),
+                    prompts::chat(&memories),
+                    vec![self.brigadier_server(grant, CHAT_TOOL_TIMEOUT_SECS)],
+                )
+            }
+            (Some(Setup::Chat { .. }), ConversationKind::Session) => {
+                return Err(Error::Invalid(
+                    "a session cannot have a Chat's setup".into(),
+                ));
             }
             (None, ConversationKind::Session) => {
                 return Err(Error::Invalid("the session has no setup".into()));

@@ -399,6 +399,15 @@ impl SessionManager {
             .await?;
         match &question.kind {
             QuestionKind::Orchestrator => {
+                self.learn_user_decision(
+                    &conversation_id,
+                    format!("question:{}", question.id),
+                    format!("{} → {answer}", question.text),
+                    format!(
+                        "The orchestrator asked the user: {}\nThe user answered: {answer}",
+                        question.text
+                    ),
+                );
                 self.deliver_for(
                     &conversation_id,
                     Envelope {
@@ -515,6 +524,29 @@ impl SessionManager {
             *plan_mode = false;
             self.core.set_setup(conversation_id.clone(), setup).await?;
         }
+        let steps: Vec<String> = plan
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(number, step)| format!("{}. {}", number + 1, step.title))
+            .collect();
+        self.learn_user_decision(
+            &conversation_id,
+            format!("plan:{}", plan.id),
+            format!(
+                "The user {} the plan \"{}\"",
+                if approve { "approved" } else { "rejected" },
+                plan.title
+            ),
+            format!(
+                "{}\nSteps:\n{}",
+                message
+                    .as_deref()
+                    .map(|m| format!("Their note: {m}"))
+                    .unwrap_or_default(),
+                steps.join("\n")
+            ),
+        );
         let text = if approve {
             format!(
                 "[decision] The user approved the plan \"{}\". Go ahead, and pass each step's number as `step` when you delegate it.",

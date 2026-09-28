@@ -19,22 +19,26 @@ fn role_name(role: &Role) -> &'static str {
     match role {
         Role::Orchestrator { .. } => "orchestrator",
         Role::Worker { .. } => "worker",
+        Role::BrainJob { .. } => "brain job",
+        Role::Chat { .. } => "chat",
         Role::Gate { .. } => "gate",
     }
 }
 
-/// Serves the Brigadier MCP tools on `stream` for an orchestrator or worker grant; any other
-/// grant closes the connection at once.
+/// Serves the Brigadier MCP tools on `stream` for an orchestrator, worker, Brain job or Chat
+/// grant; any other grant closes the connection at once.
 pub async fn serve_mcp(daemon: Arc<Daemon>, grant: String, stream: RawStream) {
     let host: Arc<dyn ToolHost> = daemon.sessions.clone();
     let role = match host.role(&grant) {
-        Some(role @ (Role::Orchestrator { .. } | Role::Worker { .. })) => role,
+        Some(
+            role @ (Role::Orchestrator { .. }
+            | Role::Worker { .. }
+            | Role::BrainJob { .. }
+            | Role::Chat { .. }),
+        ) => role,
         other => {
             let role = other.as_ref().map_or("unknown", role_name);
-            tracing::warn!(
-                role,
-                "refused an MCP connection: not an orchestrator or worker grant"
-            );
+            tracing::warn!(role, "refused an MCP connection: not a tool grant");
             return;
         }
     };

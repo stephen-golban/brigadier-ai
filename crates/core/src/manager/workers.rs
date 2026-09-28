@@ -115,6 +115,16 @@ impl TaskLive {
         }
     }
 
+    /// The provider of the worker's CLI while it works (a Brain job yields to it).
+    pub(super) async fn busy_provider(&self) -> Option<ProviderKind> {
+        let state = self.state.lock().await;
+        state
+            .cli
+            .as_ref()
+            .filter(|_| state.busy || state.question.is_some())
+            .map(|cli| cli.provider)
+    }
+
     /// Ends the worker's CLI session (interrupting first; Codex keeps running its current
     /// command after an interrupt, so the session is closed, which ends its process tree).
     pub async fn close_cli(&self) {
@@ -1531,6 +1541,7 @@ impl SessionManager {
             })
             .await?;
         live.state.lock().await.nudged = true;
+        self.learn_report(&task, &report);
         if task.kind == TaskKind::Review && self.review_in_landing(&task).await {
             self.review_reported(&task).await;
         } else {

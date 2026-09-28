@@ -241,7 +241,7 @@ impl SessionManager {
     }
 
     /// The provider's cheapest model for a one-off chore, at low effort where it has efforts.
-    fn cheapest(&self, provider: ProviderKind) -> (String, Option<String>) {
+    pub(super) fn cheapest(&self, provider: ProviderKind) -> (String, Option<String>) {
         let family = match provider {
             ProviderKind::Claude => "haiku",
             ProviderKind::Codex => "luna",

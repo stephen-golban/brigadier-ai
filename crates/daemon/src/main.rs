@@ -239,7 +239,12 @@ async fn run(
     let sessions = SessionManager::start(core.clone(), providers.clone(), spawner, manager_config)
         .await
         .context("starting the session manager")?;
-    let metrics = Metrics::start(supervisor.clone(), store.clone(), platform.clone());
+    let metrics = Metrics::start(
+        supervisor.clone(),
+        store.clone(),
+        platform.clone(),
+        &sessions,
+    );
     let listener = Listener::bind(&*platform).context("binding the IPC endpoint")?;
     {
         let platform = platform.clone();

@@ -12,8 +12,13 @@ pub(crate) const SESSION_RESET: &str = "brigadier: CLI session reset";
 pub(crate) const QUIET: &str = "[quiet]";
 
 fn today() -> String {
-    // Days since the epoch → a civil date (Howard Hinnant's algorithm), UTC.
-    let days = crate::now_ms().div_euclid(86_400_000);
+    date_of(crate::now_ms())
+}
+
+/// The UTC date of a time in ms since the epoch, as `YYYY-MM-DD`.
+pub(crate) fn date_of(at_ms: i64) -> String {
+    // Days since the epoch → a civil date (Howard Hinnant's algorithm).
+    let days = at_ms.div_euclid(86_400_000);
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -27,8 +32,12 @@ fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// The orchestrator's role.
-pub(crate) fn orchestrator(conversation: &Conversation, project: Option<&Project>) -> String {
+/// The orchestrator's role, with the user's preferences from the Personal Brain.
+pub(crate) fn orchestrator(
+    conversation: &Conversation,
+    project: Option<&Project>,
+    preferences: &[String],
+) -> String {
     let (repo, environment, permission) = match &conversation.setup {
         Some(Setup::Session {
             repo,
@@ -72,6 +81,9 @@ You only talk. You cannot read files, run commands or edit anything, and you mus
 
 How to work:
 - Understand what the user wants. If something only the user can decide is unclear, ask (in your reply, or with ask_user when a task must wait for the answer).
+- Ask the Project Brain first (query_brain): it keeps what earlier scouts, research and reports found, the project's modules, stack, conventions, contracts and decisions, each with where it came from. Delegate a scout only when the Brain has no answer or marks it stale. Every report is kept in the Brain for next time.
+- When the user settles something later work must respect (a decision, a convention, a contract), or states a preference, keep it with remember (personal: true for a preference that holds in every project). Do it silently. Plan approvals and ask_user answers are kept for you.
+- search_transcript finds anything said earlier in this conversation, including what is no longer in view.
 - Delegate with delegate_task. Write a complete spec: the worker sees nothing of this conversation. Say what to do, the relevant context, constraints, what "done" means and how to verify it (typecheck, lint, build, existing tests, a runtime check). Use scout tasks to look around the repository and research tasks to check current docs; don't guess about code you haven't had scouted.
 - Run independent tasks in parallel. Tools return at once; never wait or poll. Reports, worker questions and outcomes arrive later as messages from Brigadier, in blocks like [report task-3 …] … [/report]. Only these and the user's messages reach you.
 - A worker may ask you a blocking question ([question from task-N]); answer it with message_worker. message_worker also steers a running worker, or sends a reported worker back to fix something.
@@ -82,13 +94,28 @@ How to work:
 
 How to talk to the user:
 - The user sees every worker live next to your replies: its title, state, model, what it is doing and its report summary. Don't announce what you delegated, don't repeat a task's spec, and don't restate reports.
-- Everything a user message sets in motion (your turns, the workers, their reports and landings) is one request, shown as one answer. Messages from Brigadier are not the user; each ends with what still runs for that request. While work for the request is still running, don't write to the user at all: reply with exactly {quiet} and nothing else, which Brigadier doesn't show (progress lines like "task-1 finished, waiting on task-2" are noise). This holds right after you delegate, too. Write one short line only when something changed their plans.
+- Everything a user message sets in motion (your turns, the workers, their reports and landings) is one request, shown as one answer. Messages from Brigadier are not the user; each ends with what still runs for that request. While work for the request is still running, don't write to the user at all: reply with exactly {quiet} and nothing else, which Brigadier doesn't show (progress lines like "task-1 finished, waiting on task-2" are noise). This holds right after you delegate, too. Never write text before or between tool calls ("Let me…", "I'll delegate…"): call the tools, then reply {quiet} or your final answer. Write one short line only when something changed their plans.
 - When the request's work is done, or the user must decide something, write one final answer: what was found or done, what was verified and how (as the workers reported it), and what's next or the decision you need. Don't repeat what you already told them.
 - A message from Brigadier marked [for the user's earlier request: …] belongs to that earlier request; answer about it as such, briefly.
-- A [follow-up …] block is a message the user sent while you work on their request; it waits in their queue until you sort it with route_follow_up, silently (the user sees where it goes). If it belongs to this work (a question about the same thing, a detail or a change for it), it joins it: it reaches you at once as the user's message, and your one final answer covers it too. If it is a request of its own, it waits and reaches you on its own once this work is done; don't act on it before."#,
+- A [follow-up …] block is a message the user sent while you work on their request; it waits in their queue until you sort it with route_follow_up, silently (the user sees where it goes). If it belongs to this work (a question about the same thing, a detail or a change for it), it joins it: it reaches you at once as the user's message, and your one final answer covers it too. If it is a request of its own, it waits and reaches you on its own once this work is done; don't act on it before.{preferences}"#,
         today = today(),
         quiet = QUIET,
+        preferences = preference_lines(preferences),
     )
+}
+
+/// The user's preferences as an instructions section (empty without any).
+fn preference_lines(preferences: &[String]) -> String {
+    if preferences.is_empty() {
+        return String::new();
+    }
+    let mut text =
+        "\n\nThe user's preferences (kept in their Personal Brain; follow them):".to_owned();
+    for preference in preferences {
+        text.push_str("\n- ");
+        text.push_str(preference);
+    }
+    text
 }
 
 /// A worker's role and task.
@@ -141,11 +168,21 @@ The task:
 }
 
 /// A Chat's role.
-pub(crate) fn chat() -> String {
-    format!(
-        "You are a helpful assistant in Brigadier, a desktop app. Today is {}. You are in a plain chat: there is no repository and you cannot edit code. You may search the web when current information helps; say where facts came from.",
+pub(crate) fn chat(memories: &[String]) -> String {
+    let mut text = format!(
+        "You are a helpful assistant in Brigadier, a desktop app. Today is {}. You are in a plain chat: there is no repository and you cannot edit code. You may search the web when current information helps; say where facts came from.\nWhen the user tells you something about themselves that will matter in later conversations (a preference, their role, what they work on), keep it with the save_memory tool, one short sentence, without announcing it: the user sees what you saved and can remove it.",
         today()
-    )
+    );
+    if !memories.is_empty() {
+        text.push_str(
+            "\n\nWhat you know about the user from earlier conversations (their memories):",
+        );
+        for memory in memories {
+            text.push_str("\n- ");
+            text.push_str(memory);
+        }
+    }
+    text
 }
 
 /// A report as the orchestrator reads it.

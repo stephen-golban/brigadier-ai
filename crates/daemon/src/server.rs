@@ -556,12 +556,20 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetActivity => Response::GetActivity {
             activity: core.activity().await,
         },
-        Request::CreateProject { name, repo } => Response::CreateProject {
-            project: Box::new(core.create_project(name, repo).await?),
-        },
-        Request::UpdateProject { id, patch } => Response::UpdateProject {
-            project: Box::new(core.update_project(id, patch).await?),
-        },
+        Request::CreateProject { name, repo } => {
+            let project = core.create_project(name, repo).await?;
+            sessions.project_changed(&project).await;
+            Response::CreateProject {
+                project: Box::new(project),
+            }
+        }
+        Request::UpdateProject { id, patch } => {
+            let project = core.update_project(id, patch).await?;
+            sessions.project_changed(&project).await;
+            Response::UpdateProject {
+                project: Box::new(project),
+            }
+        }
         Request::CreateConversation {
             kind,
             project_id,
@@ -713,17 +721,31 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 .display()
                 .to_string(),
         },
-        Request::GetBrain { .. }
-        | Request::QueryBrain { .. }
-        | Request::GetBrainGraph { .. }
-        | Request::ListMemories
-        | Request::ForgetMemory { .. }
-        | Request::ExportConventions { .. }
-        | Request::RunBrainJob { .. }
-        | Request::RebuildIndex { .. } => {
-            return Err(IpcError::from(brigadier_core::Error::Invalid(
-                "the Project Brain is not connected yet".into(),
-            )));
+        Request::GetBrain { project_id } => Response::GetBrain {
+            overview: Box::new(sessions.brain_overview(project_id).await?),
+        },
+        Request::QueryBrain { project_id, query } => Response::QueryBrain {
+            answer: Box::new(sessions.query_brain(project_id, query).await?),
+        },
+        Request::GetBrainGraph { project_id, filter } => Response::GetBrainGraph {
+            graph: Box::new(sessions.brain_graph(project_id, filter).await?),
+        },
+        Request::ListMemories => Response::ListMemories {
+            memories: sessions.list_memories().await?,
+        },
+        Request::ForgetMemory { node_id } => {
+            sessions.forget_memory(node_id).await?;
+            Response::ForgetMemory
+        }
+        Request::ExportConventions { project_id, path } => Response::ExportConventions {
+            export: sessions.export_conventions(project_id, path).await?,
+        },
+        Request::RunBrainJob { project_id, kind } => Response::RunBrainJob {
+            job_id: sessions.run_brain_job(project_id, kind).await?,
+        },
+        Request::RebuildIndex { project_id } => {
+            sessions.rebuild_index(project_id).await?;
+            Response::RebuildIndex
         }
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
@@ -934,10 +956,10 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::Delete {
             id,
             delete_branches,
-            forget_brain: _,
+            forget_brain,
         } => {
             daemon.terminals.close_conversation(&id.0);
-            sessions.delete(id, delete_branches).await?;
+            sessions.delete(id, delete_branches, forget_brain).await?;
             Response::Delete
         }
         Request::RenameConversation { id, title } => Response::RenameConversation {

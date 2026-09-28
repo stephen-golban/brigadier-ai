@@ -1,17 +1,19 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use brigadier_ipc::metrics::{
-    DaemonMetrics, LatencySummary, ProcessInfo, ProcessRole, RuntimeMetrics, StoreMetrics,
-    TaskPollMetrics,
+    BrainMetrics, DaemonMetrics, IndexRun, LatencySummary, ProcessInfo, ProcessRole,
+    RuntimeMetrics, StoreMetrics, TaskPollMetrics,
 };
 use brigadier_ipc::protocol::ClientInfo;
 use brigadier_sandbox::Platform;
 use brigadier_store::Store;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::{Notify, watch};
+
+use brigadier_core::manager::SessionManager;
 
 use crate::supervisor::{Supervisor, slow_poll_threshold};
 
@@ -42,10 +44,17 @@ pub struct Metrics {
     clients: Mutex<HashMap<u64, ClientInfo>>,
     heartbeat: Mutex<VecDeque<f64>>,
     system: Arc<Mutex<System>>,
+    /// Where the Brain counters come from.
+    sessions: Weak<SessionManager>,
 }
 
 impl Metrics {
-    pub fn start(supervisor: Supervisor, store: Store, platform: Arc<dyn Platform>) -> Arc<Self> {
+    pub fn start(
+        supervisor: Supervisor,
+        store: Store,
+        platform: Arc<dyn Platform>,
+        sessions: &Arc<SessionManager>,
+    ) -> Arc<Self> {
         let metrics = Arc::new(Self {
             started: Instant::now(),
             supervisor: supervisor.clone(),
@@ -58,6 +67,7 @@ impl Metrics {
             clients: Mutex::new(HashMap::new()),
             heartbeat: Mutex::new(VecDeque::with_capacity(HEARTBEAT_WINDOW)),
             system: Arc::new(Mutex::new(System::new())),
+            sessions: Arc::downgrade(sessions),
         });
 
         let sampler = metrics.clone();
@@ -134,6 +144,27 @@ impl Metrics {
     }
 
     /// A fresh sample, taken now.
+    /// The Brains' query timings, embedder and largest index run.
+    fn brain(&self) -> BrainMetrics {
+        let Some(sessions) = self.sessions.upgrade() else {
+            return BrainMetrics::default();
+        };
+        let mut counters = sessions.brain_counters();
+        BrainMetrics {
+            query: LatencySummary::from_samples(&mut counters.query_ms),
+            embedder_loaded: counters.embedder_loaded,
+            largest_index_run: counters.largest_index_run.map(|run| {
+                Box::new(IndexRun {
+                    root: run.root,
+                    files: run.files,
+                    parsed: run.parsed,
+                    duration_ms: run.duration_ms,
+                    at_ms: run.at_ms,
+                })
+            }),
+        }
+    }
+
     pub async fn sample(&self) -> DaemonMetrics {
         let own_pid = std::process::id();
         let (rss_bytes, cpu_percent) = self
@@ -188,7 +219,7 @@ impl Metrics {
                 checkpoints: store.checkpoints,
             },
             connections: self.connections.load(Ordering::Relaxed),
-            brain: Default::default(),
+            brain: self.brain(),
         }
     }
 

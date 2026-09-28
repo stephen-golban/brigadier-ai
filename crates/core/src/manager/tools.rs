@@ -59,15 +59,20 @@ impl SessionManager {
                     (Some(reference), _) => Some(self.find_task(id, reference).await?),
                     (None, TaskKind::Review) => {
                         return Err(Error::Invalid(
-                            "a review task needs `subject`: the task whose change it reviews".into(),
+                            "a review task needs `subject`: the task whose change it reviews"
+                                .into(),
                         ));
                     }
                     (None, _) => None,
                 };
                 if args.kind == TaskKind::Review
-                    && subject.as_ref().is_some_and(|s| s.candidate.is_none() && s.report.is_none())
+                    && subject
+                        .as_ref()
+                        .is_some_and(|s| s.candidate.is_none() && s.report.is_none())
                 {
-                    return Err(Error::Invalid("the subject task has nothing to review yet".into()));
+                    return Err(Error::Invalid(
+                        "the subject task has nothing to review yet".into(),
+                    ));
                 }
                 if let Some(step) = args.step {
                     self.plan_step(id, step).await?;
@@ -82,7 +87,16 @@ impl SessionManager {
                         model: s.route.choice.model.clone(),
                     });
                 let task = self
-                    .create_task(id, args.title, args.kind, args.spec, pin, avoid, subject, attachments)
+                    .create_task(
+                        id,
+                        args.title,
+                        args.kind,
+                        args.spec,
+                        pin,
+                        avoid,
+                        subject,
+                        attachments,
+                    )
                     .await?;
                 if let Some(step) = args.step {
                     // A task that redoes a step takes it over.
@@ -146,19 +160,24 @@ impl SessionManager {
             }
             OrchestratorCall::ReadReport(args) => {
                 let task = self.find_task(id, &args.task).await?;
-                let report = task
-                    .report
-                    .as_ref()
-                    .ok_or_else(|| Error::Invalid(format!("task-{} has not reported yet", task.number)))?;
+                let report = task.report.as_ref().ok_or_else(|| {
+                    Error::Invalid(format!("task-{} has not reported yet", task.number))
+                })?;
                 let text = prompts::report_envelope(&task, report, &route_label(&task));
                 self.orchestrator_step(id, OrchestratorStepKind::ReadReport { task_id: task.id })
                     .await;
                 Ok(text)
             }
             OrchestratorCall::ReadArtifact(args) => {
-                let limit = args.limit.unwrap_or(ARTIFACT_PAGE_MAX).min(ARTIFACT_PAGE_MAX);
+                let limit = args
+                    .limit
+                    .unwrap_or(ARTIFACT_PAGE_MAX)
+                    .min(ARTIFACT_PAGE_MAX);
                 let offset = args.offset.unwrap_or(0);
-                let (bytes, total) = self.core.read_blob_range(args.id.clone(), offset, limit).await?;
+                let (bytes, total) = self
+                    .core
+                    .read_blob_range(args.id.clone(), offset, limit)
+                    .await?;
                 let text = match std::str::from_utf8(&bytes) {
                     Ok(text) => text.to_owned(),
                     // A page may end inside a character.
@@ -184,9 +203,9 @@ impl SessionManager {
                     }
                 ))
             }
-            OrchestratorCall::QueryBrain(_) => Ok(
-                "The Project Brain is not available yet in this version of Brigadier. Delegate a scout task to find this out.".into(),
-            ),
+            OrchestratorCall::QueryBrain(args) => self.query_brain_tool(id, args.query).await,
+            OrchestratorCall::Remember(args) => self.remember_tool(id, args).await,
+            OrchestratorCall::SearchTranscript(args) => self.search_transcript_tool(id, args).await,
             OrchestratorCall::ProposePlan(args) => self.propose_plan(id, args).await,
             OrchestratorCall::RequestApproval(args) => {
                 self.open_approval(
@@ -286,6 +305,9 @@ impl SessionManager {
             WorkerCall::SubmitReport(args) => {
                 self.worker_report(&conversation_id, &task_id, args).await
             }
+            WorkerCall::CodeSearch(args) => self.code_search_tool(&conversation_id, args).await,
+            WorkerCall::CodeRefs(args) => self.code_refs_tool(&conversation_id, args).await,
+            WorkerCall::ProjectMap => self.project_map_tool(&conversation_id).await,
         };
         match result {
             Ok(text) => ToolReply::ok(text),

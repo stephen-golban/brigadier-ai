@@ -4,8 +4,9 @@
 use std::sync::{Arc, OnceLock};
 
 use brigadier_core::tools::{
-    AcceptTask, AskOrchestrator, AskUser, DelegateTask, FinishSession, MessageWorker,
-    OrchestratorCall, ProposePlan, QueryBrain, ReadArtifact, RequestApproval, Role, RouteFollowUp,
+    AcceptTask, AskOrchestrator, AskUser, ChatCall, CodeRefs, CodeSearch, DelegateTask,
+    FinishSession, JobCall, MessageWorker, OrchestratorCall, ProposePlan, QueryBrain, ReadArtifact,
+    RecordNodes, Remember, RequestApproval, Role, RouteFollowUp, SaveMemory, SearchTranscript,
     SubmitReport, TaskRef, ToolCall, WorkerCall,
 };
 use rmcp::model::{JsonObject, Tool};
@@ -47,8 +48,20 @@ diff, command output, note) by its id. At most 16000 bytes per call, starting at
 reply gives the total size so you can page. Read only what you need: everything you read enters \
 your context.";
 
-const QUERY_BRAIN: &str = "Ask the Project Brain, the project's stored knowledge. Not \
-available in this version yet: it returns a notice.";
+const QUERY_BRAIN: &str = "Ask the Project Brain: what Brigadier knows about this project \
+(its modules and services, earlier scout and research findings, decisions, conventions, \
+contracts) and the user's preferences, each with where it came from. Fast and cheap: ask it \
+first, and delegate a scout only when it has no answer or marks its answer stale.";
+
+const REMEMBER: &str = "Keep something that later work must respect: a decision the user \
+settled or you made, a convention of this project, a contract between parts, or (personal) a \
+preference of the user's that holds in every project. One clear line in `title`, the why in \
+`detail`. Do it silently: don't tell the user you remembered it. Returns the node id; pass it \
+as `replaces` when a later decision changes it.";
+
+const SEARCH_TRANSCRIPT: &str = "Search this conversation's full transcript (the user's \
+messages, your answers, reports and decisions), including what is no longer in your context. \
+Returns the best-matching passages with their dates.";
 
 const PROPOSE_PLAN: &str = "Show the user a plan card for multi-step work: a title and the \
 steps. Returns at once; the decision arrives later as a message. Under \"Ask for approval\" no \
@@ -69,6 +82,28 @@ once; the outcome arrives later as a message.";
 
 const LIST_TASKS: &str = "List this session's tasks: id, title, kind, status and model.";
 
+const CODE_SEARCH: &str = "Search the repository's code index (instant; it is kept current \
+as files change): symbol definitions by name (functions, types, classes, methods) and files \
+by path, best matches first. Use it before grepping to find where things are.";
+
+const CODE_REFS: &str = "Where a symbol is defined and where it is used (calls, type uses), \
+from the code index. References are matched by name, without type information.";
+
+const PROJECT_MAP: &str = "The repository at a glance, from the code index: top folders, \
+modules and their dependencies, package manifests, scripts (build, test, lint, run), \
+services and their ports, and the most used definitions per module.";
+
+const RECORD_NODES: &str = "Record what you found in the Project Brain: one node per module, \
+service, important file, convention or contract, each with a short title and a body of a few \
+plain sentences (what it is for, what matters about it). Give modules and file summaries their \
+repository-relative `path`, and list in `files` the files each was learned from. Call it as \
+often as you like; a node with the same kind and path replaces the earlier one.";
+
+const SAVE_MEMORY: &str = "Save something about the user that will help in later \
+conversations (a preference, their role, what they work on), as one short sentence. Only when \
+they state it or clearly imply it holds beyond this chat; never secrets or passing details. The \
+user sees it saved and can remove it.";
+
 const ASK_ORCHESTRATOR: &str = "Ask the orchestrator (who gave you this task) a question you \
 cannot settle yourself, such as an unclear requirement or a choice outside your task. The call \
 blocks until the answer comes back, which can take minutes. Ask only when you cannot sensibly \
@@ -84,9 +119,13 @@ deleted under `changes`: new files that are not listed are not kept.";
 pub fn tools_for(role: &Role) -> &'static [Tool] {
     static ORCHESTRATOR: OnceLock<Vec<Tool>> = OnceLock::new();
     static WORKER: OnceLock<Vec<Tool>> = OnceLock::new();
+    static JOB: OnceLock<Vec<Tool>> = OnceLock::new();
+    static CHAT: OnceLock<Vec<Tool>> = OnceLock::new();
     match role {
         Role::Orchestrator { .. } => ORCHESTRATOR.get_or_init(orchestrator_tools),
         Role::Worker { .. } => WORKER.get_or_init(worker_tools),
+        Role::BrainJob { .. } => JOB.get_or_init(job_tools),
+        Role::Chat { .. } => CHAT.get_or_init(chat_tools),
         Role::Gate { .. } => &[],
     }
 }
@@ -117,6 +156,12 @@ fn orchestrator_tools() -> Vec<Tool> {
             input_schema::<ReadArtifact>(),
         ),
         tool("query_brain", QUERY_BRAIN, input_schema::<QueryBrain>()),
+        tool("remember", REMEMBER, input_schema::<Remember>()),
+        tool(
+            "search_transcript",
+            SEARCH_TRANSCRIPT,
+            input_schema::<SearchTranscript>(),
+        ),
         tool("propose_plan", PROPOSE_PLAN, input_schema::<ProposePlan>()),
         tool(
             "request_approval",
@@ -145,7 +190,27 @@ fn worker_tools() -> Vec<Tool> {
             SUBMIT_REPORT,
             input_schema::<SubmitReport>(),
         ),
+        tool("code_search", CODE_SEARCH, input_schema::<CodeSearch>()),
+        tool("code_refs", CODE_REFS, input_schema::<CodeRefs>()),
+        tool("project_map", PROJECT_MAP, no_arguments()),
     ]
+}
+
+fn job_tools() -> Vec<Tool> {
+    vec![
+        tool("record_nodes", RECORD_NODES, input_schema::<RecordNodes>()),
+        tool("code_search", CODE_SEARCH, input_schema::<CodeSearch>()),
+        tool("code_refs", CODE_REFS, input_schema::<CodeRefs>()),
+        tool("project_map", PROJECT_MAP, no_arguments()),
+    ]
+}
+
+fn chat_tools() -> Vec<Tool> {
+    vec![tool(
+        "save_memory",
+        SAVE_MEMORY,
+        input_schema::<SaveMemory>(),
+    )]
 }
 
 fn tool(name: &'static str, description: &'static str, schema: JsonObject) -> Tool {
@@ -194,6 +259,10 @@ pub fn parse_call(
                 "read_report" => OrchestratorCall::ReadReport(args(name, arguments)?),
                 "read_artifact" => OrchestratorCall::ReadArtifact(args(name, arguments)?),
                 "query_brain" => OrchestratorCall::QueryBrain(args(name, arguments)?),
+                "remember" => OrchestratorCall::Remember(args(name, arguments)?),
+                "search_transcript" => {
+                    OrchestratorCall::SearchTranscript(args::<SearchTranscript>(name, arguments)?)
+                }
                 "propose_plan" => OrchestratorCall::ProposePlan(args(name, arguments)?),
                 "request_approval" => OrchestratorCall::RequestApproval(args(name, arguments)?),
                 "accept_task" => OrchestratorCall::AcceptTask(args(name, arguments)?),
@@ -209,10 +278,29 @@ pub fn parse_call(
                     WorkerCall::AskOrchestrator(args::<AskOrchestrator>(name, arguments)?)
                 }
                 "submit_report" => WorkerCall::SubmitReport(args::<SubmitReport>(name, arguments)?),
+                "code_search" => WorkerCall::CodeSearch(args::<CodeSearch>(name, arguments)?),
+                "code_refs" => WorkerCall::CodeRefs(args::<CodeRefs>(name, arguments)?),
+                "project_map" => WorkerCall::ProjectMap,
                 _ => return Err(unknown()),
             };
             Ok(ToolCall::Worker(call))
         }
+        Role::BrainJob { .. } => {
+            let call = match name {
+                "record_nodes" => JobCall::RecordNodes(args::<RecordNodes>(name, arguments)?),
+                "code_search" => JobCall::CodeSearch(args::<CodeSearch>(name, arguments)?),
+                "code_refs" => JobCall::CodeRefs(args::<CodeRefs>(name, arguments)?),
+                "project_map" => JobCall::ProjectMap,
+                _ => return Err(unknown()),
+            };
+            Ok(ToolCall::Job(call))
+        }
+        Role::Chat { .. } => match name {
+            "save_memory" => Ok(ToolCall::Chat(ChatCall::SaveMemory(args::<SaveMemory>(
+                name, arguments,
+            )?))),
+            _ => Err(unknown()),
+        },
         Role::Gate { .. } => Err(unknown()),
     }
 }

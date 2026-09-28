@@ -21,7 +21,7 @@ use brigadier_providers::BoxFuture;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::model::{ConversationId, TaskId};
+use crate::model::{ConversationId, ProjectId, TaskId};
 use crate::work::{ReviewVerdict, TaskKind};
 
 /// What a grant allows.
@@ -39,6 +39,13 @@ pub enum Role {
         conversation_id: ConversationId,
         task_id: Option<TaskId>,
     },
+    /// A Brain job (skeleton pass, enrichment) of a project: it reads and records nodes.
+    BrainJob {
+        project_id: ProjectId,
+        job_id: String,
+    },
+    /// A Chat's model: it may save memories to the Personal Brain.
+    Chat { conversation_id: ConversationId },
 }
 
 /// Live grants, keyed by their secret value. Each belongs to a cleanup-ledger owner
@@ -355,6 +362,8 @@ pub enum OrchestratorCall {
     ReadReport(TaskRef),
     ReadArtifact(ReadArtifact),
     QueryBrain(QueryBrain),
+    Remember(Remember),
+    SearchTranscript(SearchTranscript),
     ProposePlan(ProposePlan),
     RequestApproval(RequestApproval),
     AcceptTask(AcceptTask),
@@ -374,6 +383,8 @@ impl OrchestratorCall {
             Self::ReadReport(_) => "read_report",
             Self::ReadArtifact(_) => "read_artifact",
             Self::QueryBrain(_) => "query_brain",
+            Self::Remember(_) => "remember",
+            Self::SearchTranscript(_) => "search_transcript",
             Self::ProposePlan(_) => "propose_plan",
             Self::RequestApproval(_) => "request_approval",
             Self::AcceptTask(_) => "accept_task",
@@ -436,6 +447,9 @@ pub struct SubmitReport {
 pub enum WorkerCall {
     AskOrchestrator(AskOrchestrator),
     SubmitReport(SubmitReport),
+    CodeSearch(CodeSearch),
+    CodeRefs(CodeRefs),
+    ProjectMap,
 }
 
 impl WorkerCall {
@@ -444,15 +458,56 @@ impl WorkerCall {
         match self {
             Self::AskOrchestrator(_) => "ask_orchestrator",
             Self::SubmitReport(_) => "submit_report",
+            Self::CodeSearch(_) => "code_search",
+            Self::CodeRefs(_) => "code_refs",
+            Self::ProjectMap => "project_map",
         }
     }
 }
 
-/// A tool call, for either role.
+/// `save_memory`: a Chat keeps something about the user for later conversations.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveMemory {
+    /// What to remember, as one short sentence about the user ("Prefers answers in British
+    /// English").
+    pub memory: String,
+}
+
+/// A tool call from a Brain job.
+#[derive(Debug, Clone)]
+pub enum JobCall {
+    RecordNodes(RecordNodes),
+    CodeSearch(CodeSearch),
+    CodeRefs(CodeRefs),
+    ProjectMap,
+}
+
+impl JobCall {
+    /// The MCP tool name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::RecordNodes(_) => "record_nodes",
+            Self::CodeSearch(_) => "code_search",
+            Self::CodeRefs(_) => "code_refs",
+            Self::ProjectMap => "project_map",
+        }
+    }
+}
+
+/// A tool call from a Chat's model.
+#[derive(Debug, Clone)]
+pub enum ChatCall {
+    SaveMemory(SaveMemory),
+}
+
+/// A tool call, for any role.
 #[derive(Debug, Clone)]
 pub enum ToolCall {
     Orchestrator(OrchestratorCall),
     Worker(WorkerCall),
+    Job(JobCall),
+    Chat(ChatCall),
 }
 
 /// What a tool call returns to the model.
