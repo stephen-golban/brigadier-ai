@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect } from "react";
 import { AppSidebar } from "@/app/AppSidebar";
 import { ArchivedView } from "@/app/ArchivedView";
 import { ConversationView } from "@/app/ConversationView";
+import { OnboardingDialog } from "@/app/onboarding/OnboardingDialog";
 import { runSmoke } from "@/app/smoke";
 import { TopBar } from "@/app/TopBar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -105,6 +106,7 @@ export function App() {
           </Suspense>
         )}
       </SidebarInset>
+      <OnboardingDialog />
     </SidebarProvider>
   );
 }

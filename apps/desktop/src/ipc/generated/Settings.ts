@@ -35,4 +35,8 @@ showFullAccessNotice: boolean,
 /**
  * Spend quota left over before a usage window resets on deepening the Project Brains.
  */
-enrichBrain: boolean, };
+enrichBrain: boolean, 
+/**
+ * The first-run setup (agents, then projects) was finished or skipped.
+ */
+onboarded: boolean, };

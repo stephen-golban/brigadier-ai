@@ -8,7 +8,8 @@
  * Token families (Tailwind utility → token):
  *   Colors      bg-background, text-foreground, bg-card, bg-popover, bg-primary, bg-secondary,
  *               bg-muted, text-muted-foreground, bg-accent, text-destructive, text-warning,
- *               text-success, text-full-access (Full access permission pill), border-border,
+ *               text-success, text-full-access (Full access permission pill), text-brand-claude
+ *               (Claude's mark), border-border,
  *               bg-input, ring-ring, bg-code-surface, bg-composer (the composer card),
  *               bg-rail (rail cards), bg-rail-controls (the rail's utility bar),
  *               bg-sidebar(-accent|-primary|…), chart-1…5, text-glyph-1…8 (a worker's glyph).
@@ -36,6 +37,7 @@
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
+ *               max-w-setup                   the first-run setup dialog
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
  *               rounded-dialog, rounded-thread (message bubbles), rounded-composer (the composer
  *               card), rounded-rail (the rail's top corners), rounded-menu (menus), rounded-tooltip,
@@ -133,6 +135,7 @@
   --container-sm: 24rem;
   --container-md: 28rem;
   --container-lg: 32rem;
+  --container-setup: 42rem;
   --container-thread: 46rem;
 
   --radius-xs: 0.1875rem;
@@ -211,6 +214,7 @@
   --color-link: var(--link);
   --color-full-access: var(--full-access);
   --color-full-access-foreground: var(--full-access-foreground);
+  --color-brand-claude: var(--brand-claude);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -273,6 +277,8 @@
   /* Orange: the Full access permission level (no OS sandbox). */
   --full-access: oklch(0.72 0.19 45);
   --full-access-foreground: oklch(0.215 0.003 var(--tint));
+  /* Claude's brand colour, for its mark only. */
+  --brand-claude: oklch(0.672 0.131 38.8);
   --success: oklch(0.765 0.15 155);
   --success-foreground: oklch(0.215 0.003 var(--tint));
   /* Blue: links inside the thread ("Continued from chat"). */

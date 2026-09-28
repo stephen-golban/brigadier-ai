@@ -25,7 +25,7 @@ import type { TaskId } from "./TaskId";
 /**
  * Commands and queries.
  */
-export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getBrain", projectId: ProjectId | null, } | { "method": "queryBrain", projectId: ProjectId | null, query: BrainQuery, } | { "method": "getBrainGraph", projectId: ProjectId | null, filter: NodeFilter, } | { "method": "listMemories" } | { "method": "forgetMemory", nodeId: string, } | { "method": "exportConventions", projectId: ProjectId, path: string, } | { "method": "runBrainJob", projectId: ProjectId, kind: BrainJobKind, } | { "method": "rebuildIndex", projectId: ProjectId, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, 
+export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getBrain", projectId: ProjectId | null, } | { "method": "queryBrain", projectId: ProjectId | null, query: BrainQuery, } | { "method": "getBrainGraph", projectId: ProjectId | null, filter: NodeFilter, } | { "method": "listMemories" } | { "method": "forgetMemory", nodeId: string, } | { "method": "exportConventions", projectId: ProjectId, path: string, } | { "method": "runBrainJob", projectId: ProjectId, kind: BrainJobKind, } | { "method": "rebuildIndex", projectId: ProjectId, } | { "method": "getRepoInfo", path: string, } | { "method": "findProjects" } | { "method": "listFiles", conversationId: ConversationId, 
 /**
  * Only the files whose path has these letters in order (ignoring case), searched in
  * the whole checkout: how the Files tab finds files past the listed ones.
@@ -34,7 +34,7 @@ query: string | null, } | { "method": "readFile", conversationId: ConversationId
 /**
  * Relative to the checkout's root.
  */
-path: string, } | { "method": "openTerminal", conversationId: ConversationId, cols: number, rows: number, } | { "method": "openSideChat", conversationId: ConversationId, } | { "method": "writeTerminal", terminalId: string, data: string, } | { "method": "resizeTerminal", terminalId: string, cols: number, rows: number, } | { "method": "closeTerminal", terminalId: string, } | { "method": "getDictation" } | { "method": "downloadDictationModel" } | { "method": "cancelDictationDownload" } | { "method": "startDictation" } | { "method": "appendDictation", dictationId: string, 
+path: string, } | { "method": "openTerminal", conversationId: ConversationId, cols: number, rows: number, } | { "method": "openSideChat", conversationId: ConversationId, } | { "method": "openSetupTerminal", provider: ProviderKind, install: boolean, cols: number, rows: number, } | { "method": "writeTerminal", terminalId: string, data: string, } | { "method": "resizeTerminal", terminalId: string, cols: number, rows: number, } | { "method": "closeTerminal", terminalId: string, } | { "method": "getDictation" } | { "method": "downloadDictationModel" } | { "method": "cancelDictationDownload" } | { "method": "startDictation" } | { "method": "appendDictation", dictationId: string, 
 /**
  * 16 kHz mono 16-bit little-endian PCM, base64-encoded.
  */
@@ -72,7 +72,7 @@ before: number | null, limit: number, } | { "method": "readBlobText", hash: stri
 /**
  * Also stream daemon metrics once a second.
  */
-metrics: boolean, } | { "method": "setMetricsStreaming", enabled: boolean, } | { "method": "eventsSince", afterSeq: number, limit: number, } | { "method": "getDiagnostics" } | { "method": "probeBurst", count: number, intervalMs: number, } | { "method": "getProviders" } | { "method": "refreshProviders" } | { "method": "startRawSession", provider: ProviderKind, 
+metrics: boolean, } | { "method": "setMetricsStreaming", enabled: boolean, } | { "method": "eventsSince", afterSeq: number, limit: number, } | { "method": "getDiagnostics" } | { "method": "probeBurst", count: number, intervalMs: number, } | { "method": "getProviders" } | { "method": "refreshProviders", provider: ProviderKind | null, } | { "method": "startRawSession", provider: ProviderKind, 
 /**
  * Absolute path of the working directory.
  */

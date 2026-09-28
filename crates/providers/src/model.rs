@@ -37,6 +37,24 @@ impl ProviderKind {
             Self::Codex => "codex",
         }
     }
+
+    /// The vendor's own installer, as typed into a terminal (PowerShell on Windows).
+    pub fn install_command(self, windows: bool) -> &'static str {
+        match (self, windows) {
+            (Self::Claude, false) => "curl -fsSL https://claude.ai/install.sh | bash",
+            (Self::Claude, true) => "irm https://claude.ai/install.ps1 | iex",
+            (Self::Codex, false) => "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+            (Self::Codex, true) => "irm https://chatgpt.com/codex/install.ps1 | iex",
+        }
+    }
+
+    /// Signs the user in to the CLI, as typed into a terminal.
+    pub fn login_command(self) -> &'static str {
+        match self {
+            Self::Claude => "claude auth login",
+            Self::Codex => "codex login",
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderKind {

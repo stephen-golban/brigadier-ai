@@ -79,13 +79,14 @@ impl Terminals {
     }
 
     /// The conversation's running terminal resized to `cols` × `rows`, or a new shell in
-    /// `cwd`.
+    /// `cwd`: interactive, or running only the command `run` and ending with it.
     pub fn open(
         &self,
         conversation: &str,
         cwd: String,
         cols: u16,
         rows: u16,
+        run: Option<&str>,
     ) -> Result<TerminalInfo> {
         let size = PtySize {
             rows: rows.max(1),
@@ -112,6 +113,13 @@ impl Terminals {
         if cfg!(unix) {
             // A login shell, so the user's PATH and profile apply as in their own terminal.
             command.arg("-l");
+        }
+        if let Some(run) = run {
+            if cfg!(windows) {
+                command.args(["-NoLogo", "-Command", run]);
+            } else {
+                command.args(["-c", run]);
+            }
         }
         command.cwd(&cwd);
         // The daemon's own settings are not the user's.

@@ -160,6 +160,7 @@ export const useApp = create<AppState>()(() => ({
     showContextUsage: true,
     showFullAccessNotice: true,
     enrichBrain: true,
+    onboarded: false,
   },
   threads: {},
   pending: [],

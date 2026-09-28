@@ -725,6 +725,18 @@ impl Provider for Claude {
             asked: HashSet::new(),
         })
     }
+
+    fn past_folders(&self) -> BoxFuture<'_, Vec<crate::history::PastFolder>> {
+        let dir = self.config_dir();
+        Box::pin(async move {
+            let Some(dir) = dir else {
+                return Vec::new();
+            };
+            tokio::task::spawn_blocking(move || crate::history::claude(&dir))
+                .await
+                .unwrap_or_default()
+        })
+    }
 }
 
 /// The CLI's model list as the picker offers it: each model under its real name ("Opus 5.5",

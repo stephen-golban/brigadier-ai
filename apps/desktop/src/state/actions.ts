@@ -913,8 +913,9 @@ export async function loadProviders(): Promise<void> {
   updateProviders((providers) => ({ ...providers, view }));
 }
 
-export async function refreshProviders(): Promise<void> {
-  await request({ method: "refreshProviders" });
+/** Checks every provider again (or only `provider`); results arrive as events. */
+export async function refreshProviders(provider: ProviderKind | null = null): Promise<void> {
+  await request({ method: "refreshProviders", provider });
 }
 
 /** Opens a raw session in the Providers tab (or goes back to the list with `null`). */

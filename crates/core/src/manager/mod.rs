@@ -27,6 +27,7 @@ mod instructions;
 mod landing;
 mod lifecycle;
 mod outputs;
+mod past_projects;
 mod prompts;
 mod pull_request;
 mod rebirth;

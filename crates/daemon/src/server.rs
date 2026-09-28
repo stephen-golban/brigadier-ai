@@ -16,6 +16,7 @@ use brigadier_ipc::protocol::{
     IpcError, Outcome, RawJson, Request, Response, SendOutcome, ServerFrame, TerminalOutput,
 };
 use brigadier_ipc::{Accepted, Connection, Listener, Reader, Token, Writer};
+use brigadier_providers::ProviderKind;
 use brigadier_store::{Store, StoredEvent};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -318,6 +319,12 @@ impl Session {
                 cols,
                 rows,
             } => self.open_terminal(&conversation_id, cols, rows),
+            Request::OpenSetupTerminal {
+                provider,
+                install,
+                cols,
+                rows,
+            } => self.open_setup_terminal(provider, install, cols, rows),
             Request::GetDictation => Ok(Response::GetDictation {
                 dictation: self.daemon.dictation.status(),
             }),
@@ -406,9 +413,52 @@ impl Session {
         let terminal = self
             .daemon
             .terminals
-            .open(&conversation_id.0, cwd, cols, rows)?;
+            .open(&conversation_id.0, cwd, cols, rows, None)?;
         self.terminals.insert(terminal.id.clone());
         Ok(Response::OpenTerminal { terminal })
+    }
+
+    /// Opens (or re-attaches to) the terminal that sets up a CLI: its install or sign-in
+    /// command runs in the home folder, and the terminal ends with it.
+    fn open_setup_terminal(
+        &mut self,
+        provider: ProviderKind,
+        install: bool,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Response, IpcError> {
+        let env = self.daemon.runtime.cli_env();
+        let cwd = env
+            .home()
+            .ok_or_else(|| IpcError::from(brigadier_core::Error::Invalid("no home folder".into())))?
+            .display()
+            .to_string();
+        let command = if install {
+            provider.install_command(cfg!(windows)).to_owned()
+        } else {
+            // The binary Brigadier found, so the sign-in is the one Brigadier will use.
+            let (binary, arguments) = provider
+                .login_command()
+                .split_once(' ')
+                .unwrap_or((provider.login_command(), ""));
+            let binary = env.resolve(provider).map_or_else(
+                || binary.to_owned(),
+                |path| shell_quote(&path.display().to_string()),
+            );
+            format!("{binary} {arguments}")
+        };
+        if self.terminal_feed.is_none() {
+            self.terminal_feed = Some(self.daemon.terminals.subscribe());
+        }
+        let terminal = self.daemon.terminals.open(
+            &format!("setup:{provider}"),
+            cwd,
+            cols,
+            rows,
+            Some(&command),
+        )?;
+        self.terminals.insert(terminal.id.clone());
+        Ok(Response::OpenSetupTerminal { terminal })
     }
 
     /// Forwards dictation updates to this connection from now on.
@@ -750,6 +800,9 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
         },
+        Request::FindProjects => Response::FindProjects {
+            candidates: sessions.find_projects().await?,
+        },
         Request::ListFiles {
             conversation_id,
             query,
@@ -763,7 +816,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         } => Response::ReadFile {
             file: sessions.read_file(&conversation_id, path).await?,
         },
-        Request::OpenTerminal { .. } => {
+        Request::OpenTerminal { .. } | Request::OpenSetupTerminal { .. } => {
             return Err(IpcError::from(brigadier_core::Error::Invalid(
                 "a terminal opens on the connection that shows it".into(),
             )));
@@ -1014,8 +1067,8 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::GetProviders => Response::GetProviders {
             view: daemon.runtime.view().await,
         },
-        Request::RefreshProviders => {
-            daemon.runtime.refresh_providers();
+        Request::RefreshProviders { provider } => {
+            daemon.runtime.refresh_providers(provider);
             Response::RefreshProviders
         }
         Request::StartRawSession {
@@ -1087,4 +1140,14 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             });
         }
     })
+}
+
+/// A path as one word for the shell a setup terminal runs in (PowerShell on Windows, where
+/// a quoted program needs the call operator).
+fn shell_quote(path: &str) -> String {
+    if cfg!(windows) {
+        format!("& '{}'", path.replace('\'', "''"))
+    } else {
+        format!("'{}'", path.replace('\'', "'\"'\"'"))
+    }
 }

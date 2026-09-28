@@ -18,6 +18,7 @@ pub mod cli;
 pub mod codex;
 mod events;
 pub mod fixtures;
+pub mod history;
 pub mod model;
 pub mod policy;
 pub mod process;
@@ -99,6 +100,12 @@ pub trait Provider: Send + Sync {
 
     /// A fresh parser over the CLI's raw output, for replaying recordings.
     fn replayer(&self) -> Box<dyn Replayer>;
+
+    /// The folders the user's own sessions of this CLI ran in, most recent first, from the
+    /// CLI's session files (read, never changed).
+    fn past_folders(&self) -> BoxFuture<'_, Vec<history::PastFolder>> {
+        Box::pin(async { Vec::new() })
+    }
 }
 
 /// A started session and its event stream.

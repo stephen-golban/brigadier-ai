@@ -12,10 +12,10 @@ use brigadier_core::{
     AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
     ConventionsExport, Conversation, ConversationActivity, ConversationId, ConversationKind,
     ConversationStatus, ConversationView, DiffStat, ForkPlace, GitState, Mention, Message,
-    MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch,
-    ProvidersView, PullRequest, QueuedMessage, Rating, RawApprovals, RawPage, RawSession,
-    RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, Settings, Setup, SetupRequest,
-    TaskId, WorkerPage,
+    MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectCandidate, ProjectId,
+    ProjectPatch, ProvidersView, PullRequest, QueuedMessage, Rating, RawApprovals, RawPage,
+    RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, Settings, Setup,
+    SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -130,6 +130,9 @@ pub enum Request {
     GetRepoInfo {
         path: String,
     },
+    /// The repositories the user's own Claude Code and Codex sessions worked in, most recent
+    /// first: the first run's project suggestions.
+    FindProjects,
     /// The files of a session's checkout, for the composer's @-mentions and the Files tab.
     ListFiles {
         conversation_id: ConversationId,
@@ -156,6 +159,15 @@ pub enum Request {
     /// Closing it deletes it.
     OpenSideChat {
         conversation_id: ConversationId,
+    },
+    /// A terminal in the home folder that sets up a CLI (the first run's Install and Sign
+    /// in), started if none runs for it: it runs the CLI's installer when `install`, else its
+    /// sign-in, and ends with it. Its output streams like [`Request::OpenTerminal`]'s.
+    OpenSetupTerminal {
+        provider: ProviderKind,
+        install: bool,
+        cols: u16,
+        rows: u16,
     },
     /// Typed input for a terminal.
     WriteTerminal {
@@ -490,8 +502,12 @@ pub enum Request {
     },
     /// Providers (login, models, quota), raw sessions and replayable fixtures.
     GetProviders,
-    /// Checks every provider again in the background; results arrive as `providerChecked`.
-    RefreshProviders,
+    /// Checks every provider (or only `provider`) again in the background; results arrive as
+    /// `providerChecked`.
+    RefreshProviders {
+        #[serde(default)]
+        provider: Option<ProviderKind>,
+    },
     /// Starts a raw CLI session in the background; its state arrives as `rawSessionUpdated`.
     StartRawSession {
         provider: ProviderKind,
@@ -597,6 +613,9 @@ pub enum Response {
     GetRepoInfo {
         repo: RepoInfo,
     },
+    FindProjects {
+        candidates: Vec<ProjectCandidate>,
+    },
     ListFiles {
         /// Paths relative to the checkout's root, tracked and untracked (not ignored).
         files: Vec<String>,
@@ -607,6 +626,9 @@ pub enum Response {
         file: CheckoutFile,
     },
     OpenTerminal {
+        terminal: TerminalInfo,
+    },
+    OpenSetupTerminal {
         terminal: TerminalInfo,
     },
     OpenSideChat {

@@ -120,6 +120,7 @@ export type { ProbeBurst } from "./ProbeBurst";
 export type { ProcessInfo } from "./ProcessInfo";
 export type { ProcessRole } from "./ProcessRole";
 export type { Project } from "./Project";
+export type { ProjectCandidate } from "./ProjectCandidate";
 export type { ProjectId } from "./ProjectId";
 export type { ProjectPatch } from "./ProjectPatch";
 export type { ProjectPrefs } from "./ProjectPrefs";

@@ -466,6 +466,8 @@ pub struct Settings {
     pub show_full_access_notice: bool,
     /// Spend quota left over before a usage window resets on deepening the Project Brains.
     pub enrich_brain: bool,
+    /// The first-run setup (agents, then projects) was finished or skipped.
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
@@ -479,6 +481,7 @@ impl Default for Settings {
             show_context_usage: true,
             show_full_access_notice: true,
             enrich_brain: true,
+            onboarded: false,
         }
     }
 }
@@ -601,6 +604,23 @@ pub struct RepoInfo {
     pub branches: Vec<BranchInfo>,
     /// The user's checkout has uncommitted changes (tracked or untracked).
     pub dirty: bool,
+}
+
+/// A repository the user's own CLI sessions worked in, offered as a project on first run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCandidate {
+    /// The repository's top-level directory (the main checkout, for a linked worktree).
+    pub path: String,
+    /// `owner/name` from its `origin` remote, else the folder's name.
+    pub name: String,
+    /// The CLIs that worked in it.
+    pub providers: Vec<ProviderKind>,
+    /// How many of their sessions ran in it.
+    pub sessions: u32,
+    pub last_active_ms: i64,
+    /// The project that already has this repository.
+    pub project_id: Option<ProjectId>,
 }
 
 /// A page of a worker's transcript, oldest first.

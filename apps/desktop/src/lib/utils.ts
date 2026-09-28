@@ -36,7 +36,7 @@ const twMerge = extendTailwindMerge({
         "traffic-lights",
         "inspector",
       ],
-      container: ["thread"],
+      container: ["thread", "setup"],
       radius: [
         "document",
         "control",

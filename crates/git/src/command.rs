@@ -10,6 +10,15 @@ use std::{
 
 use crate::{Environment, Error, Oid, Repo, Result, Worktree, parse};
 
+/// The repository a folder belongs to, as [`Git::find_repo`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundRepo {
+    /// The main checkout's canonical top level.
+    pub root: PathBuf,
+    /// The `origin` remote's URL.
+    pub origin: Option<String>,
+}
+
 /// The user's git binary and captured login-shell environment.
 #[derive(Debug, Clone)]
 pub struct Git {
@@ -79,6 +88,50 @@ impl Git {
             root,
             common_dir,
         })
+    }
+
+    /// The repository a folder is in: its main checkout's top level (also for a folder in a
+    /// linked worktree) and its `origin` URL. `None` when the folder is in no repository.
+    pub fn find_repo(&self, path: &Path) -> Result<Option<FoundRepo>> {
+        let out = self.run(
+            Some(path),
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+            true,
+            &[],
+            None,
+        )?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        let (Some(toplevel), Some(common)) = (lines.next(), lines.next()) else {
+            return Ok(None);
+        };
+        let common = Path::new(common);
+        // A non-bare repository keeps its metadata in `<main checkout>/.git`.
+        let root = match common.file_name() {
+            Some(name) if name == ".git" => common.parent().unwrap_or(common),
+            _ => Path::new(toplevel),
+        };
+        let root = fs::canonicalize(root)?;
+        let origin = self.run(
+            Some(&root),
+            &["config", "--get", "remote.origin.url"],
+            true,
+            &[],
+            None,
+        )?;
+        let origin = String::from_utf8_lossy(&origin.stdout).trim().to_owned();
+        Ok(Some(FoundRepo {
+            root,
+            origin: (!origin.is_empty()).then_some(origin),
+        }))
     }
 
     /// Open a task/session checkout that the application created.

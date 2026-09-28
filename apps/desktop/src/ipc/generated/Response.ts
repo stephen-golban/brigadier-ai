@@ -24,6 +24,7 @@ import type { Node } from "./Node";
 import type { OrchestratorPage } from "./OrchestratorPage";
 import type { ProbeBurst } from "./ProbeBurst";
 import type { Project } from "./Project";
+import type { ProjectCandidate } from "./ProjectCandidate";
 import type { ProvidersView } from "./ProvidersView";
 import type { PullRequest } from "./PullRequest";
 import type { RawPage } from "./RawPage";
@@ -39,7 +40,7 @@ import type { WorkerPage } from "./WorkerPage";
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "getActivity", activity: Array<ConversationActivity>, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getBrain", overview: BrainOverview, } | { "method": "queryBrain", answer: BrainAnswer, } | { "method": "getBrainGraph", graph: BrainGraph, } | { "method": "listMemories", memories: Array<Node>, } | { "method": "forgetMemory" } | { "method": "exportConventions", export: ConventionsExport, } | { "method": "runBrainJob", jobId: string, } | { "method": "rebuildIndex" } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "listFiles", 
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "getActivity", activity: Array<ConversationActivity>, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getBrain", overview: BrainOverview, } | { "method": "queryBrain", answer: BrainAnswer, } | { "method": "getBrainGraph", graph: BrainGraph, } | { "method": "listMemories", memories: Array<Node>, } | { "method": "forgetMemory" } | { "method": "exportConventions", export: ConventionsExport, } | { "method": "runBrainJob", jobId: string, } | { "method": "rebuildIndex" } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "findProjects", candidates: Array<ProjectCandidate>, } | { "method": "listFiles", 
 /**
  * Paths relative to the checkout's root, tracked and untracked (not ignored).
  */
@@ -47,7 +48,7 @@ files: Array<string>,
 /**
  * Set when the checkout has more files than were listed.
  */
-truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "openTerminal", terminal: TerminalInfo, } | { "method": "openSideChat", conversation: Conversation, } | { "method": "writeTerminal" } | { "method": "resizeTerminal" } | { "method": "closeTerminal" } | { "method": "getDictation", dictation: DictationStatus, } | { "method": "downloadDictationModel" } | { "method": "cancelDictationDownload" } | { "method": "startDictation", dictationId: string, } | { "method": "appendDictation" } | { "method": "finishDictation" } | { "method": "cancelDictation" } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
+truncated: boolean, } | { "method": "readFile", file: CheckoutFile, } | { "method": "openTerminal", terminal: TerminalInfo, } | { "method": "openSetupTerminal", terminal: TerminalInfo, } | { "method": "openSideChat", conversation: Conversation, } | { "method": "writeTerminal" } | { "method": "resizeTerminal" } | { "method": "closeTerminal" } | { "method": "getDictation", dictation: DictationStatus, } | { "method": "downloadDictationModel" } | { "method": "cancelDictationDownload" } | { "method": "startDictation", dictationId: string, } | { "method": "appendDictation" } | { "method": "finishDictation" } | { "method": "cancelDictation" } | { "method": "rateMessage" } | { "method": "getSessionDiff", 
 /**
  * Absent for Chats and local-checkout sessions.
  */

@@ -13,7 +13,7 @@ mod worktree;
 
 use std::{ffi::OsString, path::PathBuf};
 
-pub use command::Git;
+pub use command::{FoundRepo, Git};
 pub use repo::Repo;
 pub use worktree::Worktree;
 

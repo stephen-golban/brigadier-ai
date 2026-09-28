@@ -23,6 +23,7 @@ use std::time::Duration;
 use brigadier_providers::claude::Claude;
 use brigadier_providers::cli::CliEnv;
 use brigadier_providers::codex::Codex;
+use brigadier_providers::history::PastFolder;
 use brigadier_providers::policy::{self, ApprovalMode, Route};
 use brigadier_providers::record::{self, Recording};
 use brigadier_providers::{
@@ -82,7 +83,8 @@ struct State {
     live: HashMap<RawSessionId, Live>,
     overviews: HashMap<ProviderKind, ProviderOverview>,
     quota_recorded_ms: HashMap<ProviderKind, i64>,
-    refreshing: bool,
+    /// Providers being checked now.
+    refreshing: HashSet<ProviderKind>,
 }
 
 pub struct Runtime {
@@ -147,7 +149,7 @@ impl Runtime {
         runtime
             .pumps
             .spawn(async move { ledger.archive_codex_threads().await });
-        runtime.refresh_providers();
+        runtime.refresh_providers(None);
         Ok(runtime)
     }
 
@@ -163,6 +165,18 @@ impl Runtime {
 
     pub fn platform(&self) -> &Arc<dyn Platform> {
         &self.platform
+    }
+
+    /// The folders the user's own sessions of each CLI ran in.
+    pub async fn past_folders(&self) -> Vec<(ProviderKind, PastFolder)> {
+        let (claude, codex) = tokio::join!(self.claude.past_folders(), self.codex.past_folders());
+        let claude = claude
+            .into_iter()
+            .map(|folder| (ProviderKind::Claude, folder));
+        let codex = codex
+            .into_iter()
+            .map(|folder| (ProviderKind::Codex, folder));
+        claude.chain(codex).collect()
     }
 
     /// What Brigadier last learned about a provider (login, models, quota).
@@ -371,32 +385,29 @@ impl Runtime {
         }
     }
 
-    /// Checks every provider in the background: login, live models (cached on disk) and
-    /// quota. Results arrive as `providerChecked` events.
-    pub fn refresh_providers(self: &Arc<Self>) {
-        {
-            let mut state = self.state();
-            if state.refreshing {
-                return;
+    /// Checks every provider (or only `only`) in the background: login, live models (cached on
+    /// disk) and quota. Results arrive as `providerChecked` events, each provider's as soon as
+    /// it is known; a provider already being checked is not checked twice.
+    pub fn refresh_providers(self: &Arc<Self>, only: Option<ProviderKind>) {
+        for kind in ProviderKind::ALL {
+            if only.is_some_and(|only| only != kind) || !self.state().refreshing.insert(kind) {
+                continue;
             }
-            state.refreshing = true;
-        }
-        let runtime = self.clone();
-        self.spawn(async move {
-            let (claude, codex) = tokio::join!(
-                runtime.check(ProviderKind::Claude),
-                runtime.check(ProviderKind::Codex)
-            );
-            for overview in [claude, codex] {
+            let runtime = self.clone();
+            self.spawn(async move {
+                let overview = runtime.check(kind).await;
                 runtime.record_overview(overview).await;
-            }
-            runtime.state().refreshing = false;
-        });
+                runtime.state().refreshing.remove(&kind);
+            });
+        }
     }
 
     async fn check(&self, kind: ProviderKind) -> ProviderOverview {
         let provider = self.provider(kind);
         let previous = self.state().overviews.get(&kind).cloned();
+        let previous_status = previous
+            .as_ref()
+            .and_then(|overview| overview.status.clone());
         let status = provider.status().await;
         let mut overview = ProviderOverview {
             provider: kind,
@@ -410,6 +421,13 @@ impl Runtime {
         };
         if !status.logged_in {
             return overview;
+        }
+        // Just signed in or installed: say so now; models and quota can take a while.
+        let changed = previous_status.is_none_or(|previous| {
+            previous.logged_in != status.logged_in || previous.path != status.path
+        });
+        if changed {
+            self.record_overview(overview.clone()).await;
         }
         let (models, quota) = tokio::join!(provider.models(), provider.quota());
         let mut errors = Vec::new();

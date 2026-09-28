@@ -577,6 +577,18 @@ impl Provider for Codex {
             asked: HashSet::new(),
         })
     }
+
+    fn past_folders(&self) -> BoxFuture<'_, Vec<crate::history::PastFolder>> {
+        let dir = self.codex_home();
+        Box::pin(async move {
+            let Some(dir) = dir else {
+                return Vec::new();
+            };
+            tokio::task::spawn_blocking(move || crate::history::codex(&dir))
+                .await
+                .unwrap_or_default()
+        })
+    }
 }
 
 /// A started thread, its model, and warnings for the user.

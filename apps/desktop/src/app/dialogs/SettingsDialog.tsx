@@ -28,6 +28,7 @@ import {
   useModelGroups,
 } from "@/lib/setup";
 import { setDensity, updateSettings } from "@/state/actions";
+import { reopenOnboarding } from "@/state/onboarding";
 import { useApp } from "@/state/store";
 
 /** The defaults new conversations start from. The full Settings screen comes in Phase 9. */
@@ -209,6 +210,17 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
       </p>
       <ErrorLine error={error} />
       <DialogFooter>
+        <Button
+          type="button"
+          variant="ghost"
+          className="me-auto"
+          onClick={() => {
+            onOpenChange(false);
+            reopenOnboarding();
+          }}
+        >
+          Run setup again
+        </Button>
         <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
