@@ -213,7 +213,10 @@ impl SessionManager {
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,
-            owned_cwd: true,
+            // The orchestrator's live CLI works in the same folder (a fork finds its session by
+            // folder): sweeping the folder when the fork ends would end that CLI too, mid-turn.
+            // The fork's own process tree still ends with it.
+            owned_cwd: false,
             auto_compact: false,
         };
         let owner = format!("orch:{id}");
