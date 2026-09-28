@@ -46,7 +46,7 @@ function useTitle(): {
 }
 
 /**
- * The header over the thread, as ChatGPT's: a session's folder icon and the title (click to
+ * The header over the thread: a session's folder icon and the title (click to
  * rename), then the conversation's own controls (`children`) on the right.
  */
 export function TopBar({

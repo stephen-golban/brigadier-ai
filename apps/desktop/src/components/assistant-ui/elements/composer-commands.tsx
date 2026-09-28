@@ -33,7 +33,7 @@ type TriggerAdapter = NonNullable<
   ComponentProps<typeof ComposerPrimitive.Unstable_TriggerPopover>["adapter"]
 >;
 
-/** `/` opens the menu only as the message's first character, as ChatGPT's does. */
+/** `/` opens the menu only as the message's first character. */
 const atStart: Unstable_TriggerMatcher = (text, char, cursor) => {
   if (!text.startsWith(char)) return null;
   const query = text.slice(char.length, cursor);
@@ -58,7 +58,7 @@ function commandAdapter(commands: readonly ComposerCommand[]): TriggerAdapter {
     categories: () => [],
     categoryItems: () => [],
     search(query) {
-      // Over names and ids, as ChatGPT's: names that start with the query first, then those
+      // Over names and ids: names that start with the query first, then those
       // holding it, then those with its letters in order; alphabetical within each.
       const rankOf = (item: Unstable_TriggerItem) =>
         Math.min(fuzzyMatch(item.label, query)?.rank ?? 3, fuzzyMatch(item.id, query)?.rank ?? 3);
@@ -72,7 +72,7 @@ function commandAdapter(commands: readonly ComposerCommand[]): TriggerAdapter {
 }
 
 /**
- * The Slash commands element (assistant-ui's composer trigger popover), laid out as ChatGPT's
+ * The Slash commands element (assistant-ui's composer trigger popover), laid out as a
  * menu above the composer: icon, name and a grey description per row, the first row
  * highlighted, Enter runs it and clears the typed command. Render it inside
  * `ComposerPrimitive.Unstable_TriggerPopoverRoot`, next to the composer.

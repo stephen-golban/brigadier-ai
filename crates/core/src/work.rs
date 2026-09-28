@@ -639,7 +639,7 @@ pub struct WorkerStep {
 // ----- orchestrator steps -----------------------------------------------------------------
 
 /// What the orchestrator (or a Chat's model) did that the thread tells as a grey row, in
-/// ChatGPT's words. What already shows by itself (a worker's own row, a card) has none.
+/// its own words. What already shows by itself (a worker's own row, a card) has none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "type",
@@ -690,7 +690,7 @@ pub enum CompactionState {
     Failed { error: String },
 }
 
-/// A Chat's model compacting its context: ChatGPT's "Compacting context" row, then "Context
+/// A Chat's model compacting its context: a "Compacting context" row, then "Context
 /// compacted". A session's orchestrator never compacts (it starts afresh instead).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -766,7 +766,7 @@ pub struct UserRequest {
     pub undo: Option<RequestUndo>,
 }
 
-/// The user's Undo and Reapply of what a request's workers landed (ChatGPT's turn diff card).
+/// The user's Undo and Reapply of what a request's workers landed (the turn diff card).
 /// Each is a new commit, never a history rewrite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -824,7 +824,7 @@ pub struct CommitOutcome {
     pub pushed: bool,
 }
 
-/// What the side panel's Review tab compares (ChatGPT's scope picker).
+/// What the side panel's Review tab compares (the scope picker).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "type",

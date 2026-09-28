@@ -1,10 +1,10 @@
-import { Spin } from "@openai/apps-sdk-ui/components/Icon";
 import type { ComponentProps, ReactNode } from "react";
 
+import { Spinner } from "@/components/glyphs/spinner";
 import { cn } from "@/lib/utils";
 
 /**
- * The Message queue element (assistant-ui), laid out as ChatGPT's queue card on the composer
+ * The Message queue element (assistant-ui), laid out as a queue card on the composer
  * rail: one quiet row per waiting message, in the order they will be sent, no header and no
  * count. Brigadier's controls (steer, delete, the actions menu, the drag grip) come in as
  * children.
@@ -33,7 +33,7 @@ export function MessageQueuePaused({ children }: { children?: ReactNode }) {
   );
 }
 
-/** ChatGPT's queue glyph: lines of a list with an arrow into them. */
+/** The queue glyph: lines of a list with an arrow into them. */
 export function QueueGlyph({ className }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 20 20" fill="currentColor" className={className}>
@@ -76,7 +76,7 @@ export function MessageQueueItem({
     >
       <span className="text-muted-foreground/70 relative flex size-icon-button-sm shrink-0 items-center justify-center">
         {deciding ? (
-          <Spin className={cn(glyph, "animate-spin motion-reduce:animate-none")} />
+          <Spinner className={cn(glyph, "animate-spin motion-reduce:animate-none")} />
         ) : (
           <QueueGlyph className={glyph} />
         )}

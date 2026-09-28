@@ -2,13 +2,13 @@ import {
   Check,
   ChevronRight,
   Pause,
-  Spin,
   X,
   XCircle,
 } from "@openai/apps-sdk-ui/components/Icon";
 import type { ComponentProps, ReactNode } from "react";
 
 import { mono, paper } from "@/components/assistant-ui/elements/surfaces";
+import { Spinner } from "@/components/glyphs/spinner";
 import { cn } from "@/lib/utils";
 
 /** The Task card element (assistant-ui), on Brigadier's tokens. */
@@ -33,7 +33,7 @@ export function TaskStateIcon({
       return <Pause aria-hidden className={cn(base, "text-warning", className)} />;
     case "working":
       return (
-        <Spin
+        <Spinner
           aria-hidden
           className={cn(base, "text-muted-foreground animate-spin motion-reduce:animate-none", className)}
         />

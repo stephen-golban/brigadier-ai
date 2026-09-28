@@ -48,7 +48,7 @@ export type ComposerInputProps = {
 /**
  * The text field (assistant-ui's Lexical input): grows with its text up to a quarter of the
  * window, then scrolls, the top line fading under the edge once scrolled. Mentions, inline
- * code and links show as ChatGPT's chips while the text stays plain.
+ * code and links show as chips while the text stays plain.
  */
 export default function ComposerEditor({
   placeholder,
@@ -79,7 +79,7 @@ export default function ComposerEditor({
       line={line}
       placeholder={placeholder}
       autoFocus={autoFocus}
-      // Esc stops only on a second press (useEscToStop), as ChatGPT's does.
+      // Esc stops only on a second press (useEscToStop).
       cancelOnEscape={false}
       aria-label="Message input"
     >
@@ -99,8 +99,8 @@ const mentionLook: MentionLook = ({ directiveType, directiveId, label }) => {
 /**
  * The composer's keys and paste: ↑ in an empty field edits the last queued message, else
  * walks back through the conversation's prompts (↓ forward); a long paste becomes a
- * "Pasted text" attachment and pasted files attach, as ChatGPT's do; ⌃⇧D starts dictating at
- * the caret and stops (or cancels) again. The `@` and `/` menus take their keys first.
+ * "Pasted text" attachment and pasted files attach directly; ⌃⇧D starts dictating at the
+ * caret and stops (or cancels) again. The `@` and `/` menus take their keys first.
  */
 function ComposerKeys() {
   const [editor] = useLexicalComposerContext();

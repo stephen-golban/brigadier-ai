@@ -2,8 +2,8 @@ import { type SpeechSynthesisAdapter, WebSpeechSynthesisAdapter } from "@assista
 import { useSyncExternalStore } from "react";
 
 /**
- * "Read aloud" under an answer, with the system's voices: one answer at a time, as ChatGPT
- * reads one. Reading another stops the first.
+ * "Read aloud" under an answer, with the system's voices: one answer at a time.
+ * Reading another stops the first.
  */
 
 const voice = new WebSpeechSynthesisAdapter();

@@ -3,7 +3,7 @@ import type { ComponentProps, FC, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * ChatGPT's composer rail: a strip attached to the top of the composer card, inset from its
+ * The composer rail: a strip attached to the top of the composer card, inset from its
  * sides and tucked under its top edge, so only the rail's top corners show. It carries the
  * utility bar on a new chat (project, run location, branch) and, in a thread, cards such as
  * the queue and /status. Hidden while it holds nothing.

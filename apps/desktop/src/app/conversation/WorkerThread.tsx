@@ -160,7 +160,7 @@ function ActionRun({ items }: { items: readonly ActionItem[] }) {
   const activities = items.map(activityOf);
   const counts = new Map<ActivityKind, number>();
   for (const activity of activities) counts.set(activity.kind, (counts.get(activity.kind) ?? 0) + 1);
-  // Edits win the icon, as in ChatGPT; otherwise the most frequent kind does.
+  // Edits win the icon; otherwise the most frequent kind does.
   const [dominant] = counts.has("edit")
     ? ["edit" as const]
     : ([...counts].toSorted((a, b) => b[1] - a[1])[0] ?? ["run" as const]);

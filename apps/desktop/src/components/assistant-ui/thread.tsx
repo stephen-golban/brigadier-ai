@@ -46,7 +46,7 @@ import { cn } from "@/lib/utils";
  * Optional overrides: `AssistantMessage`, `Welcome` and `Composer` replace whole sections;
  * `BeforeMessages` renders above the message list (e.g. a "load earlier" control);
  * `MessageFooter` renders under each assistant message; `UserAttachments` above a user
- * message's text (its files, as ChatGPT shows them);
+ * message's text (its files);
  * `AboveComposer` renders between the messages and the composer (queue, notices).
  */
 export type ThreadComponents = {
@@ -56,7 +56,7 @@ export type ThreadComponents = {
   MessageFooter?: ComponentType | undefined;
   UserAttachments?: ComponentType | undefined;
   AboveComposer?: ComponentType | undefined;
-  /** Floats centred just above the composer, over the thread (ChatGPT's capsule). */
+  /** Floats centred just above the composer, over the thread (the capsule). */
   Capsule?: ComponentType | undefined;
   Composer?: ComponentType<ComposerProps> | undefined;
 };
@@ -126,7 +126,7 @@ export const Thread: FC<ThreadProps> = ({
   );
 };
 
-/** ChatGPT's "Drop to attach", over the thread while files are dragged onto it. */
+/** "Drop to attach", over the thread while files are dragged onto it. */
 const DropOverlay: FC = () => (
   <div
     aria-hidden
@@ -162,7 +162,7 @@ const ThreadRoot: FC<{
           className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
         >
           <div className="max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4">
-            {/* ChatGPT's new chat: the hero ends a little above the middle, the composer sits
+            {/* The new chat: the hero ends a little above the middle, the composer sits
                 at the bottom; each takes half the height. */}
             <AuiIf condition={isNewChatView}>
               <div className="flex min-h-fit grow basis-0 flex-col items-center justify-end pb-11">
@@ -228,7 +228,7 @@ const SystemMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-/** ↓ once scrolled up; while the model works below, ChatGPT's "•••" in its place. */
+/** ↓ once scrolled up; while the model works below, "•••" in its place. */
 const ThreadScrollToBottom: FC = () => {
   const running = useAuiState((s) => s.thread.isRunning);
   return (

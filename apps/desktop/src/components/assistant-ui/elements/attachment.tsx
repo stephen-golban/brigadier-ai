@@ -4,7 +4,7 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { ChevronRight, Spin, Warning } from "@openai/apps-sdk-ui/components/Icon";
+import { ChevronRight, Warning } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, type ReactNode, useContext } from "react";
 
 import {
@@ -18,9 +18,10 @@ import {
   TileRemove,
   useAttachmentText,
 } from "@/components/assistant-ui/elements/attachment-tile";
+import { Spinner } from "@/components/glyphs/spinner";
 
 /**
- * One composer attachment (the assistant-ui Attachment element, as ChatGPT draws it): an
+ * One composer attachment (the assistant-ui Attachment element): an
  * image is a thumbnail that opens a preview, a long paste a "Pasted text" card that can go
  * back into the text field, any other file a card with its kind. Each has a remove ×.
  */
@@ -48,7 +49,7 @@ const ComposerAttachment: FC = () => {
       />
     </AttachmentPrimitive.Remove>
   );
-  const spinner = <Spin aria-label="Uploading" className="size-icon-md animate-spin" />;
+  const spinner = <Spinner aria-label="Uploading" className="size-icon-md animate-spin" />;
 
   let tile;
   if (state === "error") {
@@ -100,7 +101,7 @@ const ComposerAttachment: FC = () => {
 };
 
 /**
- * ChatGPT's "Pasted text" card: the paste's first line and "Show in text field ›", which
+ * The "Pasted text" card: the paste's first line and "Show in text field ›", which
  * puts the text back into the composer and drops the attachment.
  */
 const PastedText: FC<{ source: AttachmentSource; busy: boolean; remove: ReactNode }> = ({

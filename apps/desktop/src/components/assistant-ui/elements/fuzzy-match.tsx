@@ -2,7 +2,7 @@ import { unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/re
 import type { FC } from "react";
 
 /**
- * Where `query` matches `text`, as ChatGPT's `/` and `@` menus match: at its start, anywhere
+ * Where `query` matches `text`, as the `/` and `@` menus match: at its start, anywhere
  * in it, or letter by letter in order. The positions of the matched letters, and how good the
  * match is (0 = start, 1 = anywhere, 2 = letter by letter); null when it doesn't match.
  */
@@ -25,8 +25,8 @@ export function fuzzyMatch(text: string, query: string): { rank: 0 | 1 | 2; at: 
 }
 
 /**
- * A menu row's name with what the typed query matched in full white and the rest dimmed, as
- * ChatGPT's menus show it. Inside a trigger popover it reads the query; elsewhere it is plain.
+ * A menu row's name with what the typed query matched in full white and the rest dimmed.
+ * Inside a trigger popover it reads the query; elsewhere it is plain.
  */
 export const MatchedText: FC<{ text: string }> = ({ text }) => {
   const query = unstable_useTriggerPopoverScopeContextOptional()?.query ?? "";

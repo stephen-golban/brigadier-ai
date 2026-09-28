@@ -16,7 +16,7 @@ import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
 /**
- * ChatGPT's Browser tab (⌘T): web pages beside the conversation, such as the app a worker is
+ * The Browser tab (⌘T): web pages beside the conversation, such as the app a worker is
  * running on localhost. The page is a system webview the shell lays over this tab's area (see
  * `src-tauri/src/browser.rs`); it is made on the first address entered and hidden whenever the
  * tab is, or something of the app's (a menu, a dialog) opens over it.

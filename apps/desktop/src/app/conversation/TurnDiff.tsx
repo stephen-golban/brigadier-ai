@@ -26,7 +26,7 @@ const Counts: FC<{ insertions: number; deletions: number; className?: string }> 
 );
 
 /**
- * ChatGPT's card under a finished turn's answer: "Edited N files +a −d", one row per file, and
+ * The card under a finished turn's answer: "Edited N files +a −d", one row per file, and
  * Undo, which turns into Reapply. It sums what the request's workers landed, so it keeps its
  * counts in both states; a request that landed nothing has no card.
  */

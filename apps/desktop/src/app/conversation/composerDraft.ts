@@ -8,7 +8,7 @@ import { type DraftMention, loadDraft, saveDraft } from "@/state/drafts";
 
 /** How long the composer rests before its draft is kept. */
 const DRAFT_SAVE_MS = 400;
-/** Prompts ↑ walks back through, as ChatGPT keeps per thread. */
+/** Prompts ↑ walks back through, kept per thread. */
 const HISTORY = 20;
 
 /** Where each remembered file or conversation's `@name` stands in `text`. */
@@ -73,9 +73,8 @@ export function useComposerDraft(
 
 /**
  * ↑ in an empty composer walks back through the conversation's last prompts and ↓ forward
- * again, as ChatGPT's does; editing a recalled prompt stops the walk. A recalled prompt's
- * mentions are remembered again, so they chip and send as before. Returns whether the key
- * was taken.
+ * again; editing a recalled prompt stops the walk. A recalled prompt's mentions are
+ * remembered again, so they chip and send as before. Returns whether the key was taken.
  */
 export function usePromptHistory(
   memory: MentionMemory | null,

@@ -3,7 +3,7 @@ import type { FC, SVGProps } from "react";
 /**
  * Brigadier's mark as a line glyph: the app icon's rounded square and its three chevrons,
  * outlined on the icon set's 24-unit grid in the current colour, sized by the caller. The new
- * chat's hero shows it faintly above the heading, where ChatGPT shows its own.
+ * chat's hero shows it faintly above the heading.
  */
 
 const FRAME =

@@ -108,7 +108,7 @@ function headerLabel(state: BlockState, elapsed: number): string {
   }
 }
 
-/** A live turn shows no header until it has worked this long (only "Thinking"), as ChatGPT. */
+/** A live turn shows no header until it has worked this long (only "Thinking"). */
 const HEADER_AFTER_MS = 2000;
 
 /**
@@ -276,7 +276,7 @@ function compactionLabel({ automatic, state }: BlockCompaction): string {
   }
 }
 
-/** ChatGPT's compaction line: "Compacting context" shimmers while it runs, then stays grey. */
+/** The compaction line: "Compacting context" shimmers while it runs, then stays grey. */
 const CompactionRow: FC<{ compaction: BlockCompaction }> = ({ compaction }) => (
   <div data-slot="compaction" data-state={compaction.state} className={STEP_ROW}>
     <TextShorterConcise aria-hidden className="size-icon-md shrink-0" />
@@ -290,7 +290,7 @@ const CompactionRow: FC<{ compaction: BlockCompaction }> = ({ compaction }) => (
 /**
  * A compaction the user asked for between turns, after the answer it followed: while it runs
  * a turn of its own ("Working for 5s" over the shimmering row), then only its row, with no
- * header or actions, as ChatGPT shows it.
+ * header or actions.
  */
 const CompactionBlock: FC<{ compaction: BlockCompaction }> = ({ compaction }) => {
   const live = compaction.state === "running";
@@ -359,11 +359,11 @@ const ActivityRow: FC<{ requestIds: string[] }> = ({ requestIds }) => {
 };
 
 /**
- * One request's answer, as ChatGPT shows a turn. While the request works (and after it was
- * stopped or failed) its work shows in place, in order: replies, workers and cards, then what
- * happens right now. Once it is done, everything before the answer folds into "Worked for
- * 3m 4s"; the cards that matter (decisions, failures, what needs the user) and the user's
- * follow-ups stay in view.
+ * One request's answer, shown as a turn. While the request works (and after it was stopped
+ * or failed) its work shows in place, in order: replies, workers and cards, then what happens
+ * right now. Once it is done, everything before the answer folds into "Worked for 3m 4s"; the
+ * cards that matter (decisions, failures, what needs the user) and the user's follow-ups stay
+ * in view.
  */
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
@@ -379,7 +379,7 @@ export const RequestBlock: FC = () => {
   const live = isLive(meta.state);
   const last = meta.texts.length - 1;
   // The final answer is streaming: the workers it waited for are all over. The work folds now,
-  // as ChatGPT folds when its final answer starts.
+  // when the final answer starts.
   const answering =
     meta.state === "working" &&
     meta.steps.length > 0 &&
@@ -473,7 +473,7 @@ export const RequestBlock: FC = () => {
   );
 };
 
-/** ChatGPT's line when a turn ran on another model than the one picked (a fallback). */
+/** The line shown when a turn ran on another model than the one picked (a fallback). */
 const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }> = ({
   model,
   picked,
@@ -488,9 +488,8 @@ const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }
 };
 
 /**
- * Under the answer, always shown: copy it, rate it and, in a Chat, ask for another answer and move
- * between answers (a session's answers have neither, as in ChatGPT's Codex mode); when it
- * came shows on hover.
+ * Under the answer, always shown: copy it, rate it and, in a Chat, ask for another answer and
+ * move between answers (a session's answers have neither); when it came shows on hover.
  */
 const AnswerActions: FC<{
   session: boolean;

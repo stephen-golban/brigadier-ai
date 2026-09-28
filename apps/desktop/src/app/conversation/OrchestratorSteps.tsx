@@ -25,7 +25,7 @@ const ICONS: Record<Kind, FC<{ className?: string }>> = {
   readPage: Globe,
 };
 
-/** How a run of steps sums them up, as ChatGPT does ("Read reports, messaged a worker"). */
+/** How a run of steps sums them up ("Read reports, messaged a worker"). */
 const PLURALS: Record<Kind, [one: string, many: string]> = {
   messaged: ["messaged a worker", "messaged workers"],
   readReport: ["read a report", "read reports"],
@@ -35,7 +35,7 @@ const PLURALS: Record<Kind, [one: string, many: string]> = {
   readPage: ["read a page", "read pages"],
 };
 
-/** A grey line of the thread's work, as ChatGPT draws its tool rows. */
+/** A grey line of the thread's work. */
 export const STEP_ROW = "text-muted-foreground flex min-h-row-sm min-w-0 items-center gap-2 text-sm";
 const row = STEP_ROW;
 
@@ -103,9 +103,8 @@ const StepRow: FC<{ step: BlockOrchestratorStep }> = ({ step }) => {
 };
 
 /**
- * What the orchestrator did between two replies, as ChatGPT tells its tool use: one grey line
- * per step ("Sent message to Add tests"), and a run of steps summed up in one line that opens
- * to each of them.
+ * What the orchestrator did between two replies: one grey line per step ("Sent message to
+ * Add tests"), and a run of steps summed up in one line that opens to each of them.
  */
 export const OrchestratorSteps: FC<{ steps: readonly BlockOrchestratorStep[] }> = ({ steps }) => {
   const [first] = steps;

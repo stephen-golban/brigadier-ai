@@ -148,7 +148,7 @@
   --radius-thread: 1rem;
   --radius-composer: 1.375rem;
   --radius-rail: 1.25rem;
-  /* ChatGPT's menus and tooltips: rounder than cards. */
+  /* Menus and tooltips: rounder than cards. */
   --radius-menu: 1.25rem;
   --radius-tooltip: 1rem;
   --radius-capsule: 9999px;
@@ -167,7 +167,7 @@
   --text-xl--line-height: 1.75rem;
   --text-2xl: 1.5rem;
   --text-2xl--line-height: 2rem;
-  /* The new chat's "What should we build?", ChatGPT's hero. */
+  /* The new chat's "What should we build?" hero text. */
   --text-hero: 1.875rem;
   --text-hero--line-height: 2.25rem;
   --text-code: 0.8125rem;
@@ -243,12 +243,12 @@
   /* The single neutral knob: hue of every low-chroma neutral. */
   --tint: 106;
 
-  /* ChatGPT's surfaces: page #181818, composer #353535, its utility bar #1f1f1f, menus #2d2d2d.
+  /* The surfaces: page #181818, composer #353535, utility bar #1f1f1f, menus #2d2d2d.
      The other neutrals keep their steps above the page. */
   --background: oklch(0.21 0.002 var(--tint));
   --foreground: oklch(0.985 0.002 var(--tint));
   --code-surface: color-mix(in oklab, var(--foreground) 4%, var(--background));
-  /* ChatGPT's composer: a lifted card; the rail a darker tab behind it (utility bar) or a
+  /* The composer: a lifted card; the rail a darker tab behind it (utility bar) or a
      dim card (queue, status). */
   --composer: color-mix(in oklab, var(--foreground) 15.5%, var(--background));
   --rail: color-mix(in oklab, var(--foreground) 6%, var(--background));
@@ -275,7 +275,7 @@
   --full-access-foreground: oklch(0.215 0.003 var(--tint));
   --success: oklch(0.765 0.15 155);
   --success-foreground: oklch(0.215 0.003 var(--tint));
-  /* Blue: links inside the thread ("Continued from chat"), as ChatGPT colours them. */
+  /* Blue: links inside the thread ("Continued from chat"). */
   --link: oklch(0.7 0.15 255);
   --border: oklch(0.985 0.002 var(--tint) / 10%);
   --input: oklch(0.985 0.002 var(--tint) / 15%);

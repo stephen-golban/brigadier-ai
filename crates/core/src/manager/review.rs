@@ -1,4 +1,4 @@
-//! The side panel's Review tab (ChatGPT's): what a session changed, by scope, as a unified
+//! The side panel's Review tab: what a session changed, by scope, as a unified
 //! patch with its files. It only reads: nothing is staged, committed or written.
 
 use std::collections::{BTreeSet, HashMap};

@@ -147,7 +147,7 @@ function fileIcon(name: string): ReactNode {
   return <FileTypeIcon name={name} className={CHIP_ICON} />;
 }
 
-/** One chip, inline in the composer's text: ChatGPT's blue mention, mono code pill or link. */
+/** One chip, inline in the composer's text: a blue mention, mono code pill or link. */
 const ComposerChip: FC<DirectiveChipProps> = (chip) => {
   const look = useContext(MentionLookContext);
   if (chip.directiveType === CODE) {
@@ -305,7 +305,7 @@ function ChipsPlugin({
 }
 
 /**
- * assistant-ui's Lexical composer input with ChatGPT's inline chips: a mention shows its icon
+ * assistant-ui's Lexical composer input with inline chips: a mention shows its icon
  * and blue name, `` `code` `` a mono pill, a link a globe and blue text, while the composer's
  * text stays plain. It grows with its text up to `max-h-composer-max`, then scrolls, the top
  * line fading under the edge. `children` are further Lexical plugins.
@@ -325,7 +325,7 @@ export const ChipComposerInput: FC<
   const directivePluginProps = useMemo(
     () => ({
       onDirectiveSelect: (item: Unstable_TriggerItem) => {
-        // A space after the chip, as a picked mention gets in ChatGPT's composer.
+        // A space after the chip, as a picked mention gets.
         editor.current?.update(
           () => {
             const selection = $getSelection();

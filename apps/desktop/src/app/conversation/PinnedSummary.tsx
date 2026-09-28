@@ -122,8 +122,8 @@ function hostOf(url: string): string {
 }
 
 /**
- * The session's sources, as ChatGPT's pinned card lists them: links in the user's messages
- * (as soon as they are sent) and pages the orchestrator read, first seen first.
+ * The session's sources, listed in the pinned card: links in the user's messages (as soon as
+ * they are sent) and pages the orchestrator read, first seen first.
  */
 function useSources(conversationId: string): string[] {
   const messages = useApp((s) => s.threads[conversationId]?.items);
@@ -293,7 +293,7 @@ function usePullRequest(conversationId: string): PullRequest | null {
   return found;
 }
 
-/** ChatGPT's pull request row: the branch's pull request, opened in the browser. */
+/** The pull request row: the branch's pull request, opened in the browser. */
 function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
   const state = PULL_REQUEST[pullRequest.state];
   return (
@@ -317,8 +317,8 @@ function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
 }
 
 /**
- * A session's summary, pinned at the top right of its thread as ChatGPT does: the project,
- * the branch (with what it changed, for a worktree session), the workers and the plan.
+ * A session's summary, pinned at the top right of its thread: the project, the branch (with
+ * what it changed, for a worktree session), the workers and the plan.
  */
 export function PinnedSummary({ conversation }: { conversation: Conversation }) {
   const shown = useApp((s) => s.pinnedSummary);

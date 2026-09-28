@@ -1,4 +1,4 @@
-//! The pinned card's pull request row (ChatGPT's "Existing pull request"): the GitHub pull
+//! The pinned card's pull request row ("Existing pull request"): the GitHub pull
 //! request of a session's branch, looked up with the user's `gh`. Read only: Brigadier never
 //! creates or edits one.
 

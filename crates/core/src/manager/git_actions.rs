@@ -1,4 +1,4 @@
-//! The pinned card's Git actions (ChatGPT's): the user's own commit and push in a session's
+//! The pinned card's Git actions: the user's own commit and push in a session's
 //! checkout. They are never automatic (PLAN §4); a commit waits for any landing on the same
 //! repository (the landing lock). A blank commit message is written by the cheapest model of
 //! the session's provider, in a throwaway CLI session that is disposed of right after.

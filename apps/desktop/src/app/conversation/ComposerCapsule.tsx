@@ -1,9 +1,10 @@
-import { Check, Spin, X } from "@openai/apps-sdk-ui/components/Icon";
+import { Check, X } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, type ReactNode, useContext } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { ComposerTargetContext } from "@/app/conversation/composerTarget";
 import { mono } from "@/components/assistant-ui/elements/surfaces";
+import { Spinner } from "@/components/glyphs/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DiffStat, FileStat, Plan, Task, TaskState } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
@@ -121,7 +122,7 @@ const Pill: FC<{ tip: ReactNode; children: ReactNode }> = ({ tip, children }) =>
   </Tooltip>
 );
 
-/** ChatGPT's 12 pt progress donut. */
+/** A 12 pt progress donut. */
 const Donut: FC<{ done: number; total: number }> = ({ done, total }) => (
   <span aria-hidden className="text-link size-icon-xs shrink-0 rounded-full border border-current p-px">
     <span
@@ -136,7 +137,7 @@ const StepGlyph: FC<{ status: StepStatus }> = ({ status }) => {
     case "done":
       return <Check className="text-muted-foreground size-icon-xs" />;
     case "active":
-      return <Spin className="size-icon-xs animate-spin motion-reduce:animate-none" />;
+      return <Spinner className="size-icon-xs animate-spin motion-reduce:animate-none" />;
     case "failed":
       return <X className="text-destructive size-icon-xs" />;
     case "pending":
@@ -145,9 +146,9 @@ const StepGlyph: FC<{ status: StepStatus }> = ({ status }) => {
 };
 
 /**
- * ChatGPT's capsule above the composer while a request works: "Step n / m" of its plan and
- * "N files changed +a −d" of what its workers landed, updated on every landing. It makes room
- * for a pending decision and goes when the request stops working.
+ * The capsule above the composer while a request works: "Step n / m" of its plan and "N files
+ * changed +a −d" of what its workers landed, updated on every landing. It makes room for a
+ * pending decision and goes when the request stops working.
  */
 export const ComposerCapsule: FC = () => {
   const conversationId = useContext(ComposerTargetContext)?.conversation?.id ?? "";

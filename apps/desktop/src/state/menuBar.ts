@@ -4,8 +4,8 @@ import { runningConversations, useActivity } from "@/state/activity";
 import { useApp } from "@/state/store";
 
 /**
- * Keeps the menu-bar item's "Running" list, as ChatGPT's menu-bar extra has one: the
- * conversations with a turn or a worker in progress, by title. Picking one opens it.
+ * Keeps the menu-bar item's "Running" list: the conversations with a turn or a worker in
+ * progress, by title. Picking one opens it.
  */
 
 let listed = "";

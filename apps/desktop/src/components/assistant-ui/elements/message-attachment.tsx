@@ -11,7 +11,7 @@ import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
- * The Message attachment element (assistant-ui), as ChatGPT shows a sent message's files:
+ * The Message attachment element (assistant-ui): a sent message's files show as
  * images as thumbnails that open a preview, other files as cards with their kind and size.
  */
 export function MessageAttachments({

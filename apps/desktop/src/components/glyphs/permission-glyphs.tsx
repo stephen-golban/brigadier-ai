@@ -1,7 +1,7 @@
 import type { FC, SVGProps } from "react";
 
 /**
- * ChatGPT's permission icons that the icon set lacks: its shield (the outline of
+ * The permission icons that the icon set lacks: a shield (the outline of
  * apps-sdk-ui's ShieldCheck, MIT) with a prompt inside for Approve for me, and with an
  * exclamation mark for Full access. Drawn like the set's icons (24-unit grid, current
  * colour), sized by the caller.

@@ -1,4 +1,4 @@
-//! Side chats (ChatGPT's "Side chat" tab, ⌥⌘S): a temporary Chat beside a conversation, for
+//! Side chats (the "Side chat" tab, ⌥⌘S): a temporary Chat beside a conversation, for
 //! questions about it that shouldn't enter its thread. Each of its turns carries the
 //! conversation's latest messages; like any Chat it changes nothing. It goes when its tab
 //! closes, or with the conversation.

@@ -44,7 +44,7 @@ const formatter: Unstable_DirectiveFormatter = {
 };
 
 /**
- * The Mentions element (assistant-ui's composer trigger popover) as ChatGPT's `@` menu: one
+ * The Mentions element (assistant-ui's composer trigger popover) as an `@` menu: one
  * list above the composer mixing what can be mentioned, icon, name and grey detail per row,
  * the first row highlighted, filtered as you type. `search` returns the rows for a query; the
  * composer input hears each pick (it becomes a chip there). Render it inside

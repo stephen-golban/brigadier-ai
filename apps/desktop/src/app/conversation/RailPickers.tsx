@@ -44,22 +44,22 @@ import { loadProviders, select, updateProject } from "@/state/actions";
 import { useApp } from "@/state/store";
 
 /*
- * The utility bar on ChatGPT's composer rail, shown on a new chat only: the project, where
- * the session works, and its branch. Each is a ghost pill (icon and value, no chevron) that
- * opens a menu upward. A session's repository and environment are fixed once it starts, so
- * the bar goes with the first send.
+ * The utility bar on the composer rail, shown on a new chat only: the project, where the
+ * session works, and its branch. Each is a ghost pill (icon and value, no chevron) that opens
+ * a menu upward. A session's repository and environment are fixed once it starts, so the bar
+ * goes with the first send.
  */
 
 /** What "Create branch for this session" suggests before a name, unless the project says. */
 const DEFAULT_BRANCH_PREFIX = "brigadier/";
 
-/** ChatGPT's menu surface, shared by the rail's menus. */
+/** The menu surface, shared by the rail's menus. */
 const MENU = "rounded-menu p-1";
 const ROW =
   "rounded-capsule min-h-control-sm flex w-full items-center gap-2 px-2 text-start text-sm outline-none transition-colors [&_svg]:size-icon-md [&_svg]:shrink-0";
 const ROW_ACTIVE = "bg-foreground/8";
 
-/** A rail trigger: ChatGPT's composer pill, in the rail's bright text. */
+/** A rail trigger: the composer's pill, in the rail's bright text. */
 const RailPill = forwardRef<
   HTMLButtonElement,
   { icon: ReactNode; label: string; title?: string; children: ReactNode }
@@ -141,9 +141,8 @@ function SearchField({
 type ProjectRow = { key: string; run: () => void };
 
 /**
- * ChatGPT's project picker: "Search projects", the projects (✓ on the one in use), "New
- * project" and "Don't work in a project" (a Chat). With no project the pill reads "Choose
- * project".
+ * The project picker: "Search projects", the projects (✓ on the one in use), "New project"
+ * and "Don't work in a project" (a Chat). With no project the pill reads "Choose project".
  */
 export function ProjectCombobox({
   project,
@@ -290,7 +289,7 @@ const PLACES: Record<EnvironmentKind, { label: string; icon: ReactNode }> = {
   newWorktree: { label: "New worktree", icon: <BranchAlt /> },
 };
 
-/** A usage window as ChatGPT names it: "Weekly", "5h". */
+/** A usage window's name: "Weekly", "5h". */
 function usageName(window: QuotaWindow): string {
   return window.windowMinutes === 10080 ? "Weekly" : windowName(window);
 }
@@ -338,7 +337,7 @@ function UsageRemaining({ provider }: { provider: string }) {
   );
 }
 
-/** ChatGPT's "Work in" menu: the local checkout or a new worktree, and the usage left. */
+/** The "Work in" menu: the local checkout or a new worktree, and the usage left. */
 export function WorkInMenu({ resolved }: { resolved: ResolvedDraft }) {
   const [open, setOpen] = useState(false);
   const projectId = resolved.project?.id ?? null;
@@ -413,7 +412,7 @@ function slug(text: string): string {
 }
 
 /**
- * "Create branch for this session": ChatGPT's create dialog, saying what Brigadier does. The
+ * "Create branch for this session": the create dialog, saying what Brigadier does. The
  * branch is created from the picked one when the session starts; the user's checkout stays
  * on its branch.
  */
@@ -517,9 +516,9 @@ function CreateBranchForm({ open, onOpenChange, resolved, from }: CreateBranchPr
 }
 
 /**
- * ChatGPT's branch popover: a search (not focused on open), the branches (default and
- * checked-out first, ✓ on the pick) in a fixed-height list, then "Create branch for this
- * session…". In a new worktree it picks the branch the session starts from.
+ * The branch popover: a search (not focused on open), the branches (default and checked-out
+ * first, ✓ on the pick) in a fixed-height list, then "Create branch for this session…". In a
+ * new worktree it picks the branch the session starts from.
  */
 export function BranchPopover({ resolved }: { resolved: ResolvedDraft }) {
   const [open, setOpen] = useState(false);
@@ -571,7 +570,7 @@ export function BranchPopover({ resolved }: { resolved: ResolvedDraft }) {
           side="top"
           align="start"
           className={cn(MENU, "w-xs")}
-          // ChatGPT leaves the search unfocused: focus stays on the menu, where ↑/↓ still move.
+          // Leaves the search unfocused: focus stays on the menu, where ↑/↓ still move.
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             (event.currentTarget as HTMLElement | null)?.focus();

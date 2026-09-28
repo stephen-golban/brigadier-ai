@@ -1,4 +1,4 @@
-//! The side panel's Terminal tab (ChatGPT's): one shell per session, in its checkout, on a
+//! The side panel's Terminal tab: one shell per session, in its checkout, on a
 //! pseudo terminal. Its output streams live to the connections that opened it, and a tail is
 //! kept so a tab opened again shows what came before; none of it is stored. A shell ends when
 //! its tab closes, its session is archived or deleted, or the daemon quits.

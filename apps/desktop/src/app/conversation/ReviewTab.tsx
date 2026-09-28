@@ -69,9 +69,9 @@ import {
 import { toast } from "@/state/toasts";
 
 /**
- * ChatGPT's Review tab in the side panel: a scope ("Last Turn", "Uncommitted", …) and its
- * total, every changed file's diff stacked under a sticky header, and the file list beside
- * them. It only reads; a line's "+" quotes it into the composer to comment on.
+ * The Review tab in the side panel: a scope ("Last Turn", "Uncommitted", …) and its total,
+ * every changed file's diff stacked under a sticky header, and the file list beside them. It
+ * only reads; a line's "+" quotes it into the composer to comment on.
  */
 
 function scopeLabel(scope: ReviewScope, review: ReviewDiff | null): string {
@@ -508,7 +508,7 @@ const JumpToFile: FC<{ files: ReviewFile[]; onJump: (path: string) => void }> = 
   );
 };
 
-/** ChatGPT's badge for how a file changed: a square for modified, a letter for the rest. */
+/** The badge for how a file changed: a square for modified, a letter for the rest. */
 const StatusBadge: FC<{ file: ReviewFile }> = ({ file }) => {
   switch (file.status) {
     case "modified":

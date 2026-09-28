@@ -6,8 +6,8 @@ import type { MentionMemory, MentionTarget } from "@/app/conversation/Mentions";
 import type { Conversation, Mention } from "@/ipc/generated";
 
 /**
- * A queued message pulled into the composer to edit (ChatGPT's "Edit message"): the slot it
- * goes back to when sent, and its mentions. Taken by the next send in that conversation.
+ * A queued message pulled into the composer to edit ("Edit message"): the slot it goes back
+ * to when sent, and its mentions. Taken by the next send in that conversation.
  */
 export class PulledSlot {
   private slot: { conversationId: string; index: number; mentions: Mention[] } | null = null;

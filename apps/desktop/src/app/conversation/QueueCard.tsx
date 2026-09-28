@@ -46,7 +46,7 @@ function useQueueItems(conversationId: string | null): QueuedMessage[] {
 }
 
 /**
- * Pulls a queued message into the empty composer (ChatGPT's "Edit message", and ↑ on an empty
+ * Pulls a queued message into the empty composer ("Edit message", and ↑ on an empty
  * composer): the row leaves the queue, its text and attachments fill the composer, and
  * sending puts it back in the same slot. `null` while there is nothing to pull.
  */
@@ -98,8 +98,8 @@ function dropIndex(list: HTMLElement, y: number, dragged: number): number {
 type Drag = { id: string; from: number; to: number };
 
 /**
- * ChatGPT's queue card on the composer rail: what waits for the running turn, one row each
- * (glyph, text, ↳ Steer, delete, ⋯), dragged by the grip that replaces the glyph on hover.
+ * The queue card on the composer rail: what waits for the running turn, one row each (glyph,
+ * text, ↳ Steer, delete, ⋯), dragged by the grip that replaces the glyph on hover.
  * Steering, moving and deleting go through assistant-ui's queue (the view's adapter talks to
  * the daemon). After an interrupt the queue pauses until resumed.
  */

@@ -27,9 +27,9 @@ export const FORK_PLACES: readonly { place: ForkPlace; title: string; detail: st
 ];
 
 /**
- * "Fork chat from here" under an answer, as ChatGPT has it. A session asks where the fork
- * works (its checkout or a new worktree, from the commit current at this answer); a Chat,
- * which works nowhere, forks at once.
+ * "Fork chat from here" under an answer. A session asks where the fork works (its checkout
+ * or a new worktree, from the commit current at this answer); a Chat, which works nowhere,
+ * forks at once.
  */
 export const ForkMenu: FC<{ conversationId: string; kind: ConversationKind; messageId: string }> = ({
   conversationId,

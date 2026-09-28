@@ -10,6 +10,6 @@ export type ModelChoice = { provider: ProviderKind,
  */
 model: string | null, effort: string | null, 
 /**
- * On the model's fast service tier, where it has one (ChatGPT's "Fast").
+ * On the model's fast service tier, where it has one (labeled "Fast").
  */
 fast?: boolean, };

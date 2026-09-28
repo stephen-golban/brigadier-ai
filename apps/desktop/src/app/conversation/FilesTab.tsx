@@ -38,9 +38,9 @@ import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
 /**
- * ChatGPT's Files tab (⌘P): the session checkout's files as a tree with a search field, and
- * one file shown with its line numbers and colours, opened from the tree, a search result or
- * a file link in an answer.
+ * The Files tab (⌘P): the session checkout's files as a tree with a search field, and one
+ * file shown with its line numbers and colours, opened from the tree, a search result or a
+ * file link in an answer.
  */
 
 /** A file the tab shows, and the line to bring into view. */

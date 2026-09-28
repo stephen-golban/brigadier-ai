@@ -24,7 +24,7 @@ export type PatchFile = {
   rows: DiffRow[];
 };
 
-/** Unchanged lines kept in view on each side of a change, as ChatGPT's Review keeps one. */
+/** Unchanged lines kept in view on each side of a change, for context around the diff. */
 const KEEP = 1;
 
 /** What git writes after `\` in a quoted path, other than octal bytes. */

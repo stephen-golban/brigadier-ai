@@ -21,7 +21,7 @@ import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import type { Token } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
-/** How ChatGPT names a block's language in its header ("Bash", "Diff", "TypeScript"). */
+/** How a block's language is named in its header ("Bash", "Diff", "TypeScript"). */
 const NAMES: Record<string, string> = {
   sh: "Bash",
   bash: "Bash",
@@ -79,7 +79,7 @@ function useTokens(code: string, language: string): Token[][] | null {
   return tokens?.code === code ? tokens.lines : null;
 }
 
-/** A diff's line in ChatGPT's colours: + green, − red, @@ blue, file headers grey italic. */
+/** A diff's line in colour: + green, − red, @@ blue, file headers grey italic. */
 function diffLineClass(line: string): string {
   if (line.startsWith("+++") || line.startsWith("---")) return "text-muted-foreground italic";
   if (line.startsWith("+")) return "text-success";
@@ -156,7 +156,7 @@ const Card: FC<{ header: ReactNode; children: ReactNode }> = ({ header, children
 );
 
 /**
- * ChatGPT's code block: a card with `</>` and the language on the left, "Enable word wrap"
+ * The code block: a card with `</>` and the language on the left, "Enable word wrap"
  * and Copy on the right, the code syntax-highlighted (a diff in its own colours). A mermaid
  * block draws its diagram.
  */

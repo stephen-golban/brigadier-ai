@@ -429,9 +429,9 @@ export function buildBlocks(
 }
 
 /**
- * A request steered into the running turn of the block just before it joins that block, as
- * ChatGPT shows a follow-up sent while it works: its message becomes a bubble inside the
- * block, its work follows, and the header times from the steer.
+ * A request steered into the running turn of the block just before it joins that block: its
+ * message becomes a bubble inside the block, its work follows, and the header times from the
+ * steer.
  */
 function joinSteered(blocks: Block[], requests: BoardDigest["requests"]): Block[] {
   const joined: Block[] = [];

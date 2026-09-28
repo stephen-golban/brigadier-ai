@@ -17,7 +17,7 @@ import {
 import type { Rating } from "@/ipc/generated";
 
 /**
- * "Rate response" under an answer, as ChatGPT has it: one button that opens "Good response"
+ * "Rate response" under an answer: one button that opens "Good response"
  * and "Bad response", and shows the thumb the user picked. The items are `RateItem`s, bound
  * to wherever the rating goes.
  */

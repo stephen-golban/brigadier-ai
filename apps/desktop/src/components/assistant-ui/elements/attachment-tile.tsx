@@ -36,7 +36,7 @@ export const AttachmentReaderContext = createContext<AttachmentReader | null>(nu
 /** A tile's bytes: a file not stored yet, or a stored reference. */
 export type AttachmentSource = { file?: File | undefined; ref?: AttachmentRef | undefined };
 
-/** A paste this long becomes a "Pasted text" attachment instead of text, as ChatGPT does. */
+/** A paste this long becomes a "Pasted text" attachment instead of text. */
 export const PASTE_AS_ATTACHMENT_CHARS = 5000;
 export const PASTED_TEXT_NAME = "Pasted text.txt";
 
@@ -163,7 +163,7 @@ export function TileRemove({
 }
 
 /**
- * ChatGPT's image attachment: a rounded square thumbnail that opens a full-window preview.
+ * The image attachment: a rounded square thumbnail that opens a full-window preview.
  * `children` go over it (the remove button).
  */
 export function ImageTile({
@@ -254,7 +254,7 @@ const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 8;
 
 /**
- * ChatGPT's "Image preview": the image over the dimmed window, fitted to it, with a close
+ * The "Image preview": the image over the dimmed window, fitted to it, with a close
  * button at the top right and a "− 100% +" zoom pill at the bottom (+, − and 0 zoom too).
  */
 function ImagePreview({

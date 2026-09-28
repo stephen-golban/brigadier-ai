@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 /*
- * ChatGPT's action cards, which take the composer's place while a decision waits: an
+ * The action cards, which take the composer's place while a decision waits: an
  * approval ("Terminal", the justification, the command, Deny / Allow once), a question
  * (numbered answers, the free-text row, Skip) and "Implement this plan?". One shell, same
  * width and radius as the composer card.

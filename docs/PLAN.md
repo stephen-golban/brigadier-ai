@@ -107,7 +107,7 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
   - **Local checkout:** reviewed task commits land directly on the branch you pick, in your own checkout. Workers still use temporary worktrees for parallel work, created from that branch's latest commit. Your uncommitted changes are never overwritten, and Brigadier asks whether workers should see them.
   - **New worktree:** you pick a base branch, and the session gets its own worktree on a new branch. Worker worktrees are created from the session branch and merge back into it. When the work is done, the session branch merges into the base branch after your one-click go-ahead.
   - In both modes Brigadier's git engine performs merges on the orchestrator's instruction, and a merge worker resolves conflicts.
-- **Chat:** a plain conversation outside any project, listed under "Chats" in the sidebar, like ChatGPT. It is **not** a Brigadier session: there is no orchestrator and no workers. You talk directly to the model you picked. Chats get:
+- **Chat:** a plain conversation outside any project, listed under "Chats" in the sidebar. It is **not** a Brigadier session: there is no orchestrator and no workers. You talk directly to the model you picked. Chats get:
   - web search and attachments;
   - plugins and connectors from the registry;
   - the Personal Brain as memory;
@@ -115,7 +115,7 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
   - image generation, quietly routed to Codex and shown inline.
 
   A chat runs in a scratch folder, with no repo and no code editing.
-- **Sidebar** (ChatGPT layout): New chat and Search, then navigation items (Plugins, Scheduled, Usage), then Pinned, then **Projects** (folders with their sessions nested), then **Chats**.
+- **Sidebar:** New chat and Search, then navigation items (Plugins, Scheduled, Usage), then Pinned, then **Projects** (folders with their sessions nested), then **Chats**.
 - **Lifecycle** (applies to both sessions and chats):
   - **Hibernate:** automatic when idle. CLI processes stop and temp files are cleaned up, but the session stays in the sidebar, ready to continue.
   - **Archive:** hidden in an Archived view. Workers stop and all leftovers are cleaned up. The transcript and artifacts are kept, so the session is restorable; the orchestrator restarts from the Brain and the transcript. Unmerged branches are kept.
@@ -156,7 +156,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
   - A lint rule bans raw colors and arbitrary pixel values.
   - apps-sdk-ui icons replace lucide.
 - **Bare-bones desktop UI:**
-  - A ChatGPT-style sidebar (Projects with nested sessions, and Chats).
+  - A sidebar with Projects (sessions nested) and Chats.
   - A session view using assistant-ui Thread and Composer on ExternalStoreRuntime.
 - **Inspector panel** (developer view) showing the live event stream, process list, and performance metrics against the §4 budgets.
 - CI on macOS, Windows, and Linux: build, lint, and a launch smoke check on all three.
@@ -453,8 +453,8 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 | Q21 | MIT, no telemetry, universal macOS 14+, DMG + Homebrew, signed updater, `ai.brigadier.app` |
 | Q22 | Cross-platform core from day one; Windows and Linux ship in Phase 10 |
 | Q23 | Composer environment: Local checkout (commits on the picked branch) or New worktree (session branch from the picked base, merged into it on approval); worker worktrees in both |
-| Q24 | Chats are plain ChatGPT-style conversations with the picked model (no orchestrator), under "Chats" in the sidebar |
+| Q24 | Chats are plain conversations with the picked model (no orchestrator), under "Chats" in the sidebar |
 | Q25 | Archive (hidden, cleaned up, restorable) / Delete (permanent, Brain knowledge kept by default); idle sessions hibernate |
 | Q26 | One permission picker combining autonomy and sandbox; outward actions always ask (levels finalized in Q27) |
 | Q27 | Levels: Ask for approval / Approve for me (default; stricter fusion review approves big plans on your behalf; stops only for questions only you can answer) / Full access (no sandbox, orange pill) |
-| — | Additions (2026-09-24): leave-no-litter cleanup ledger and litter guard; BB-parity composer; message queue (steer, edit, reorder, pause/resume); ChatGPT-style sidebar; assistant-ui design system + elements as the full UI kit; dark-only theme with Compact / Normal density, everything token-driven |
+| — | Additions (2026-09-24): leave-no-litter cleanup ledger and litter guard; BB-parity composer; message queue (steer, edit, reorder, pause/resume); a sidebar with Projects and Chats; assistant-ui design system + elements as the full UI kit; dark-only theme with Compact / Normal density, everything token-driven |

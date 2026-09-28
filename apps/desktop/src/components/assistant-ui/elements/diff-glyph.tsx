@@ -1,4 +1,4 @@
-/** ChatGPT's diff glyph: a square with a plus over a minus. */
+/** The diff glyph: a square with a plus over a minus. */
 export function DiffGlyph({ className }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 20 20" fill="currentColor" fillRule="evenodd" className={className}>

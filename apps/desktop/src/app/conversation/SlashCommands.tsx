@@ -59,9 +59,9 @@ export function useLatestAnswer(): string | null {
 }
 
 /**
- * ChatGPT's `/` menu in the composer, with the commands that mean something in Brigadier:
- * Archive, Compact (Chats whose CLI compacts), Fork, Init (sessions), Model, New, Pin, Rename
- * and Status. A draft has only Model.
+ * The `/` menu in the composer, with the commands that mean something in Brigadier: Archive,
+ * Compact (Chats whose CLI compacts), Fork, Init (sessions), Model, New, Pin, Rename and
+ * Status. A draft has only Model.
  */
 export const SlashCommands: FC<{
   conversation: Conversation | null;

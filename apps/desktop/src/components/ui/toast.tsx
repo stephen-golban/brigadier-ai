@@ -50,8 +50,8 @@ function ToastItem({ toast }: { toast: Toast }) {
 }
 
 /**
- * Where toasts show: centred at the top of the conversation pane, just under its header, as
- * ChatGPT shows "Changes reverted" and "Archived chat".
+ * Where toasts show: centred at the top of the conversation pane, just under its header, for
+ * messages like "Changes reverted" and "Archived chat".
  */
 export function Toaster({ className }: { className?: string }) {
   const toasts = useToasts((s) => s.toasts);

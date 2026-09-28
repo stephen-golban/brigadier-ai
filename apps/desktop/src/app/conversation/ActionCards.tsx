@@ -44,9 +44,9 @@ import { answerCard, answerQuestion, decidePlan } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
 /*
- * ChatGPT puts a pending decision in the composer's place: the approval card, the question
- * card and "Implement this plan?". Brigadier keeps a one-line message field in each (the
- * user can always talk to the orchestrator; sending steers or queues as usual).
+ * A pending decision takes the composer's place: the approval card, the question card and
+ * "Implement this plan?". Brigadier keeps a one-line message field in each (the user can
+ * always talk to the orchestrator; sending steers or queues as usual).
  */
 
 export type PendingAction = { type: "approval" | "question" | "plan"; id: string };
@@ -146,7 +146,7 @@ function quote(arg: string): string {
 
 type Shown = { icon: ReactNode; kind: string; title: string; detail?: string | undefined; body: ReactNode };
 
-/** ChatGPT's kinds ("Terminal", "Edit files", "Internet access") for what is asked. */
+/** The kinds shown ("Terminal", "Edit files", "Internet access") for what is asked. */
 function describe(approval: Approval, taskNumber?: number, landingNumber?: number): Shown {
   const actor = taskNumber === undefined ? null : `task-${taskNumber}`;
   const { subject } = approval;
@@ -166,7 +166,7 @@ function describe(approval: Approval, taskNumber?: number, landingNumber?: numbe
       return {
         icon,
         kind,
-        // The asker's own justification, as ChatGPT shows it; else the plain question.
+        // The asker's own justification, when it has one; else the plain question.
         title: request.reason || `Do you want ${actor ?? "the model"} to ${what}?`,
         detail: request.reason && actor ? `Asked by ${actor}` : undefined,
         body: (
@@ -298,7 +298,7 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
 }
 
 /**
- * The ⌄ half of ChatGPT's split "Allow once". Its "Allow similar commands" becomes an exact
+ * The ⌄ half of the split "Allow once" button. "Allow similar commands" becomes an exact
  * grant: this command, for the rest of this worker's CLI session, never saved.
  */
 function GrantMenu({
@@ -348,8 +348,8 @@ function GrantMenu({
 // ----- question ----------------------------------------------------------------------------
 
 /**
- * ChatGPT's question card: numbered answers (1–9 pick, ↑/↓ move, a pick sends after a beat),
- * then "No, and tell Brigadier what to do differently" and Skip. × puts it aside.
+ * The question card: numbered answers (1–9 pick, ↑/↓ move, a pick sends after a beat), then
+ * "No, and tell Brigadier what to do differently" and Skip. × puts it aside.
  */
 function QuestionAction({
   id,
@@ -375,7 +375,7 @@ function QuestionAction({
   const options = question.options;
   const answer = (text: string) =>
     action.run(() => answerQuestion(question.conversationId, question.id, text));
-  // The row lights up, then the answer goes, as ChatGPT's does.
+  // The row lights up, then the answer goes.
   const choose = (index: number) => {
     const option = options[index];
     if (option === undefined || action.busy) return;

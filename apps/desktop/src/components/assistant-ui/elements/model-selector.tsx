@@ -75,10 +75,10 @@ export function effortFor(model: ModelInfo | null, effort: string | null): strin
   return model.defaultEffort;
 }
 
-/** A two-line row (a model and what it's for): rounded, not a pill, as ChatGPT's are. */
+/** A two-line row (a model and what it's for): rounded, not a pill. */
 const TALL_ROW = "h-auto rounded-xl";
 
-/** A section heading, in ChatGPT's plain grey. */
+/** A section heading, in plain grey. */
 const Section: FC<{ children: ReactNode }> = ({ children }) => (
   <DropdownMenuLabel className="font-sans text-sm font-normal tracking-normal normal-case">
     {children}
@@ -96,7 +96,7 @@ const ModelRow: FC<{ model: ModelInfo }> = ({ model }) => (
 );
 
 /**
- * The model and effort picker, in ChatGPT's menu style. The trigger reads "Opus 5.5 High": the
+ * The model and effort picker. The trigger reads "Opus 5.5 High": the
  * model and effort the conversation runs with, the CLI's defaults spelled out. The menu lists
  * the model's efforts (its default marked), Fast where the model has a fast tier, then each
  * provider with its model in use, opening to the side on its models.

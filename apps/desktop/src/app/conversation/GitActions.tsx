@@ -3,12 +3,12 @@ import {
   Check,
   Commit,
   DotsHorizontal,
-  Spin,
   UploadDocuments,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Spinner } from "@/components/glyphs/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -58,9 +58,8 @@ function push(conversationId: string): void {
 }
 
 /**
- * The branch row's hover ⋯ "Git actions", as ChatGPT's pinned card has: Commit (the commit
- * popover), Push, Create branch and Switch branch. The last two stay off: a session's
- * branch is fixed when it starts.
+ * The branch row's hover ⋯ "Git actions": Commit (the commit popover), Push, Create branch
+ * and Switch branch. The last two stay off: a session's branch is fixed when it starts.
  */
 export const GitActions: FC<{ conversationId: string; children: ReactNode }> = ({
   conversationId,
@@ -133,8 +132,8 @@ export const GitActions: FC<{ conversationId: string; children: ReactNode }> = (
 type Busy = null | "commit" | "commitAndPush" | "push";
 
 /**
- * ChatGPT's commit popover: the branch, "Commit message (leave blank to generate)…",
- * "Include unstaged changes" with its +a −d, then Commit ⌘⏎, Commit and push, and Push.
+ * The commit popover: the branch, "Commit message (leave blank to generate)…", "Include
+ * unstaged changes" with its +a −d, then Commit ⌘⏎, Commit and push, and Push.
  */
 const CommitForm: FC<{
   conversationId: string;
@@ -173,7 +172,7 @@ const CommitForm: FC<{
   const item =
     "hover:bg-muted rounded-control flex h-control-md w-full items-center gap-2 px-2 text-start text-sm disabled:pointer-events-none disabled:opacity-50";
   const glyph = (kind: Busy, icon: ReactNode) =>
-    busy === kind ? <Spin className="size-icon-sm animate-spin motion-reduce:animate-none" /> : icon;
+    busy === kind ? <Spinner className="size-icon-sm animate-spin motion-reduce:animate-none" /> : icon;
   return (
     <div data-slot="commit-popover" className="flex flex-col">
       <div className="text-muted-foreground flex h-control-md items-center gap-1.5 px-2 text-sm">

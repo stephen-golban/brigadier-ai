@@ -21,12 +21,12 @@ export const mono = "font-mono text-2xs tracking-tight";
 /** Something live (running, streaming). */
 export const live = "text-success";
 
-/** A floating menu anchored to the composer (mentions), on ChatGPT's round menu surface. */
+/** A floating menu anchored to the composer (mentions), on the round menu surface. */
 export const floatingMenu =
   "bg-popover text-popover-foreground rounded-menu shadow-menu border p-1";
 
 /**
- * ChatGPT's composer controls (the `+`, permission, model, the rail's project and branch): a
+ * The composer controls (the `+`, permission, model, the rail's project and branch): a
  * text-sm ghost at the height of a control, fully round, filled with a light wash while
  * hovered or open.
  */

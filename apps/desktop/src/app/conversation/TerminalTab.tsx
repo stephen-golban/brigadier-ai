@@ -10,7 +10,7 @@ import { useApp } from "@/state/store";
 import { noteTerminal, onTerminalOutput } from "@/state/terminals";
 
 /**
- * ChatGPT's Terminal tab (⌃`): the session's shell in its checkout. The shell runs in the
+ * The Terminal tab (⌃`): the session's shell in its checkout. The shell runs in the
  * daemon and keeps running while the tab is hidden; closing the tab ends it.
  */
 

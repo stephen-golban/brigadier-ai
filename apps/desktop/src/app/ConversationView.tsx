@@ -766,7 +766,7 @@ export function ConversationView({
                           {conversation && !embedded && <PinnedSummary conversation={conversation} />}
                           <Thread
                             components={THREAD_COMPONENTS}
-                            // ChatGPT's one placeholder, in every conversation.
+                            // One placeholder, in every conversation.
                             placeholder="Do anything"
                           />
                         </div>
@@ -791,7 +791,7 @@ export function ConversationView({
   );
 }
 
-/** ChatGPT's hero over a new chat: a faint mark over "What should we build in {project}?".
+/** The hero over a new chat: a faint mark over "What should we build in {project}?".
  * A side chat says what it is for instead. */
 const Welcome: FC = () => {
   const { selection, embedded } = useContext(ViewContext);

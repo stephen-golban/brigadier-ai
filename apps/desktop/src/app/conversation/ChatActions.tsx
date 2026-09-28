@@ -96,10 +96,9 @@ async function copy(text: string, done: string) {
 }
 
 /**
- * The header's ⋯ "Chat actions", as ChatGPT has it: Rename ⌥⌘R, Pin ⌥⌘P, Archive ⇧⌘A; Copy ›
- * (working directory, Markdown); Fork ›; Open in › (a session's working directory). Share,
- * side chats, scheduled tasks and new windows need what Brigadier doesn't have, so they are
- * not offered.
+ * The header's ⋯ "Chat actions": Rename ⌥⌘R, Pin ⌥⌘P, Archive ⇧⌘A; Copy › (working directory,
+ * Markdown); Fork ›; Open in › (a session's working directory). Share, side chats, scheduled
+ * tasks and new windows need what Brigadier doesn't have, so they are not offered.
  */
 export const ChatActions: FC<{ conversation: Conversation; onRename: () => void }> = ({
   conversation,

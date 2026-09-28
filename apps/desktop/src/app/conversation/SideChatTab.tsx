@@ -13,9 +13,9 @@ import { noteSideChat } from "@/state/sideChats";
 import { useApp } from "@/state/store";
 
 /**
- * ChatGPT's Side chat tab (⌥⌘S): a temporary chat beside the conversation, for questions
- * about it that stay out of its thread. Its own thread and composer, on its own board; each
- * of its turns carries the conversation's latest messages. Closing the tab deletes it.
+ * The Side chat tab (⌥⌘S): a temporary chat beside the conversation, for questions about it
+ * that stay out of its thread. Its own thread and composer, on its own board; each of its
+ * turns carries the conversation's latest messages. Closing the tab deletes it.
  */
 export function SideChatTab({ conversationId }: { conversationId: string }) {
   const [side, setSide] = useState<{ id: string; store: BoardStore } | null>(null);

@@ -8,12 +8,12 @@ import { cn } from "@/lib/utils";
 const RADIUS = 7;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
-/** "45k": tokens in thousands, as ChatGPT writes them. */
+/** "45k": tokens in thousands. */
 function thousands(tokens: number): string {
   return `${Math.round(tokens / 1000)}k`;
 }
 
-/** The share of the context window in use (0–1) as ChatGPT's ring; `null` draws the track only. */
+/** The share of the context window in use (0–1) for the ring; `null` draws the track only. */
 export function contextShare(usage: ContextUsage | null): number | null {
   if (!usage?.windowTokens || usage.windowTokens <= 0) return null;
   return Math.min(1, Math.max(0, usage.usedTokens / usage.windowTokens));
@@ -41,7 +41,7 @@ export const ContextArc: FC<{ share: number | null; className?: string }> = ({
 );
 
 /**
- * How full the model's context is, as ChatGPT shows it by the model picker: a thin ring whose
+ * How full the model's context is, shown by the model picker: a thin ring whose
  * arc is the share used (no number, no colour change), and on hover "Context window:",
  * "17% used (83% left)", "45k / 258k tokens used". With no known window only the tokens show.
  */

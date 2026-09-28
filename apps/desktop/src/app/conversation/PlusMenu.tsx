@@ -66,14 +66,14 @@ export function usePlanMode(target: ComposerTarget | null): {
   };
 }
 
-/** A section heading, in ChatGPT's plain grey. */
+/** A section heading, in plain grey. */
 const Section: FC<{ children: string }> = ({ children }) => (
   <DropdownMenuLabel className="font-sans text-sm font-normal tracking-normal normal-case">
     {children}
   </DropdownMenuLabel>
 );
 
-/** A row of the menu: icon, title, then grey detail, as ChatGPT's rows read. */
+/** A row of the menu: icon, title, then grey detail. */
 const Row: FC<{ icon: ReactNode; title: string; detail?: string | undefined }> = ({
   icon,
   title,
@@ -92,9 +92,9 @@ const Row: FC<{ icon: ReactNode; title: string; detail?: string | undefined }> =
 type Placement = { width: number; alignOffset: number; sideOffset: number };
 
 /**
- * ChatGPT's `+` ("Add files and more"): the `@` list with an Add section first. Files (the
- * native picker), plan mode, and on a new chat "Work in a project"; then what `@` mentions
- * without typing: the session's workers and other conversations.
+ * The `+` ("Add files and more"): the `@` list with an Add section first. Files (the native
+ * picker), plan mode, and on a new chat "Work in a project"; then what `@` mentions without
+ * typing: the session's workers and other conversations.
  */
 export const PlusMenu: FC = () => {
   const target = useContext(ComposerTargetContext);
@@ -118,8 +118,8 @@ export const PlusMenu: FC = () => {
         .slice(0, CHAT_ROWS),
     ),
   );
-  // ChatGPT opens it with the first row highlighted, whatever opened it. Stable, so it runs
-  // once per opening, not on every render (which would undo ↑/↓).
+  // Opens with the first row highlighted, whatever opened it. Stable, so it runs once per
+  // opening, not on every render (which would undo ↑/↓).
   const highlightFirst = useCallback((menu: HTMLDivElement | null) => {
     if (menu) requestAnimationFrame(() => menu.querySelector<HTMLElement>("[role=menuitem]")?.focus());
   }, []);
@@ -128,7 +128,7 @@ export const PlusMenu: FC = () => {
 
   const onOpenChange = (open: boolean) => {
     const button = trigger.current;
-    // ChatGPT's sits on the card itself, covering the rail (hidden meanwhile).
+    // The menu sits on the card itself, covering the rail (hidden meanwhile).
     const composer =
       button?.closest<HTMLElement>("[data-slot=aui_composer-shell]") ??
       button?.closest<HTMLElement>("[data-slot=composer]");
@@ -247,7 +247,7 @@ export const PlusMenu: FC = () => {
   );
 };
 
-/** ChatGPT's "💡 Plan" chip after the permission picker while plan mode is on. */
+/** The "💡 Plan" chip after the permission picker while plan mode is on. */
 export const PlanChip: FC = () => {
   const target = useContext(ComposerTargetContext);
   const plan = usePlanMode(target);

@@ -1,4 +1,4 @@
-//! The side panel's Files tab (ChatGPT's): one file of a session's checkout, read for the
+//! The side panel's Files tab: one file of a session's checkout, read for the
 //! user to look at. It only reads, and never outside the checkout.
 
 use std::fs::File;

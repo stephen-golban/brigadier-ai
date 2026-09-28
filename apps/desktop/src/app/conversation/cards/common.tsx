@@ -55,8 +55,8 @@ export function DiffStatView({ stat }: { stat: DiffStat }) {
 }
 
 /**
- * In the thread, a decision whose card is in the composer: a grey row, as ChatGPT's "Waiting
- * for your answer".
+ * In the thread, a decision whose card is in the composer: a grey row, e.g. "Waiting for your
+ * answer".
  */
 export function WaitingRow({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (

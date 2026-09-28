@@ -84,10 +84,10 @@ export function openPermissionsHelp(): void {
 }
 
 /**
- * ChatGPT's permission pill and menu, opening upward: "How should Brigadier's actions be
- * approved?" with "Learn more", each level with its icon and a one-line summary, a check on
- * the one in use, Full access in orange and confirmed before it turns on. In a narrow composer
- * the pill keeps only its icon.
+ * The permission pill and menu, opening upward: "How should Brigadier's actions be approved?"
+ * with "Learn more", each level with its icon and a one-line summary, a check on the one in
+ * use, Full access in orange and confirmed before it turns on. In a narrow composer the pill
+ * keeps only its icon.
  */
 export function PermissionPicker({
   value,
@@ -206,7 +206,7 @@ const FULL_ACCESS_POWERS: { icon: FC<{ className?: string }>; tone: string; titl
 ];
 
 /**
- * ChatGPT's "Turn on Full Access?": what workers could do without the sandbox, what still
+ * The "Turn on Full Access?" dialog: what workers could do without the sandbox, what still
  * asks, and the risks. Only Confirm changes the level; Esc or Cancel keeps it.
  */
 function FullAccessDialog({

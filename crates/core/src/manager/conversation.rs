@@ -764,7 +764,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Compacts a Chat's context now, as ChatGPT's `/compact` does: its CLI summarizes the
+    /// Compacts a Chat's context now, the same as a `/compact` command: its CLI summarizes the
     /// conversation in a turn of its own that answers nothing, which the thread shows as one
     /// row. A session's orchestrator never compacts: Brigadier starts it afresh instead.
     pub async fn compact(&self, id: ConversationId) -> Result<()> {
@@ -1095,8 +1095,8 @@ impl SessionManager {
     }
 
     /// The user changed the model, effort or Fast since the CLI started: close it while nothing
-    /// runs, so the next turn resumes the conversation on the new choice, as ChatGPT's picker
-    /// takes effect on the next message.
+    /// runs, so the next turn resumes the conversation on the new choice, taking effect on the
+    /// next message.
     async fn retire_changed_cli(&self, conv: &Arc<ConvLive>) {
         let Ok(conversation) = self.core.conversation(&conv.id) else {
             return;

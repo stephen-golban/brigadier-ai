@@ -13,7 +13,7 @@ import { stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
 import { ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 
-/** What a worker is at, in ChatGPT's words ("is working", "is awaiting instruction"). */
+/** What a worker is at, in plain words ("is working", "is awaiting instruction"). */
 function stateLine(task: Task): string {
   switch (task.state) {
     case "queued":
@@ -48,9 +48,9 @@ const Changes: FC<{ insertions: number; deletions: number }> = ({ insertions, de
   ) : null;
 
 /**
- * ChatGPT's "N background agents" strip on the composer: while any worker of the session is
- * still at work, the workers of those requests, what each is doing and its +N −N (a row opens
- * the worker), with the total and Stop all.
+ * The "N background agents" strip on the composer: while any worker of the session is still
+ * at work, the workers of those requests, what each is doing and its +N −N (a row opens the
+ * worker), with the total and Stop all.
  */
 export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversationId }) => {
   const tasks = useBoard(

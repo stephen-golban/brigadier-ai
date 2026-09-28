@@ -545,7 +545,7 @@ export async function getConversationStatus(conversationId: string): Promise<Con
   return status;
 }
 
-/** Compacts a Chat's context now, in a turn of its own, as ChatGPT's `/compact` does. */
+/** Compacts a Chat's context now, in a turn of its own, the same as a `/compact` command. */
 export async function compact(conversationId: string): Promise<void> {
   await request({ method: "compact", conversationId });
 }
@@ -705,7 +705,7 @@ export async function hibernate(id: string): Promise<void> {
   storeConversation(conversation);
 }
 
-/** Archives a conversation and confirms it with ChatGPT's "Archived chat · View · Undo" toast. */
+/** Archives a conversation and confirms it with an "Archived chat · View · Undo" toast. */
 export async function archive(id: string): Promise<void> {
   const { conversation } = await request({ method: "archive", id });
   storeConversation(conversation);

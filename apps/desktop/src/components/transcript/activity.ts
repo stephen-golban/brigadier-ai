@@ -1,7 +1,7 @@
 import type { TranscriptItem } from "@/components/transcript/transcript";
 
 /**
- * A worker's tool use as ChatGPT tells it: one grey line per action ("Read notes.py", "Ran
+ * A worker's tool use, told as: one grey line per action ("Read notes.py", "Ran
  * git status"), and each run of actions between two replies summed up in one line ("Read
  * files, ran commands").
  */
@@ -10,7 +10,7 @@ export type ActivityKind = "read" | "list" | "search" | "edit" | "run" | "report
 
 export type Activity = {
   kind: ActivityKind;
-  /** It reaches the network (curl, git fetch, …): ChatGPT shows a globe. */
+  /** It reaches the network (curl, git fetch, …): shown as a globe. */
   web?: boolean;
   /** "Read notes.py", "Ran git status". */
   done: string;

@@ -129,7 +129,7 @@ export const OpenFileContext = createContext<(path: string, line: number | null)
 );
 
 /**
- * ChatGPT's file-link chip: the file's type icon and its name in link blue, "(line 36)"
+ * The file-link chip: the file's type icon and its name in link blue, "(line 36)"
  * after it, the absolute path on hover. A click opens the file in the Files tab, or shows it
  * in Finder when it isn't the session's.
  */
@@ -201,7 +201,7 @@ function tableMarkdown(table: HTMLTableElement): string {
   return [line(head), line(head.map(() => "---")), ...body.map(line)].join("\n");
 }
 
-/** ChatGPT's table: rules between rows, no outer border; on hover "Expand table" and "Copy table". */
+/** The table: rules between rows, no outer border; on hover "Expand table" and "Copy table". */
 const Table: FC<React.ComponentProps<"table">> = ({ className, ...props }) => {
   const ref = useRef<HTMLTableElement>(null);
   const [expanded, setExpanded] = useState(false);

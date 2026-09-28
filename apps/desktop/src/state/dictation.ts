@@ -5,7 +5,7 @@ import type { DictationStatus, DictationUpdate } from "@/ipc/generated";
 import { request } from "@/ipc/client";
 
 /**
- * Dictation (the composer's Dictate button), ChatGPT's way but on this computer: the
+ * Dictation (the composer's Dictate button), run on this computer: the
  * microphone's audio goes to brigadierd, whose speech engine turns it into text that lands at
  * the composer's caret. The speech model downloads on first use. One dictation runs at a time,
  * owned by one composer (its conversation, or the new chat).
@@ -280,7 +280,7 @@ async function finishCapture(current: Capture): Promise<void> {
 
 /**
  * Stops recording and transcribes: the text goes to the composer's caret, and with `then`
- * (ChatGPT's "Transcribe and send") that runs once the composer has it.
+ * (a "Transcribe and send") that runs once the composer has it.
  */
 export async function stopDictation(then?: () => void): Promise<void> {
   const current = capture;

@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 export type TooltipIconButtonProps = ComponentPropsWithRef<typeof Button> & {
   tooltip: string;
-  /** The button's keyboard shortcut, as a pill after the tip (ChatGPT's "Dictate ⌃⇧D"). */
+  /** The button's keyboard shortcut, as a pill after the tip (e.g. "Dictate ⌃⇧D"). */
   shortcut?: string | undefined;
   side?: "top" | "bottom" | "left" | "right";
 };
@@ -36,7 +36,7 @@ export const TooltipIconButton = forwardRef<
               {...rest}
               className={cn(
                 "aui-button-icon active:scale-90",
-                // ChatGPT's quiet controls: a light wash while hovered or open.
+                // Quiet controls: a light wash while hovered or open.
                 (rest.variant ?? "ghost") === "ghost" &&
                   "hover:bg-foreground/8 data-[state=open]:bg-foreground/8",
                 className,

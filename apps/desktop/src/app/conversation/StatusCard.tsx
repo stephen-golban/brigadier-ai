@@ -11,7 +11,7 @@ export const StatusCardContext = createContext<{ open: boolean; setOpen: (open: 
   setOpen: () => {},
 });
 
-/** "258K": a window size in thousands, as ChatGPT's status card writes it. */
+/** "258K": a window size in thousands. */
 function thousands(tokens: number): string {
   return `${Math.round(tokens / 1000)}K`;
 }
@@ -55,8 +55,8 @@ const LimitBar: FC<{ left: number }> = ({ left }) => (
 );
 
 /**
- * ChatGPT's `/status` card, attached above the composer: the model's CLI session, how much
- * context is left, and how much of each usage window is left and when it resets.
+ * The `/status` card, attached above the composer: the model's CLI session, how much context
+ * is left, and how much of each usage window is left and when it resets.
  */
 export const StatusCard: FC<{ conversationId: string; onClose: () => void }> = ({
   conversationId,

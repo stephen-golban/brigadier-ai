@@ -39,7 +39,7 @@ import { pauseTask, resumeTask, stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
 import { toast } from "@/state/toasts";
 
-/** What the UI calls a session's workers (ChatGPT's "Subagents"; the user chose Workers). */
+/** What the UI calls a session's workers (the user chose "Workers" over "Subagents"). */
 export const WORKERS_LABEL = "Workers";
 
 /**
@@ -231,8 +231,8 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
 });
 
 /**
- * One section of the list, a page at a time as ChatGPT shows it: the first `page` rows, then
- * "Show N more" for the next page.
+ * One section of the list, a page at a time: the first `page` rows, then "Show N more" for
+ * the next page.
  */
 function AgentSection({
   title,
@@ -366,7 +366,7 @@ function useWorkerIds(conversationId: string): { active: string[]; finished: str
   }, [ids]);
 }
 
-/** Rows a section shows before "Show N more": ChatGPT's 4 active and 10 done. */
+/** Rows a section shows before "Show N more": 4 active and 10 done. */
 const ACTIVE_PAGE = 4;
 const DONE_PAGE = 10;
 

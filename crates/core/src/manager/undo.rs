@@ -1,4 +1,4 @@
-//! Undo and Reapply of what a request's workers landed (ChatGPT's turn diff card, PLAN §4).
+//! Undo and Reapply of what a request's workers landed (the turn diff card, PLAN §4).
 //!
 //! Undo is a new commit that reverts the request's landed commits; Reapply reverts that one,
 //! and so on. Each lands like any landing: a fast-forward of the branch the work landed on,

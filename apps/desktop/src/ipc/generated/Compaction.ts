@@ -2,7 +2,7 @@
 import type { CompactionState } from "./CompactionState";
 
 /**
- * A Chat's model compacting its context: ChatGPT's "Compacting context" row, then "Context
+ * A Chat's model compacting its context: a "Compacting context" row, then "Context
  * compacted". A session's orchestrator never compacts (it starts afresh instead).
  */
 export type Compaction = { id: string, 

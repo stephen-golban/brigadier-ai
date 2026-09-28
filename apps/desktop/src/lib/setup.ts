@@ -30,7 +30,7 @@ export const PERMISSION_LABELS: Record<PermissionLevel, string> = {
   fullAccess: "Full access",
 };
 
-/** One line each, as ChatGPT's picker has. */
+/** One line each. */
 export const PERMISSION_DETAILS: Record<PermissionLevel, string> = {
   askForApproval: "Always ask to approve plans and land changes",
   approveForMe: "Only ask what only you can answer",

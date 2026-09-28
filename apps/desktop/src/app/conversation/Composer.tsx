@@ -3,7 +3,6 @@ import {
   ArrowUp,
   Mic,
   PlayTriangle,
-  Spin,
   Stop,
   Warning,
   X,
@@ -50,6 +49,7 @@ import { ComposerAttachments } from "@/components/assistant-ui/elements/attachme
 import { ModelSelector } from "@/components/assistant-ui/elements/model-selector";
 import { ContextRing } from "@/components/assistant-ui/context-ring";
 import { ShieldExclamation } from "@/components/glyphs/permission-glyphs";
+import { Spinner } from "@/components/glyphs/spinner";
 import { Button } from "@/components/ui/button";
 import type { Conversation } from "@/ipc/generated";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
@@ -72,9 +72,9 @@ const ComposerEditor = lazy(() => import("@/app/conversation/ComposerEditor"));
 
 /**
  * The composer (assistant-ui composer elements, BB parity): attachments, @-mentions of
- * workers, files and conversations, ChatGPT's `/` commands, and the setup pickers. A draft picks its project (or none, for a Chat),
- * environment, branch, permission level and model; a started session can still change its
- * model, effort and permission level, a Chat its model.
+ * workers, files and conversations, `/` commands, and the setup pickers. A draft picks its
+ * project (or none, for a Chat), environment, branch, permission level and model; a started
+ * session can still change its model, effort and permission level, a Chat its model.
  */
 export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder }) => {
   const target = useContext(ComposerTargetContext);
@@ -115,10 +115,10 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
           groups={resolved.groups}
           onOpenModel={() => setModelOpen(true)}
         />
-        {/* Hidden, not unmounted, while the slash or + menu is open over it, as ChatGPT's is. */}
+        {/* Hidden, not unmounted, while the slash or + menu is open over it. */}
         <ComposerRail className="transition-[opacity,visibility] group-has-[[data-slot=composer-commands]]/composer:invisible group-has-[[data-slot=composer-commands]]/composer:opacity-0 group-has-[[data-slot=plus-trigger][data-state=open]]/composer:invisible group-has-[[data-slot=plus-trigger][data-state=open]]/composer:opacity-0">
           {!conversation && <UtilityBar resolved={resolved} />}
-          {/* ChatGPT's order: /status on top, then the cards below it. */}
+          {/* /status sits on top, then the cards below it. */}
           {conversation && statusCard.open && (
             <StatusCard conversationId={conversation.id} onClose={() => statusCard.setOpen(false)} />
           )}
@@ -151,7 +151,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
               }
             />
           ) : (
-          /* ChatGPT's card: lifted, an inner hairline for an edge, and no focus ring. */
+          /* The composer's card: lifted, an inner hairline for an edge, and no focus ring. */
           <div
             data-slot="aui_composer-shell"
             className="@container/composer bg-composer rounded-composer shadow-hairline relative flex w-full cursor-text flex-col gap-1 p-2 backdrop-blur-lg"
@@ -229,8 +229,8 @@ function ComposerDraft({
 }
 
 /**
- * The text field: assistant-ui's Lexical input with ChatGPT's chips (its own chunk, so it
- * doesn't hold up the first paint), a plain field on the same composer text until it loads.
+ * The text field: assistant-ui's Lexical input with mention/command chips (its own chunk, so
+ * it doesn't hold up the first paint), a plain field on the same composer text until it loads.
  */
 function ComposerInput(props: ComposerInputProps) {
   const { placeholder, autoFocus, line = false } = props;
@@ -269,9 +269,9 @@ function ComposerContextRing() {
 const closedNotices = new Set<string>();
 
 /**
- * ChatGPT's "Full access is on" card above the composer, while a session's workers run
- * without the OS sandbox. × closes it for this conversation; "Don't show again" turns it off
- * in Settings, where it can be turned back on.
+ * The "Full access is on" card above the composer, while a session's workers run without the
+ * OS sandbox. × closes it for this conversation; "Don't show again" turns it off in Settings,
+ * where it can be turned back on.
  */
 function FullAccessNotice({ conversation }: { conversation: Conversation }) {
   const show = useApp((s) => s.settings.showFullAccessNotice);
@@ -368,9 +368,9 @@ function UtilityBar({ resolved }: { resolved: ResolvedDraft }) {
 const ESC_WINDOW_MS = 2000;
 
 /**
- * ChatGPT's two-press stop: the first Esc outside menus and cards arms the send button
- * (it reads "Esc"), a second within two seconds stops the model. Esc in the composer also
- * leaves the field, keeping the text.
+ * A two-press stop: the first Esc outside menus and cards arms the send button (it reads
+ * "Esc"), a second within two seconds stops the model. Esc in the composer also leaves the
+ * field, keeping the text.
  */
 function useEscToStop(canCancel: boolean): boolean {
   const aui = useAui();
@@ -419,9 +419,10 @@ const SEND_TIPS: Record<SendState, string> = {
 };
 
 /**
- * ChatGPT's one send button, which changes with the state: ↑ to send (its tip "Queue" while
- * the model works: a Chat queues the message, a session's orchestrator sorts it), ■ to stop, "Esc" once armed, ▶ to resume a stopped
- * request, and a grey spinner while the conversation's model starts.
+ * One send button, which changes with the state: ↑ to send (its tip "Queue" while the model
+ * works: a Chat queues the message, a session's orchestrator sorts it), ■ to stop, "Esc" once
+ * armed, ▶ to resume a stopped request, and a grey spinner while the conversation's model
+ * starts.
  */
 function SendControls({
   running,
@@ -469,7 +470,7 @@ function SendControls({
       {/* Keyed by state, so each glyph eases in as the button changes. */}
       <span key={state} className="animate-in fade-in zoom-in-75 flex items-center duration-200 motion-reduce:animate-none">
         {state === "starting" ? (
-          <Spin className="size-icon-sm animate-spin motion-reduce:animate-none" />
+          <Spinner className="size-icon-sm animate-spin motion-reduce:animate-none" />
         ) : state === "armed" ? (
           "Esc"
         ) : state === "stop" ? (
@@ -524,7 +525,7 @@ function DictationNote({ owner }: { owner: string }) {
 }
 
 /**
- * ChatGPT's Dictate button, its own beside the send button: the microphone (or ⌃⇧D) starts
+ * The Dictate button, its own beside the send button: the microphone (or ⌃⇧D) starts
  * dictating wherever the caret is, with or without text around it. It spins while the speech
  * model downloads, the microphone opens (a click cancels either) and the text is worked out,
  * and offers a retry after a failure. It keeps the field's focus, so the caret stays put.
@@ -565,7 +566,7 @@ function DictateButton({ owner }: { owner: string }) {
       >
         {busy ? (
           <>
-            <Spin className="size-icon-sm animate-spin group-hover/dictate:hidden motion-reduce:animate-none" />
+            <Spinner className="size-icon-sm animate-spin group-hover/dictate:hidden motion-reduce:animate-none" />
             <X className="size-icon-sm hidden group-hover/dictate:block" />
           </>
         ) : failed ? (
@@ -578,7 +579,7 @@ function DictateButton({ owner }: { owner: string }) {
   );
 }
 
-/** The composer's footer row; while the microphone records, ChatGPT's dictation controls take all of it. */
+/** The composer's footer row; while the microphone records, the dictation controls take all of it. */
 function ComposerFooter({ owner, children }: { owner: string; children: ReactNode }) {
   const { phase } = useDictation(owner);
   return (
@@ -589,8 +590,8 @@ function ComposerFooter({ owner, children }: { owner: string; children: ReactNod
 }
 
 /**
- * Recording (ChatGPT's): Cancel, the microphone's waveform, Stop (the text goes to the caret)
- * and "Transcribe and send".
+ * The recording bar: Cancel, the microphone's waveform, Stop (the text goes to the caret) and
+ * "Transcribe and send".
  */
 function DictationBar({ owner, compact = false }: { owner: string; compact?: boolean }) {
   const aui = useAui();

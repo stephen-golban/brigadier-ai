@@ -244,7 +244,7 @@ pub enum Request {
     Resume {
         conversation_id: ConversationId,
     },
-    /// Compacts a Chat's context now, in a turn of its own (ChatGPT's `/compact`).
+    /// Compacts a Chat's context now, in a turn of its own (a `/compact` command).
     Compact {
         conversation_id: ConversationId,
     },

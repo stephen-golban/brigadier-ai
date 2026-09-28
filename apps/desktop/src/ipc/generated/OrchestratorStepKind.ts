@@ -3,6 +3,6 @@ import type { TaskId } from "./TaskId";
 
 /**
  * What the orchestrator (or a Chat's model) did that the thread tells as a grey row, in
- * ChatGPT's words. What already shows by itself (a worker's own row, a card) has none.
+ * its own words. What already shows by itself (a worker's own row, a card) has none.
  */
 export type OrchestratorStepKind = { "type": "messaged", taskId: TaskId, } | { "type": "readReport", taskId: TaskId, } | { "type": "readArtifact", name: string, } | { "type": "accepted", taskId: TaskId, } | { "type": "searchedWeb", query: string, } | { "type": "readPage", url: string, };

@@ -35,7 +35,7 @@
   --animate-collapsible-down: collapsible-down 150ms ease-out;
   --animate-shimmer: shimmer 2s linear infinite;
   --animate-collapsible-up: collapsible-up 150ms ease-out;
-  /* A rail card opens from nothing to its height, as ChatGPT's do. */
+  /* A rail card opens from nothing to its height. */
   @keyframes rail-open {
     from {
       grid-template-rows: 0fr;

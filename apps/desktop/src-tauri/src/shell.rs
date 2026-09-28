@@ -40,7 +40,7 @@ pub fn exit_code() -> i32 {
     EXIT_CODE.load(Ordering::Acquire)
 }
 
-/// The menu-bar item's menu: open, the conversations running now (ChatGPT's "Running"), quit.
+/// The menu-bar item's menu: open, the conversations running now ("Running"), quit.
 fn tray_menu(app: &AppHandle, running: &[RunningChat]) -> tauri::Result<Menu<tauri::Wry>> {
     let open_item = MenuItemBuilder::with_id("open", "Open Brigadier").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Brigadier").build(app)?;

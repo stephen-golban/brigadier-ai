@@ -2,8 +2,8 @@ import { request } from "@/ipc/client";
 import type { AttachmentRef, Mention } from "@/ipc/generated";
 
 /**
- * What the composer holds but hasn't sent, per conversation (and one for a new chat), as
- * ChatGPT keeps its drafts: text and attachments come back when the conversation opens again,
+ * What the composer holds but hasn't sent, per conversation (and one for a new chat):
+ * text and attachments come back when the conversation opens again,
  * after a restart too. The text lives in the webview's storage; the attachments' blobs are
  * pinned in the daemon so collection keeps them until the draft is sent or discarded.
  */

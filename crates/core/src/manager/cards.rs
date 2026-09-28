@@ -506,7 +506,7 @@ impl SessionManager {
         };
         plan.decided_at_ms = Some(now_ms());
         self.store_plan(&plan).await?;
-        // Approving a plan leaves plan mode, as ChatGPT's "Yes, implement this plan" does.
+        // Approving a plan leaves plan mode, the same as accepting the plan to implement it.
         if approve
             && let Some(mut setup) = self.core.conversation(&conversation_id)?.setup
             && let Setup::Session { plan_mode, .. } = &mut setup

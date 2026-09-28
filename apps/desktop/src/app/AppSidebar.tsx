@@ -11,7 +11,6 @@ import {
   Settings,
   SettingsCog,
   Sleep,
-  Spin,
   Terminal,
   Trash,
   Unpin,
@@ -25,6 +24,7 @@ import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
 import { SettingsDialog } from "@/app/dialogs/SettingsDialog";
 import { NameDialog } from "@/app/NameDialog";
 import { SearchDialog } from "@/app/SearchDialog";
+import { Spinner } from "@/components/glyphs/spinner";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -481,9 +481,9 @@ const ProjectRow = memo(function ProjectRow({
 });
 
 /**
- * At the end of a row, as ChatGPT's sidebar shows a chat's state: a green "Awaiting approval"
- * or "Needs input" pill while it waits for the user, else a spinner while it runs. The row's
- * actions take its place on hover.
+ * At the end of a row, showing a chat's state: a green "Awaiting approval" or "Needs input"
+ * pill while it waits for the user, else a spinner while it runs. The row's actions take its
+ * place on hover.
  */
 function RowStatus({ conversationId, nested }: { conversationId: string; nested: boolean }) {
   const { running, awaiting } = useRowActivity(conversationId);
@@ -506,7 +506,7 @@ function RowStatus({ conversationId, nested }: { conversationId: string; nested:
     );
   }
   return (
-    <Spin
+    <Spinner
       data-slot="row-status"
       data-status="running"
       aria-label="Running"

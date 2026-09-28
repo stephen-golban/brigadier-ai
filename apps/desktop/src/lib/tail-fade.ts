@@ -1,6 +1,6 @@
 /**
  * While a reply streams, its newest words are dimmer and brighten as the next words arrive
- * (ChatGPT's fade-in). A rehype pass wraps the last words of the last text in spans ranked
+ * (a fade-in for the trailing edge). A rehype pass wraps the last words of the last text in spans ranked
  * `aui-tail-1` (newest) to `aui-tail-4`; the styles live in `globals.css`.
  */
 

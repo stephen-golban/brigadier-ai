@@ -1,7 +1,8 @@
-import { Check, Spin, X } from "@openai/apps-sdk-ui/components/Icon";
+import { Check, X } from "@openai/apps-sdk-ui/components/Icon";
 import type { ComponentProps, ReactNode } from "react";
 
 import { mono, paper } from "@/components/assistant-ui/elements/surfaces";
+import { Spinner } from "@/components/glyphs/spinner";
 import { cn } from "@/lib/utils";
 
 export type AgentPlanStepStatus = "pending" | "active" | "done" | "failed";
@@ -66,7 +67,7 @@ export function AgentPlan({
               {step.status === "done" ? (
                 <Check className="text-muted-foreground size-icon-sm" />
               ) : step.status === "active" ? (
-                <Spin className="text-foreground size-icon-sm animate-spin motion-reduce:animate-none" />
+                <Spinner className="text-foreground size-icon-sm animate-spin motion-reduce:animate-none" />
               ) : step.status === "failed" ? (
                 <X className="text-destructive size-icon-sm" />
               ) : (

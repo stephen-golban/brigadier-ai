@@ -55,15 +55,15 @@ const FilesTab = lazy(() =>
 );
 
 /**
- * ChatGPT's right side panel: a strip of tabs ("Subagents" there, Workers here) with "+" to
- * open another, full screen and the toggle on the right, beside the thread behind a splitter.
- * Toggling it open with no tab shows the tabs this conversation can open.
+ * The right side panel: a strip of tabs with "+" to open another, full screen and the toggle
+ * on the right, beside the thread behind a splitter. Toggling it open with no tab shows the
+ * tabs this conversation can open.
  */
 
 /** The kinds of tab the side panel opens. */
 export type SideTab = "workers" | "review" | "terminal" | "browser" | "files" | "sideChat";
 
-/** Each tab's title, icon and ChatGPT's shortcut (macOS keys; Ctrl for ⌘ elsewhere). */
+/** Each tab's title, icon and shortcut (macOS keys; Ctrl for ⌘ elsewhere). */
 const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | null }> = {
   workers: { title: WORKERS_LABEL, icon: <User />, keys: null },
   review: { title: "Review", icon: <DiffGlyph />, keys: "⌃⇧G" },
@@ -73,7 +73,7 @@ const TABS: Record<SideTab, { title: string; icon: ReactNode; keys: string | nul
   sideChat: { title: "Side chat", icon: <PlusCircle />, keys: "⌥⌘S" },
 };
 
-/** Which tab a key press opens: ChatGPT's ⌃⇧G, ⌃`, ⌘T, ⌘P and ⌥⌘S (Ctrl for ⌘ off macOS). */
+/** Which tab a key press opens: ⌃⇧G, ⌃`, ⌘T, ⌘P and ⌥⌘S (Ctrl for ⌘ off macOS). */
 function tabForKey(event: KeyboardEvent, mac: boolean): SideTab | null {
   const command = mac ? event.metaKey : event.ctrlKey;
   if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyG") {
@@ -185,7 +185,7 @@ export function useSidePanel(
     if (!conversationId) return;
     return () => closePage(conversationId);
   }, [conversationId]);
-  // ChatGPT's tab shortcuts while this conversation is open.
+  // Tab shortcuts while this conversation is open.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const tab = tabForKey(event, mac);
@@ -395,7 +395,7 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
       className={cn(
         "border-border bg-background animate-in fade-in slide-in-from-right-2 relative flex h-full min-w-0 flex-col duration-200 motion-reduce:animate-none",
         fullscreen ? "flex-1" : "shrink-0 border-s",
-        // ChatGPT's panel opens at about half the workspace.
+        // The panel opens at about half the workspace.
         !fullscreen && width === null && "min-w-agents w-1/2",
       )}
       style={!fullscreen && width !== null ? { width } : undefined}

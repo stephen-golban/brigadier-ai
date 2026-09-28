@@ -17,7 +17,7 @@ import { useApp } from "@/state/store";
 /** A worker the composer can @-mention. */
 export type MentionTarget = { id: string; number: number; title: string; state: string };
 
-/** Files matching a query that the menu lists; ChatGPT shows a handful. */
+/** Files matching a query that the menu lists; only a handful show at once. */
 const FILE_ROWS = 8;
 /** Other conversations the menu lists. */
 const CHAT_ROWS = 5;
@@ -189,8 +189,8 @@ export function useCheckoutFiles(
 }
 
 /**
- * ChatGPT's `@` menu with what Brigadier can mention: a session's workers (as `@task-N`) and
- * its checkout's files, and other chats and sessions, whose latest messages go along.
+ * The `@` menu with what Brigadier can mention: a session's workers (as `@task-N`) and its
+ * checkout's files, and other chats and sessions, whose latest messages go along.
  */
 export const Mentions: FC<{
   conversation: Conversation;
