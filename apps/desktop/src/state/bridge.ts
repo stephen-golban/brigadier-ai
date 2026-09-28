@@ -9,6 +9,7 @@ import {
 } from "@/state/actions";
 import { applyActivityEvents, loadActivity } from "@/state/activity";
 import { applyBoardEvents, sideBoardIds, useBoard } from "@/state/board";
+import { applyBrainEvents } from "@/state/brain";
 import { applyEvents, useApp } from "@/state/store";
 import { startMenuBar } from "@/state/menuBar";
 import { onDictationDisconnected, onDictationUpdate } from "@/state/dictation";
@@ -27,6 +28,7 @@ function flush() {
   applyEvents(batch);
   applyBoardEvents(batch);
   applyActivityEvents(batch);
+  applyBrainEvents(batch);
   noteFlush(started, batch.map(({ event }) => event.type));
   for (const { atMs, event } of batch) {
     markApplied(atMs, event.type === "probe" ? event.burstId : null);

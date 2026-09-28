@@ -429,8 +429,9 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "queueChanged":
     case "workerEvent":
     case "orchestratorLogged":
-    case "brainJobUpdated":
+    // A Chat's Memory chips live on its board; Brain jobs in the Inspector's Brain tab.
     case "memoryUpdated":
+    case "brainJobUpdated":
       return slice;
   }
 }

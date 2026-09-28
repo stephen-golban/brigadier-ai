@@ -5,6 +5,7 @@ import type {
   BridgeEvent,
   BrowserBounds,
   BrowserEvent,
+  ConventionsExport,
   IpcError,
   RunningChat,
   Request,
@@ -91,6 +92,21 @@ export function pickFolder(starting?: string): Promise<string | null> {
 export async function saveArtifact(id: string, fileName: string): Promise<boolean> {
   try {
     return await invoke<boolean>("save_artifact", { id, fileName });
+  } catch (error) {
+    throw isIpcError(error) ? new RequestError(error) : error;
+  }
+}
+
+/**
+ * Exports a project's conventions to the AGENTS.md picked in the system save dialog, which
+ * starts in `directory`; `null` when cancelled. Scripts use the `exportConventions` request.
+ */
+export async function exportConventions(
+  projectId: string,
+  directory: string | null,
+): Promise<ConventionsExport | null> {
+  try {
+    return await invoke<ConventionsExport | null>("export_conventions", { projectId, directory });
   } catch (error) {
     throw isIpcError(error) ? new RequestError(error) : error;
   }

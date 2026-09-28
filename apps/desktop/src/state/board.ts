@@ -7,6 +7,7 @@ import type {
   ContextUsage,
   ConversationView,
   EventEnvelope,
+  MemoryChange,
   MessageQueue,
   Notice,
   OrchestratorLogEntry,
@@ -77,6 +78,8 @@ export type Board = {
   activity: Record<string, string>;
   /** Transcripts of the worker cards opened so far, by task id. */
   transcripts: Record<string, WorkerTranscript>;
+  /** A Chat's Memory chips: the latest change per memory, in the order they were saved. */
+  memories: MemoryChange[];
 };
 
 /** The Inspector's Orchestrator tab: one conversation's orchestrator log. */
@@ -196,6 +199,7 @@ export function emptyBoard(conversationId: string): Board {
     notices: [],
     activity: {},
     transcripts: {},
+    memories: [],
   };
 }
 
@@ -221,6 +225,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "orchestratorStepped",
   "compactionUpdated",
   "messageRated",
+  "memoryUpdated",
 ]);
 
 /** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
@@ -272,6 +277,7 @@ export function boardFromView(
     notices: view.notices.slice(-NOTICES),
     activity: keep?.activity ?? {},
     transcripts: keep?.transcripts ?? {},
+    memories: view.memories,
   };
   return arrived.reduce(applyToBoard, board);
 }
@@ -418,6 +424,17 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       return { ...board, ratings: { ...board.ratings, [event.subject]: event.rating } };
     case "queueChanged":
       return { ...board, queue: event.queue };
+    case "memoryUpdated": {
+      // A change to a memory already shown (the user removed it) updates it in place.
+      const { memory } = event;
+      const known = board.memories.some((entry) => entry.nodeId === memory.nodeId);
+      return {
+        ...board,
+        memories: known
+          ? board.memories.map((entry) => (entry.nodeId === memory.nodeId ? memory : entry))
+          : [...board.memories, memory],
+      };
+    }
     case "workerEvent": {
       const { taskId } = event;
       let next = board;

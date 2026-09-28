@@ -29,6 +29,7 @@ import {
   isWorking,
 } from "@/app/conversation/blocks";
 import { TurnDiff } from "@/app/conversation/TurnDiff";
+import { TurnMemories } from "@/app/conversation/TurnMemories";
 import { useViewConversation } from "@/app/conversation/viewContext";
 import {
   BranchPicker,
@@ -454,6 +455,7 @@ export const RequestBlock: FC = () => {
         </div>
       )}
       {!live && meta.session && <TurnDiff requestId={meta.requestId} />}
+      {!meta.session && <TurnMemories requestIds={meta.requestIds} />}
       <MessageError />
       {!live && last >= 0 && (
         <AnswerActions
