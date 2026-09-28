@@ -141,6 +141,9 @@ export function deriveLog(entries: readonly OrchestratorLogEntry[]): DerivedLog 
   let generation = 0;
   let windowTokens: number | null = null;
   let latestContext: ContextPoint | null = null;
+  // Injections logged before the current CLI's latest exit. A new CLI's instructions and
+  // briefing are logged before its rebirth entry, so the rebirth reaches back to here.
+  let exitedAfter: number | null = null;
   for (const { streamSeq, atMs, entry } of entries) {
     switch (entry.type) {
       case "injection": {
@@ -155,7 +158,9 @@ export function deriveLog(entries: readonly OrchestratorLogEntry[]): DerivedLog 
         break;
       }
       case "provider":
-        if (entry.event.type === "contextSize") {
+        if (entry.event.type === "exited") {
+          exitedAfter = injections.length;
+        } else if (entry.event.type === "contextSize") {
           windowTokens = entry.event.windowTokens ?? windowTokens;
           latestContext = {
             after: injections.length,
@@ -167,13 +172,24 @@ export function deriveLog(entries: readonly OrchestratorLogEntry[]): DerivedLog 
         }
         break;
       case "rebirth": {
-        const row = { streamSeq, atMs, after: injections.length, record: entry.record };
+        const previous = generations[generations.length - 1]!;
+        const from = Math.max(previous.from, exitedAfter ?? injections.length);
+        const row = { streamSeq, atMs, after: from, record: entry.record };
         rebirths.push(row);
         generation = entry.record.generation;
-        generations.push({ generation, from: injections.length, rebirth: row });
-        // The new CLI starts with an empty context; it has reported nothing yet.
+        generations.push({ generation, from, rebirth: row });
+        // The new CLI started with an empty context and has reported nothing yet; what was
+        // injected into it before this entry is counted from zero again.
         running = zero();
+        for (let index = from; index < injections.length; index++) {
+          const { kind, tokensEstimate } = injections[index]!.injection;
+          const group = groupOf(kind);
+          running = { ...running, [group]: running[group] + tokensEstimate };
+          generationOf[index] = generation;
+          cumulative[index] = running;
+        }
         latestContext = null;
+        exitedAfter = null;
         break;
       }
       case "contractBreach":
