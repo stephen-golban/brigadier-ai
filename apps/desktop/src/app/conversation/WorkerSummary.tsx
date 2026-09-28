@@ -86,11 +86,12 @@ const DIFF_INTERVAL_MS = 3_000;
 
 /**
  * Keeps the board's live +N −N of the conversation's workers current: read again after
- * a worker at work on a change edits files or changes state, at most every few seconds.
+ * a worker at work on a change edits files, runs a command or changes state, at most every
+ * few seconds.
  * It renders nothing, so what it watches re-renders only itself.
  */
 export function WorkerDiffs({ conversationId }: { conversationId: string }) {
-  // Changes whenever a write task at work edits files or changes state.
+  // Changes whenever a write task at work edits files, runs a command or changes state.
   const key = useBoard((s) => {
     const board = s.board;
     if (board?.conversationId !== conversationId) return "";

@@ -80,7 +80,7 @@ export type Board = {
   activity: Record<string, string>;
   /** Each worker's latest reply, its first line, and when it came (from its live events). */
   summaries: Record<string, WorkerSummary>;
-  /** How many times each worker changed files (from its live events). */
+  /** How many times each worker changed files or ran a command (from its live events). */
   edits: Record<string, number>;
   /** What each worker at work on a change changed in its worktree so far, as last read. */
   diffs: Record<string, DiffStat>;
@@ -469,7 +469,11 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       if (reply.type === "message" && reply.role === "assistant") {
         const text = firstLine(reply.text);
         if (text) next = { ...next, summaries: { ...next.summaries, [taskId]: { text, atMs } } };
-      } else if (reply.type === "fileChanges" && reply.status !== "inProgress") {
+      } else if (
+        (reply.type === "fileChanges" || reply.type === "command") &&
+        reply.status !== "inProgress"
+      ) {
+        // A command may have changed files too.
         next = { ...next, edits: { ...next.edits, [taskId]: (next.edits[taskId] ?? 0) + 1 } };
       }
       const transcript = board.transcripts[taskId];
