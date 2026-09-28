@@ -188,6 +188,7 @@ impl Metrics {
                 checkpoints: store.checkpoints,
             },
             connections: self.connections.load(Ordering::Relaxed),
+            brain: Default::default(),
         }
     }
 

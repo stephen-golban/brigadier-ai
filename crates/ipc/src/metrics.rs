@@ -72,6 +72,30 @@ pub struct StoreMetrics {
     pub checkpoints: u64,
 }
 
+/// The last full code-index scan of any project.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexRun {
+    pub root: String,
+    pub files: u64,
+    /// Files it parsed (the rest were unchanged).
+    pub parsed: u64,
+    pub duration_ms: u64,
+    pub at_ms: i64,
+}
+
+/// Project Brain counters (PLAN.md §4: Brain query and static index budgets).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainMetrics {
+    /// `query_brain` tool calls, end to end in the daemon, over the recent window.
+    pub query: LatencySummary,
+    /// The embedding model is loaded.
+    pub embedder_loaded: bool,
+    /// The last full scan with the most files, since the daemon started.
+    pub largest_index_run: Option<Box<IndexRun>>,
+}
+
 /// A daemon metrics sample.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +111,7 @@ pub struct DaemonMetrics {
     pub runtime: RuntimeMetrics,
     pub store: StoreMetrics,
     pub connections: u32,
+    pub brain: BrainMetrics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
