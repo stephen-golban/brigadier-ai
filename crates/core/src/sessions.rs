@@ -146,6 +146,18 @@ impl Core {
             Some(path) => vec![check_repo(path).await?],
             None => Vec::new(),
         };
+        if let Some(repo) = repos.first()
+            && let Some(existing) = self
+                .projection()
+                .projects
+                .values()
+                .find(|project| project.repos.iter().any(|r| r.path == repo.path))
+        {
+            return Err(Error::Invalid(format!(
+                "{} is already the project \"{}\"",
+                repo.path, existing.name
+            )));
+        }
         let name = match (name.trim().is_empty(), repos.first()) {
             (true, Some(repo)) => repo.name.clone(),
             _ => clean_name(&name, "project name")?,

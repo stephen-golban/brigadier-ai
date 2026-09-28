@@ -14,6 +14,7 @@
 //! Every CLI session is disposable: the conversation stream is the truth, and a session that
 //! is gone (hibernated with its files cleaned up, archived, crashed) is started again from it.
 
+mod add_project;
 mod brain_jobs;
 mod brains;
 mod branches;

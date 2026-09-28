@@ -16,6 +16,8 @@ import type { Diagnostics } from "./Diagnostics";
 import type { DictationStatus } from "./DictationStatus";
 import type { DiffStat } from "./DiffStat";
 import type { EventEnvelope } from "./EventEnvelope";
+import type { FolderCheck } from "./FolderCheck";
+import type { FolderListing } from "./FolderListing";
 import type { GitState } from "./GitState";
 import type { Message } from "./Message";
 import type { MessagePage } from "./MessagePage";
@@ -40,7 +42,7 @@ import type { WorkerPage } from "./WorkerPage";
 /**
  * Results, tagged with the method of the request they answer.
  */
-export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "getActivity", activity: Array<ConversationActivity>, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getBrain", overview: BrainOverview, } | { "method": "queryBrain", answer: BrainAnswer, } | { "method": "getBrainGraph", graph: BrainGraph, } | { "method": "listMemories", memories: Array<Node>, } | { "method": "forgetMemory" } | { "method": "exportConventions", export: ConventionsExport, } | { "method": "runBrainJob", jobId: string, } | { "method": "rebuildIndex" } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "findProjects", candidates: Array<ProjectCandidate>, } | { "method": "listFiles", 
+export type Response = { "method": "getCatalog", catalog: Catalog, } | { "method": "getActivity", activity: Array<ConversationActivity>, } | { "method": "createProject", project: Project, } | { "method": "updateProject", project: Project, } | { "method": "getBrain", overview: BrainOverview, } | { "method": "queryBrain", answer: BrainAnswer, } | { "method": "getBrainGraph", graph: BrainGraph, } | { "method": "listMemories", memories: Array<Node>, } | { "method": "forgetMemory" } | { "method": "exportConventions", export: ConventionsExport, } | { "method": "runBrainJob", jobId: string, } | { "method": "rebuildIndex" } | { "method": "getRepoInfo", repo: RepoInfo, } | { "method": "findProjects", candidates: Array<ProjectCandidate>, } | { "method": "browseFolders", listing: FolderListing, } | { "method": "checkFolder", check: FolderCheck, } | { "method": "addProject", project: Project, } | { "method": "cloneProject", project: Project, } | { "method": "listFiles", 
 /**
  * Paths relative to the checkout's root, tracked and untracked (not ignored).
  */

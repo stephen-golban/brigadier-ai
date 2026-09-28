@@ -25,7 +25,6 @@ import {
 
 import { type ResolvedDraft, updateDraft } from "@/app/conversation/draftSetup";
 import { resetsAt, windowName } from "@/app/conversation/StatusCard";
-import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
 import { NameDialog } from "@/app/NameDialog";
 import { composerPill } from "@/components/assistant-ui/elements/surfaces";
 import { Button } from "@/components/ui/button";
@@ -41,6 +40,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import type { EnvironmentKind, Project, QuotaWindow, RepoInfo } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import { loadProviders, select, updateProject } from "@/state/actions";
+import { openAddProject } from "@/state/addProject";
 import { useApp } from "@/state/store";
 
 /*
@@ -141,8 +141,8 @@ function SearchField({
 type ProjectRow = { key: string; run: () => void };
 
 /**
- * The project picker: "Search projects", the projects (✓ on the one in use), "New project"
- * and "Don't work in a project" (a Chat). With no project the pill reads "Choose project".
+ * The project picker: "Search projects", the projects (✓ on the one in use), "Add project"
+ * (a typed path opens it on that folder) and "Don't work in a project" (a Chat). With no project the pill reads "Choose project".
  */
 export function ProjectCombobox({
   project,
@@ -155,13 +155,14 @@ export function ProjectCombobox({
   const projects = useApp((s) => s.projects);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [creating, setCreating] = useState(false);
   const listId = useId();
   const sorted = useMemo(
     () => Object.values(projects).toSorted((a, b) => a.name.localeCompare(b.name)),
     [projects],
   );
   const needle = query.trim().toLowerCase();
+  // A typed path is a folder to add: "Add ~/code/app".
+  const typedPath = /^(~|\/|[A-Za-z]:[\\/])/.test(query.trim()) ? query.trim() : "";
   const shown = sorted.filter((entry) => entry.name.toLowerCase().includes(needle));
   const choose = (id: string | null) => {
     setOpen(false);
@@ -173,7 +174,7 @@ export function ProjectCombobox({
       key: "new",
       run: () => {
         setOpen(false);
-        setCreating(true);
+        openAddProject(typedPath);
       },
     },
     ...(project ? [{ key: "none", run: () => choose(null) }] : []),
@@ -246,7 +247,7 @@ export function ProjectCombobox({
               </button>
             ))}
           </div>
-          {shown.length === 0 && (
+          {shown.length === 0 && !typedPath && (
             <p className="text-muted-foreground px-2 py-1.5 text-sm">No projects found</p>
           )}
           <div className="border-foreground/10 mt-1 border-t pt-1">
@@ -257,7 +258,9 @@ export function ProjectCombobox({
               className={cn(ROW, highlighted === "new" && ROW_ACTIVE)}
             >
               <Plus />
-              New project
+              <span className="min-w-0 flex-1 truncate">
+                {typedPath ? `Add ${typedPath}` : "Add project"}
+              </span>
             </button>
             {project && (
               <button
@@ -273,11 +276,6 @@ export function ProjectCombobox({
           </div>
         </PopoverContent>
       </Popover>
-      <ProjectDialog
-        open={creating}
-        onOpenChange={setCreating}
-        onCreated={(created) => select({ type: "draft", kind: "session", projectId: created.id })}
-      />
     </>
   );
 }

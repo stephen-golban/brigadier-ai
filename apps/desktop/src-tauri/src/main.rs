@@ -40,6 +40,10 @@ pub struct AppState {
     cold_start_ms: Mutex<Option<f64>>,
 }
 
+/// Folders opened with the app that the webview hasn't taken yet. Not in [`AppState`]: a
+/// launch by opening a folder delivers it before the app is set up.
+static OPENED_FOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 #[tauri::command]
 fn app_info(state: State<'_, AppState>) -> AppInfo {
     state.info.clone()
@@ -72,6 +76,67 @@ async fn pick_folder(app: tauri::AppHandle, starting: Option<String>) -> Option<
     });
     let folder = rx.await.ok().flatten()?.into_path().ok()?;
     Some(folder.display().to_string())
+}
+
+/// File › Open Folder…: asks for folders to add as projects; empty when the user cancels.
+#[tauri::command]
+async fn pick_folders(app: tauri::AppHandle) -> Vec<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Open Folder");
+    if let Some(window) = app.get_webview_window(shell::MAIN_WINDOW) {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_folders(move |folders| {
+        let _ = tx.send(folders);
+    });
+    rx.await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|folder| folder.into_path().ok())
+        .map(|folder| folder.display().to_string())
+        .collect()
+}
+
+/// The folders opened with the app since the last call (see [`open_folders`]).
+#[tauri::command]
+fn take_opened_folders() -> Vec<String> {
+    std::mem::take(&mut *OPENED_FOLDERS.lock().expect("opened folders lock"))
+}
+
+/// Folders opened with the app (Finder, the Dock, `open -a`, a command-line argument): the
+/// webview takes them and adds them as projects. Anything but an existing folder is ignored.
+fn open_folders(app: &tauri::AppHandle, paths: impl IntoIterator<Item = std::path::PathBuf>) {
+    let folders: Vec<String> = paths
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .map(|path| path.display().to_string())
+        .collect();
+    if folders.is_empty() {
+        return;
+    }
+    OPENED_FOLDERS
+        .lock()
+        .expect("opened folders lock")
+        .extend(folders);
+    // Before setup, the webview takes them once it connects.
+    if let Some(state) = app.try_state::<AppState>() {
+        shell::show_main(app);
+        state.bridge.emit(BridgeEvent::FoldersOpened);
+    }
+}
+
+/// The folders among a launch's arguments, relative ones resolved against `cwd`.
+fn folder_args(
+    args: impl IntoIterator<Item = String>,
+    cwd: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    args.into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .map(|arg| cwd.join(arg))
+        .filter(|path| path.is_dir())
+        .collect()
 }
 
 /// Saves an artifact where the user picks in the system save dialog, offering `file_name`.
@@ -325,8 +390,12 @@ fn main() {
         .unwrap_or_default();
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             shell::show_main(app);
+            open_folders(
+                app,
+                folder_args(args.into_iter().skip(1), std::path::Path::new(&cwd)),
+            );
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -338,6 +407,13 @@ fn main() {
                 info,
                 cold_start_ms: Mutex::new(None),
             });
+            if let Ok(cwd) = std::env::current_dir() {
+                open_folders(app.handle(), folder_args(std::env::args().skip(1), &cwd));
+            }
+            #[cfg(target_os = "macos")]
+            if let Err(err) = shell::install_app_menu(app.handle()) {
+                tracing::warn!(error = %err, "could not add File › Open Folder…");
+            }
             // No menu-bar host (e.g. a bare Linux session) must not stop the app.
             if let Err(err) = shell::install_tray(app.handle()) {
                 tracing::warn!(error = %err, "menu-bar item unavailable");
@@ -372,6 +448,8 @@ fn main() {
             app_ready,
             smoke_finish,
             pick_folder,
+            pick_folders,
+            take_opened_folders,
             save_artifact,
             export_conventions,
             open_artifact,
@@ -400,6 +478,11 @@ fn main() {
         RunEvent::Exit => shell::quit_on_exit(app),
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => shell::show_main(app),
+        #[cfg(target_os = "macos")]
+        RunEvent::Opened { urls } => open_folders(
+            app,
+            urls.into_iter().filter_map(|url| url.to_file_path().ok()),
+        ),
         _ => {}
     });
     // The code the quit asked for, so smoke failures reach CI.

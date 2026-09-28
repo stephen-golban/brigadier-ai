@@ -134,6 +134,31 @@ impl Git {
         }))
     }
 
+    /// Makes `dir` (created when missing) a new repository with an empty first commit, so
+    /// sessions can branch from it. When git can't make the commit (no user identity, a
+    /// signing key that needs a passphrase) the branch stays unborn and its error is returned.
+    pub fn init(&self, dir: &Path) -> Result<Option<Error>> {
+        fs::create_dir_all(dir)?;
+        self.checked(Some(dir), &["init", "--quiet"], false, &[], None)?;
+        let commit = ["commit", "--quiet", "--allow-empty", "-m", "Initial commit"];
+        let out = self.run(Some(dir), &commit, false, &[], None)?;
+        Ok((!out.status.success()).then(|| failure(&commit, &out)))
+    }
+
+    /// Clones `url` into the new folder `dest`. Never prompts: a remote that needs a password
+    /// the credential helper doesn't have fails instead.
+    pub fn clone_into(&self, url: &str, dest: &Path) -> Result<()> {
+        let args = [
+            OsStr::new("clone"),
+            OsStr::new("--quiet"),
+            OsStr::new("--"),
+            OsStr::new(url),
+            dest.as_os_str(),
+        ];
+        self.checked(None, &args, false, &[], None)?;
+        Ok(())
+    }
+
     /// Open a task/session checkout that the application created.
     pub fn open_worktree(&self, path: &Path) -> Result<Worktree> {
         let repo = self.open(path)?;

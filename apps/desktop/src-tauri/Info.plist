@@ -4,5 +4,20 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Brigadier listens only while you dictate into the message box. Your speech is turned into text on this Mac and never leaves it.</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

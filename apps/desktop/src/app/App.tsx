@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect } from "react";
 
 import { AppSidebar } from "@/app/AppSidebar";
+import { AddProjectDialog } from "@/app/dialogs/AddProjectDialog";
+import { FolderDropZone } from "@/app/FolderDropZone";
 import { ArchivedView } from "@/app/ArchivedView";
 import { ConversationView } from "@/app/ConversationView";
 import { OnboardingDialog } from "@/app/onboarding/OnboardingDialog";
@@ -12,6 +14,7 @@ import { appReady, nowEpochMs } from "@/ipc/client";
 import { nextPaint, setFrameSampling } from "@/lib/perf";
 import { markStartup } from "@/lib/startup";
 import { setInspectorOpen, setMetricsStreaming } from "@/state/actions";
+import { openFolderPicker } from "@/state/addProject";
 import { useApp, type Selection } from "@/state/store";
 
 // The Inspector is a developer view: keep it off the cold-start path.
@@ -78,6 +81,12 @@ export function App() {
         event.preventDefault();
         setInspectorOpen(!useApp.getState().inspector.open);
       }
+      // Open Folder…: on macOS the File menu's ⌘O does it.
+      const mac = useApp.getState().info?.platform === "macos";
+      if (!mac && event.code === "KeyO" && event.ctrlKey && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        void openFolderPicker();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -107,6 +116,8 @@ export function App() {
         )}
       </SidebarInset>
       <OnboardingDialog />
+      <AddProjectDialog />
+      <FolderDropZone />
     </SidebarProvider>
   );
 }

@@ -31,6 +31,8 @@ use crate::upgrade;
 
 /// Frames buffered between a connection's reader task and its handler.
 const INBOUND_FRAMES: usize = 32;
+/// Slow requests' answers waiting to be written.
+const LATE_ANSWERS: usize = 8;
 /// Page size when replaying committed events to a new subscriber.
 const REPLAY_PAGE: u32 = 500;
 /// A subscriber further behind than this resyncs through `eventsSince` instead.
@@ -153,6 +155,7 @@ async fn serve(daemon: Arc<Daemon>, connection: Connection, client: ClientInfo) 
     let id = daemon.next_connection.fetch_add(1, Ordering::Relaxed);
     tracing::info!(connection = id, client = %client.name, pid = client.pid, "client connected");
     daemon.metrics.connection_opened(id, client);
+    let (late_tx, late) = mpsc::channel(LATE_ANSWERS);
     let mut session = Session {
         daemon: daemon.clone(),
         writer: connection.writer,
@@ -163,6 +166,8 @@ async fn serve(daemon: Arc<Daemon>, connection: Connection, client: ClientInfo) 
         terminals: HashSet::new(),
         dictation_feed: None,
         dictations: HashSet::new(),
+        late_tx,
+        late,
     };
     if let Err(err) = session.run(connection.reader).await {
         tracing::debug!(connection = id, error = %err, "connection ended with an error");
@@ -190,6 +195,9 @@ struct Session {
     dictation_feed: Option<broadcast::Receiver<DictationUpdate>>,
     /// The dictations this connection started: only their text is forwarded.
     dictations: HashSet<String>,
+    /// Answers to slow requests (clones), which run beside the others, by request id.
+    late_tx: mpsc::Sender<(u32, Result<Response, IpcError>)>,
+    late: mpsc::Receiver<(u32, Result<Response, IpcError>)>,
 }
 
 enum Flow {
@@ -264,6 +272,7 @@ impl Session {
                     }
                     Err(RecvError::Closed) => self.feed = None,
                 },
+                Some((id, outcome)) = self.late.recv() => self.respond(id, outcome).await?,
                 sample = next_metrics(&mut self.metrics) => {
                     if let Some(metrics) = sample {
                         self.writer.write(&ServerFrame::Metrics { metrics }).await?;
@@ -368,6 +377,26 @@ impl Session {
                 self.daemon.dictation.cancel(&dictation_id);
                 self.dictations.remove(&dictation_id);
                 Ok(Response::CancelDictation)
+            }
+            Request::CloneProject {
+                url,
+                parent,
+                folder,
+                name,
+            } => {
+                let sessions = self.daemon.sessions.clone();
+                let late = self.late_tx.clone();
+                self.daemon.supervisor.spawn(async move {
+                    let outcome = sessions
+                        .clone_project(url, parent, folder, name)
+                        .await
+                        .map(|project| Response::CloneProject {
+                            project: Box::new(project),
+                        })
+                        .map_err(IpcError::from);
+                    let _ = late.send((id, outcome)).await;
+                });
+                return Ok(Flow::Continue);
             }
             Request::Shutdown => {
                 // Stop admission and drain first; acknowledge only once writes are committed.
@@ -803,6 +832,15 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::FindProjects => Response::FindProjects {
             candidates: sessions.find_projects().await?,
         },
+        Request::BrowseFolders { path } => Response::BrowseFolders {
+            listing: sessions.browse_folders(path).await?,
+        },
+        Request::CheckFolder { path } => Response::CheckFolder {
+            check: sessions.check_folder(path).await?,
+        },
+        Request::AddProject { path, name, init } => Response::AddProject {
+            project: Box::new(sessions.add_project(path, name, init).await?),
+        },
         Request::ListFiles {
             conversation_id,
             query,
@@ -819,6 +857,11 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::OpenTerminal { .. } | Request::OpenSetupTerminal { .. } => {
             return Err(IpcError::from(brigadier_core::Error::Invalid(
                 "a terminal opens on the connection that shows it".into(),
+            )));
+        }
+        Request::CloneProject { .. } => {
+            return Err(IpcError::from(brigadier_core::Error::Invalid(
+                "a clone is answered on the connection that asked for it".into(),
             )));
         }
         Request::OpenSideChat { conversation_id } => Response::OpenSideChat {

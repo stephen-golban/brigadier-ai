@@ -13,96 +13,25 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { Project } from "@/ipc/generated";
-import { createProject, updateProject } from "@/state/actions";
+import { updateProject } from "@/state/actions";
 
 export type ProjectDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Absent: create a project. Present: edit its settings. */
-  project?: Project | null;
-  onCreated?: (project: Project) => void;
+  project: Project | null;
 };
 
-/** Creates a project on a repository, or edits a project's name, repository and secrets. */
+/** Edits a project's name, repository and secrets (new projects: `AddProjectDialog`). */
 export function ProjectDialog(props: ProjectDialogProps) {
   return (
-    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+    <Dialog open={props.open && props.project !== null} onOpenChange={props.onOpenChange}>
       <DialogContent className="max-w-md">
         {/* Remounted per opening so the fields start from the project. */}
-        {props.open &&
-          (props.project ? (
-            <SettingsForm project={props.project} onOpenChange={props.onOpenChange} />
-          ) : (
-            <CreateForm onOpenChange={props.onOpenChange} onCreated={props.onCreated} />
-          ))}
+        {props.open && props.project && (
+          <SettingsForm project={props.project} onOpenChange={props.onOpenChange} />
+        )}
       </DialogContent>
     </Dialog>
-  );
-}
-
-function CreateForm({
-  onOpenChange,
-  onCreated,
-}: {
-  onOpenChange: (open: boolean) => void;
-  onCreated?: ((project: Project) => void) | undefined;
-}) {
-  const id = useId();
-  const [name, setName] = useState("");
-  const [repo, setRepo] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    const path = repo.trim();
-    if (!path) {
-      setError("Choose the project's repository.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const project = await createProject(name.trim(), path);
-      onOpenChange(false);
-      onCreated?.(project);
-    } catch (cause) {
-      setError(errorText(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={(event) => void submit(event)} className="grid gap-4">
-      <DialogHeader>
-        <DialogTitle>New project</DialogTitle>
-        <DialogDescription>
-          A project owns its sessions and works in a git repository.
-        </DialogDescription>
-      </DialogHeader>
-      <Field label="Repository" htmlFor={`${id}-repo`}>
-        <FolderField id={`${id}-repo`} value={repo} onChange={setRepo} autoFocus />
-      </Field>
-      <Field label="Name" htmlFor={`${id}-name`}>
-        <Input
-          id={`${id}-name`}
-          value={name}
-          maxLength={200}
-          placeholder="Named after the folder"
-          onChange={(event) => setName(event.target.value)}
-        />
-      </Field>
-      <ErrorLine error={error} />
-      <DialogFooter>
-        <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={busy}>
-          Create project
-        </Button>
-      </DialogFooter>
-    </form>
   );
 }
 

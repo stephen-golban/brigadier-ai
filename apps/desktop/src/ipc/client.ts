@@ -88,6 +88,16 @@ export function pickFolder(starting?: string): Promise<string | null> {
   return invoke<string | null>("pick_folder", { starting: starting || null });
 }
 
+/** File › Open Folder…'s picker: folders to add as projects, none when cancelled. */
+export function pickFolders(): Promise<string[]> {
+  return invoke<string[]>("pick_folders");
+}
+
+/** The folders opened with the app (Finder, the Dock, launch arguments) not yet taken. */
+export function takeOpenedFolders(): Promise<string[]> {
+  return invoke<string[]>("take_opened_folders");
+}
+
 /** Saves an artifact where the user picks in the system save dialog; `false` when cancelled. */
 export async function saveArtifact(id: string, fileName: string): Promise<boolean> {
   try {

@@ -71,11 +71,11 @@ import {
   setProjectExpanded,
 } from "@/state/actions";
 import { useRowActivity } from "@/state/activity";
+import { openAddProject } from "@/state/addProject";
 import { exportProjectConventions } from "@/state/brain";
 import { useApp } from "@/state/store";
 
 type DialogState =
-  | { type: "newProject" }
   | { type: "projectSettings"; project: Project }
   | { type: "rename"; conversation: Conversation }
   | { type: "settings" }
@@ -249,9 +249,9 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupLabel>Projects</SidebarGroupLabel>
           <SidebarGroupAction
-            title="New project"
-            aria-label="New project"
-            onClick={() => setDialog({ type: "newProject" })}
+            title="Add project"
+            aria-label="Add project"
+            onClick={() => openAddProject()}
           >
             <Plus />
           </SidebarGroupAction>
@@ -275,9 +275,9 @@ export function AppSidebar() {
                 <button
                   type="button"
                   className="text-sidebar-foreground underline-offset-4 hover:underline"
-                  onClick={() => setDialog({ type: "newProject" })}
+                  onClick={() => openAddProject()}
                 >
-                  Create a project
+                  Add a project
                 </button>
               </EmptyHint>
             )}
@@ -343,13 +343,9 @@ export function AppSidebar() {
 
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
       <ProjectDialog
-        open={dialog?.type === "newProject" || dialog?.type === "projectSettings"}
+        open={dialog?.type === "projectSettings"}
         onOpenChange={(open) => !open && setDialog(null)}
         project={dialog?.type === "projectSettings" ? dialog.project : null}
-        onCreated={(project) => {
-          setProjectExpanded(project.id, true);
-          select({ type: "draft", kind: "session", projectId: project.id });
-        }}
       />
       <SettingsDialog
         open={dialog?.type === "settings"}

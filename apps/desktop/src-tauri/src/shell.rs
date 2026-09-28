@@ -101,6 +101,38 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Menu id of File › Open Folder….
+#[cfg(target_os = "macos")]
+const OPEN_FOLDER_ITEM: &str = "open-folder";
+
+/// The standard app menu with File › Open Folder… (⌘O) first. Choosing it has the webview ask
+/// for folders to add as projects.
+#[cfg(target_os = "macos")]
+pub fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
+    let menu = Menu::default(app)?;
+    let open = MenuItemBuilder::with_id(OPEN_FOLDER_ITEM, "Open Folder…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    for item in menu.items()? {
+        if let Some(file) = item.as_submenu()
+            && file.text()? == "File"
+        {
+            file.insert_items(&[&open, &separator], 0)?;
+        }
+    }
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id().as_ref() == OPEN_FOLDER_ITEM {
+            show_main(app);
+            if let Some(state) = app.try_state::<AppState>() {
+                state.bridge.emit(BridgeEvent::OpenFolderMenu);
+            }
+        }
+    });
+    Ok(())
+}
+
 /// Closing the window hides it when the menu-bar item can bring it back; without one (a
 /// desktop with no tray host) closing quits.
 pub fn close_main(app: &AppHandle) {

@@ -26,6 +26,8 @@ use crate::launcher::Launcher;
 const QUEUED_REQUESTS: usize = 256;
 /// How long a request may wait (including reconnecting) before failing.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// A clone is answered when it ends: big repositories on slow links take a while.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// How long to wait for a freshly launched daemon to accept connections.
 const LAUNCH_WAIT: Duration = Duration::from_secs(10);
 const CONNECT_POLL: Duration = Duration::from_millis(20);
@@ -96,12 +98,16 @@ impl Bridge {
         if let Request::SetMetricsStreaming { enabled } = &request {
             self.inner.metrics_wanted.store(*enabled, Ordering::Release);
         }
+        let timeout = match &request {
+            Request::CloneProject { .. } => CLONE_TIMEOUT,
+            _ => REQUEST_TIMEOUT,
+        };
         let (reply, response) = oneshot::channel();
         let outgoing = Outgoing {
             request,
             reply: Some(reply),
         };
-        let result = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let result = tokio::time::timeout(timeout, async {
             self.inner
                 .requests
                 .send(outgoing)

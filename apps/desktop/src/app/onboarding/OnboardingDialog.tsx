@@ -27,15 +27,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { pickFolder } from "@/ipc/client";
 import type { ProjectCandidate, ProviderKind, ProviderOverview } from "@/ipc/generated";
-import { formatAgo } from "@/lib/format";
+import { formatAgo, shortPath } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
   createProject,
-  getRepoInfo,
   loadProviders,
   refreshProviders,
   select,
 } from "@/state/actions";
+import { checkFolder } from "@/state/addProject";
 import {
   closeSetupTerminal,
   findProjects,
@@ -483,11 +483,6 @@ function suggested(candidate: ProjectCandidate, nowMs: number): boolean {
   );
 }
 
-/** A home-relative path for display (`~/Development/app`). */
-function shortPath(path: string): string {
-  return path.replace(/^(\/Users|\/home)\/[^/]+(?=\/|$)/, "~");
-}
-
 function ProjectsStep() {
   const [candidates, setCandidates] = useState<ProjectCandidate[] | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -529,10 +524,15 @@ function ProjectsStep() {
     try {
       const picked = await pickFolder();
       if (!picked) return;
-      const repo = await getRepoInfo(picked);
-      const project = Object.values(useApp.getState().projects).find((entry) =>
-        entry.repos.some((r) => r.path === repo.path),
-      );
+      const check = await checkFolder(picked);
+      if (check.kind === "invalid") throw new Error(check.reason);
+      if (check.kind !== "repo") {
+        throw new Error(
+          `${shortPath(picked)} is not in a git repository. Add it with Add project, which can make one.`,
+        );
+      }
+      const repo = { path: check.root, name: check.name };
+      const project = check.projectId ? { id: check.projectId } : null;
       setCandidates((current) => {
         const list = current ?? [];
         if (list.some((candidate) => candidate.path === repo.path)) return list;

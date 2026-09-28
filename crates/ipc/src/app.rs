@@ -50,6 +50,11 @@ pub enum BridgeEvent {
     OpenConversation {
         conversation_id: String,
     },
+    /// Folders were opened with the app (Finder or the Dock, a command-line argument): take
+    /// them with `take_opened_folders` and add them as projects.
+    FoldersOpened,
+    /// File › Open Folder… was chosen: pick folders to add as projects.
+    OpenFolderMenu,
 }
 
 /// A conversation the menu-bar item lists under "Running".

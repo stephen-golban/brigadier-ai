@@ -98,3 +98,8 @@ export function formatDaySeparator(epochMs: number, nowMs: number): string {
 export function sameDay(a: number, b: number): boolean {
   return daysAgo(a, b) === 0;
 }
+
+/** A home-relative path for display (`~/Development/app`). */
+export function shortPath(path: string): string {
+  return path.replace(/^(\/Users|\/home)\/[^/]+(?=\/|$)/, "~");
+}

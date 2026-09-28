@@ -11,11 +11,11 @@ use brigadier_brain::{BrainAnswer, BrainGraph, BrainQuery, Node, NodeFilter};
 use brigadier_core::{
     AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
     ConventionsExport, Conversation, ConversationActivity, ConversationId, ConversationKind,
-    ConversationStatus, ConversationView, DiffStat, ForkPlace, GitState, Mention, Message,
-    MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectCandidate, ProjectId,
-    ProjectPatch, ProvidersView, PullRequest, QueuedMessage, Rating, RawApprovals, RawPage,
-    RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, Settings, Setup,
-    SetupRequest, TaskId, WorkerPage,
+    ConversationStatus, ConversationView, DiffStat, FolderCheck, FolderListing, ForkPlace,
+    GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
+    ProjectCandidate, ProjectId, ProjectPatch, ProvidersView, PullRequest, QueuedMessage, Rating,
+    RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
+    ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -133,6 +133,32 @@ pub enum Request {
     /// The repositories the user's own Claude Code and Codex sessions worked in, most recent
     /// first: the first run's project suggestions.
     FindProjects,
+    /// The folders a typed path points into (`~` is the home folder): the Add project
+    /// dialog's suggestions.
+    BrowseFolders {
+        path: String,
+    },
+    /// What adding a folder (typed, picked, dropped or opened from the file manager) as a
+    /// project does.
+    CheckFolder {
+        path: String,
+    },
+    /// Adds a folder as a project: the top-level folder of the repository it is in, or with
+    /// `init`, a new repository made there (and the folder, when missing). An empty `name`
+    /// names it after the folder.
+    AddProject {
+        path: String,
+        name: String,
+        init: bool,
+    },
+    /// Clones `url` into the new folder `folder` in `parent` and adds it as a project. The
+    /// answer comes when the clone ends; the connection serves other requests meanwhile.
+    CloneProject {
+        url: String,
+        parent: String,
+        folder: String,
+        name: String,
+    },
     /// The files of a session's checkout, for the composer's @-mentions and the Files tab.
     ListFiles {
         conversation_id: ConversationId,
@@ -615,6 +641,18 @@ pub enum Response {
     },
     FindProjects {
         candidates: Vec<ProjectCandidate>,
+    },
+    BrowseFolders {
+        listing: FolderListing,
+    },
+    CheckFolder {
+        check: FolderCheck,
+    },
+    AddProject {
+        project: Box<Project>,
+    },
+    CloneProject {
+        project: Box<Project>,
     },
     ListFiles {
         /// Paths relative to the checkout's root, tracked and untracked (not ignored).

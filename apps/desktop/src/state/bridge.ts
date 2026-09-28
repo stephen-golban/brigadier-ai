@@ -8,6 +8,7 @@ import {
   openOrchestratorLog,
 } from "@/state/actions";
 import { applyActivityEvents, loadActivity } from "@/state/activity";
+import { openFolderPicker, takeFolders } from "@/state/addProject";
 import { applyBoardEvents, sideBoardIds, useBoard } from "@/state/board";
 import { applyBrainEvents } from "@/state/brain";
 import { applyEvents, useApp } from "@/state/store";
@@ -67,9 +68,12 @@ function onBridgeEvent(message: BridgeEvent) {
       useApp.setState({
         connection: { status: "connected", daemon: message.daemon, reason: null },
       });
-      void resync().catch((error: unknown) => {
-        console.error("resync after connecting failed", error);
-      });
+      // Folders opened with the app before it connected are added once the catalog is in.
+      void resync()
+        .then(takeFolders)
+        .catch((error: unknown) => {
+          console.error("resync after connecting failed", error);
+        });
       break;
     case "disconnected":
       onDictationDisconnected();
@@ -103,6 +107,12 @@ function onBridgeEvent(message: BridgeEvent) {
       break;
     case "openConversation":
       openConversation(message.conversationId);
+      break;
+    case "foldersOpened":
+      void takeFolders();
+      break;
+    case "openFolderMenu":
+      void openFolderPicker();
       break;
   }
 }

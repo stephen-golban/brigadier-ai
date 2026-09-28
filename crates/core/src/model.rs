@@ -623,6 +623,56 @@ pub struct ProjectCandidate {
     pub project_id: Option<ProjectId>,
 }
 
+/// A folder offered while a path is typed in the Add project dialog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderEntry {
+    pub name: String,
+    /// Absolute path.
+    pub path: String,
+    /// It is the top-level folder of a git repository.
+    pub repo: bool,
+    /// The project that already has this repository.
+    pub project_id: Option<ProjectId>,
+}
+
+/// The folders inside the folder a typed path points into whose names start with the path's
+/// last part, by name.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderListing {
+    /// The folder listed (absolute), empty when the path points into none.
+    pub dir: String,
+    pub entries: Vec<FolderEntry>,
+    /// Set when more folders matched than were listed.
+    pub truncated: bool,
+}
+
+/// What adding a folder as a project does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FolderCheck {
+    /// The folder is in a git repository, and the project works in its top-level folder
+    /// `root`. `nested` when that is not the folder itself (a subfolder, a linked worktree).
+    Repo {
+        root: String,
+        name: String,
+        nested: bool,
+        /// The project that already has this repository.
+        project_id: Option<ProjectId>,
+    },
+    /// A folder in no repository: adding it runs `git init` there first.
+    Plain { path: String, name: String },
+    /// Nothing is there yet: adding it creates the folder and a repository in it.
+    Missing { path: String, name: String },
+    /// It can't be a project.
+    Invalid { reason: String },
+}
+
 /// A page of a worker's transcript, oldest first.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
