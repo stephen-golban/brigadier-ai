@@ -248,8 +248,11 @@ Claude's sandbox lets network traffic out only as HTTP(S) through its proxy, so 
 - Workers and orchestrators get grants scoped to their role and task, checked on every MCP and
   gate call and revoked when the session ends. UI-only requests (such as answering approvals)
   never accept a grant; they need the IPC token in `<data>/run/`. Claude workers cannot read that
-  folder; Codex's sandbox cannot deny reads, so a hostile Codex worker could read the token and
-  act as the UI.
+  folder, nor can Codex sessions that run in a Brigadier folder (read-only workers and Brain
+  jobs), which get a Codex permission profile denying it; a Brain job never runs on Codex
+  without one. A Codex worker that writes in a worktree keeps Codex's older sandbox, which
+  cannot deny reads (a permission profile there would make Codex trust your checkout in
+  `~/.codex/config.toml`), so a hostile one could read the token and act as the UI.
 - A process that detaches and moves out of Brigadier's folders escapes the cleanup.
 - A Codex orchestrator runs read-only with every approval declined. It still has: exec
   (JavaScript in an isolate that can only call its tools), `apply_patch` (each patch is an

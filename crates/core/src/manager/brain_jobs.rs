@@ -23,6 +23,7 @@ use std::time::Duration;
 use brigadier_brain::{
     Edge, EdgeKind, NewNode, NodeFilter, NodeKind, NodeState, Origin, Provenance, WorkerRef,
 };
+use brigadier_providers::codex;
 use brigadier_providers::policy::{self, ApprovalMode, Route as PolicyRoute};
 use brigadier_providers::{
     Access, ApprovalDecision, Origin as SessionOrigin, ProviderEvent, ProviderKind, QuotaSnapshot,
@@ -236,11 +237,14 @@ impl SessionManager {
     }
 
     /// The signed-in provider with the most quota left; with `known_only`, only one whose
-    /// usage windows are known.
+    /// usage windows are known. Codex qualifies only where its sandbox can keep the job out of
+    /// the run folder (the IPC token): a job's scratch folder outside any repository.
     fn job_provider(&self, known_only: bool) -> Option<ProviderKind> {
+        let scratch = self.owned_dir("scratch", "");
         ProviderKind::ALL
             .into_iter()
             .filter(|kind| self.provider_usable(*kind))
+            .filter(|kind| *kind != ProviderKind::Codex || codex::can_deny_reads(true, &scratch))
             .filter_map(|kind| {
                 let quota = self
                     .runtime
@@ -407,7 +411,8 @@ impl SessionManager {
             },
         );
         // Codex cannot run with a read-only cwd: it works from the scratch folder and reads
-        // the repository by path, as read-only workers do.
+        // the repository by path, as read-only workers do. There its sandbox is a permission
+        // profile that denies reading the run folder, or the session does not start.
         let codex = provider == ProviderKind::Codex;
         let run_dir = self.runtime.platform().paths().run_dir.clone();
         let spec = SessionSpec {

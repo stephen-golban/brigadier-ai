@@ -21,6 +21,8 @@
 //! writable sandbox in a project the user never trusted makes Codex persist a trust entry for
 //! the project (for a worktree: the user's main checkout), and no per-process override stops it;
 //! so threads start with no sandbox of their own and every turn sets it ([`thread_sandbox`]).
+//! The exception is a session that must not read some folders, started in a folder Brigadier
+//! owns outside any repository: it gets a permission profile instead ([`permission_profile`]).
 //! Should Codex still add an entry for the exact folder of a Brigadier-owned session
 //! ([`SessionSpec::owned_cwd`]), it is recorded and removed with the session through Codex's
 //! config API, only while it is still exactly `trusted`.
@@ -38,8 +40,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use brigadier_sandbox::Platform;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -64,6 +66,8 @@ const EXIT_GRACE: Duration = Duration::from_secs(3);
 const NO_AUTO_COMPACT_TOKENS: i64 = 1_000_000_000;
 /// The first version seen to serve `thread/compact/start`.
 const COMPACT_SINCE: &str = "0.156.1";
+/// The permission profile a session with folders it must not read runs under.
+const PROFILE: &str = "brigadier";
 
 /// Built-ins switched off for sessions that must not act on their own (the orchestrator, a
 /// Chat): viewing local images, generating images, Codex's own sub-agents, goals, the sleep
@@ -442,12 +446,15 @@ impl Provider for Codex {
                 .collect();
             tokio::spawn(read_loop(rpc.clone(), stdout, shared.clone(), trusted));
 
+            let profile = permission_profile(&spec, &cwd);
+            let profiled = profile.is_some();
             let started = tokio::time::timeout(
                 START_TIMEOUT,
                 open_thread(
                     &rpc,
                     &spec,
                     &cwd,
+                    profile,
                     self.images_root().as_deref(),
                     ledger.as_ref(),
                 ),
@@ -473,6 +480,7 @@ impl Provider for Codex {
                 rpc,
                 shared,
                 access: spec.access.clone(),
+                profiled,
                 effort: spec.effort.clone(),
             });
             session
@@ -583,11 +591,13 @@ async fn open_thread(
     rpc: &Rpc,
     spec: &SessionSpec,
     cwd: &Path,
+    profile: Option<Value>,
     images_root: Option<&Path>,
     ledger: &dyn Ledger,
 ) -> Result<Opened> {
     rpc.initialize().await?;
-    let config = thread_config(rpc, spec, cwd).await?;
+    let profiled = profile.is_some();
+    let config = thread_config(rpc, spec, cwd, profile).await?;
     // Only a folder Brigadier created may have its trust entry recorded and undone. Codex keys
     // trust on the main checkout for a worktree, which is the user's: watched, never touched.
     let watched: Vec<String> = if spec.owned_cwd {
@@ -613,7 +623,7 @@ async fn open_thread(
     let service_tier = Some(if spec.fast { FAST_TIER } else { STANDARD_TIER }.to_owned());
     let (thread, model) = match &spec.origin {
         Origin::New => {
-            let started: p::ThreadStartResponse = rpc
+            let started: Profiled<p::ThreadStartResponse> = rpc
                 .call(
                     "thread/start",
                     &p::ThreadStartParams {
@@ -628,12 +638,13 @@ async fn open_thread(
                     },
                 )
                 .await?;
+            let started = started.checked(profiled)?;
             (started.thread, started.model)
         }
         Origin::Resume { native_id } => {
             // Brigadier archived it when it last closed the thread.
             unarchive_thread(rpc, native_id).await?;
-            let resumed: p::ThreadResumeResponse = rpc
+            let resumed: Profiled<p::ThreadResumeResponse> = rpc
                 .call(
                     "thread/resume",
                     &p::ThreadResumeParams {
@@ -650,11 +661,12 @@ async fn open_thread(
                     },
                 )
                 .await?;
+            let resumed = resumed.checked(profiled)?;
             (resumed.thread, resumed.model)
         }
         Origin::Fork { native_id } => {
             let archived = unarchive_thread(rpc, native_id).await?;
-            let forked: p::ThreadForkResponse = rpc
+            let forked: Profiled<p::ThreadForkResponse> = rpc
                 .call(
                     "thread/fork",
                     &p::ThreadForkParams {
@@ -674,6 +686,7 @@ async fn open_thread(
             if archived {
                 archive_thread(rpc, native_id).await?;
             }
+            let forked = forked.checked(profiled)?;
             (forked.thread, forked.model)
         }
     };
@@ -821,8 +834,13 @@ async fn remove_project_trust(rpc: &Rpc, path: &str) -> Result<()> {
 }
 
 /// Per-thread config: the user's MCP servers off, Brigadier's on, and the workspace sandbox
-/// with network access.
-async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<String, Value>> {
+/// with network access, or the session's permission profile.
+async fn thread_config(
+    rpc: &Rpc,
+    spec: &SessionSpec,
+    cwd: &Path,
+    profile: Option<Value>,
+) -> Result<Map<String, Value>> {
     let effective: Value = rpc
         .call(
             "config/read",
@@ -877,6 +895,12 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
             config.insert("web_search".into(), json!("live"));
         }
     }
+    if let Some(profile) = profile {
+        // Profiles and the legacy sandbox settings don't compose: set only the profile.
+        config.insert("default_permissions".into(), json!(PROFILE));
+        config.insert("permissions".into(), json!({ PROFILE: profile }));
+        return Ok(config);
+    }
     let network = match &spec.access {
         Access::Workspace { .. } => Some(true),
         Access::Scoped { network, .. } => Some(*network),
@@ -900,6 +924,95 @@ async fn thread_config(rpc: &Rpc, spec: &SessionSpec, cwd: &Path) -> Result<Map<
         );
     }
     Ok(config)
+}
+
+/// The permission profile of a scoped session with folders it must not read, when Codex can
+/// take one ([`can_deny_reads`]).
+///
+/// Codex's legacy sandbox settings cannot deny reads. A permission profile can, and the OS
+/// sandbox enforces it: a denied read fails with "Operation not permitted" (verified against
+/// Codex 0.156.1 on macOS). Profiles are set when the thread opens; turns then set no sandbox
+/// policy of their own, which would bring back the legacy settings.
+fn permission_profile(spec: &SessionSpec, cwd: &Path) -> Option<Value> {
+    let Access::Scoped {
+        writable_roots,
+        network,
+        deny_read,
+        unix_sockets,
+        ..
+    } = &spec.access
+    else {
+        return None;
+    };
+    if deny_read.is_empty() || !can_deny_reads(spec.owned_cwd, cwd) {
+        return None;
+    }
+    let real = |path: &PathBuf| {
+        path.canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .display()
+            .to_string()
+    };
+    // Everything readable, the working directory (always writable for Codex) and the roots
+    // writable, `/tmp` and `$TMPDIR` read-only as in the legacy scoped sandbox.
+    let mut filesystem = Map::new();
+    filesystem.insert(":root".into(), json!("read"));
+    filesystem.insert(":workspace_roots".into(), json!("write"));
+    for root in writable_roots {
+        filesystem.insert(real(root), json!("write"));
+    }
+    for path in deny_read {
+        filesystem.insert(real(path), json!("deny"));
+    }
+    let sockets: Map<String, Value> = unix_sockets
+        .iter()
+        .map(|socket| (real(socket), json!("allow")))
+        .collect();
+    Some(json!({
+        "filesystem": filesystem,
+        "network": { "enabled": network, "unix_sockets": sockets },
+    }))
+}
+
+/// Whether a Codex session started in `cwd` can be kept from reading folders
+/// ([`Access::Scoped`]'s `deny_read`): only in a folder Brigadier owns outside any repository.
+/// A thread opened with a writable permission profile makes Codex persist a trust entry in
+/// `~/.codex/config.toml` for the repository it runs in (for a worktree: the user's main
+/// checkout), so a worker in a worktree keeps the legacy sandbox, which cannot deny reads.
+pub fn can_deny_reads(owned_cwd: bool, cwd: &Path) -> bool {
+    owned_cwd && !cwd.ancestors().any(|dir| dir.join(".git").exists())
+}
+
+/// A thread response with the permission profile Codex reports active (a field its schema
+/// doesn't declare yet).
+#[derive(Deserialize)]
+struct Profiled<R> {
+    #[serde(flatten)]
+    response: R,
+    #[serde(rename = "activePermissionProfile", default)]
+    active_profile: Option<ActiveProfile>,
+}
+
+#[derive(Deserialize)]
+struct ActiveProfile {
+    id: String,
+}
+
+impl<R> Profiled<R> {
+    /// Fails closed when the session asked for its profile and Codex didn't apply it (an older
+    /// Codex, or a `sandbox_mode` in the user's config, which turns profiles off): nothing
+    /// would keep it out of the folders it must not read.
+    fn checked(self, profiled: bool) -> Result<R> {
+        let active = self.active_profile.map(|profile| profile.id);
+        if profiled && active.as_deref() != Some(PROFILE) {
+            return Err(Error::Invalid(format!(
+                "Codex did not apply Brigadier's permission profile (active: {}), so it cannot \
+                 keep this session out of Brigadier's private folders",
+                active.as_deref().unwrap_or("none")
+            )));
+        }
+        Ok(self.response)
+    }
 }
 
 fn approval_policy(access: &Access) -> p::AskForApproval {
@@ -1248,6 +1361,8 @@ pub struct CodexSession {
     rpc: Arc<Rpc>,
     shared: Arc<Shared>,
     access: Access,
+    /// Its sandbox is a permission profile set when the thread opened.
+    profiled: bool,
     effort: Option<String>,
 }
 
@@ -1301,7 +1416,7 @@ impl CodexSession {
                     thread_id: self.thread_id.clone(),
                     input: Self::input(input)?,
                     effort,
-                    sandbox_policy: Some(sandbox_policy(&self.access)),
+                    sandbox_policy: (!self.profiled).then(|| sandbox_policy(&self.access)),
                     approval_policy: Some(approval_policy(&self.access)),
                     ..Default::default()
                 },
