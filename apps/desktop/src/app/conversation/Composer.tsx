@@ -185,7 +185,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                 <PlanChip />
               </div>
               <DictationNote owner={dictationOwner} />
-              {conversation && <ComposerContextRing />}
+              {conversation?.kind === "chat" && <ComposerContextRing />}
               {conversation ? (
                 <ConversationModelPicker
                   conversation={conversation}

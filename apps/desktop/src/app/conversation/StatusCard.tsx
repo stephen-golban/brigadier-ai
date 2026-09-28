@@ -3,6 +3,7 @@ import { createContext, type FC, type ReactNode, useEffect, useState } from "rea
 import type { ContextUsage, ConversationStatus, QuotaWindow } from "@/ipc/generated";
 import { getConversationStatus } from "@/state/actions";
 import { useBoard } from "@/state/board";
+import { useApp } from "@/state/store";
 import { ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 
 /** Whether the open conversation shows the `/status` card above its composer. */
@@ -71,6 +72,8 @@ export const StatusCard: FC<{ conversationId: string; onClose: () => void }> = (
   const context = useBoard((s) =>
     s.board?.conversationId === conversationId ? s.board.context : null,
   );
+  // A session's orchestrator is reborn with a fresh context; its meter is in the Inspector.
+  const session = useApp((s) => s.conversations[conversationId]?.kind === "session");
   useEffect(() => {
     let current = true;
     getConversationStatus(conversationId).then(
@@ -113,16 +116,18 @@ export const StatusCard: FC<{ conversationId: string; onClose: () => void }> = (
             <Row label="Session/Thread:">
               <span className="truncate">{status ? (status.nativeId ?? "not started yet") : "…"}</span>
             </Row>
-            <Row label="Context:">
-              {shown ? (
-                <span className="truncate">
-                  {shown.value}
-                  {shown.detail && <span className="text-muted-foreground"> {shown.detail}</span>}
-                </span>
-              ) : (
-                <span className="text-muted-foreground">no usage yet</span>
-              )}
-            </Row>
+            {!session && (
+              <Row label="Context:">
+                {shown ? (
+                  <span className="truncate">
+                    {shown.value}
+                    {shown.detail && <span className="text-muted-foreground"> {shown.detail}</span>}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">no usage yet</span>
+                )}
+              </Row>
+            )}
             {status?.quota?.windows.map((window) => {
               const left = Math.max(0, Math.min(100, Math.round(100 - window.usedPercent)));
               return (

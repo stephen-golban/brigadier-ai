@@ -131,7 +131,10 @@ export const SlashCommands: FC<{
       {
         id: "status",
         label: "Status",
-        description: `Show ${noun} ID, context usage, and rate limits`,
+        description:
+          conversation.kind === "chat"
+            ? "Show chat ID, context usage, and rate limits"
+            : "Show session ID and rate limits",
         icon: <InfoCircle />,
         run: () => status.setOpen(true),
       },
