@@ -2404,10 +2404,11 @@ impl SessionManager {
         if conv.kind != ConversationKind::Session {
             return;
         }
-        let bytes = message.blob.as_ref().map_or(message.text.len(), |_| {
-            // Stored as a blob: count what was sent.
-            message.text.len().max(1)
-        });
+        // A long message keeps only its first part inline: count all of what was sent.
+        let bytes = match &message.blob {
+            Some(_) => self.full_text(message).await.len(),
+            None => message.text.len(),
+        };
         self.log_injection(
             &conv.id,
             InjectionKind::UserMessage,
