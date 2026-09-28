@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 
 import { ErrorLine, errorText, Field, RadioChoice, SwitchRow } from "@/app/dialogs/fields";
+import { MemoriesSection } from "@/app/dialogs/MemoriesSection";
 import {
   ModelSelector,
   type ModelGroup,
@@ -57,6 +58,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const [showContext, setShowContext] = useState(initial.showContextUsage);
   const [fullAccessNotice, setFullAccessNotice] = useState(initial.showFullAccessNotice);
   const [hibernate, setHibernate] = useState(String(initial.hibernateAfterMinutes));
+  const [enrichBrain, setEnrichBrain] = useState(initial.enrichBrain);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -81,6 +83,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         showContextUsage: showContext,
         showFullAccessNotice: fullAccessNotice,
         hibernateAfterMinutes: minutes,
+        enrichBrain,
       };
       await updateSettings(next);
       onOpenChange(false);
@@ -175,6 +178,13 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         onCheckedChange={setFullAccessNotice}
       />
 
+      <SwitchRow
+        label="Use spare quota to deepen the Brain"
+        hint="Before a usage window resets with quota left, a cheap model studies your projects further."
+        checked={enrichBrain}
+        onCheckedChange={setEnrichBrain}
+      />
+
       <Field
         label="Hibernate after (minutes)"
         htmlFor={`${id}-hibernate`}
@@ -191,6 +201,8 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
           onChange={(event) => setHibernate(event.target.value)}
         />
       </Field>
+
+      <MemoriesSection />
 
       <p className="text-muted-foreground text-xs">
         Routing, secrets and the other settings arrive with the full Settings screen (Phase 9).
