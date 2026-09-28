@@ -1,18 +1,22 @@
-import {
-  Bolt,
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Regenerate,
-} from "@openai/apps-sdk-ui/components/Icon";
-import { Slider as SliderPrimitive } from "radix-ui";
-import { useState } from "react";
+import { Bolt, Check, ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
+import { type FC, type ReactNode, useState } from "react";
 
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { composerPill } from "@/components/assistant-ui/elements/surfaces";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { ModelChoice, ModelInfo, ProviderKind } from "@/ipc/generated";
+import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 
 /** "xhigh" → "Extra high", "medium" → "Medium". */
@@ -38,21 +42,26 @@ export type ModelGroup = {
   unavailable: string | null;
 };
 
+/**
+ * The model a choice names. No model, or the `default` alias of an older list, is the model the
+ * CLI runs when not told one.
+ */
 export function findModel(groups: readonly ModelGroup[], choice: ModelChoice): ModelInfo | null {
   const group = groups.find((entry) => entry.provider === choice.provider);
   if (!group) return null;
-  return (
-    group.models.find((model) =>
-      choice.model === null ? model.isDefault : model.id === choice.model,
-    ) ?? null
-  );
+  const named = choice.model === null ? undefined : group.models.find((model) => model.id === choice.model);
+  if (named) return named;
+  return choice.model === null || choice.model === "default"
+    ? (group.models.find((model) => model.isDefault) ?? null)
+    : null;
 }
 
 /** "Opus 5.5 · High": the choice as the trigger shows it. */
 export function choiceLabel(groups: readonly ModelGroup[], choice: ModelChoice): string {
   const model = findModel(groups, choice);
   const name = model?.displayName ?? choice.model ?? "Default model";
-  return choice.effort ? `${name} · ${effortLabel(choice.effort)}` : name;
+  const effort = effortFor(model, choice.effort);
+  return effort ? `${name} · ${effortLabel(effort)}` : name;
 }
 
 /**
@@ -66,11 +75,31 @@ export function effortFor(model: ModelInfo | null, effort: string | null): strin
   return model.defaultEffort;
 }
 
+/** A two-line row (a model and what it's for): rounded, not a pill, as ChatGPT's are. */
+const TALL_ROW = "h-auto rounded-xl";
+
+/** A section heading, in ChatGPT's plain grey. */
+const Section: FC<{ children: ReactNode }> = ({ children }) => (
+  <DropdownMenuLabel className="font-sans text-sm font-normal tracking-normal normal-case">
+    {children}
+  </DropdownMenuLabel>
+);
+
+/** A model row: its name, then what it's for in grey. */
+const ModelRow: FC<{ model: ModelInfo }> = ({ model }) => (
+  <span className="flex min-w-0 flex-col py-1">
+    <span className="truncate">{model.displayName}</span>
+    {model.description && (
+      <span className="text-muted-foreground truncate text-xs">{model.description}</span>
+    )}
+  </span>
+);
+
 /**
- * ChatGPT's model and effort picker. The trigger reads "Opus 5.5 High"; it opens on the effort:
- * the effort in use over the model's name (which opens the model list), a reset to the model's
- * default effort, and a slider with one stop per effort the model accepts. A model without
- * efforts opens on the model list.
+ * The model and effort picker, in ChatGPT's menu style. The trigger reads "Opus 5.5 High": the
+ * model and effort the conversation runs with, the CLI's defaults spelled out. The menu lists
+ * the model's efforts (its default marked), Fast where the model has a fast tier, then each
+ * provider with its model in use, opening to the side on its models.
  */
 export function ModelSelector({
   groups,
@@ -95,239 +124,132 @@ export function ModelSelector({
   const [own, setOwn] = useState(false);
   const open = shown ?? own;
   const setOpen = onOpenChange ?? setOwn;
-  const [listing, setListing] = useState(false);
   const current = findModel(groups, value);
   const effort = effortFor(current, value.effort);
-  const name = current?.displayName ?? value.model ?? "Default model";
-  const models = listing || !current || current.efforts.length === 0;
+  const name =
+    current?.displayName ?? (value.model && value.model !== "default" ? value.model : "Default model");
   const fast = value.fast === true && Boolean(current?.fast);
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) setListing(false);
+  const pick = (model: ModelInfo, provider: ProviderKind) =>
+    onChange({
+      provider,
+      model: model.id,
+      effort: effortFor(model, provider === value.provider ? value.effort : null),
+      // Fast carries over to a model that has a fast tier too.
+      ...(model.fast && value.fast ? { fast: true } : {}),
+    });
+  const models = (group: ModelGroup) => (
+    <DropdownMenuRadioGroup
+      value={group.provider === value.provider ? (current?.id ?? "") : ""}
+      onValueChange={(id) => {
+        const model = group.models.find((entry) => entry.id === id);
+        if (model) pick(model, group.provider);
       }}
     >
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="xs"
+      {group.models.map((model) => (
+        <DropdownMenuRadioItem
+          key={model.id}
+          value={model.id}
+          data-slot="model-selector-item"
+          indicator={<Check className="size-icon-md" />}
+          className={TALL_ROW}
+        >
+          <ModelRow model={model} />
+        </DropdownMenuRadioItem>
+      ))}
+    </DropdownMenuRadioGroup>
+  );
+  const single = groups.length === 1 ? groups[0] : undefined;
+  return (
+    <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
           aria-label={label}
           disabled={disabled}
           data-slot="model-selector-trigger"
-          className={cn("text-muted-foreground min-w-0 justify-between", className)}
+          className={cn(composerPill, "text-muted-foreground gap-1", className)}
         >
-          {open && !models ? (
-            <span className="truncate">Select effort</span>
-          ) : (
-            <>
-              {fast && <Bolt aria-label="Fast" className="text-foreground/80 shrink-0" />}
-              <span className="text-foreground/80 truncate">{name}</span>
-              {effort && <span className="shrink-0">{effortLabel(effort)}</span>}
-            </>
-          )}
-          <ChevronDown />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-60 p-2">
-        {models ? (
-          <ModelList
-            groups={groups}
-            value={value}
-            onBack={current && current.efforts.length > 0 ? () => setListing(false) : null}
-            onPick={(model, provider) => {
-              onChange({
-                provider,
-                model: model.id,
-                effort: effortFor(model, value.effort),
-                // Fast carries over to a model that has a fast tier too.
-                ...(model.fast && value.fast ? { fast: true } : {}),
-              });
-              if (model.efforts.length > 0) setListing(false);
-              else setOpen(false);
-            }}
-          />
-        ) : (
-          <EffortPanel
-            model={current}
-            effort={effort}
-            fast={fast}
-            onFast={(on) => onChange({ ...value, fast: on })}
-            onEffort={(next) => onChange({ ...value, effort: next })}
-            onModels={() => setListing(true)}
-          />
+          {fast && <Bolt aria-label="Fast" className="text-foreground" />}
+          <span className="text-foreground truncate">{name}</span>
+          {effort && <span className="shrink-0">{effortLabel(effort)}</span>}
+          <ChevronDown className="size-icon-xs!" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="top"
+        align="end"
+        data-slot="model-selector"
+        className="w-xs p-1"
+      >
+        {current && current.efforts.length > 0 && (
+          <>
+            <Section>Effort</Section>
+            <DropdownMenuRadioGroup
+              value={effort ?? ""}
+              onValueChange={(next) => onChange({ ...value, model: current.id, effort: next })}
+            >
+              {current.efforts.map((level) => (
+                <DropdownMenuRadioItem
+                  key={level}
+                  value={level}
+                  data-slot="model-selector-effort"
+                  indicator={<Check className="size-icon-md" />}
+                >
+                  {effortLabel(level)}
+                  {level === current.defaultEffort && (
+                    <span className="text-muted-foreground">Default</span>
+                  )}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </>
         )}
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-/**
- * The effort in use over the model's name, ChatGPT's fast mode toggle (for a model with a
- * fast tier), a reset, and the slider.
- */
-function EffortPanel({
-  model,
-  effort,
-  fast,
-  onFast,
-  onEffort,
-  onModels,
-}: {
-  model: ModelInfo;
-  effort: string | null;
-  fast: boolean;
-  onFast: (on: boolean) => void;
-  onEffort: (effort: string | null) => void;
-  onModels: () => void;
-}) {
-  const { efforts } = model;
-  // While the CLI picks its own default no stop is true: the thumb shows only once moved.
-  const index = effort === null ? -1 : efforts.indexOf(effort);
-  return (
-    <div data-slot="model-selector-effort" className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        {model.fast ? (
-          <TooltipIconButton
-            tooltip={fast ? "Turn off fast mode" : `Enable fast mode: ${model.fast}`}
-            size="icon-md"
-            aria-pressed={fast}
+        {current?.fast && (
+          <DropdownMenuCheckboxItem
+            checked={fast}
             data-slot="model-selector-fast"
-            className={cn(fast && "text-link")}
-            onClick={() => onFast(!fast)}
+            onCheckedChange={(on) => onChange({ ...value, model: current.id, fast: on })}
           >
             <Bolt />
-          </TooltipIconButton>
+            Fast
+            <span className="text-muted-foreground min-w-0 truncate">{current.fast}</span>
+          </DropdownMenuCheckboxItem>
+        )}
+        {current && (current.efforts.length > 0 || current.fast) && <DropdownMenuSeparator />}
+        <Section>Model</Section>
+        {single ? (
+          models(single)
         ) : (
-          <span aria-hidden className="size-icon-button-md" />
-        )}
-        <button
-          type="button"
-          aria-label="Select model"
-          onClick={onModels}
-          className="hover:bg-foreground/5 rounded-control flex min-w-0 flex-col items-center px-2 py-0.5"
-        >
-          <span className="text-link flex items-center gap-0.5 text-sm">
-            {effort ? effortLabel(effort) : "Default"}
-            <ChevronRight className="size-icon-xs" />
-          </span>
-          <span className="text-muted-foreground max-w-full truncate text-xs">{model.displayName}</span>
-        </button>
-        <TooltipIconButton
-          tooltip="Reset to default"
-          size="icon-md"
-          disabled={effort === model.defaultEffort}
-          onClick={() => onEffort(model.defaultEffort)}
-        >
-          <Regenerate />
-        </TooltipIconButton>
-      </div>
-      {efforts.length > 1 && (
-        <SliderPrimitive.Root
-          min={0}
-          max={efforts.length - 1}
-          step={1}
-          value={[Math.max(0, index)]}
-          onValueChange={([next]) => onEffort((next !== undefined && efforts[next]) || effort)}
-          // Unset, the thumb rests on the first stop, so a click there would change nothing:
-          // the stop nearest the pointer is picked here instead.
-          onPointerDown={(event) => {
-            if (index >= 0) return;
-            const rect = event.currentTarget.getBoundingClientRect();
-            const share = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
-            const at = Math.round(Math.min(1, Math.max(0, share)) * (efforts.length - 1));
-            onEffort(efforts[at] ?? null);
-          }}
-          aria-label="Reasoning effort"
-          className="relative flex h-control-sm w-full touch-none items-center select-none"
-        >
-          <SliderPrimitive.Track className="bg-foreground/10 rounded-capsule relative h-control-xs w-full overflow-hidden">
-            {index >= 0 && <SliderPrimitive.Range className="bg-link absolute h-full" />}
-          </SliderPrimitive.Track>
-          {efforts.map((stop, at) => (
-            <span
-              key={stop}
-              aria-hidden
-              className={cn(
-                "pointer-events-none absolute size-1 -translate-x-1/2 rounded-capsule",
-                at <= index ? "bg-foreground/60" : "bg-foreground/30",
-              )}
-              // Where the thumb's centre sits at this stop (it stays inside the track).
-              style={{
-                left: `calc(var(--spacing-control-sm) / 2 + (100% - var(--spacing-control-sm)) * ${at / (efforts.length - 1)})`,
-              }}
-            />
-          ))}
-          <SliderPrimitive.Thumb
-            aria-valuetext={effort ? effortLabel(effort) : "Default"}
-            className={cn(
-              "bg-foreground focus-visible:ring-ring block size-control-sm rounded-capsule shadow-sm outline-hidden focus-visible:ring-2",
-              index < 0 && "opacity-0 focus-visible:opacity-100",
-            )}
-          />
-        </SliderPrimitive.Root>
-      )}
-    </div>
-  );
-}
-
-/** "Select model": every provider's models, the one in use checked. */
-function ModelList({
-  groups,
-  value,
-  onPick,
-  onBack,
-}: {
-  groups: readonly ModelGroup[];
-  value: ModelChoice;
-  onPick: (model: ModelInfo, provider: ProviderKind) => void;
-  onBack: (() => void) | null;
-}) {
-  const current = findModel(groups, value);
-  return (
-    <div data-slot="model-selector-models" className="flex max-h-96 flex-col overflow-y-auto">
-      <div className="flex items-center gap-1 px-1 pb-1">
-        {onBack && (
-          <TooltipIconButton tooltip="Back" size="icon-sm" onClick={onBack}>
-            <ChevronLeft />
-          </TooltipIconButton>
-        )}
-        <span className="text-muted-foreground text-sm">Select model</span>
-      </div>
-      {groups.map((group) => (
-        <div key={group.provider} role="group" aria-label={group.label} className="flex flex-col">
-          <p className="text-muted-foreground flex items-center gap-2 px-2 pt-1.5 pb-0.5 text-xs">
-            {group.label}
-            {group.unavailable && <span className="text-warning">{group.unavailable}</span>}
-          </p>
-          {group.models.map((model) => {
-            const picked = group.provider === value.provider && model.id === current?.id;
+          groups.map((group) => {
+            const inUse =
+              group.provider === value.provider
+                ? current
+                : (group.models.find((model) => model.isDefault) ?? group.models[0]);
             return (
-              <button
-                key={model.id}
-                type="button"
-                disabled={group.unavailable !== null}
-                aria-pressed={picked}
-                data-slot="model-selector-item"
-                onClick={() => onPick(model, group.provider)}
-                className="hover:bg-foreground/5 rounded-control flex min-h-control-sm items-center gap-2 px-2 py-1 text-start text-sm disabled:opacity-50"
-              >
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate">{model.displayName}</span>
-                  {model.description && (
-                    <span className="text-muted-foreground truncate text-xs">{model.description}</span>
-                  )}
-                </span>
-                {picked && <Check className="size-icon-md shrink-0" />}
-              </button>
+              <DropdownMenuSub key={group.provider}>
+                <DropdownMenuSubTrigger
+                  disabled={group.unavailable !== null || group.models.length === 0}
+                  data-slot="model-selector-provider"
+                >
+                  <span className={cn(group.provider === value.provider && "font-medium")}>
+                    {group.label}
+                  </span>
+                  <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                    {group.unavailable ??
+                      (group.models.length === 0 ? "No models listed yet" : inUse?.displayName)}
+                  </span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  sideOffset={tokenPx("--spacing")}
+                  className="w-xs max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto p-1"
+                >
+                  {models(group)}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             );
-          })}
-          {group.models.length === 0 && (
-            <p className="text-muted-foreground px-2 py-1 text-xs">No models listed yet.</p>
-          )}
-        </div>
-      ))}
-    </div>
+          })
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

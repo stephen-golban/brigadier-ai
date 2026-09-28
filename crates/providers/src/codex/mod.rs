@@ -160,11 +160,26 @@ impl Codex {
     /// Where Codex saves generated images, one folder per thread: `$CODEX_HOME` (by default
     /// `~/.codex`) `/generated_images`.
     fn images_root(&self) -> Option<PathBuf> {
-        let home = match self.env.var("CODEX_HOME") {
-            Some(home) if !home.is_empty() => PathBuf::from(home),
-            _ => self.env.home()?.join(".codex"),
+        Some(self.codex_home()?.join("generated_images"))
+    }
+
+    /// `$CODEX_HOME`, by default `~/.codex`.
+    fn codex_home(&self) -> Option<PathBuf> {
+        match self.env.var("CODEX_HOME") {
+            Some(home) if !home.is_empty() => Some(PathBuf::from(home)),
+            _ => Some(self.env.home()?.join(".codex")),
+        }
+    }
+
+    /// The model and effort `codex` runs with when not told, from `config.toml`.
+    async fn configured(&self) -> Configured {
+        let Some(path) = self.codex_home().map(|home| home.join("config.toml")) else {
+            return Configured::default();
         };
-        Some(home.join("generated_images"))
+        tokio::fs::read_to_string(path)
+            .await
+            .map(|text| Configured::parse(&text))
+            .unwrap_or_default()
     }
 
     async fn version(&self) -> Option<String> {
@@ -345,13 +360,15 @@ impl Provider for Codex {
                     }
                 })
                 .await?;
+            let mut models: Vec<ModelInfo> = models
+                .into_iter()
+                .filter(|model| !model.hidden)
+                .map(model_info)
+                .collect();
+            self.configured().await.apply(&mut models);
             Ok(ModelCatalog {
                 provider: ProviderKind::Codex,
-                models: models
-                    .into_iter()
-                    .filter(|model| !model.hidden)
-                    .map(model_info)
-                    .collect(),
+                models,
                 cli_version: version,
                 fetched_at_ms: now_ms(),
             })
@@ -934,6 +951,54 @@ fn sandbox_policy(access: &Access) -> p::SandboxPolicy {
 const FAST_TIER: &str = "priority";
 /// Codex's standard speed, which the app server takes as an explicit "not Fast".
 const STANDARD_TIER: &str = "default";
+
+/// The top-level `model` and `model_reasoning_effort` of Codex's `config.toml`: what `codex`
+/// runs when not told, which `model/list`'s own default doesn't reflect.
+#[derive(Debug, Default)]
+struct Configured {
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl Configured {
+    /// Reads the two keys before the first table; the rest of the file doesn't matter here.
+    fn parse(text: &str) -> Self {
+        let mut configured = Self::default();
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                break;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.split('#').next().unwrap_or_default().trim();
+            let value = value.trim_matches(|c| c == '"' || c == '\'').to_owned();
+            match key.trim() {
+                "model" => configured.model = Some(value),
+                "model_reasoning_effort" => configured.effort = Some(value),
+                _ => {}
+            }
+        }
+        configured
+    }
+
+    /// Marks the configured model default and gives it the configured effort, if it takes it.
+    fn apply(self, models: &mut [ModelInfo]) {
+        if let Some(chosen) = &self.model
+            && models.iter().any(|model| &model.id == chosen)
+        {
+            for model in models.iter_mut() {
+                model.is_default = &model.id == chosen;
+            }
+        }
+        if let Some(effort) = self.effort
+            && let Some(model) = models.iter_mut().find(|model| model.is_default)
+            && model.efforts.contains(&effort)
+        {
+            model.default_effort = Some(effort);
+        }
+    }
+}
 
 fn model_info(model: p::Model) -> ModelInfo {
     let fast = model

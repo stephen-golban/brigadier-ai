@@ -78,6 +78,18 @@ impl Claude {
         }
     }
 
+    /// The user's `settings.json` (the model and effort `claude` runs with when not told).
+    async fn settings(&self) -> Value {
+        let Some(path) = self.config_dir().map(|dir| dir.join("settings.json")) else {
+            return Value::Null;
+        };
+        tokio::fs::read_to_string(path)
+            .await
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
     async fn version(&self) -> Option<String> {
         let spec = self.env.spec(self.binary().ok()?).arg("--version");
         let output = process::run(&self.platform, &spec, STATUS_TIMEOUT)
@@ -469,7 +481,7 @@ impl Provider for Claude {
                 .ok_or_else(|| Error::Protocol("initialize returned no models".into()))?;
             Ok(ModelCatalog {
                 provider: ProviderKind::Claude,
-                models: models.iter().filter_map(model_info).collect(),
+                models: model_infos(models, &self.settings().await),
                 cli_version: version,
                 fetched_at_ms: now_ms(),
             })
@@ -712,7 +724,97 @@ impl Provider for Claude {
     }
 }
 
-fn model_info(model: &Value) -> Option<ModelInfo> {
+/// The CLI's model list as the picker offers it: each model under its real name ("Opus 5.5",
+/// not "Default (recommended)"), the `default` alias folded into the entry it resolves to, the
+/// model `settings.json` picks marked default, and each model's effort as `claude` would run it.
+fn model_infos(models: &[Value], settings: &Value) -> Vec<ModelInfo> {
+    let mut infos: Vec<ModelInfo> = models
+        .iter()
+        .filter_map(|model| model_info(model, settings))
+        .collect();
+    // The `default` alias is a second row for a model already listed: keep the model's own row.
+    if let Some(alias) = infos.iter().position(|info| info.id == "default")
+        && let Some(resolved) = infos[alias].resolved.clone()
+        && infos
+            .iter()
+            .any(|info| info.id != "default" && info.resolved.as_deref() == Some(&resolved))
+    {
+        infos.remove(alias);
+        for info in &mut infos {
+            info.is_default = info.resolved.as_deref() == Some(&resolved);
+        }
+    }
+    // The model `claude` runs when not told one, per `settings.json`, wins over the CLI's pick.
+    if let Some(chosen) = settings.get("model").and_then(Value::as_str)
+        && let Some(index) = infos
+            .iter()
+            .position(|info| info.id == chosen)
+            .or_else(|| infos.iter().position(|info| bare(&info.id) == chosen))
+            .or_else(|| {
+                infos
+                    .iter()
+                    .position(|info| info.resolved.as_deref().map(bare) == Some(bare(chosen)))
+            })
+    {
+        for (at, info) in infos.iter_mut().enumerate() {
+            info.is_default = at == index;
+        }
+    }
+    // Two rows under one name: the long-context one says so.
+    let names: Vec<String> = infos.iter().map(|info| info.display_name.clone()).collect();
+    for info in &mut infos {
+        let twins = names
+            .iter()
+            .filter(|name| **name == info.display_name)
+            .count();
+        if twins > 1 && info.id.ends_with("[1m]") {
+            info.display_name.push_str(" (1M)");
+        }
+    }
+    infos
+}
+
+/// A model id without its context suffix: `opus[1m]` → `opus`.
+fn bare(id: &str) -> &str {
+    id.strip_suffix("[1m]").unwrap_or(id)
+}
+
+/// "Opus 5.5" from a description such as "Opus 5.5 with 1M context · Best for everyday tasks";
+/// the CLI's display name when the description doesn't start with one.
+fn real_name(display_name: &str, description: &str) -> String {
+    let lead = description.split(" · ").next().unwrap_or_default();
+    let name = lead.split(" with ").next().unwrap_or_default().trim();
+    let named = name.split_whitespace().count() <= 3
+        && name.chars().next().is_some_and(char::is_uppercase)
+        && name.chars().any(|c| c.is_ascii_digit());
+    if named {
+        name.to_owned()
+    } else {
+        display_name.to_owned()
+    }
+}
+
+/// The effort `claude` runs `model` at: its `modelSettings` entry, then the global
+/// `effortLevel`, kept only if the model accepts it; else High (the API's default).
+fn settings_effort(settings: &Value, resolved: Option<&str>, efforts: &[String]) -> Option<String> {
+    let accepted = |level: &str| efforts.iter().any(|effort| effort == level);
+    let per_model = resolved.and_then(|model| {
+        settings
+            .get("modelSettings")?
+            .get(bare(model))?
+            .get("effortLevel")?
+            .as_str()
+    });
+    let global = settings.get("effortLevel").and_then(Value::as_str);
+    per_model
+        .filter(|level| accepted(level))
+        .or(global.filter(|level| accepted(level)))
+        .or(Some("high").filter(|level| accepted(level)))
+        .or(efforts.last().map(String::as_str))
+        .map(str::to_owned)
+}
+
+fn model_info(model: &Value, settings: &Value) -> Option<ModelInfo> {
     let id = model.get("value")?.as_str()?.to_owned();
     let text = |key: &str| {
         model
@@ -721,26 +823,29 @@ fn model_info(model: &Value) -> Option<ModelInfo> {
             .unwrap_or_default()
             .to_owned()
     };
+    let description = text("description");
+    let resolved = model
+        .get("resolvedModel")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let efforts: Vec<String> = model
+        .get("supportedEffortLevels")
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     Some(ModelInfo {
         is_default: id == "default",
-        display_name: text("displayName"),
-        description: text("description"),
-        resolved: model
-            .get("resolvedModel")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        efforts: model
-            .get("supportedEffortLevels")
-            .and_then(Value::as_array)
-            .map(|levels| {
-                levels
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        default_effort: None,
+        display_name: real_name(&text("displayName"), &description),
+        default_effort: settings_effort(settings, resolved.as_deref(), &efforts),
+        description,
+        resolved,
+        efforts,
         input_modalities: vec!["text".into(), "image".into()],
         fast: None,
         id,

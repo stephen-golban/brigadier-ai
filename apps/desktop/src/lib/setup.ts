@@ -1,7 +1,11 @@
 import { useEffect, useMemo } from "react";
 
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
-import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
+import {
+  effortFor,
+  findModel,
+  type ModelGroup,
+} from "@/components/assistant-ui/elements/model-selector";
 import type {
   Environment,
   ModelChoice,
@@ -108,12 +112,24 @@ export function resolveModel(
   settings: Settings,
   groups: readonly ModelGroup[],
 ): ModelChoice {
-  return (
+  return completeChoice(
+    groups,
     explicit ??
-    (kind === "session" ? project?.prefs.orchestrator : settings.defaultChatModel) ??
-    settings.defaultOrchestrator ??
-    builtInDefault(groups)
+      (kind === "session" ? project?.prefs.orchestrator : settings.defaultChatModel) ??
+      settings.defaultOrchestrator ??
+      builtInDefault(groups),
   );
+}
+
+/**
+ * A choice with its model and effort spelled out ("the CLI's default" becomes the model and
+ * effort the CLI would pick), so what the picker shows is what the conversation runs with.
+ * Left as is while the provider's model list is unknown.
+ */
+export function completeChoice(groups: readonly ModelGroup[], choice: ModelChoice): ModelChoice {
+  const model = findModel(groups, choice);
+  if (!model) return choice;
+  return { ...choice, model: model.id, effort: effortFor(model, choice.effort) };
 }
 
 /** The permission level: the session choice, the project's remembered one, the default. */
@@ -134,11 +150,11 @@ export function environmentLabel(environment: Environment): string {
 
 /** "Opus 5.5" for a choice, from the live lists (the raw id when unknown). */
 export function modelName(groups: readonly ModelGroup[], choice: ModelChoice): string {
-  const group = groups.find((entry) => entry.provider === choice.provider);
-  const model = group?.models.find((entry) =>
-    choice.model === null ? entry.isDefault : entry.id === choice.model,
+  return (
+    findModel(groups, choice)?.displayName ??
+    (choice.model && choice.model !== "default" ? choice.model : null) ??
+    `${PROVIDER_LABELS[choice.provider]} default`
   );
-  return model?.displayName ?? choice.model ?? `${PROVIDER_LABELS[choice.provider]} default`;
 }
 
 export function sameModel(a: ModelChoice, b: ModelChoice): boolean {
