@@ -105,6 +105,10 @@ export function BrainGraphPanel({ brainKey, overview }: { brainKey: string; over
     [kinds, session, currentOnly, text, limit],
   );
 
+  // Read again when the Brain changes under the open graph (a scan, a job, a report).
+  const stats = overview?.stats;
+  const version = stats ? `${stats.nodes}:${stats.edges}:${stats.stale}` : "";
+
   useEffect(() => {
     let current = true;
     getBrainGraph(brainKey, filter).then(
@@ -116,7 +120,9 @@ export function BrainGraphPanel({ brainKey, overview }: { brainKey: string; over
     return () => {
       current = false;
     };
-  }, [brainKey, filter]);
+    // `version` only says when to read again.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
+  }, [brainKey, filter, version]);
   const graph = read?.graph ?? null;
   const error = read?.error ?? null;
   const loading = read?.filter !== filter;
