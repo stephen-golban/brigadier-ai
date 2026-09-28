@@ -2,6 +2,7 @@ import {
   Archive,
   ChatCompose,
   DotsHorizontal,
+  Download,
   Folder,
   FolderOpen,
   MagnifyingGlassSearch,
@@ -70,6 +71,7 @@ import {
   setProjectExpanded,
 } from "@/state/actions";
 import { useRowActivity } from "@/state/activity";
+import { exportProjectConventions } from "@/state/brain";
 import { useApp } from "@/state/store";
 
 type DialogState =
@@ -453,6 +455,12 @@ const ProjectRow = memo(function ProjectRow({
               >
                 <FolderOpen />
                 {mac ? "Reveal in Finder" : "Open in File Manager"}
+              </DropdownMenuItem>
+            )}
+            {repo && (
+              <DropdownMenuItem onSelect={() => void exportProjectConventions(project.id, repo)}>
+                <Download />
+                Export conventions to AGENTS.md…
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
