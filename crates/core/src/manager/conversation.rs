@@ -1338,6 +1338,11 @@ impl SessionManager {
             }
             Err(err) => {
                 self.grants.revoke_owner(&owner);
+                // A reborn CLI that could not start is still owed its fresh start: the next
+                // try must not resume the old, nearly full session.
+                if fresh {
+                    conv.state.lock().await.fresh = true;
+                }
                 return Err(err);
             }
         };
@@ -2635,10 +2640,25 @@ const REASONING: &[&str] = &[
     "because", "instead", "decid", "chose", "choos", "must", "should",
 ];
 
+/// What a sentence opening with [`BRAIN_MISS`] must say for it to be a miss ("doesn't have
+/// that", "has nothing on it"); "The Brain says we use SQLite." states a fact.
+const MISSING: &[&str] = &[
+    "doesn't", "does not", "didn't", "did not", "has no", "had no", "nothing", "no ", "not ",
+    "isn't", "is not", "without",
+];
+
+/// What joins a second clause onto a sentence ("I'll check the Brain, then go with B."): an
+/// announcement or a miss is one clause, so a sentence with one of these may carry more and is
+/// shown.
+const JOINS: &[&str] = &[
+    ",", " then ", " and ", " but ", " so ", " or ", " also ", "—", "–", " - ", "(",
+];
+
 /// Whether a short reply only announces the next step ("Let me check the Brain.", "The Brain
-/// doesn't have that. I'll ask a scout."): at most two sentences, one announcing a lookup or a
-/// hand-off, the other at most saying the Brain had no answer, with no reason, choice or limit
-/// in them. Anything else (a decision, its reason, more sentences) is shown.
+/// doesn't have that. I'll ask a scout."): at most two sentences of one clause each, one
+/// announcing a lookup or a hand-off, the other at most saying the Brain had no answer, with no
+/// reason, choice or limit in them. Anything else (a decision, its reason, a fact, a second
+/// clause, more sentences) is shown.
 fn announces(text: &str) -> bool {
     let lower = text.trim().to_lowercase();
     let sentences: Vec<&str> = lower
@@ -2656,13 +2676,18 @@ fn announces(text: &str) -> bool {
                 rest.strip_prefix(opening)
                     .is_some_and(|after| LOOKUPS.iter().any(|verb| after.starts_with(verb)))
             });
-        opens && !SUBSTANTIVE.iter().any(|word| sentence.contains(word))
+        opens
+            && !SUBSTANTIVE.iter().any(|word| sentence.contains(word))
+            && !JOINS.iter().any(|join| sentence.contains(join))
     };
     let brain_miss = |sentence: &&str| {
         BRAIN_MISS
             .iter()
             .any(|opening| sentence.starts_with(opening))
+            && (sentence.starts_with("nothing ")
+                || MISSING.iter().any(|word| sentence.contains(word)))
             && !REASONING.iter().any(|word| sentence.contains(word))
+            && !JOINS.iter().any(|join| sentence.contains(join))
     };
     sentences.len() <= 2
         && sentences.iter().any(announcement)
