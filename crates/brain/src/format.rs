@@ -23,16 +23,19 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize) -> String {
         head.push('\n');
         let tail = format!("{}\n", provenance(&node.provenance));
         let separator = if out.is_empty() { 0 } else { 1 };
-        let fixed = separator + head.len() + tail.len();
-        let room = budget.saturating_sub(out.len() + fixed);
         let body = node.body.trim();
-        if room < MIN_BODY.min(body.len()) {
+        // The header, where it came from, and the newline after a body.
+        let fixed = separator + head.len() + tail.len() + usize::from(!body.is_empty());
+        let room = budget
+            .checked_sub(out.len() + fixed)
+            .filter(|room| *room >= MIN_BODY.min(body.len()));
+        let Some(room) = room else {
             if out.is_empty() {
                 // The best hit shows at least its header, whatever the budget.
                 out.push_str(&head);
             }
             break;
-        }
+        };
         if separator == 1 {
             out.push('\n');
         }

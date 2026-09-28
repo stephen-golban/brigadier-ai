@@ -441,6 +441,14 @@ fn scope_str(scope: Scope) -> &'static str {
     }
 }
 
+/// `origin` as provenance stores it.
+fn origin_str(origin: &Origin) -> Result<String> {
+    serde_json::to_value(origin)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| Error::Invalid(format!("unnamed origin {origin:?}")))
+}
+
 /// What a node's embedding is computed from.
 fn embed_text(title: &str, body: &str) -> String {
     format!("{title}\n{body}")
@@ -547,6 +555,13 @@ impl Brain {
         self.write(move |tx, _| write::link(tx, &edges))
     }
 
+    /// Replaces the module and service edges (`contains`, `dependsOn`) leaving `sources` with
+    /// `edges`, in one write: the code index's current structure, without the dependencies a
+    /// manifest dropped since. Endpoints as in [`Brain::link`].
+    pub fn relink_structure(&self, sources: Vec<String>, edges: Vec<NewEdge>) -> Result<()> {
+        self.write(move |tx, _| write::relink_structure(tx, &sources, &edges))
+    }
+
     /// Marks `old` superseded by `new` (and links them). Either may be `key:<node key>`.
     pub fn supersede(&self, old: &str, new: &str) -> Result<()> {
         let (old, new) = (old.to_owned(), new.to_owned());
@@ -564,6 +579,30 @@ impl Brain {
     pub fn forget_session(&self, session_id: &str) -> Result<u64> {
         let session = session_id.to_owned();
         self.write(move |tx, changes| write::forget_session(tx, &session, changes))
+    }
+
+    /// Deletes every node that came from one of `origins` (what the code index, the skeleton
+    /// pass or enrichment learned of a repository the project no longer uses). Nodes they
+    /// superseded are current again. Returns how many went.
+    pub fn forget_origins(&self, origins: &[Origin]) -> Result<u64> {
+        let origins = origins
+            .iter()
+            .map(origin_str)
+            .collect::<Result<Vec<String>>>()?;
+        self.write(move |tx, changes| write::forget_origins(tx, &origins, changes))
+    }
+
+    /// Whether any node came from `origin`.
+    pub fn holds_origin(&self, origin: Origin) -> Result<bool> {
+        let origin = origin_str(&origin)?;
+        self.read(|conn| {
+            Ok(conn
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM nodes \
+                     WHERE json_extract(provenance, '$.origin') = ?1)",
+                )?
+                .query_row([origin], |row| row.get(0))?)
+        })
     }
 
     /// Files changed (each with its new content hash, `None` when deleted): every fresh node

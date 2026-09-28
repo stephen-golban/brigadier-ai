@@ -114,6 +114,30 @@ pub(crate) fn link(tx: &Transaction, edges: &[NewEdge]) -> Result<()> {
     Ok(())
 }
 
+/// Replaces the structural edges (`contains`, `dependsOn`) from each of `sources` to modules
+/// and services with `edges`. Their other edges (a module's file summaries) stay.
+pub(crate) fn relink_structure(
+    tx: &Transaction,
+    sources: &[String],
+    edges: &[NewEdge],
+) -> Result<()> {
+    let mut clear = tx.prepare_cached(
+        "DELETE FROM edges WHERE from_id = ?1 AND kind IN (?2, ?3) \
+         AND to_id IN (SELECT id FROM nodes WHERE kind IN (?4, ?5))",
+    )?;
+    for source in sources {
+        let from = db::resolve(tx, source)?;
+        clear.execute(params![
+            from,
+            edge_kind_str(crate::EdgeKind::Contains),
+            edge_kind_str(crate::EdgeKind::DependsOn),
+            kind_str(crate::NodeKind::Module),
+            kind_str(crate::NodeKind::Service)
+        ])?;
+    }
+    link(tx, edges)
+}
+
 pub(crate) fn supersede(
     tx: &Transaction,
     old: &str,
@@ -124,6 +148,22 @@ pub(crate) fn supersede(
     let new = db::resolve(tx, new)?;
     if old == new {
         return Err(Error::Invalid(format!("{old} can't supersede itself")));
+    }
+    // A chain that loops would leave no current version of either.
+    let mut next = tx.prepare_cached("SELECT superseded_by FROM nodes WHERE id = ?1")?;
+    let (mut at, mut seen) = (new.clone(), std::collections::HashSet::new());
+    while let Some(by) = next
+        .query_row([&at], |row| row.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten()
+        .filter(|by| seen.insert(by.clone()))
+    {
+        if by == old {
+            return Err(Error::Invalid(format!(
+                "{new} is already superseded by {old}, directly or through later versions"
+            )));
+        }
+        at = by;
     }
     tx.prepare_cached(
         "UPDATE nodes SET state = 'superseded', superseded_by = ?2, stale_reason = NULL, \
@@ -189,6 +229,31 @@ pub(crate) fn forget_session(
         .execute([session])?;
     tx.prepare_cached("DELETE FROM transcript WHERE conversation_id = ?1")?
         .execute([session])?;
+    // A node revived above but deleted too is simply gone.
+    changes.extend(ids.iter().cloned().map(Change::Remove));
+    Ok(ids.len() as u64)
+}
+
+pub(crate) fn forget_origins(
+    tx: &Transaction,
+    origins: &[String],
+    changes: &mut Vec<Change>,
+) -> Result<u64> {
+    let mut select =
+        tx.prepare_cached("SELECT id FROM nodes WHERE json_extract(provenance, '$.origin') = ?1")?;
+    let mut ids = Vec::new();
+    for origin in origins {
+        ids.extend(
+            select
+                .query_map([origin], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
+    revive(tx, &ids, changes)?;
+    let mut delete = tx.prepare_cached("DELETE FROM nodes WHERE id = ?1")?;
+    for id in &ids {
+        delete.execute([id])?;
+    }
     // A node revived above but deleted too is simply gone.
     changes.extend(ids.iter().cloned().map(Change::Remove));
     Ok(ids.len() as u64)
