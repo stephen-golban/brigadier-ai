@@ -153,6 +153,15 @@ pub struct TaskRef {
     pub task: String,
 }
 
+/// `read_report`: a task of this session, or a report from another session of the project.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportRef {
+    /// This session's task, e.g. "task-3"; or another session's task by the id a Brain
+    /// answer names ("from report <id>").
+    pub task: String,
+}
+
 /// `ask_user`: a question only the user can answer (a product choice, an unclear requirement).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -361,7 +370,7 @@ pub enum OrchestratorCall {
     RouteFollowUp(RouteFollowUp),
     StopWorker(TaskRef),
     AskUser(AskUser),
-    ReadReport(TaskRef),
+    ReadReport(ReportRef),
     ReadArtifact(ReadArtifact),
     QueryBrain(QueryBrain),
     Remember(Remember),

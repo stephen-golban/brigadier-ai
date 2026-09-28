@@ -222,6 +222,15 @@ impl Vectors {
         Ok(())
     }
 
+    /// Whether the cache holds a vector for `id` (never while it is not built).
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.table
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            .is_some_and(|table| table.rows.contains_key(id))
+    }
+
     /// The `k` nodes most similar to `query` (a normalized vector) that `keep` accepts, best
     /// first, with their cosine similarity.
     pub(crate) fn nearest(

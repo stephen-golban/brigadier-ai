@@ -197,7 +197,8 @@ pub struct NewNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum EdgeKind {
-    /// A module contains a file summary, a service contains a module.
+    /// A module contains a file summary, a service contains a module, a report contains the
+    /// parts of its findings files.
     Contains,
     DependsOn,
     /// A decision, report or convention is about this module or file summary.

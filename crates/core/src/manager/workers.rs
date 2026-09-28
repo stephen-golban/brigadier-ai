@@ -1931,6 +1931,16 @@ impl SessionManager {
             })
             .await;
         self.dispose_task(task, TaskState::Failed).await;
+        // Kept with the task, as the orchestrator reads it by its id (read_artifact).
+        if let Some(message) = &kept {
+            let _ = self
+                .update_task(&task.conversation_id, &task.id, |t| {
+                    if !t.outputs.iter().any(|known| known.id == message.id) {
+                        t.outputs.push(message.clone());
+                    }
+                })
+                .await;
+        }
         if reviewing {
             self.review_failed(task, reason).await;
             return;

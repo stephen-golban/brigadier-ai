@@ -280,6 +280,13 @@ code index, the skeleton pass, enrichment, a worker's report, the orchestrator, 
 session, task, worker model and commit. The orchestrator asks it first (`query_brain`: SQLite
 FTS5 plus local embeddings, merged, then one hop along the graph) and keeps what you settle with
 `remember`. Reports, plan decisions and your answers on cards are recorded without being asked.
+A report's text artifacts (research notes, markdown or plain-text findings; not diffs, logs,
+transcripts or binaries) come in with it, redacted like the report, up to 24 KB in parts of about
+1.4 KB split at headings, each linked to the report and with its provenance, so a finding kept
+in a file answers the next question too. A node not embedded yet (learned while the model was
+unloaded) ranks by its full-text match in both lists. `read_report` and `read_artifact` also
+reach the reports and artifacts of the project's other sessions, by the ids a Brain answer names;
+nothing outside the project.
 
 - **Code index.** A project's repository is scanned on a thread of its own (tree-sitter symbols
   and references, manifests, scripts, services), then kept current by a file watcher. Workers

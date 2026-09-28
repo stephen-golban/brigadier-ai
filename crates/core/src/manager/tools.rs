@@ -11,7 +11,7 @@ use crate::model::{ConversationId, DomainEvent, PermissionLevel, Setup};
 use crate::tools::{OrchestratorCall, ToolReply, WorkerCall};
 use crate::work::{
     ApprovalSubject, AttachmentRef, CardId, InjectionKind, OrchestratorStep, OrchestratorStepKind,
-    Plan, PlanApprover, PlanState, PlanStep, QuestionKind, TaskId, TaskKind,
+    Plan, PlanApprover, PlanState, PlanStep, QuestionKind, Task, TaskId, TaskKind,
 };
 use crate::{Error, Result, now_ms};
 
@@ -159,16 +159,27 @@ impl SessionManager {
                 Ok("Asked the user. The answer arrives later as a message; carry on with anything that doesn't depend on it.".into())
             }
             OrchestratorCall::ReadReport(args) => {
-                let task = self.find_task(id, &args.task).await?;
+                let (task, here) = self.find_report(id, &args.task).await?;
                 let report = task.report.as_ref().ok_or_else(|| {
                     Error::Invalid(format!("task-{} has not reported yet", task.number))
                 })?;
-                let text = prompts::report_envelope(&task, report, &route_label(&task));
-                self.orchestrator_step(id, OrchestratorStepKind::ReadReport { task_id: task.id })
-                    .await;
+                let mut text = prompts::report_envelope(&task, report, &route_label(&task));
+                let step = if here {
+                    OrchestratorStepKind::ReadReport { task_id: task.id }
+                } else {
+                    text = format!("[from another session of this project]\n{text}");
+                    OrchestratorStepKind::ReadArtifact {
+                        name: format!(
+                            "the report \u{201c}{}\u{201d} from another session",
+                            task.title
+                        ),
+                    }
+                };
+                self.orchestrator_step(id, step).await;
                 Ok(text)
             }
             OrchestratorCall::ReadArtifact(args) => {
+                self.check_artifact(id, &args.id).await?;
                 let limit = args
                     .limit
                     .unwrap_or(ARTIFACT_PAGE_MAX)
@@ -274,6 +285,71 @@ impl SessionManager {
         {
             tracing::warn!(conversation = %id, error = %err, "could not store an orchestrator step");
         }
+    }
+
+    /// The task `reference` names for `read_report`: one of this session's (by number or id),
+    /// else, by its id, one of another session of the same project (as a Brain answer names
+    /// it). Whether it is this session's comes with it.
+    async fn find_report(&self, id: &ConversationId, reference: &str) -> Result<(Task, bool)> {
+        match self.find_task(id, reference).await {
+            Ok(task) => return Ok((task, true)),
+            Err(Error::NotFound(_)) => {}
+            Err(err) => return Err(err),
+        }
+        let wanted = TaskId(reference.trim().to_owned());
+        for other in self.project_conversations(id) {
+            if let Ok(board) = self.core.board(&other).await
+                && let Some(task) = board.tasks.get(&wanted)
+            {
+                return Ok((task.clone(), false));
+            }
+        }
+        Err(Error::Invalid(format!(
+            "{reference} is not a task of this session or of another session of this project. Task numbers (task-3) are this session's; a report from another session is read by the task id its Brain answer names (\"from report <id>\")."
+        )))
+    }
+
+    /// `read_artifact` reads what a report of this project stored (its artifacts and
+    /// outputs, a kept patch), from this session or another of the project; nothing else in
+    /// the store.
+    async fn check_artifact(&self, id: &ConversationId, artifact: &str) -> Result<()> {
+        let names = |task: &Task| {
+            task.report
+                .iter()
+                .flat_map(|report| &report.artifacts)
+                .chain(&task.outputs)
+                .chain(task.kept.iter().filter_map(|kept| match kept {
+                    crate::work::KeptWork::Diff { artifact, .. } => Some(artifact),
+                    _ => None,
+                }))
+                .any(|known| known.id == artifact)
+        };
+        for conversation in std::iter::once(id.clone()).chain(self.project_conversations(id)) {
+            if let Ok(board) = self.core.board(&conversation).await
+                && board.tasks.values().any(names)
+            {
+                return Ok(());
+            }
+        }
+        Err(Error::Invalid(format!(
+            "{artifact} is not an artifact of a report in this project. Use an id a report, read_report or query_brain gave you."
+        )))
+    }
+
+    /// The project's other conversations (sessions of the same project), newest first.
+    fn project_conversations(&self, id: &ConversationId) -> Vec<ConversationId> {
+        let Some(project) = self.core.conversation(id).ok().and_then(|c| c.project_id) else {
+            return Vec::new();
+        };
+        let mut others: Vec<_> = self
+            .core
+            .catalog()
+            .conversations
+            .into_iter()
+            .filter(|c| c.id != *id && c.project_id.as_ref() == Some(&project))
+            .collect();
+        others.sort_by_key(|c| std::cmp::Reverse(c.updated_at_ms));
+        others.into_iter().map(|c| c.id).collect()
     }
 
     /// An artifact's title from the report that lists it, else "an artifact".

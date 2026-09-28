@@ -36,7 +36,7 @@ use super::{SessionManager, blocking};
 use crate::knowledge::{BrainJob, BrainOverview, ConventionsExport};
 use crate::model::{ConversationId, DomainEvent, MessageRole, Project, ProjectId, Setup, streams};
 use crate::tools::{CodeRefs, CodeSearch, MemoryKind, Remember, SearchTranscript};
-use crate::work::{Report, Task, TaskKind};
+use crate::work::{ArtifactKind, ArtifactRef, Report, Task, TaskKind};
 use crate::{Error, Result, now_ms};
 
 /// The embedding model is freed after this long unused.
@@ -49,6 +49,13 @@ const EMBED_BATCH: u32 = 256;
 const QUERY_TOKENS: u32 = 1_500;
 /// Research nodes go stale after this (PLAN.md §6 Phase 6: a TTL of about 7 days).
 pub(crate) const RESEARCH_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// A report's findings files come into the Brain in parts of at most this many bytes, each a
+/// node of its own, so a part fits whole in an answer (see the Brain's per-body cap).
+const FINDINGS_PART_BYTES: usize = 1_400;
+/// At most this much of one report's findings files goes into the Brain...
+const FINDINGS_MAX_BYTES: usize = 24_000;
+/// ...in at most this many parts.
+const FINDINGS_MAX_PARTS: usize = 32;
 /// Transcript events read per page while indexing a conversation's transcript.
 const TRANSCRIPT_PAGE: u32 = 500;
 /// The markers around the conventions Brigadier writes into an AGENTS.md.
@@ -981,15 +988,33 @@ impl SessionManager {
             TaskKind::Implement | TaskKind::Merge => NodeKind::Task,
             _ => NodeKind::Report,
         };
+        let expires_at_ms = (kind == NodeKind::Research).then(|| now_ms() + RESEARCH_TTL_MS);
         let node = NewNode {
             kind,
             key: Some(format!("task:{}", task.id.0)),
             title: format!("task-{} {}", task.number, task.title),
-            body: report_text(task, report),
+            body: report_body(task, report),
             provenance: provenance.clone(),
             files: files.clone(),
-            expires_at_ms: (kind == NodeKind::Research).then(|| now_ms() + RESEARCH_TTL_MS),
+            expires_at_ms,
         };
+        // What it left in files rather than in its summary, with the report's provenance.
+        let parts: Vec<NewNode> = self
+            .findings_parts(task, report)
+            .await
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| NewNode {
+                kind,
+                key: Some(part_key(&task.id.0, index)),
+                title: part.title,
+                body: part.body,
+                provenance: provenance.clone(),
+                files: files.clone(),
+                expires_at_ms,
+            })
+            .collect();
+        let task_id = task.id.0.clone();
         let decisions: Vec<NewNode> = report
             .decisions
             .iter()
@@ -1016,6 +1041,25 @@ impl SessionManager {
                     kind: EdgeKind::About,
                 });
             }
+            let count = parts.len();
+            for part in parts {
+                let part_id = brain.record(part).map_err(brain_error)?;
+                edges.push(Edge {
+                    from: report_id.clone(),
+                    to: part_id,
+                    kind: EdgeKind::Contains,
+                });
+            }
+            // A report sent back and made again may have fewer parts: the rest are its old ones.
+            for index in count..FINDINGS_MAX_PARTS {
+                match brain
+                    .node_by_key(kind, &part_key(&task_id, index))
+                    .map_err(brain_error)?
+                {
+                    Some(old) => brain.delete(&old.id).map_err(brain_error)?,
+                    None => break,
+                }
+            }
             for decision in decisions {
                 let decision_id = brain.record(decision).map_err(brain_error)?;
                 edges.push(Edge {
@@ -1037,6 +1081,81 @@ impl SessionManager {
             Ok(())
         })
         .await
+    }
+
+    /// A report's findings files as Brain parts: the text a worker left in artifacts rather
+    /// than in its summary (research notes, markdown or plain-text findings; never a diff, a
+    /// transcript, command output or a binary), redacted with the task's secrets like
+    /// everything it recorded, at most [`FINDINGS_MAX_BYTES`] in all.
+    async fn findings_parts(&self, task: &Task, report: &Report) -> Vec<FindingsPart> {
+        let mut findings: Vec<&ArtifactRef> = Vec::new();
+        for artifact in report.artifacts.iter().chain(&task.outputs) {
+            if is_findings(artifact) && !findings.iter().any(|seen| seen.id == artifact.id) {
+                findings.push(artifact);
+            }
+        }
+        if findings.is_empty() {
+            return Vec::new();
+        }
+        let redactor = self.task_redactor(task).await;
+        let mut room = FINDINGS_MAX_BYTES;
+        let mut parts = Vec::new();
+        for artifact in findings {
+            if room < FINDINGS_PART_BYTES / 4 {
+                break;
+            }
+            let Ok(hash) = artifact.id.parse() else {
+                continue;
+            };
+            let Some(text) = self
+                .core
+                .store()
+                .blobs()
+                .get(hash)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+            else {
+                continue;
+            };
+            let text = match &redactor {
+                Some(redactor) => redactor.redact(&text).into_owned(),
+                None => text,
+            };
+            let kept = &text[..floor_boundary(&text, room)];
+            room -= kept.len();
+            let pieces = split_findings(kept);
+            let count = pieces.len();
+            for (index, piece) in pieces.into_iter().enumerate() {
+                let mut title = format!(
+                    "task-{} {} · {}",
+                    task.number,
+                    task.title,
+                    one_line(&artifact.title, 120)
+                );
+                if let Some(heading) = &piece.heading {
+                    title.push_str(&format!(" › {heading}"));
+                }
+                if count > 1 {
+                    title.push_str(&format!(" (part {} of {count})", index + 1));
+                }
+                let body = format!(
+                    "{}\n(from artifact {}, bytes {}–{} of {})",
+                    piece.text.trim_end(),
+                    artifact.id,
+                    piece.start,
+                    piece.end,
+                    text.len()
+                );
+                parts.push(FindingsPart {
+                    title: one_line(&title, 240),
+                    body,
+                });
+            }
+        }
+        parts.truncate(FINDINGS_MAX_PARTS);
+        parts
     }
 
     /// Something the user settled on a card (an answer, a plan decision): a decision node.
@@ -1740,6 +1859,131 @@ pub(crate) fn report_text(task: &Task, report: &Report) -> String {
         }
     }
     text
+}
+
+/// A report as the Brain keeps it: [`report_text`], then its artifacts, for `read_artifact`.
+fn report_body(task: &Task, report: &Report) -> String {
+    let mut text = report_text(task, report);
+    let artifacts: Vec<&ArtifactRef> = report.artifacts.iter().chain(&task.outputs).collect();
+    if !artifacts.is_empty() {
+        text.push_str("\nArtifacts:");
+        for artifact in artifacts {
+            text.push_str(&format!(
+                "\n- {} (artifact {})",
+                one_line(&artifact.title, 120),
+                artifact.id
+            ));
+        }
+    }
+    text
+}
+
+/// A part of a report's findings files, as a Brain node's title and body.
+struct FindingsPart {
+    title: String,
+    body: String,
+}
+
+/// The key of the `index`th findings part of a task's report.
+fn part_key(task_id: &str, index: usize) -> String {
+    format!("task:{task_id}:part:{}", index + 1)
+}
+
+/// Whether an artifact holds findings worth keeping in the Brain: a note or a markdown or
+/// plain-text file, not a diff, transcript, command output, log or binary.
+fn is_findings(artifact: &ArtifactRef) -> bool {
+    let log = artifact
+        .file_name
+        .as_deref()
+        .is_some_and(|name| name.ends_with(".log") || name.ends_with(".out"));
+    matches!(artifact.kind, ArtifactKind::Note | ArtifactKind::File)
+        && (artifact.mime == "text/markdown" || (artifact.mime == "text/plain" && !log))
+}
+
+/// One part of a findings file: its text, where it sits in the file, and the heading it is
+/// under.
+#[derive(Debug, PartialEq)]
+struct FindingsPiece {
+    text: String,
+    start: usize,
+    end: usize,
+    heading: Option<String>,
+}
+
+/// A findings file in parts of at most [`FINDINGS_PART_BYTES`], whole lines where it can: a
+/// new part starts at a heading once the one before is half full, and a line longer than a
+/// part is split between words. Each part knows the last heading before it.
+fn split_findings(text: &str) -> Vec<FindingsPiece> {
+    let mut pieces = Vec::new();
+    let mut heading: Option<String> = None;
+    let mut part_heading: Option<String> = None;
+    let mut start = 0;
+    let mut end = 0;
+    let mut at = 0;
+    let flush =
+        |pieces: &mut Vec<FindingsPiece>, start: usize, end: usize, heading: &Option<String>| {
+            if !text[start..end].trim().is_empty() {
+                pieces.push(FindingsPiece {
+                    text: text[start..end].to_owned(),
+                    start,
+                    end,
+                    heading: heading.clone(),
+                });
+            }
+        };
+    for line in text.split_inclusive('\n') {
+        let line_start = at;
+        at += line.len();
+        let title = line
+            .trim_start()
+            .strip_prefix('#')
+            .map(|rest| one_line(rest.trim_start_matches('#'), 120));
+        let full = end - start + line.len() > FINDINGS_PART_BYTES;
+        let at_heading = title.is_some() && end - start >= FINDINGS_PART_BYTES / 2;
+        if end > start && (full || at_heading) {
+            flush(&mut pieces, start, end, &part_heading);
+            start = line_start;
+            end = line_start;
+            part_heading.clone_from(&heading);
+        }
+        if let Some(title) = title.filter(|title| !title.is_empty()) {
+            heading = Some(title);
+            if end == start {
+                part_heading.clone_from(&heading);
+            }
+        }
+        if line.len() <= FINDINGS_PART_BYTES {
+            end = at;
+            continue;
+        }
+        // A line longer than a part: whole parts of it, split between words.
+        let mut from = line_start;
+        while at - from > FINDINGS_PART_BYTES {
+            let limit = floor_boundary(&text[from..], FINDINGS_PART_BYTES);
+            let cut = text[from..from + limit]
+                .rfind([' ', '\t'])
+                .filter(|cut| *cut >= limit / 2)
+                .map_or(limit, |cut| cut + 1);
+            flush(&mut pieces, from, from + cut, &part_heading);
+            from += cut;
+        }
+        start = from;
+        end = at;
+    }
+    flush(&mut pieces, start, end, &part_heading);
+    pieces
+}
+
+/// The largest length of at most `max` bytes that ends on a character boundary of `text`.
+fn floor_boundary(text: &str, max: usize) -> usize {
+    if text.len() <= max {
+        return text.len();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
 }
 
 /// A stable key part for a piece of text.

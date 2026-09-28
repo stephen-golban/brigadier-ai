@@ -93,19 +93,31 @@ pub(crate) fn hits(
     let allowed = |kind: NodeKind| query.kinds.is_empty() || query.kinds.contains(&kind);
 
     let mut fused: HashMap<String, f64> = HashMap::new();
-    let mut add = |ranked: Vec<String>| {
-        for (rank, id) in ranked.into_iter().enumerate() {
-            *fused.entry(id).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
+    let mut add = |ranked: &[String], keep: &dyn Fn(&str) -> bool| {
+        for (rank, id) in ranked.iter().enumerate() {
+            if keep(id) {
+                *fused.entry(id.clone()).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
+            }
         }
     };
-    if let Some(expression) = fts_expression(&query.text) {
-        add(full_text(conn, &expression, &query.kinds)?);
-    }
+    let text_ranked = match fts_expression(&query.text) {
+        Some(expression) => full_text(conn, &expression, &query.kinds)?,
+        None => Vec::new(),
+    };
+    add(&text_ranked, &|_| true);
     if let Some(embedding) = embedding {
-        let nearest = vectors.nearest(conn, embedding, CANDIDATES, |kind, superseded| {
-            allowed(kind) && candidate(kind, superseded)
-        })?;
-        add(nearest.into_iter().map(|(id, _)| id).collect());
+        let nearest: Vec<String> = vectors
+            .nearest(conn, embedding, CANDIDATES, |kind, superseded| {
+                allowed(kind) && candidate(kind, superseded)
+            })?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        add(&nearest, &|_| true);
+        // A node not embedded yet (learned while the model was unloaded) can't be in the
+        // semantic ranking: its full-text rank stands in, so new knowledge isn't outranked by
+        // older nodes for being new.
+        add(&text_ranked, &|id| !vectors.contains(id));
     }
     let mut ranked: Vec<(String, f64)> = fused.into_iter().collect();
     ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));

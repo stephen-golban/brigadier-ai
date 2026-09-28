@@ -213,7 +213,7 @@ impl SessionManager {
 
     /// The redactor for a task's files: its live worker's, or rebuilt from the project's
     /// secret files after a restart.
-    async fn task_redactor(&self, task: &Task) -> Option<Arc<Redactor>> {
+    pub(super) async fn task_redactor(&self, task: &Task) -> Option<Arc<Redactor>> {
         if let Some(live) = self.existing_task_live(&task.id)
             && let Some(redactor) = live.redactor().await
         {

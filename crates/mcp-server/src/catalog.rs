@@ -6,8 +6,8 @@ use std::sync::{Arc, OnceLock};
 use brigadier_core::tools::{
     AcceptTask, AskOrchestrator, AskUser, ChatCall, CodeRefs, CodeSearch, DelegateTask,
     FinishSession, JobCall, MessageWorker, OrchestratorCall, ProposePlan, QueryBrain, ReadArtifact,
-    RecordNodes, Remember, RequestApproval, Role, RouteFollowUp, SaveMemory, SearchTranscript,
-    SubmitReport, TaskRef, ToolCall, WorkerCall,
+    RecordNodes, Remember, ReportRef, RequestApproval, Role, RouteFollowUp, SaveMemory,
+    SearchTranscript, SubmitReport, TaskRef, ToolCall, WorkerCall,
 };
 use rmcp::model::{JsonObject, Tool};
 use serde::de::DeserializeOwned;
@@ -41,10 +41,11 @@ waits for the answer in `task` so other work continues; `options` become numbere
 user can always type their own answer), and `recommended` marks the one you recommend.";
 
 const READ_REPORT: &str = "Read a task's final report again: summary, changes, decisions, \
-verification, open questions and artifact ids.";
+verification, open questions and artifact ids. A report from another session of this project \
+is read by the task id a Brain answer names.";
 
-const READ_ARTIFACT: &str = "Read part of an artifact named in a report (full transcript, \
-diff, command output, note) by its id. At most 16000 bytes per call, starting at `offset`; the \
+const READ_ARTIFACT: &str = "Read part of an artifact named in a report or a Brain answer (full \
+transcript, diff, command output, note), from any session of this project, by its id. At most 16000 bytes per call, starting at `offset`; the \
 reply gives the total size so you can page. Read only what you need: everything you read enters \
 your context.";
 
@@ -149,7 +150,7 @@ fn orchestrator_tools() -> Vec<Tool> {
         ),
         tool("stop_worker", STOP_WORKER, input_schema::<TaskRef>()),
         tool("ask_user", ASK_USER, input_schema::<AskUser>()),
-        tool("read_report", READ_REPORT, input_schema::<TaskRef>()),
+        tool("read_report", READ_REPORT, input_schema::<ReportRef>()),
         tool(
             "read_artifact",
             READ_ARTIFACT,
