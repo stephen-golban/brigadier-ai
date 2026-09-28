@@ -29,6 +29,7 @@ use brigadier_brain::{
 use brigadier_index::{
     CodeHit, CodeIndex, CodeQuery, FileChange, IndexConfig, ScanHelper, SearchKind,
 };
+use brigadier_providers::Artifact;
 use brigadier_store::StreamPage;
 
 use super::brain_jobs::BrainJobs;
@@ -294,43 +295,51 @@ impl SessionManager {
         }
     }
 
-    /// A project is being removed: its Brain job and watcher stop, a scan in progress is
-    /// waited for (it can't be cancelled, and it holds the Brain and index open), and its
-    /// Brain and index close. Fails, to be tried again, if the scan outlasts
-    /// [`REMOVE_SCAN_WAIT`].
-    pub(crate) async fn close_project_brain(&self, id: &ProjectId) -> Result<()> {
+    /// A project is being removed: its Brain job and watcher stop, and a scan in progress (it
+    /// can't be cancelled, and it holds the Brain and index open) is waited for, all within
+    /// [`REMOVE_SCAN_WAIT`]; then its Brain and index close. Past that, removal goes on: the
+    /// scan starts nothing when it ends, and its files are deleted by the cleanup ledger.
+    pub(crate) async fn close_project_brain(&self, id: &ProjectId) {
         self.brains.jobs.stop_for(id, "the project was removed");
         self.brains.jobs.forget_tries(id);
-        let open = self.brains.projects().get(id).cloned();
-        if let Some(open) = open {
-            open.removed.store(true, Ordering::Release);
-            stop_watchers(open.take_watcher().into_iter().collect()).await;
-            let deadline = Instant::now() + REMOVE_SCAN_WAIT;
+        let Some(open) = self.brains.projects().get(id).cloned() else {
+            return;
+        };
+        open.removed.store(true, Ordering::Release);
+        let deadline = tokio::time::Instant::now() + REMOVE_SCAN_WAIT;
+        let watchers = open.take_watcher().into_iter().collect();
+        let closed = tokio::time::timeout_at(deadline, async {
+            stop_watchers(watchers).await;
             while open.indexing.load(Ordering::Acquire) {
-                if Instant::now() >= deadline {
-                    return Err(Error::Invalid(
-                        "the project's code index is still being scanned; try again in a moment"
-                            .into(),
-                    ));
-                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            self.brains.projects().remove(id);
+        })
+        .await;
+        self.brains.projects().remove(id);
+        if closed.is_err() {
+            tracing::warn!(project = %id, "the project's code index was still scanning when it was removed");
+            return;
         }
-        Ok(())
+        // The scan thread lets go of the Brain just after it says it is done.
+        while Arc::strong_count(&open) > 1 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
-    /// A removed project's Brain and index files (`brains/<project>/`), after
-    /// [`Self::close_project_brain`] and once the project is gone, so nothing opens them
-    /// again. The repository is not touched.
+    /// A removed project's Brain and index files (`brains/<project>/`), once the project is
+    /// gone so nothing opens them again. They go through the cleanup ledger, so what can't be
+    /// deleted now (a file still open) is deleted at the next launch. The repository is not
+    /// touched.
     pub(crate) async fn delete_project_brain(&self, id: &ProjectId) -> Result<()> {
-        let dir = self.brains.root.join(&id.0);
-        blocking(move || match std::fs::remove_dir_all(&dir) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(Error::Invalid(format!("removing {}: {err}", dir.display()))),
-        })
-        .await
+        let owner = format!("project:{}", id.0);
+        let path = self.brains.root.join(&id.0).display().to_string();
+        let ledger = self.runtime.ledger();
+        ledger.record(&owner, Artifact::ScratchDir { path }).await?;
+        let leftovers = ledger.dispose(&owner).await;
+        if !leftovers.is_clean() {
+            tracing::warn!(project = %id, failures = ?leftovers.failures, "a removed project's Brain is deleted at the next launch");
+        }
+        Ok(())
     }
 
     /// The project's Brain and index, opened (and its indexing started) on first use.
@@ -458,6 +467,7 @@ impl SessionManager {
                     .upgrade()
                     .filter(|_| !project.removed.load(Ordering::Acquire))
                 else {
+                    drop((brain, index));
                     project.indexing.store(false, Ordering::Release);
                     return;
                 };
@@ -482,6 +492,7 @@ impl SessionManager {
                         tracing::warn!(project = %id, error = %err, "code index scan failed");
                     }
                 }
+                drop((brain, index));
                 project.indexing.store(false, Ordering::Release);
             });
         match spawned {

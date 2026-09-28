@@ -196,6 +196,10 @@ impl SessionManager {
     /// Runs the project's skeleton pass unless one succeeded before (or this daemon run
     /// already tried it twice).
     async fn skeleton_if_needed(&self, project: ProjectId) {
+        // A project removed since it asked has nothing to map.
+        if self.core.project(&project).is_err() {
+            return;
+        }
         let jobs = self.brain_jobs(&project).await;
         let live = self
             .brains
