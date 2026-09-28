@@ -3,6 +3,11 @@ import type { KindCount } from "./KindCount";
 
 export type BrainStats = { nodes: number, edges: number, stale: number, 
 /**
+ * When a node was last added or rewritten (none in an empty Brain): the counts miss a
+ * node updated in place.
+ */
+updatedMs: number | null, 
+/**
  * Nodes without an embedding from the current model.
  */
 unembedded: number, kinds: Array<KindCount>, 

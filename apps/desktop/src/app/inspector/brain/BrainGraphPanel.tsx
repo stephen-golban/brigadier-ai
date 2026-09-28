@@ -107,7 +107,7 @@ export function BrainGraphPanel({ brainKey, overview }: { brainKey: string; over
 
   // Read again when the Brain changes under the open graph (a scan, a job, a report).
   const stats = overview?.stats;
-  const version = stats ? `${stats.nodes}:${stats.edges}:${stats.stale}` : "";
+  const version = stats ? `${stats.nodes}:${stats.edges}:${stats.stale}:${stats.updatedMs}` : "";
 
   useEffect(() => {
     let current = true;

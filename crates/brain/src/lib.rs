@@ -306,6 +306,9 @@ pub struct BrainStats {
     pub nodes: u64,
     pub edges: u64,
     pub stale: u64,
+    /// When a node was last added or rewritten (none in an empty Brain): the counts miss a
+    /// node updated in place.
+    pub updated_ms: Option<i64>,
     /// Nodes without an embedding from the current model.
     pub unembedded: u64,
     pub kinds: Vec<KindCount>,
@@ -783,6 +786,9 @@ impl Brain {
                 nodes: count("SELECT COUNT(*) FROM nodes", &[])?,
                 edges: count("SELECT COUNT(*) FROM edges", &[])?,
                 stale: count("SELECT COUNT(*) FROM nodes WHERE state = 'stale'", &[])?,
+                updated_ms: conn
+                    .prepare_cached("SELECT MAX(updated_ms) FROM nodes")?
+                    .query_row([], |row| row.get(0))?,
                 unembedded: count(
                     "SELECT COUNT(*) FROM nodes WHERE embedding IS NULL OR embed_model IS NOT ?1",
                     &[embed::MODEL_ID],
