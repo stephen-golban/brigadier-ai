@@ -2526,9 +2526,9 @@ impl Quiet {
             .collect()
     }
 
-    /// Whether `event` is a complete reply none of which was shown yet, short enough to be
-    /// narration: it is held until the next event says whether it was. A question is never
-    /// held.
+    /// Whether `event` is a complete reply none of which was shown yet that reads as narration
+    /// ([`announces`]): it is held until the next event says whether it was. A question is
+    /// never held.
     fn holds_whole(&mut self, event: &ProviderEvent) -> bool {
         let ProviderEvent::Message {
             item_id,
@@ -2541,7 +2541,8 @@ impl Quiet {
         let whole = self.enabled
             && !self.released.contains(item_id)
             && text.len() < NARRATION_BYTES
-            && !text.contains('?');
+            && !text.contains('?')
+            && announces(text);
         if whole {
             self.forget(event);
         }
@@ -2559,6 +2560,116 @@ impl Quiet {
 
 /// Replies shorter than this are held back until the turn shows whether they were narration.
 const NARRATION_BYTES: usize = 400;
+
+/// How narration starts: the orchestrator saying it looks something up or hands work out
+/// next. An opening needs one of [`LOOKUPS`] right after it ("I'll check …", "Let me ask a
+/// scout …"); a bare "I'll use SQLite." is a decision, not narration.
+const OPENINGS: &[&str] = &[
+    "let me ",
+    "let's ",
+    "i'll ",
+    "i will ",
+    "i'm going to ",
+    "i am going to ",
+];
+
+/// What narration announces.
+const LOOKUPS: &[&str] = &[
+    "check",
+    "look",
+    "ask",
+    "hand",
+    "delegate",
+    "search",
+    "read",
+    "pull up",
+    "dig",
+    "find out",
+    "see ",
+    "verify",
+    "confirm",
+    "query",
+    "get a scout",
+    "have a scout",
+    "send a scout",
+    "spin up",
+    "kick off",
+];
+
+/// Openings that are narration on their own ("Checking the report.", "On it.").
+const PROGRESS: &[&str] = &[
+    "checking ",
+    "looking ",
+    "asking ",
+    "handing ",
+    "delegating ",
+    "searching ",
+    "reading ",
+    "pulling up ",
+    "digging ",
+    "querying ",
+    "on it",
+    "one moment",
+];
+
+/// Lead-ins before an announcement ("Now let me …").
+const LEAD_INS: &[&str] = &["now ", "next, ", "first, ", "ok, ", "okay, ", "alright, "];
+
+/// Words that give a reply more than an announcement: a reason, a choice, a limit.
+const SUBSTANTIVE: &[&str] = &[
+    "because", "since ", "instead", "decid", "chose", "choos", "won't", "will not", "can't",
+    "cannot", "must", "should", "don't", "didn't", "not ",
+];
+
+/// How a sentence saying the Project Brain has no answer starts ("The Brain doesn't have
+/// that."): the lookup's outcome, which the hand-off after it shows anyway.
+const BRAIN_MISS: &[&str] = &[
+    "the brain ",
+    "the project brain ",
+    "nothing in the brain",
+    "nothing in the project brain",
+];
+
+/// Words that give a Brain-miss sentence more than the miss.
+const REASONING: &[&str] = &[
+    "because", "instead", "decid", "chose", "choos", "must", "should",
+];
+
+/// Whether a short reply only announces the next step ("Let me check the Brain.", "The Brain
+/// doesn't have that. I'll ask a scout."): at most two sentences, one announcing a lookup or a
+/// hand-off, the other at most saying the Brain had no answer, with no reason, choice or limit
+/// in them. Anything else (a decision, its reason, more sentences) is shown.
+fn announces(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    let sentences: Vec<&str> = lower
+        .split(['.', '!', ';', ':', '\n'])
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect();
+    let announcement = |sentence: &&str| {
+        let mut rest: &str = sentence;
+        for lead in LEAD_INS {
+            rest = rest.strip_prefix(lead).unwrap_or(rest);
+        }
+        let opens = PROGRESS.iter().any(|opening| rest.starts_with(opening))
+            || OPENINGS.iter().any(|opening| {
+                rest.strip_prefix(opening)
+                    .is_some_and(|after| LOOKUPS.iter().any(|verb| after.starts_with(verb)))
+            });
+        opens && !SUBSTANTIVE.iter().any(|word| sentence.contains(word))
+    };
+    let brain_miss = |sentence: &&str| {
+        BRAIN_MISS
+            .iter()
+            .any(|opening| sentence.starts_with(opening))
+            && !REASONING.iter().any(|word| sentence.contains(word))
+    };
+    sentences.len() <= 2
+        && sentences.iter().any(announcement)
+        && sentences
+            .iter()
+            .all(|sentence| announcement(sentence) || brain_miss(sentence))
+}
 
 /// Tools whose call a short reply before it may only have announced ("I'll ask a scout.",
 /// "Let me read the report."): the user sees the call's result anyway.
