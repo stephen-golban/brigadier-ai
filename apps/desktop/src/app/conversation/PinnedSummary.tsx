@@ -12,13 +12,13 @@ import {
   PullRequestOpen,
   Tasks,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { AgentsPanelContext, WORKERS_LABEL, WorkerGlyphs } from "@/app/conversation/Agents";
-import { isFinal, isWorking } from "@/app/conversation/blocks";
+import { isFinal } from "@/app/conversation/blocks";
 import { GitActions } from "@/app/conversation/GitActions";
 import { COMPOSER_EDITABLE } from "@/app/conversation/composerTarget";
+import { WorkersSummary } from "@/app/conversation/WorkerSummary";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   DropdownMenu,
@@ -41,9 +41,6 @@ import { getSessionDiff, select, setPinnedSummary, setProjectExpanded } from "@/
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
-
-/** Glyphs shown on the Workers row. */
-const GLYPHS = 4;
 
 const NO_TASKS: Readonly<Record<string, Task>> = {};
 
@@ -325,12 +322,8 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
   const project = useApp((s) =>
     conversation.projectId ? (s.projects[conversation.projectId]?.name ?? null) : null,
   );
-  const { setPanel } = useContext(AgentsPanelContext);
-  const workers = useBoard(
-    useShallow((s) => {
-      if (s.board?.conversationId !== conversation.id) return [];
-      return Object.values(s.board.tasks).toSorted((a, b) => a.number - b.number);
-    }),
+  const workers = useBoard((s) =>
+    s.board?.conversationId === conversation.id ? Object.keys(s.board.tasks).length : 0,
   );
   const plan = useBoard((s) =>
     s.board?.conversationId === conversation.id ? currentPlan(Object.values(s.board.plans)) : null,
@@ -344,14 +337,6 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
   if (!shown || !setup) return null;
   const checkout =
     setup.environment.type === "newWorktree" ? (setup.environment.path ?? setup.repo) : setup.repo;
-
-  const active = workers.filter((task) => !isFinal(task));
-  const working = active.filter(isWorking).length;
-  const waiting = active.length - working;
-  const done = workers.length - active.length;
-  const glyphs = [...active, ...workers.filter(isFinal)]
-    .slice(0, GLYPHS)
-    .map((task) => task.id);
 
   return (
     <aside
@@ -379,28 +364,8 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
         </div>
       </GitActions>
       {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
-      {(workers.length > 0 || plan || sources) && <div className="border-border border-t" />}
-      {workers.length > 0 && (
-        <Section title={WORKERS_LABEL}>
-          <button
-            type="button"
-            onClick={() => setPanel(null)}
-            className="hover:bg-foreground/5 rounded-control -mx-1 flex h-control-sm items-center gap-2 px-1 text-start text-sm transition-colors"
-          >
-            <WorkerGlyphs taskIds={glyphs} />
-            <span className="min-w-0 flex-1 truncate">
-              {active.length > 0
-                ? [working > 0 && `${working} working`, waiting > 0 && `${waiting} waiting`]
-                    .filter(Boolean)
-                    .join(" · ")
-                : `${done} done`}
-            </span>
-            {active.length > 0 && done > 0 && (
-              <span className="text-muted-foreground shrink-0">{done} done</span>
-            )}
-          </button>
-        </Section>
-      )}
+      {(workers > 0 || plan || sources) && <div className="border-border border-t" />}
+      {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
       {plan && (
         <Section title="Plan">
           <p className="truncate text-sm" title={plan.title}>

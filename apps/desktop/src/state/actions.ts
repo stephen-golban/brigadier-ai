@@ -235,6 +235,15 @@ export async function getSessionDiff(id: string): Promise<DiffStat | null> {
   return stat;
 }
 
+/** Reads what each worker at work on a change changed so far into the conversation's board. */
+export async function refreshWorkerDiffs(conversationId: string): Promise<void> {
+  const { diffs } = await request({ method: "getWorkerDiffs", conversationId });
+  updateBoard(conversationId, (board) => ({
+    ...board,
+    diffs: Object.fromEntries(diffs.map((diff) => [diff.taskId, diff.stat])),
+  }));
+}
+
 function storeConversation(conversation: Conversation): void {
   useApp.setState((state) => ({
     conversations: { ...state.conversations, [conversation.id]: conversation },

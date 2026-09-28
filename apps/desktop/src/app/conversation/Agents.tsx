@@ -10,7 +10,6 @@ import {
 import {
   createContext,
   memo,
-  type ReactNode,
   useContext,
   useMemo,
   useState,
@@ -19,7 +18,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { isFinal, isWorking } from "@/app/conversation/blocks";
 import { isStoppable, TASK_STATE_LABELS } from "@/app/conversation/cards/TaskCardView";
-import { useTaskElapsed, WorkerThread } from "@/app/conversation/WorkerThread";
+import { WorkerThread } from "@/app/conversation/WorkerThread";
 import { IdGlyph } from "@/components/glyphs/worker-glyphs";
 import { effortLabel } from "@/components/assistant-ui/elements/model-selector";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -32,11 +31,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useNow } from "@/hooks/use-now";
 import type { Task, WorkerStepKind } from "@/ipc/generated";
-import { formatAgo, formatDuration } from "@/lib/format";
+import { formatAgo } from "@/lib/format";
 import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { pauseTask, resumeTask, stopTask } from "@/state/actions";
-import { useBoard } from "@/state/board";
+import { useBoard, type WorkerSummary } from "@/state/board";
 import { toast } from "@/state/toasts";
 
 /** What the UI calls a session's workers (the user chose "Workers" over "Subagents"). */
@@ -55,44 +54,82 @@ export const AgentsPanelContext = createContext<{
   setPanel: (panel: AgentsPanelState) => void;
 }>({ panel: undefined, setPanel: () => {} });
 
-/** A worker's own glyph and colour, the same wherever it appears. */
-export function WorkerGlyph({ taskId, className }: { taskId: string; className?: string }) {
-  return <IdGlyph id={taskId} className={className} />;
+/** The colour a worker's glyph takes for how it ended: interrupted or failed. */
+export function glyphTone(state: Task["state"] | WorkerStepKind): string | undefined {
+  if (state === "stopped") return "text-warning";
+  if (state === "failed") return "text-destructive";
+  return undefined;
 }
 
-/** Glyphs shown side by side in a step row; the names go on with "and N more". */
-const CHIPS = 4;
+/**
+ * A worker's own glyph and colour, the same wherever it appears; `working` adds its status dot,
+ * `tone` recolours it for a state.
+ */
+export function WorkerGlyph({
+  taskId,
+  working,
+  tone,
+  className,
+}: {
+  taskId: string;
+  working?: boolean | undefined;
+  tone?: string | undefined;
+  className?: string | undefined;
+}) {
+  return <IdGlyph id={taskId} dot={working} className={cn(className, tone)} />;
+}
 
-/** Several workers' glyphs side by side, slightly overlapping, each sliding in as it joins. */
-export function WorkerGlyphs({ taskIds }: { taskIds: readonly string[] }) {
+/** Glyphs stacked in a summary row. */
+const STACKED = 4;
+
+/** Several workers' glyphs stacked, overlapping, each sliding in as it joins; a dot on those working. */
+export function WorkerGlyphs({
+  taskIds,
+  working,
+}: {
+  taskIds: readonly string[];
+  working?: ReadonlySet<string>;
+}) {
   return (
-    <span className="flex shrink-0 items-center -space-x-0.5">
-      {taskIds.slice(0, CHIPS).map((id) => (
-        <WorkerGlyph key={id} taskId={id} className="animate-glyph-in motion-reduce:animate-none" />
+    <span className="flex shrink-0 items-center -space-x-1">
+      {taskIds.slice(0, STACKED).map((id) => (
+        <WorkerGlyph
+          key={id}
+          taskId={id}
+          working={working?.has(id)}
+          className="animate-glyph-in motion-reduce:animate-none"
+        />
       ))}
     </span>
   );
 }
 
-/** Up to three workers are named in a step row; with more, two are, then "and N more". */
-const NAMED = 3;
+function stepTitle(task: Task): string {
+  return `task-${task.number} · ${TASK_STATE_LABELS[task.state]}`;
+}
+
+/** Pills in one activity line; the others go on as "and N other workers". */
+const PILLS = 3;
 
 const STEP_VERBS: Record<WorkerStepKind, [one: string, many: string]> = {
   started: ["started working", "started working"],
   waiting: ["is waiting for you", "are waiting for you"],
-  paused: ["was paused", "were paused"],
+  paused: ["paused", "paused"],
   resumed: ["continued", "continued"],
   finished: ["finished", "finished"],
   updated: ["updated", "updated"],
   landed: ["landed", "landed"],
   rejected: ["was turned down", "were turned down"],
-  stopped: ["was interrupted", "were interrupted"],
-  failed: ["finished with errors", "finished with errors"],
+  stopped: ["interrupted", "interrupted"],
+  failed: ["failed", "failed"],
 };
 
 /**
- * Workers' steps as one grey line in the thread: "Scout, Verify and Review started working".
- * A name opens that worker in the panel; "N more" opens the list.
+ * Workers' steps as one activity line in the thread. One worker is its glyph and name in grey
+ * ("Scout started working"); several are pills, three at most, then the rest counted: "[Scout]
+ * [Verify] [Review] and 2 other workers updated", on one line where long names give way. A
+ * glyph takes the colour of an interruption or a failure. A pill or name opens that worker in
+ * the panel; "N other workers" opens the list.
  */
 export const WorkerStepRow = memo(function WorkerStepRow({
   kind,
@@ -105,62 +142,87 @@ export const WorkerStepRow = memo(function WorkerStepRow({
   const tasks = useBoard(
     useShallow((s) => taskIds.map((id) => s.board?.tasks[id]).filter((task) => task !== undefined)),
   );
-  if (tasks.length === 0) return null;
-  const named = tasks.length > NAMED ? tasks.slice(0, NAMED - 1) : tasks;
-  const more = tasks.length - named.length;
+  const [first] = tasks;
+  if (!first) return null;
   const [one, many] = STEP_VERBS[kind];
-  const name = (task: Task) => (
-    <button
-      key={task.id}
-      type="button"
-      title={`task-${task.number} · ${TASK_STATE_LABELS[task.state]}`}
-      onClick={() => setPanel(task.id)}
-      className="hover:text-foreground inline-block max-w-xs truncate align-bottom transition-colors"
-    >
-      {task.title}
-    </button>
-  );
-  const parts: ReactNode[] = [];
-  named.forEach((task, index) => {
-    if (index > 0) parts.push(index === named.length - 1 && more === 0 ? " and " : ", ");
-    parts.push(name(task));
-  });
-  if (more > 0)
-    parts.push(
-      " and ",
-      <button
-        key="more"
-        type="button"
-        onClick={() => setPanel(null)}
-        className="hover:text-foreground align-bottom transition-colors"
+  const tone = glyphTone(kind);
+  if (tasks.length === 1) {
+    return (
+      <div
+        data-slot="worker-step"
+        data-kind={kind}
+        className="text-muted-foreground flex min-h-row-sm items-center gap-2 text-sm"
       >
-        {more} more
-      </button>,
+        <WorkerGlyph
+          taskId={first.id}
+          tone={tone}
+          className="animate-glyph-in motion-reduce:animate-none"
+        />
+        <span className="min-w-0 truncate">
+          <button
+            type="button"
+            title={stepTitle(first)}
+            onClick={() => setPanel(first.id)}
+            className="hover:text-foreground align-bottom transition-colors"
+          >
+            {first.title}
+          </button>{" "}
+          {one}
+        </span>
+      </div>
     );
+  }
+  const others = tasks.length - PILLS;
   return (
     <div
       data-slot="worker-step"
       data-kind={kind}
-      className="text-muted-foreground flex min-h-row-sm items-center gap-2 text-sm"
+      className="text-foreground flex min-h-row min-w-0 items-center gap-1.5 text-sm"
     >
-      <WorkerGlyphs taskIds={tasks.map((task) => task.id)} />
-      <span className="min-w-0 truncate">
-        {parts}
-        {` ${tasks.length === 1 ? one : many}`}
+      {tasks.slice(0, PILLS).map((task) => (
+        <button
+          key={task.id}
+          type="button"
+          data-slot="worker-pill"
+          title={stepTitle(task)}
+          onClick={() => setPanel(task.id)}
+          className="bg-muted/60 border-border hover:bg-muted rounded-capsule animate-glyph-in inline-flex h-control-xs max-w-2xs min-w-0 shrink items-center gap-1.5 border ps-2 pe-2.5 transition-colors motion-reduce:animate-none"
+        >
+          <WorkerGlyph taskId={task.id} tone={tone} className="size-icon-sm" />
+          <span className="min-w-0 truncate">{task.title}</span>
+        </button>
+      ))}
+      <span className="shrink-0 whitespace-nowrap">
+        {others > 0 && (
+          <>
+            and{" "}
+            <button
+              type="button"
+              onClick={() => setPanel(null)}
+              className="hover:text-muted-foreground transition-colors"
+            >
+              {others} other {others === 1 ? "worker" : "workers"}
+            </button>{" "}
+          </>
+        )}
+        {many}
       </span>
     </div>
   );
 });
 
-/** A worker's state in a word or two, under its name in the list. */
-function statusLine(task: Task, activity: string | undefined): string | null {
+/**
+ * A worker's live status under its name in the list: at work, its latest reply's first line,
+ * or "Thinking" before it said anything; otherwise its state in a word or two.
+ */
+function statusLine(task: Task, summary: WorkerSummary | undefined): string | null {
   switch (task.state) {
     case "queued":
       return "Queued";
     case "starting":
       return "Starting";
     case "running":
-      return activity ?? "Working";
+      return summary?.text ?? "Thinking";
     case "blocked":
       return "Asked the orchestrator";
     case "paused":
@@ -175,7 +237,7 @@ function statusLine(task: Task, activity: string | undefined): string | null {
     case "rejected":
       return "Turned down";
     case "stopped":
-      return "Stopped";
+      return "Interrupted";
     case "failed":
       return "Failed";
     case "landed":
@@ -184,24 +246,21 @@ function statusLine(task: Task, activity: string | undefined): string | null {
   }
 }
 
-/** Seconds it has worked (ticking) while active; how long ago it ended after. */
-function RowTime({ task }: { task: Task }) {
-  const elapsed = useTaskElapsed(task);
-  const final = isFinal(task);
-  const now = useNow(final ? 60_000 : null);
+/** When it last said something or changed state ("now", "3m ago"). */
+function RowTime({ task, summary }: { task: Task; summary: WorkerSummary | undefined }) {
+  const now = useNow(60_000);
+  const at = Math.max(task.updatedAtMs, isFinal(task) ? 0 : (summary?.atMs ?? 0));
   return (
-    <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-      {final ? formatAgo(task.updatedAtMs, now) : formatDuration(elapsed)}
-    </span>
+    <span className="text-muted-foreground shrink-0 text-xs tabular-nums">{formatAgo(at, now)}</span>
   );
 }
 
 const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
   const task = useBoard((s) => s.board?.tasks[taskId]);
-  const activity = useBoard((s) => s.board?.activity[taskId]);
+  const summary = useBoard((s) => s.board?.summaries[taskId]);
   const { setPanel } = useContext(AgentsPanelContext);
   if (!task) return null;
-  const status = statusLine(task, activity);
+  const status = statusLine(task, summary);
   return (
     <li>
       <button
@@ -209,15 +268,18 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
         data-task={`task-${task.number}`}
         title={`task-${task.number} · ${TASK_STATE_LABELS[task.state]}`}
         onClick={() => setPanel(task.id)}
-        className="hover:bg-foreground/5 rounded-control flex min-h-10 w-full items-center gap-3 px-2 py-2 text-start transition-colors"
+        className="hover:bg-foreground/5 rounded-control flex w-full items-start gap-3 px-2 py-2 text-start transition-colors"
       >
-        <WorkerGlyph taskId={task.id} className="size-6" />
+        <WorkerGlyph taskId={task.id} tone={glyphTone(task.state)} className="size-6" />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm">{task.title}</span>
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
+            <RowTime task={task} summary={summary} />
+          </span>
           {status && (
             <span
               className={cn(
-                "truncate text-sm",
+                "line-clamp-2 text-sm",
                 task.state === "failed" ? "text-destructive" : "text-muted-foreground",
               )}
             >
@@ -225,7 +287,6 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
             </span>
           )}
         </span>
-        <RowTime task={task} />
       </button>
     </li>
   );
@@ -233,12 +294,13 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
 
 /**
  * One section of the list, a page at a time: the first `page` rows, then "Show N more" for
- * the next page.
+ * the next page. The Done section counts its rows in its title.
  */
 function AgentSection({
   title,
   ids,
   page,
+  counted,
   trailing,
   empty,
   className,
@@ -246,6 +308,7 @@ function AgentSection({
   title: string;
   ids: readonly string[];
   page: number;
+  counted?: boolean;
   trailing?: string | undefined;
   empty?: string;
   className?: string;
@@ -257,9 +320,7 @@ function AgentSection({
   return (
     <section className={cn("flex flex-col", className)}>
       <h3 className="text-muted-foreground mb-2 flex items-center gap-2 px-2 text-sm">
-        <span className="flex-1">
-          {title} · {ids.length}
-        </span>
+        <span className="flex-1">{counted ? `${title} · ${ids.length}` : title}</span>
         {trailing && <span className="text-xs tabular-nums">{trailing}</span>}
       </h3>
       {ids.length === 0 ? (
@@ -275,7 +336,7 @@ function AgentSection({
         <button
           type="button"
           onClick={() => setPages(pages + 1)}
-          className="text-muted-foreground hover:text-foreground mt-1 self-start px-2 py-1 text-sm transition-colors"
+          className="text-muted-foreground hover:text-foreground ms-9 mt-1 self-start px-2 py-1 text-sm transition-colors"
         >
           Show {Math.min(hidden, page)} more
         </button>
@@ -348,7 +409,7 @@ function WorkerMenu({ task }: { task: Task }) {
 }
 
 /** Active workers first, then the finished ones, each by number. */
-function useWorkerIds(conversationId: string): { active: string[]; finished: string[] } {
+export function useWorkerIds(conversationId: string): { active: string[]; finished: string[] } {
   const ids = useBoard(
     useShallow((s) => {
       if (s.board?.conversationId !== conversationId) return [];
@@ -407,7 +468,13 @@ function WorkerList({ conversationId }: { conversationId: string }) {
           trailing={waiting > 0 ? `${waiting} waiting` : undefined}
           empty={`No active ${WORKERS_LABEL.toLowerCase()}`}
         />
-        <AgentSection title="Done" ids={shown.finished} page={DONE_PAGE} className="mt-6" />
+        <AgentSection
+          title="Done"
+          ids={shown.finished}
+          page={DONE_PAGE}
+          counted
+          className="mt-6"
+        />
       </div>
     </div>
   );

@@ -25,6 +25,7 @@ import { useShallow } from "zustand/react/shallow";
 import { AgentsPanelContext } from "@/app/conversation/Agents";
 import { ChatActions, RenameDialog } from "@/app/conversation/ChatActions";
 import { PinnedSummary, PinnedSummaryToggle } from "@/app/conversation/PinnedSummary";
+import { WorkerDiffs } from "@/app/conversation/WorkerSummary";
 import { ProjectCombobox } from "@/app/conversation/RailPickers";
 import {
   SidePanel,
@@ -764,6 +765,7 @@ export function ConversationView({
                         )}
                         <div className="relative min-h-0 flex-1">
                           {conversation && !embedded && <PinnedSummary conversation={conversation} />}
+                          {conversation?.kind === "session" && <WorkerDiffs conversationId={conversation.id} />}
                           <Thread
                             components={THREAD_COMPONENTS}
                             // One placeholder, in every conversation.

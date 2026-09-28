@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 import { cn } from "@/lib/utils";
 
 /**
@@ -153,9 +155,31 @@ function glyphFor(id: string): Glyph {
   return GLYPHS[hash % GLYPHS.length] ?? (GLYPHS[0] as Glyph);
 }
 
-/** A two-tone avatar for `id` (a worker), 1em square in its own colour unless sized by the caller. */
-export function IdGlyph({ id, className }: { id: string; className?: string | undefined }) {
+/** The glyph's square less a ring around its status dot. */
+const DOT_CUTOUT = "M0 0H16V16H0ZM13 8.75a4.25 4.25 0 1 0 0 8.5a4.25 4.25 0 1 0 0-8.5Z";
+
+/**
+ * A two-tone avatar for `id` (a worker), 1em square in its own colour unless sized or coloured
+ * by the caller. With `dot`, a small status dot sits in its lower corner, cut out of the glyph
+ * so it reads on any background.
+ */
+export function IdGlyph({
+  id,
+  dot,
+  className,
+}: {
+  id: string;
+  dot?: boolean | undefined;
+  className?: string | undefined;
+}) {
   const glyph = glyphFor(id);
+  const clip = useId();
+  const paths = (
+    <>
+      <path d={glyph.base} className="opacity-45" />
+      <path d={glyph.mark} />
+    </>
+  );
   return (
     <svg
       viewBox="0 0 16 16"
@@ -163,8 +187,17 @@ export function IdGlyph({ id, className }: { id: string; className?: string | un
       fill="currentColor"
       className={cn("size-icon-md shrink-0", glyph.color, className)}
     >
-      <path d={glyph.base} className="opacity-45" />
-      <path d={glyph.mark} />
+      {dot ? (
+        <>
+          <clipPath id={clip}>
+            <path clipRule="evenodd" d={DOT_CUTOUT} />
+          </clipPath>
+          <g clipPath={`url(#${clip})`}>{paths}</g>
+          <circle cx="13" cy="13" r="2.75" className="fill-success" />
+        </>
+      ) : (
+        paths
+      )}
     </svg>
   );
 }

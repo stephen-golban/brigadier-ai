@@ -6,6 +6,7 @@ import type {
   Compaction,
   ContextUsage,
   ConversationView,
+  DiffStat,
   EventEnvelope,
   MemoryChange,
   MessageQueue,
@@ -77,11 +78,20 @@ export type Board = {
   notices: Notice[];
   /** What each worker is doing right now, in a few words (from its live events). */
   activity: Record<string, string>;
+  /** Each worker's latest reply, its first line, and when it came (from its live events). */
+  summaries: Record<string, WorkerSummary>;
+  /** How many times each worker changed files (from its live events). */
+  edits: Record<string, number>;
+  /** What each worker at work on a change changed in its worktree so far, as last read. */
+  diffs: Record<string, DiffStat>;
   /** Transcripts of the worker cards opened so far, by task id. */
   transcripts: Record<string, WorkerTranscript>;
   /** A Chat's Memory chips: the latest change per memory, in the order they were saved. */
   memories: MemoryChange[];
 };
+
+/** A worker's latest reply, as its status line in the Workers panel. */
+export type WorkerSummary = { text: string; atMs: number };
 
 /** The Inspector's Orchestrator tab: one conversation's orchestrator log. */
 export type OrchestratorLog = {
@@ -201,6 +211,9 @@ export function emptyBoard(conversationId: string): Board {
     streaming: null,
     notices: [],
     activity: {},
+    summaries: {},
+    edits: {},
+    diffs: {},
     transcripts: {},
     memories: [],
   };
@@ -279,6 +292,9 @@ export function boardFromView(
     streaming: view.streaming,
     notices: view.notices.slice(-NOTICES),
     activity: keep?.activity ?? {},
+    summaries: keep?.summaries ?? {},
+    edits: keep?.edits ?? {},
+    diffs: keep?.diffs ?? {},
     transcripts: keep?.transcripts ?? {},
     memories: view.memories,
   };
@@ -448,6 +464,13 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
           ...next,
           activity: activity === null ? rest : { ...rest, [taskId]: activity },
         };
+      }
+      const reply = event.event;
+      if (reply.type === "message" && reply.role === "assistant") {
+        const text = firstLine(reply.text);
+        if (text) next = { ...next, summaries: { ...next.summaries, [taskId]: { text, atMs } } };
+      } else if (reply.type === "fileChanges" && reply.status !== "inProgress") {
+        next = { ...next, edits: { ...next.edits, [taskId]: (next.edits[taskId] ?? 0) + 1 } };
       }
       const transcript = board.transcripts[taskId];
       if (transcript) {

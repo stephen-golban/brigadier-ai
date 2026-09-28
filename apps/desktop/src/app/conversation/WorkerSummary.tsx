@@ -1,0 +1,246 @@
+import { ChevronDown, ChevronRight } from "@openai/apps-sdk-ui/components/Icon";
+import { type FC, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  AgentsPanelContext,
+  glyphTone,
+  useWorkerIds,
+  WORKERS_LABEL,
+  WorkerGlyph,
+  WorkerGlyphs,
+} from "@/app/conversation/Agents";
+import { isFinal, isWorking } from "@/app/conversation/blocks";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import type { DiffStat, Task } from "@/ipc/generated";
+import { cn } from "@/lib/utils";
+import { refreshWorkerDiffs } from "@/state/actions";
+import { useBoard } from "@/state/board";
+
+/**
+ * The session's workers summed up: rows of glyph, name, state and +N −N, shared by the pinned
+ * summary's Workers section and the composer's background-workers strip.
+ */
+
+/** What a worker is at, in plain words ("is working", "is awaiting instruction"). */
+export function stateLine(task: Task): string {
+  switch (task.state) {
+    case "queued":
+    case "starting":
+    case "running":
+    case "reviewing":
+      return "is working";
+    case "blocked":
+    case "paused":
+    case "awaitingApproval":
+    case "readyToLand":
+      return "is awaiting instruction";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "was interrupted";
+    case "reported":
+      return "reported";
+    case "landed":
+    case "done":
+    case "rejected":
+      return "is done";
+  }
+}
+
+/** "+12 −3", once there is a change. */
+export const Changes: FC<{ insertions: number; deletions: number }> = ({ insertions, deletions }) =>
+  insertions + deletions > 0 ? (
+    <span className="shrink-0 font-mono text-xs tabular-nums">
+      <span className="text-success">+{insertions}</span>{" "}
+      <span className="text-destructive">−{deletions}</span>
+    </span>
+  ) : null;
+
+/**
+ * States in which a write task's +N −N is read from its worktree: it still changes, or it
+ * reported and its candidate commit isn't made yet.
+ */
+const EDITING: ReadonlySet<Task["state"]> = new Set(["running", "blocked", "paused", "reported"]);
+
+function writes(task: Task): boolean {
+  return task.kind === "implement" || task.kind === "merge";
+}
+
+/** A worker's +N −N: its worktree so far while it works, then its candidate commit's. */
+export function workerStat(
+  task: Task,
+  diffs: Readonly<Record<string, DiffStat>> | undefined,
+): DiffStat | undefined {
+  return (EDITING.has(task.state) ? diffs?.[task.id] : undefined) ?? task.candidate?.diffStat;
+}
+
+const WorkerChanges: FC<{ task: Task }> = ({ task }) => {
+  const live = useBoard((s) => (EDITING.has(task.state) ? s.board?.diffs[task.id] : undefined));
+  const stat = live ?? task.candidate?.diffStat;
+  return stat ? <Changes insertions={stat.insertions} deletions={stat.deletions} /> : null;
+};
+
+/** The soonest a burst of edits reads the worktrees again, and the least time between reads. */
+const DIFF_SETTLE_MS = 500;
+const DIFF_INTERVAL_MS = 3_000;
+
+/**
+ * Keeps the board's live +N −N of the conversation's workers current: read again after
+ * a worker at work on a change edits files or changes state, at most every few seconds.
+ * It renders nothing, so what it watches re-renders only itself.
+ */
+export function WorkerDiffs({ conversationId }: { conversationId: string }) {
+  // Changes whenever a write task at work edits files or changes state.
+  const key = useBoard((s) => {
+    const board = s.board;
+    if (board?.conversationId !== conversationId) return "";
+    let edited = "";
+    for (const task of Object.values(board.tasks)) {
+      if (writes(task) && EDITING.has(task.state)) {
+        edited += `${task.id}:${task.state}:${board.edits[task.id] ?? 0};`;
+      }
+    }
+    return edited;
+  });
+  const last = useRef(0);
+  useEffect(() => {
+    if (!key) return;
+    const delay = Math.max(DIFF_SETTLE_MS, last.current + DIFF_INTERVAL_MS - Date.now());
+    const timer = setTimeout(() => {
+      last.current = Date.now();
+      // Until git can tell (a worktree being set up), the last read stays.
+      refreshWorkerDiffs(conversationId).catch(() => {});
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [conversationId, key]);
+  return null;
+}
+
+/** One worker in a summary: its glyph (with a dot while it works), name, state and +N −N. */
+export const WorkerSummaryRow = memo(function WorkerSummaryRow({
+  taskId,
+  className,
+}: {
+  taskId: string;
+  className?: string;
+}) {
+  const task = useBoard((s) => s.board?.tasks[taskId]);
+  const { setPanel } = useContext(AgentsPanelContext);
+  if (!task) return null;
+  const final = isFinal(task);
+  return (
+    <button
+      type="button"
+      data-slot="worker-summary-row"
+      data-state={task.state}
+      title={`task-${task.number}`}
+      onClick={() => setPanel(task.id)}
+      className={cn(
+        "hover:bg-foreground/5 rounded-control flex h-control-sm items-center gap-2 text-start text-sm transition-colors",
+        className,
+      )}
+    >
+      <WorkerGlyph taskId={task.id} working={isWorking(task)} tone={glyphTone(task.state)} />
+      <span className="min-w-0 flex-1 truncate">{task.title}</span>
+      <span
+        className={cn(
+          "shrink-0",
+          task.state === "failed"
+            ? "text-destructive"
+            : final
+              ? "text-muted-foreground"
+              : "text-foreground/70",
+        )}
+      >
+        {stateLine(task)}
+      </span>
+      <WorkerChanges task={task} />
+    </button>
+  );
+});
+
+/** Active workers listed in the summary before "N more". */
+const ROWS = 4;
+
+/**
+ * The pinned summary's Workers section, folding under its title: the stacked glyphs with how
+ * many work and how many are done (it opens the list), a row per active worker, and the
+ * finished ones behind "Completed".
+ */
+export function WorkersSummary({ conversationId }: { conversationId: string }) {
+  const { setPanel } = useContext(AgentsPanelContext);
+  const { active, finished } = useWorkerIds(conversationId);
+  const workingIds = useBoard((s) =>
+    active
+      .filter((id) => {
+        const task = s.board?.tasks[id];
+        return task !== undefined && isWorking(task);
+      })
+      .join(" "),
+  );
+  const working = useMemo(() => new Set(workingIds.split(" ").filter(Boolean)), [workingIds]);
+  const [open, setOpen] = useState(true);
+  if (active.length + finished.length === 0) return null;
+  const waiting = active.length - working.size;
+  const hidden = active.length - ROWS;
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-1">
+      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground flex h-control-xs items-center justify-between text-xs transition-colors">
+        {WORKERS_LABEL}
+        <ChevronDown
+          aria-hidden
+          className="size-icon-xs transition-[rotate] group-data-[state=closed]:-rotate-90 motion-reduce:transition-none"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="flex flex-col">
+        <button
+          type="button"
+          data-slot="workers-summary-counts"
+          onClick={() => setPanel(null)}
+          className="hover:bg-foreground/5 rounded-control -mx-1 flex h-control-sm items-center gap-2 px-1 text-start text-sm transition-colors"
+        >
+          <WorkerGlyphs taskIds={[...active, ...finished]} working={working} />
+          <span className="min-w-0 flex-1 truncate">
+            {active.length > 0
+              ? [working.size > 0 && `${working.size} working`, waiting > 0 && `${waiting} waiting`]
+                  .filter(Boolean)
+                  .join(" · ")
+              : `${finished.length} done`}
+          </span>
+          {active.length > 0 && finished.length > 0 && (
+            <span className="text-muted-foreground shrink-0">{finished.length} done</span>
+          )}
+        </button>
+        {active.slice(0, ROWS).map((id) => (
+          <WorkerSummaryRow key={id} taskId={id} className="-mx-1 px-1" />
+        ))}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setPanel(null)}
+            className="text-muted-foreground hover:text-foreground flex h-control-sm items-center ps-6 text-start text-sm transition-colors"
+          >
+            {hidden} more
+          </button>
+        )}
+        {finished.length > 0 && (
+          <Collapsible>
+            <CollapsibleTrigger className="group text-muted-foreground hover:bg-foreground/5 hover:text-foreground rounded-control -mx-1 flex h-control-sm w-full items-center gap-2 px-1 text-start text-sm transition-colors">
+              <span className="min-w-0 flex-1 truncate">Completed</span>
+              <span className="shrink-0 tabular-nums">{finished.length}</span>
+              <ChevronRight
+                aria-hidden
+                className="size-icon-xs shrink-0 transition-[rotate] group-data-[state=open]:rotate-90 motion-reduce:transition-none"
+              />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="max-h-action-list flex flex-col overflow-y-auto">
+              {finished.map((id) => (
+                <WorkerSummaryRow key={id} taskId={id} className="-mx-1 px-1" />
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}

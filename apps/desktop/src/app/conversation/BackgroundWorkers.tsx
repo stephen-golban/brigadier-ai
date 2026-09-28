@@ -1,51 +1,15 @@
 import { ChevronRight } from "@openai/apps-sdk-ui/components/Icon";
-import { type FC, useContext } from "react";
+import type { FC } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { AgentsPanelContext, WorkerGlyph } from "@/app/conversation/Agents";
 import { isFinal } from "@/app/conversation/blocks";
 import { useAction } from "@/app/conversation/useAction";
+import { Changes, WorkerSummaryRow, workerStat } from "@/app/conversation/WorkerSummary";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Task } from "@/ipc/generated";
-import { cn } from "@/lib/utils";
 import { stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
 import { ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
-
-/** What a worker is at, in plain words ("is working", "is awaiting instruction"). */
-function stateLine(task: Task): string {
-  switch (task.state) {
-    case "queued":
-    case "starting":
-    case "running":
-    case "reviewing":
-      return "is working";
-    case "blocked":
-    case "paused":
-    case "awaitingApproval":
-    case "readyToLand":
-      return "is awaiting instruction";
-    case "failed":
-      return "failed";
-    case "stopped":
-      return "was stopped";
-    case "reported":
-    case "landed":
-    case "done":
-    case "rejected":
-      return "is done";
-  }
-}
-
-/** "+12 −3", once a worker has a change. */
-const Changes: FC<{ insertions: number; deletions: number }> = ({ insertions, deletions }) =>
-  insertions + deletions > 0 ? (
-    <span className="shrink-0 font-mono text-xs tabular-nums">
-      <span className="text-success">+{insertions}</span>{" "}
-      <span className="text-destructive">−{deletions}</span>
-    </span>
-  ) : null;
 
 /**
  * The "N background agents" strip on the composer: while any worker of the session is still
@@ -58,7 +22,7 @@ export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversation
       s.board?.conversationId === conversationId ? Object.values(s.board.tasks) : [],
     ),
   );
-  const { setPanel } = useContext(AgentsPanelContext);
+  const diffs = useBoard((s) => s.board?.diffs);
   const action = useAction();
   const alive = tasks.filter((task) => !isFinal(task));
   if (alive.length === 0) return null;
@@ -66,8 +30,9 @@ export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversation
   const listed = tasks
     .filter((task) => requests.has(task.requestId))
     .toSorted((a, b) => a.number - b.number);
-  const insertions = listed.reduce((sum, task) => sum + (task.candidate?.diffStat.insertions ?? 0), 0);
-  const deletions = listed.reduce((sum, task) => sum + (task.candidate?.diffStat.deletions ?? 0), 0);
+  const stats = listed.flatMap((task) => workerStat(task, diffs) ?? []);
+  const insertions = stats.reduce((sum, stat) => sum + stat.insertions, 0);
+  const deletions = stats.reduce((sum, stat) => sum + stat.deletions, 0);
 
   return (
     <ComposerRailItem label="Background workers">
@@ -105,28 +70,7 @@ export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversation
         )}
         <CollapsibleContent className="flex flex-col">
           {listed.map((task) => (
-            <button
-              key={task.id}
-              type="button"
-              data-slot="background-worker"
-              data-state={task.state}
-              onClick={() => setPanel(task.id)}
-              className="hover:bg-foreground/5 rounded-control flex min-h-control-sm items-center gap-2 px-1 text-start"
-            >
-              <WorkerGlyph taskId={task.id} />
-              <span className="min-w-0 flex-1 truncate">
-                {task.title}{" "}
-                <span className={cn(isFinal(task) ? "text-muted-foreground" : "text-foreground/70")}>
-                  {stateLine(task)}
-                </span>
-              </span>
-              {task.candidate && (
-                <Changes
-                  insertions={task.candidate.diffStat.insertions}
-                  deletions={task.candidate.diffStat.deletions}
-                />
-              )}
-            </button>
+            <WorkerSummaryRow key={task.id} taskId={task.id} className="px-1" />
           ))}
         </CollapsibleContent>
       </Collapsible>
