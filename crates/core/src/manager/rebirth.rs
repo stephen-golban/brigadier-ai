@@ -947,6 +947,14 @@ fn note_decisions(note: &str) -> Vec<String> {
             .any(|heading| bare.starts_with(heading))
         {
             inside = bare.starts_with(NOTE_HEADINGS[1]);
+            // "Decisions not kept yet: Use tabs in the Makefile." has one on the same line.
+            let inline = item
+                .split_once(':')
+                .map(|(_, rest)| rest.trim_start_matches(['*', '_', ' ']).trim())
+                .unwrap_or_default();
+            if inside && !inline.is_empty() && !says_none(inline) {
+                decisions.push(inline.to_owned());
+            }
             continue;
         }
         if !inside || item.is_empty() || says_none(item) {
