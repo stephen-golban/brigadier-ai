@@ -7,6 +7,7 @@ import {
   KIND_LABELS,
   sumOf,
 } from "@/app/inspector/orchestratorLog";
+import type { RebirthThresholds } from "@/ipc/generated";
 import { tokenPx } from "@/lib/tokens";
 import { useApp } from "@/state/store";
 
@@ -39,8 +40,16 @@ function niceMax(value: number): number {
  * Cumulative estimated tokens Brigadier put into the orchestrator's context, one step per
  * injection, stacked by what it was; the CLI's own reported context size is drawn on the same
  * token axis. If the context grows only by messages and reports, the dots ride the stack.
+ * The rebirth thresholds are drawn across it, and each rebirth is a marker where the new CLI
+ * generation's stack starts afresh.
  */
-export function ContextChart({ log }: { log: DerivedLog }) {
+export function ContextChart({
+  log,
+  thresholds,
+}: {
+  log: DerivedLog;
+  thresholds: RebirthThresholds | null;
+}) {
   const { ref, size } = useSize();
   const density = useApp((s) => s.settings.density);
   const [hover, setHover] = useState<number | null>(null);
@@ -58,8 +67,9 @@ export function ContextChart({ log }: { log: DerivedLog }) {
 
   const maxValue = niceMax(
     Math.max(
-      sumOf(log.totals),
+      ...log.cumulative.map(sumOf),
       ...log.context.map((point) => point.usedTokens),
+      thresholds?.swapTokens ?? 0,
     ),
   );
   const x = (step: number) => padLeft + (n === 0 ? 0 : (step / n) * plotWidth);
@@ -105,7 +115,7 @@ export function ContextChart({ log }: { log: DerivedLog }) {
         {size.width > 0 && (
           <svg
             role="img"
-            aria-label={`Orchestrator context: ${formatTokens(sumOf(log.totals))} tokens injected over ${n} injections`}
+            aria-label={`Orchestrator context: ${formatTokens(sumOf(log.totals))} tokens injected over ${n} injections and ${log.generations.length} CLI generations`}
             viewBox={`0 0 ${size.width} ${size.height}`}
             className="absolute inset-0 size-full overflow-visible"
           >
@@ -146,6 +156,48 @@ export function ContextChart({ log }: { log: DerivedLog }) {
                 className="stroke-foreground/40 stroke-1"
               />
             )}
+            {thresholds &&
+              [
+                { id: "prepare", tokens: thresholds.prepareTokens, stroke: "stroke-warning", fill: "fill-warning" },
+                { id: "swap", tokens: thresholds.swapTokens, stroke: "stroke-destructive", fill: "fill-destructive" },
+              ].map((line) => (
+                <g key={line.id}>
+                  <line
+                    x1={padLeft}
+                    x2={padLeft + plotWidth}
+                    y1={y(line.tokens)}
+                    y2={y(line.tokens)}
+                    strokeDasharray={`${unit} ${unit}`}
+                    className={`${line.stroke} stroke-1`}
+                  />
+                  <text
+                    x={padLeft + plotWidth}
+                    y={y(line.tokens) - unit / 2}
+                    textAnchor="end"
+                    className={`${line.fill} text-2xs`}
+                  >
+                    {line.id} {formatTokens(line.tokens)}
+                  </text>
+                </g>
+              ))}
+            {log.rebirths.map((rebirth) => (
+              <g key={rebirth.streamSeq}>
+                <line
+                  x1={x(rebirth.after)}
+                  x2={x(rebirth.after)}
+                  y1={padTop}
+                  y2={padTop + plotHeight}
+                  className="stroke-link stroke-1"
+                />
+                <text
+                  x={x(rebirth.after) + unit / 2}
+                  y={padTop + unit * 2}
+                  className="fill-link text-2xs"
+                >
+                  G{rebirth.record.generation}
+                </text>
+              </g>
+            ))}
             {log.context.map((point) => (
               <circle
                 key={`${point.atMs}-${point.after}`}
@@ -178,7 +230,8 @@ export function ContextChart({ log }: { log: DerivedLog }) {
             </span>
             <span className="text-muted-foreground truncate">{hovered.injection.label}</span>
             <span className="tabular-nums">
-              Total injected {formatTokens(sumOf(hoveredTotals))} tokens
+              Injected into generation {log.generationOf[hover] ?? 0}:{" "}
+              {formatTokens(sumOf(hoveredTotals))} tokens
             </span>
           </div>
         )}
@@ -197,6 +250,21 @@ export function ContextChart({ log }: { log: DerivedLog }) {
           <span aria-hidden className="bg-foreground size-2 rounded-full" />
           <span>Context the CLI reported</span>
         </li>
+        {thresholds && (
+          <li className="flex items-center gap-1.5">
+            <span aria-hidden className="border-warning w-3 border-t border-dashed" />
+            <span>Prepare</span>
+            <span aria-hidden className="border-destructive w-3 border-t border-dashed" />
+            <span>Swap</span>
+          </li>
+        )}
+        {log.rebirths.length > 0 && (
+          <li className="flex items-center gap-1.5">
+            <span aria-hidden className="bg-link h-3 w-px" />
+            <span>Rebirth</span>
+            <span className="text-muted-foreground tabular-nums">{log.rebirths.length}×</span>
+          </li>
+        )}
       </ul>
     </div>
   );

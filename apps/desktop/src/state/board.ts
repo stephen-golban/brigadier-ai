@@ -21,6 +21,7 @@ import type {
   Task,
   UserRequest,
   Rating,
+  RebirthThresholds,
   WorkerStep,
 } from "@/ipc/generated";
 
@@ -88,6 +89,8 @@ export type OrchestratorLog = {
   entries: OrchestratorLogEntry[];
   hasMore: boolean;
   loading: boolean;
+  /** When the orchestrator is reborn, for its current model; read with the log. */
+  thresholds: RebirthThresholds | null;
 };
 
 type BoardState = {
