@@ -61,6 +61,16 @@ docs/          plan and design notes
   whisper.cpp for any CPU of the target's kind (`GGML_NATIVE=OFF`); its Rust bindings are
   generated for the target, since the crate's bundled ones don't fit Windows. The approach
   follows OpenWhispr (MIT); no code is copied from it.
+- `tree-sitter`, `tree-sitter-tags` and the language grammars, `ignore`, `notify`,
+  `notify-debouncer-full`, `toml`, `yaml-rust2` (the code index, `crates/index`): no model
+  involved. Symbols and references come from each grammar's tags query (C#, Swift and Kotlin
+  get corrected copies under `crates/index/queries/`, credited in `THIRD_PARTY_NOTICES.md`).
+  References are matched to definitions by name, without type information.
+- `tokenizers`, `safetensors`, `memmap2` (the Brain's embedder, `crates/brain`): the embedding
+  model is `minishlab/potion-retrieval-32M` (Model2Vec static embeddings, MIT, 512 dimensions,
+  about 130 MB), downloaded from Hugging Face once a project exists, at a pinned revision,
+  checked against its SHA-256 and kept under `models/embeddings/`. Embedding is a token lookup
+  and a mean, in the daemon; the model is loaded on first use and freed after 10 idle minutes.
 
 ## Develop
 
@@ -250,6 +260,41 @@ Claude's sandbox lets network traffic out only as HTTP(S) through its proxy, so 
   own and sets it per turn, so Codex writes none. If one ever appears for a folder Brigadier
   created, it is removed through Codex's config API when the session closes, and only while it
   is still exactly `trusted`.
+
+## Project Brain
+
+Each project has a Project Brain: what Brigadier knows about it, so a question answered once is
+not scouted again. It is a graph of nodes (modules, services, file summaries, decisions,
+conventions, contracts, reports, research), each with its provenance: where it came from (the
+code index, the skeleton pass, enrichment, a worker's report, the orchestrator, you), which
+session, task, worker model and commit. The orchestrator asks it first (`query_brain`: SQLite
+FTS5 plus local embeddings, merged, then one hop along the graph) and keeps what you settle with
+`remember`. Reports, plan decisions and your answers on cards are recorded without being asked.
+
+- **Code index.** A project's repository is scanned on a thread of its own (tree-sitter symbols
+  and references, manifests, scripts, services), then kept current by a file watcher. Workers
+  search it with `code_search`, `code_refs` and `project_map`.
+- **Staleness.** Nodes remember the content hash of the files they describe; when a file
+  changes, they are marked stale and answered as "may be outdated".
+- **Skeleton pass and enrichment.** After a project's first scan the cheapest model maps its
+  modules, stack, conventions and build/run/verify recipe, read-only and sandboxed. With
+  Settings → "Use spare quota to deepen the Brain" (on by default), quota that would expire
+  unused (a usage window resetting within the hour with 40% left, the provider idle for 10
+  minutes) refreshes stale nodes and fills gaps; it stops as soon as your own work starts.
+- **Rebirth.** The orchestrator never compacts its context. Past about 150k tokens its session
+  is forked to write a handoff note; between two turns a fresh CLI takes over from a briefing of
+  15–25k tokens (the note, every decision of the session, the live board, a Brain digest and
+  the latest messages verbatim), and `search_transcript` reaches the rest. You see one
+  conversation; the Inspector's Orchestrator tab has the rebirth log.
+- **Personal Brain.** Preferences that hold in every project, from the orchestrator or from a
+  Chat (`save_memory`, shown as Memory chips), are given to new orchestrators and Chats.
+  Settings lists them. A project's conventions can be exported to a marked section of its
+  `AGENTS.md`.
+
+Files: `brains/<project>/brain.sqlite` and `index.sqlite`, `brains/personal.sqlite`, and the
+model under `models/embeddings/`, all in the data directory. The index is a cache and can be
+rebuilt. Plan note: PLAN.md's cloud embedding fallback is not built, because Brigadier holds no
+API keys; without the model, retrieval is FTS5 plus the graph.
 
 ## Build and sign (macOS)
 
