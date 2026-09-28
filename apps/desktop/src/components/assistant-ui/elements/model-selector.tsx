@@ -85,25 +85,52 @@ const Section: FC<{ children: ReactNode }> = ({ children }) => (
   </DropdownMenuLabel>
 );
 
-/** A model row: its name, then what it's for in grey. */
-const ModelRow: FC<{ model: ModelInfo }> = ({ model }) => (
+/** A model row: its name (marked when it's the default), then what it's for in grey. */
+const ModelRow: FC<{ model: ModelInfo; isDefault: boolean }> = ({ model, isDefault }) => (
   <span className="flex min-w-0 flex-col py-1">
-    <span className="truncate">{model.displayName}</span>
+    <span className="flex min-w-0 gap-2">
+      <span className="truncate">{model.displayName}</span>
+      {isDefault && <span className="text-muted-foreground shrink-0">Default</span>}
+    </span>
     {model.description && (
       <span className="text-muted-foreground truncate text-xs">{model.description}</span>
     )}
   </span>
 );
 
+/** A model as a radio row of its provider's list, marked when it's `defaultModel`. */
+const modelItem = (defaultModel: ModelInfo | null) => (model: ModelInfo) => (
+  <DropdownMenuRadioItem
+    key={model.id}
+    value={model.id}
+    data-slot="model-selector-item"
+    indicator={<Check className="size-icon-md" />}
+    className={TALL_ROW}
+  >
+    <ModelRow model={model} isDefault={model === defaultModel} />
+  </DropdownMenuRadioItem>
+);
+
+/** Whether a model goes under Legacy: an older one, unless it's a default (the CLI's or ours). */
+const isLegacy = (defaultModel: ModelInfo | null) => (model: ModelInfo) =>
+  model.legacy && !model.isDefault && model !== defaultModel;
+
+/** A flyout's panel: as wide as the menu, scrolling when it runs out of room. */
+const FLYOUT =
+  "w-xs max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto p-1";
+
 /**
  * The model and effort picker. The trigger reads "Opus 5.5 High": the
  * model and effort the conversation runs with, the CLI's defaults spelled out. The menu lists
  * the model's efforts (its default marked), Fast where the model has a fast tier, then each
- * provider with its model in use, opening to the side on its models.
+ * provider with its model in use, opening to the side on its latest models and a Legacy row
+ * opening on the older ones. `defaultChoice`, what a new conversation starts with when nothing
+ * is picked, is marked Default, on its model and on its provider while that's the one in use.
  */
 export function ModelSelector({
   groups,
   value,
+  defaultChoice,
   onChange,
   label = "Model",
   disabled,
@@ -113,6 +140,7 @@ export function ModelSelector({
 }: {
   groups: readonly ModelGroup[];
   value: ModelChoice;
+  defaultChoice: ModelChoice;
   onChange: (choice: ModelChoice) => void;
   label?: string | undefined;
   disabled?: boolean | undefined;
@@ -125,6 +153,7 @@ export function ModelSelector({
   const open = shown ?? own;
   const setOpen = onOpenChange ?? setOwn;
   const current = findModel(groups, value);
+  const defaultModel = findModel(groups, defaultChoice);
   const effort = effortFor(current, value.effort);
   const name =
     current?.displayName ?? (value.model && value.model !== "default" ? value.model : "Default model");
@@ -137,27 +166,36 @@ export function ModelSelector({
       // Fast carries over to a model that has a fast tier too.
       ...(model.fast && value.fast ? { fast: true } : {}),
     });
-  const models = (group: ModelGroup) => (
-    <DropdownMenuRadioGroup
-      value={group.provider === value.provider ? (current?.id ?? "") : ""}
-      onValueChange={(id) => {
-        const model = group.models.find((entry) => entry.id === id);
-        if (model) pick(model, group.provider);
-      }}
-    >
-      {group.models.map((model) => (
-        <DropdownMenuRadioItem
-          key={model.id}
-          value={model.id}
-          data-slot="model-selector-item"
-          indicator={<Check className="size-icon-md" />}
-          className={TALL_ROW}
-        >
-          <ModelRow model={model} />
-        </DropdownMenuRadioItem>
-      ))}
-    </DropdownMenuRadioGroup>
-  );
+  const models = (group: ModelGroup) => {
+    const chosen = group.provider === value.provider ? current?.id : undefined;
+    const legacy = group.models.filter(isLegacy(defaultModel));
+    return (
+      <DropdownMenuRadioGroup
+        value={chosen ?? ""}
+        onValueChange={(id) => {
+          const model = group.models.find((entry) => entry.id === id);
+          if (model) pick(model, group.provider);
+        }}
+      >
+        {group.models
+          .filter((model) => !isLegacy(defaultModel)(model))
+          .map(modelItem(defaultModel))}
+        {legacy.length > 0 && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger data-slot="model-selector-legacy">
+              Legacy
+              <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                {legacy.find((model) => model.id === chosen)?.displayName}
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent sideOffset={tokenPx("--spacing")} className={FLYOUT}>
+              {legacy.map(modelItem(defaultModel))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+      </DropdownMenuRadioGroup>
+    );
+  };
   const single = groups.length === 1 ? groups[0] : undefined;
   return (
     <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
@@ -234,15 +272,15 @@ export function ModelSelector({
                   <span className={cn(group.provider === value.provider && "font-medium")}>
                     {group.label}
                   </span>
-                  <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                  <span className="text-muted-foreground min-w-0 truncate">
                     {group.unavailable ??
                       (group.models.length === 0 ? "No models listed yet" : inUse?.displayName)}
                   </span>
+                  {group.unavailable === null && inUse && inUse === defaultModel && (
+                    <span className="text-muted-foreground/60 shrink-0">Default</span>
+                  )}
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent
-                  sideOffset={tokenPx("--spacing")}
-                  className="w-xs max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto p-1"
-                >
+                <DropdownMenuSubContent sideOffset={tokenPx("--spacing")} className={FLYOUT}>
                   {models(group)}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>

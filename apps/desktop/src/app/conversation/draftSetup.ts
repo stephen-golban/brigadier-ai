@@ -88,6 +88,8 @@ export type ResolvedDraft = {
   base: string | null;
   permission: PermissionLevel;
   model: ModelChoice;
+  /** What the draft starts with when no model is picked: the picker's Default. */
+  defaultModel: ModelChoice;
   groups: ModelGroup[];
   target: DraftTarget | null;
   /** Why the draft can't be sent yet, in words. */
@@ -107,6 +109,7 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
   const repo = useRepoInfo(kind === "session" ? repoPath : null);
 
   const model = resolveModel(draft.model, kind, project, settings, groups);
+  const defaultModel = resolveModel(null, kind, project, settings, groups);
   const permission = resolvePermission(draft.permission, project, settings);
   const environment = draft.environment ?? project?.prefs.environment ?? "localCheckout";
   const current = repo.info?.currentBranch ?? null;
@@ -159,6 +162,7 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
     base,
     permission,
     model,
+    defaultModel,
     groups,
     target,
     problem,

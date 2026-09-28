@@ -729,7 +729,8 @@ impl Provider for Claude {
 
 /// The CLI's model list as the picker offers it: each model under its real name ("Opus 5.5",
 /// not "Default (recommended)"), the `default` alias folded into the entry it resolves to, the
-/// model `settings.json` picks marked default, and each model's effort as `claude` would run it.
+/// model `settings.json` picks marked default, each model's effort as `claude` would run it, and
+/// the older models of a family ("Opus 4.8" beside "Opus 5.5") marked legacy.
 fn model_infos(models: &[Value], settings: &Value) -> Vec<ModelInfo> {
     let mut infos: Vec<ModelInfo> = models
         .iter()
@@ -774,6 +775,7 @@ fn model_infos(models: &[Value], settings: &Value) -> Vec<ModelInfo> {
             info.display_name.push_str(" (1M)");
         }
     }
+    mark_superseded(&mut infos);
     infos
 }
 
@@ -851,6 +853,7 @@ fn model_info(model: &Value, settings: &Value) -> Option<ModelInfo> {
         efforts,
         input_modalities: vec!["text".into(), "image".into()],
         fast: None,
+        legacy: false,
         id,
     })
 }

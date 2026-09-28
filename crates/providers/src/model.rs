@@ -89,6 +89,44 @@ pub struct ModelInfo {
     /// (Codex's `priority` tier).
     #[serde(default)]
     pub fast: Option<String>,
+    /// An older model the CLI still offers beside a newer one ("Opus 4.8" beside "Opus 5.5"):
+    /// pickers tuck it under Legacy.
+    #[serde(default)]
+    pub legacy: bool,
+}
+
+/// Marks legacy each model with a newer namesake: "Opus 4.8" beside "Opus 5.5", "GPT-6-Sol"
+/// beside "GPT-6.1-Sol". A model without a version in its name is left alone.
+pub(crate) fn mark_superseded(models: &mut [ModelInfo]) {
+    let named: Vec<_> = models
+        .iter()
+        .map(|model| versioned(&model.display_name))
+        .collect();
+    for (model, own) in models.iter_mut().zip(&named) {
+        if let Some((family, version)) = own
+            && named
+                .iter()
+                .flatten()
+                .any(|(other, newer)| other == family && newer > version)
+        {
+            model.legacy = true;
+        }
+    }
+}
+
+/// A model name's family (the name with its version cut out) and version: "Opus 5.5 (1M)" →
+/// ("Opus  (1M)", [5, 5]), "GPT-6-Sol" → ("GPT--Sol", [6]).
+pub(crate) fn versioned(name: &str) -> Option<(String, Vec<u32>)> {
+    let mut start = 0;
+    for token in name.split([' ', '-']) {
+        let version: Option<Vec<u32>> = token.split('.').map(|part| part.parse().ok()).collect();
+        if let Some(version) = version {
+            let family = format!("{}{}", &name[..start], &name[start + token.len()..]);
+            return Some((family, version));
+        }
+        start += token.len() + 1;
+    }
+    None
 }
 
 /// A provider's model list with its provenance, as cached on disk.

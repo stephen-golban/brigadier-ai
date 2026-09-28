@@ -197,6 +197,7 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
                 <ModelSelector
                   groups={resolved.groups}
                   value={resolved.model}
+                  defaultChoice={resolved.defaultModel}
                   label={resolved.kind === "session" ? "Orchestrator model" : "Model"}
                   onChange={(model) => updateDraft(resolved.project?.id ?? null, { model })}
                   open={modelOpen}

@@ -372,6 +372,7 @@ impl Provider for Codex {
                 .filter(|model| !model.hidden)
                 .map(model_info)
                 .collect();
+            mark_legacy(&mut models);
             self.configured().await.apply(&mut models);
             Ok(ModelCatalog {
                 provider: ProviderKind::Codex,
@@ -1123,6 +1124,23 @@ impl Configured {
     }
 }
 
+/// Marks legacy what `model/list` names an upgrade for, the models of an older generation than
+/// the newest ("GPT-5.6-Terra" beside "GPT-6-Sol": Codex versions its lineup together), and
+/// older namesakes.
+fn mark_legacy(models: &mut [ModelInfo]) {
+    mark_superseded(models);
+    let generation =
+        |model: &ModelInfo| versioned(&model.display_name).and_then(|(_, v)| v.first().copied());
+    let newest = models.iter().filter_map(generation).max();
+    for model in models.iter_mut() {
+        if let (Some(own), Some(newest)) = (generation(model), newest)
+            && own < newest
+        {
+            model.legacy = true;
+        }
+    }
+}
+
 fn model_info(model: p::Model) -> ModelInfo {
     let fast = model
         .service_tiers
@@ -1131,6 +1149,7 @@ fn model_info(model: p::Model) -> ModelInfo {
         .map(|tier| tier.description.clone());
     ModelInfo {
         fast,
+        legacy: model.upgrade.is_some(),
         id: model.model,
         display_name: model.display_name,
         description: model.description,

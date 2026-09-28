@@ -24,4 +24,9 @@ inputModalities: Array<string>,
  * What its fast service tier offers ("1.5x speed, increased usage"), when it has one
  * (Codex's `priority` tier).
  */
-fast: string | null, };
+fast: string | null, 
+/**
+ * An older model the CLI still offers beside a newer one ("Opus 4.8" beside "Opus 5.5"):
+ * pickers tuck it under Legacy.
+ */
+legacy: boolean, };

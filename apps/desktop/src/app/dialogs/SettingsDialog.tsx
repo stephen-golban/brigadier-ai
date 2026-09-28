@@ -237,6 +237,7 @@ function DefaultModel({
       <ModelSelector
         groups={groups}
         value={value ?? fallback}
+        defaultChoice={fallback}
         onChange={onChange}
         className={value ? "text-foreground" : undefined}
       />

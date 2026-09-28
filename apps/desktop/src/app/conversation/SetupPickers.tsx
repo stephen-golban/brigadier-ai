@@ -296,12 +296,13 @@ export function ConversationModelPicker({
   );
   const action = useAction();
   const setup = conversation.setup;
+  const fallback = resolveModel(null, conversation.kind, project, settings, groups);
   const current: ModelChoice =
     setup?.type === "session"
       ? setup.orchestrator
       : setup?.type === "chat"
         ? setup.model
-        : resolveModel(null, conversation.kind, project, settings, groups);
+        : fallback;
   // A session created before setups existed gets one on first use; until then it can't change.
   const fixed = setup === null && conversation.kind === "session";
 
@@ -315,6 +316,7 @@ export function ConversationModelPicker({
       <ModelSelector
         groups={groups}
         value={current}
+        defaultChoice={fallback}
         disabled={fixed || action.busy}
         open={open}
         onOpenChange={onOpenChange}
