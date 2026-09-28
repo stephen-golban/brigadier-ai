@@ -241,6 +241,9 @@ export default function BrainGraphCanvas({
     const settings = {
       ...forceAtlas2.inferSettings(graph),
       barnesHutOptimize: graph.order > 400,
+      // Keeps unlinked nodes near the rest instead of drifting to the edges.
+      strongGravityMode: true,
+      gravity: 5,
     };
     let done = 0;
     let frame = requestAnimationFrame(function step() {

@@ -63,6 +63,7 @@ export function BrainSearch({ brainKey }: { brainKey: string }) {
   const [answer, setAnswer] = useState<{ query: string; answer: BrainAnswer } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [raw, setRaw] = useState(false);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -123,9 +124,9 @@ export function BrainSearch({ brainKey }: { brainKey: string }) {
                 ))}
               </ul>
             )}
-            <Collapsible className="border-t">
-              <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground flex w-full items-center gap-1 px-3 py-2 text-start">
-                <ChevronRight className="size-icon-xs transition-transform group-data-[state=open]:rotate-90" />
+            <Collapsible open={raw} onOpenChange={setRaw} className="border-t">
+              <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1 px-3 py-2 text-start">
+                <ChevronRight className={cn("size-icon-xs transition-[rotate]", raw && "rotate-90")} />
                 What the orchestrator reads · {answer.answer.text.length.toLocaleString()} characters
               </CollapsibleTrigger>
               <CollapsibleContent>
