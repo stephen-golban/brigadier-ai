@@ -451,9 +451,10 @@ impl Brain {
         Err(Error::Closed)
     }
 
-    /// Files changed: every fresh node recorded against another hash of one of them goes stale.
-    /// Returns the ids of the nodes that went stale.
-    pub fn files_changed(&self, changes: &[brigadier_index::FileChange]) -> Result<Vec<String>> {
+    /// Files changed (each with its new content hash, `None` when deleted): every fresh node
+    /// recorded against another hash of one of them goes stale. Returns the ids of the nodes
+    /// that went stale.
+    pub fn files_changed(&self, changes: &[FileRef]) -> Result<Vec<String>> {
         let _ = changes;
         Err(Error::Closed)
     }

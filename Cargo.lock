@@ -344,7 +344,6 @@ dependencies = [
 name = "brigadier-brain"
 version = "0.1.0"
 dependencies = [
- "brigadier-index",
  "serde",
  "thiserror 2.0.21",
  "ts-rs",
