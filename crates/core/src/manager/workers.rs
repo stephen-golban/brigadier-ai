@@ -250,12 +250,13 @@ impl SessionManager {
     ) -> Result<Task> {
         let mut task = self.task_by_id(conversation_id, id).await?;
         let was = task.state;
+        let reported = task.report.is_some();
         change(&mut task);
         task.updated_at_ms = now_ms();
         let mut events = vec![DomainEvent::TaskUpdated {
             task: Box::new(task.clone()),
         }];
-        events.extend(worker_step(&task, Some(was)));
+        events.extend(worker_step(&task, Some(was), reported));
         self.core
             .record_conversation(conversation_id, events)
             .await?;
@@ -390,7 +391,7 @@ impl SessionManager {
         let mut events = vec![DomainEvent::TaskUpdated {
             task: Box::new(task.clone()),
         }];
-        events.extend(worker_step(&task, None));
+        events.extend(worker_step(&task, None, false));
         self.core
             .record_conversation(conversation_id, events)
             .await?;
@@ -2170,9 +2171,10 @@ fn task_branch(conversation_id: &ConversationId, number: u32, title: &str) -> St
     }
 }
 
-/// The step the thread shows when `task` just left `was` (absent: it was just created).
-fn worker_step(task: &Task, was: Option<TaskState>) -> Option<DomainEvent> {
-    let kind = crate::work::WorkerStepKind::between(was, task.state)?;
+/// The step the thread shows when `task` just left `was` (absent: it was just created);
+/// `reported` tells whether it had reported before.
+fn worker_step(task: &Task, was: Option<TaskState>, reported: bool) -> Option<DomainEvent> {
+    let kind = crate::work::WorkerStepKind::between(was, task.state, reported)?;
     Some(DomainEvent::WorkerStepped {
         step: crate::work::WorkerStep {
             task_id: task.id.clone(),

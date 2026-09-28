@@ -194,6 +194,7 @@ export type { TurnStatus } from "./TurnStatus";
 export type { UiMeasurements } from "./UiMeasurements";
 export type { UserRequest } from "./UserRequest";
 export type { WorkerAccess } from "./WorkerAccess";
+export type { WorkerDiff } from "./WorkerDiff";
 export type { WorkerPage } from "./WorkerPage";
 export type { WorkerRef } from "./WorkerRef";
 export type { WorkerStep } from "./WorkerStep";

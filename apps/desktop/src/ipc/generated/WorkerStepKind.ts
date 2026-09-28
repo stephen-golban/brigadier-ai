@@ -3,4 +3,4 @@
 /**
  * A turn in a worker's life, as the thread tells it ("task-2 finished").
  */
-export type WorkerStepKind = "started" | "waiting" | "paused" | "resumed" | "finished" | "landed" | "rejected" | "stopped" | "failed";
+export type WorkerStepKind = "started" | "waiting" | "paused" | "resumed" | "finished" | "updated" | "landed" | "rejected" | "stopped" | "failed";

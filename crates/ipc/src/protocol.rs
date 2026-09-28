@@ -15,7 +15,7 @@ use brigadier_core::{
     GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
     ProjectCandidate, ProjectId, ProjectPatch, ProvidersView, PullRequest, QueuedMessage, Rating,
     RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
-    ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerPage,
+    ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerDiff, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -244,6 +244,11 @@ pub enum Request {
     /// What a worktree session's branch changed against its base (the pinned summary card).
     GetSessionDiff {
         id: ConversationId,
+    },
+    /// What each worker at work on a change has changed in its worktree so far: its +N −N in
+    /// the Workers summary while it works.
+    GetWorkerDiffs {
+        conversation_id: ConversationId,
     },
     /// Creates a session (with a project) or a chat (without). The setup comes from the
     /// composer; sessions need one to run, and their project remembers it.
@@ -690,6 +695,9 @@ pub enum Response {
     GetSessionDiff {
         /// Absent for Chats and local-checkout sessions.
         stat: Option<DiffStat>,
+    },
+    GetWorkerDiffs {
+        diffs: Vec<WorkerDiff>,
     },
     CreateConversation {
         conversation: Box<Conversation>,

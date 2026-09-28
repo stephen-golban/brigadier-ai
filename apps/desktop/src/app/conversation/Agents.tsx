@@ -83,6 +83,7 @@ const STEP_VERBS: Record<WorkerStepKind, [one: string, many: string]> = {
   paused: ["was paused", "were paused"],
   resumed: ["continued", "continued"],
   finished: ["finished", "finished"],
+  updated: ["updated", "updated"],
   landed: ["landed", "landed"],
   rejected: ["was turned down", "were turned down"],
   stopped: ["was interrupted", "were interrupted"],

@@ -207,6 +207,15 @@ pub struct DiffStat {
     pub deletions: u32,
 }
 
+/// What a write task's checkout changed since it started while it is at work: its commits and
+/// its uncommitted files.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerDiff {
+    pub task_id: TaskId,
+    pub stat: DiffStat,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FileStat {
@@ -581,6 +590,8 @@ pub enum WorkerStepKind {
     Resumed,
     /// It reported (or ended without anything to land).
     Finished,
+    /// It reported again after it was sent back to work: its report (and change) changed.
+    Updated,
     Landed,
     /// The orchestrator or a review turned it down.
     Rejected,
@@ -590,8 +601,8 @@ pub enum WorkerStepKind {
 
 impl WorkerStepKind {
     /// The step a task takes when its state goes from `was` (absent: it was just created) to
-    /// `now`, if the thread shows one.
-    pub fn between(was: Option<TaskState>, now: TaskState) -> Option<Self> {
+    /// `now`, if the thread shows one. `reported` tells whether it had reported before.
+    pub fn between(was: Option<TaskState>, now: TaskState, reported: bool) -> Option<Self> {
         use TaskState as S;
         let waiting = |state: S| matches!(state, S::AwaitingApproval | S::ReadyToLand);
         // A review of its commit is not the worker working again.
@@ -609,7 +620,11 @@ impl WorkerStepKind {
             S::Failed => Some(Self::Failed),
             // Back from a review, the reviewer's own row tells it.
             S::Reported | S::Done if !matches!(was, S::Reported | S::Done | S::Reviewing) => {
-                Some(Self::Finished)
+                Some(if reported {
+                    Self::Updated
+                } else {
+                    Self::Finished
+                })
             }
             S::Paused => Some(Self::Paused),
             _ if waiting(now) && !waiting(was) => Some(Self::Waiting),

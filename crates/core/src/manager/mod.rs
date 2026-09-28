@@ -56,7 +56,7 @@ use crate::model::{
 use crate::runtime::{Runtime, Spawner};
 use crate::sessions::Origin;
 use crate::tools::{GateAnswer, Grants, Role, ToolCall, ToolHost, ToolReply};
-use crate::work::{DiffStat, TaskId};
+use crate::work::{DiffStat, TaskId, TaskState, WorkerDiff};
 use crate::{Core, Error, Result};
 
 pub use brains::{BrainCounters, IndexRunStats};
@@ -261,6 +261,54 @@ impl SessionManager {
             let fork = repo.merge_base(&base, &tip).map_err(git_error)?;
             let stat = repo.diff_stat(&fork, &tip).map_err(git_error)?;
             Ok(Some(landing::diff_stat_of(&stat)))
+        })
+        .await
+    }
+
+    /// What each write task at work in the conversation (or reported, before its candidate
+    /// commit exists) changed in its worktree so far. A task whose worktree can't be read (it
+    /// is being set up or removed) is left out.
+    pub async fn worker_diffs(&self, id: &ConversationId) -> Result<Vec<WorkerDiff>> {
+        let board = self.core.board(id).await?;
+        let checkouts: Vec<(TaskId, PathBuf, String)> = board
+            .tasks
+            .values()
+            .filter(|task| {
+                task.kind.writes()
+                    && matches!(
+                        task.state,
+                        TaskState::Running
+                            | TaskState::Blocked
+                            | TaskState::Paused
+                            | TaskState::Reported
+                    )
+            })
+            .filter_map(|task| {
+                let workspace = task.workspace.as_ref()?;
+                Some((
+                    task.id.clone(),
+                    PathBuf::from(workspace.worktree.as_ref()?),
+                    workspace.base.clone()?,
+                ))
+            })
+            .collect();
+        if checkouts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let git = self.git.clone();
+        blocking(move || {
+            Ok(checkouts
+                .into_iter()
+                .filter_map(|(task_id, path, base)| {
+                    let repo = git.open(&path).ok()?;
+                    let files = repo.files_tree().ok()?;
+                    let stat = repo.diff_stat(&brigadier_git::Oid(base), &files).ok()?;
+                    Some(WorkerDiff {
+                        task_id,
+                        stat: landing::diff_stat_of(&stat),
+                    })
+                })
+                .collect())
         })
         .await
     }
