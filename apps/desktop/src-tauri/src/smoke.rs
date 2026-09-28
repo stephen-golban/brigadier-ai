@@ -18,6 +18,8 @@ use crate::shell;
 pub const REPORT_ENV: &str = "BRIGADIER_SMOKE_REPORT";
 /// The whole run must finish within this, or it fails.
 pub const WATCHDOG: Duration = Duration::from_secs(120);
+/// The repository size the static index budget is judged on (PLAN.md §4: 100k files).
+const STATIC_INDEX_FILES: u64 = 100_000;
 
 pub fn evaluate(
     platform: &str,
@@ -93,6 +95,35 @@ pub fn evaluate(
                         metrics.scheduler_delay.samples
                     ),
                 ),
+                BudgetId::BrainQuery if metrics.brain.query.samples > 0 => (
+                    Some(metrics.brain.query.p95_ms),
+                    format!(
+                        "query_brain tool calls: {} samples, p50 {:.1} ms, max {:.1} ms",
+                        metrics.brain.query.samples,
+                        metrics.brain.query.p50_ms,
+                        metrics.brain.query.max_ms
+                    ),
+                ),
+                BudgetId::StaticIndex => match metrics.brain.largest_index_run.as_deref() {
+                    Some(run) if run.files >= STATIC_INDEX_FILES => (
+                        Some(run.duration_ms as f64),
+                        format!("full scan of {} files ({} parsed)", run.files, run.parsed),
+                    ),
+                    run => {
+                        check.note = match run {
+                            Some(run) => format!(
+                                "n/a — largest scan so far: {} files in {} ms (needs ≥ {STATIC_INDEX_FILES})",
+                                run.files, run.duration_ms
+                            ),
+                            None => "n/a — no repository indexed in this run".into(),
+                        };
+                        return check;
+                    }
+                },
+                BudgetId::BrainQuery => {
+                    check.note = "n/a — no query_brain calls in this run".into();
+                    return check;
+                }
                 _ => (None, "not measured".into()),
             };
             check.measured = measured;

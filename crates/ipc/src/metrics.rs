@@ -278,7 +278,7 @@ pub fn budgets() -> Vec<Budget> {
             Some(50.0),
             Ms,
             true,
-            Some(4),
+            None,
         ),
         budget(
             StaticIndex,
@@ -287,7 +287,7 @@ pub fn budgets() -> Vec<Budget> {
             Some(60_000.0),
             Ms,
             true,
-            Some(4),
+            None,
         ),
     ]
 }
