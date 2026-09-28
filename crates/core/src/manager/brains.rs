@@ -39,6 +39,8 @@ use crate::tools::{CodeRefs, CodeSearch, MemoryKind, Remember, SearchTranscript}
 use crate::work::{ArtifactKind, ArtifactRef, Report, Task, TaskKind};
 use crate::{Error, Result, now_ms};
 
+/// Removing a project waits at most this long for its code index scan to end.
+const REMOVE_SCAN_WAIT: Duration = Duration::from_secs(120);
 /// The embedding model is freed after this long unused.
 const EMBEDDER_IDLE: Duration = Duration::from_secs(10 * 60);
 /// `query_brain` timings kept for the Inspector's p95.
@@ -69,6 +71,8 @@ pub(crate) struct ProjectBrain {
     pub root: Option<PathBuf>,
     watcher: Mutex<Option<brigadier_index::Watcher>>,
     indexing: AtomicBool,
+    /// The project is being removed: a scan ending now starts nothing.
+    removed: AtomicBool,
 }
 
 /// Session decisions a briefing's ledger reads at most. Their lines alone would fill a model's
@@ -290,15 +294,36 @@ impl SessionManager {
         }
     }
 
-    /// A project is being removed: its Brain and index close, their Brain job and watcher
-    /// stop, and their files (`brains/<project>/`) are deleted. The repository is not touched.
-    pub(crate) async fn delete_project_brain(&self, id: &ProjectId) -> Result<()> {
+    /// A project is being removed: its Brain job and watcher stop, a scan in progress is
+    /// waited for (it can't be cancelled, and it holds the Brain and index open), and its
+    /// Brain and index close. Fails, to be tried again, if the scan outlasts
+    /// [`REMOVE_SCAN_WAIT`].
+    pub(crate) async fn close_project_brain(&self, id: &ProjectId) -> Result<()> {
         self.brains.jobs.stop_for(id, "the project was removed");
         self.brains.jobs.forget_tries(id);
-        let open = self.brains.projects().remove(id);
+        let open = self.brains.projects().get(id).cloned();
         if let Some(open) = open {
+            open.removed.store(true, Ordering::Release);
             stop_watchers(open.take_watcher().into_iter().collect()).await;
+            let deadline = Instant::now() + REMOVE_SCAN_WAIT;
+            while open.indexing.load(Ordering::Acquire) {
+                if Instant::now() >= deadline {
+                    return Err(Error::Invalid(
+                        "the project's code index is still being scanned; try again in a moment"
+                            .into(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            self.brains.projects().remove(id);
         }
+        Ok(())
+    }
+
+    /// A removed project's Brain and index files (`brains/<project>/`), after
+    /// [`Self::close_project_brain`] and once the project is gone, so nothing opens them
+    /// again. The repository is not touched.
+    pub(crate) async fn delete_project_brain(&self, id: &ProjectId) -> Result<()> {
         let dir = self.brains.root.join(&id.0);
         blocking(move || match std::fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),
@@ -347,6 +372,7 @@ impl SessionManager {
                     root,
                     watcher: Mutex::new(None),
                     indexing: AtomicBool::new(false),
+                    removed: AtomicBool::new(false),
                 })
             })
             .await?
@@ -407,7 +433,7 @@ impl SessionManager {
             .name(format!("brigadier-index-{}", id.0))
             .spawn(move || {
                 let mut watcher = project.watcher.lock().unwrap_or_else(|p| p.into_inner());
-                if watcher.is_none() {
+                if watcher.is_none() && !project.removed.load(Ordering::Acquire) {
                     let brain = project.brain.clone();
                     let watched = index.clone();
                     let sink: brigadier_index::ChangeSink =
@@ -428,7 +454,11 @@ impl SessionManager {
                 let brain = project.brain.clone();
                 let scanned =
                     index.scan_into(rebuild, &mut |changed| files_changed(&brain, &changed));
-                let Some(manager) = manager.upgrade() else {
+                let Some(manager) = manager
+                    .upgrade()
+                    .filter(|_| !project.removed.load(Ordering::Acquire))
+                else {
+                    project.indexing.store(false, Ordering::Release);
                     return;
                 };
                 match scanned {

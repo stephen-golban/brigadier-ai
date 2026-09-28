@@ -475,7 +475,9 @@ impl SessionManager {
             }
             self.delete(conversation, delete_branches, false).await?;
         }
-        self.delete_project_brain(&id).await?;
+        self.close_project_brain(&id).await?;
+        self.core.forget_project(id.clone()).await?;
+        tracing::info!(project = %id, "project removed");
         // Its task worktrees lived here; the ledger removed them with their conversations.
         let worktrees = self.owned_dir("worktrees", &id.0);
         let _ = blocking(move || {
@@ -483,9 +485,7 @@ impl SessionManager {
             Ok(())
         })
         .await;
-        self.core.forget_project(id.clone()).await?;
-        tracing::info!(project = %id, "project removed");
-        Ok(())
+        self.delete_project_brain(&id).await
     }
 }
 
