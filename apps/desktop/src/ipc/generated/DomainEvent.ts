@@ -2,10 +2,12 @@
 import type { Approval } from "./Approval";
 import type { Artifact } from "./Artifact";
 import type { AttachmentRef } from "./AttachmentRef";
+import type { BrainJob } from "./BrainJob";
 import type { Compaction } from "./Compaction";
 import type { Conversation } from "./Conversation";
 import type { ConversationId } from "./ConversationId";
 import type { Lifecycle } from "./Lifecycle";
+import type { MemoryChange } from "./MemoryChange";
 import type { Message } from "./Message";
 import type { MessageQueue } from "./MessageQueue";
 import type { Notice } from "./Notice";
@@ -39,4 +41,4 @@ requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, 
 /**
  * The answer: a message id, or `task:<id>` for a worker's report.
  */
-subject: string, rating: Rating, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "draftPinned", scope: string, attachments: Array<AttachmentRef>, } | { "type": "probe", burstId: string, index: number, count: number, };
+subject: string, rating: Rating, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "draftPinned", scope: string, attachments: Array<AttachmentRef>, } | { "type": "brainJobUpdated", job: BrainJob, } | { "type": "memoryUpdated", conversationId: ConversationId, memory: MemoryChange, } | { "type": "probe", burstId: string, index: number, count: number, };

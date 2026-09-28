@@ -713,6 +713,18 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 .display()
                 .to_string(),
         },
+        Request::GetBrain { .. }
+        | Request::QueryBrain { .. }
+        | Request::GetBrainGraph { .. }
+        | Request::ListMemories
+        | Request::ForgetMemory { .. }
+        | Request::ExportConventions { .. }
+        | Request::RunBrainJob { .. }
+        | Request::RebuildIndex { .. } => {
+            return Err(IpcError::from(brigadier_core::Error::Invalid(
+                "the Project Brain is not connected yet".into(),
+            )));
+        }
         Request::GetRepoInfo { path } => Response::GetRepoInfo {
             repo: sessions.repo_info(path).await?,
         },

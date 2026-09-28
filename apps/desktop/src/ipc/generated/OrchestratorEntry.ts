@@ -2,8 +2,9 @@
 import type { ContextInjection } from "./ContextInjection";
 import type { ProviderEvent } from "./ProviderEvent";
 import type { ProviderKind } from "./ProviderKind";
+import type { RebirthRecord } from "./RebirthRecord";
 
 /**
  * One entry of the orchestrator log shown in the Inspector.
  */
-export type OrchestratorEntry = { "type": "injection", injection: ContextInjection, } | { "type": "provider", provider: ProviderKind, event: ProviderEvent, };
+export type OrchestratorEntry = { "type": "injection", injection: ContextInjection, } | { "type": "provider", provider: ProviderKind, event: ProviderEvent, } | { "type": "rebirth", record: RebirthRecord, } | { "type": "contractBreach", message: string, };

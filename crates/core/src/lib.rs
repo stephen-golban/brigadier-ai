@@ -5,6 +5,7 @@
 //! every change as a [`DomainEvent`].
 
 mod board;
+pub mod knowledge;
 pub mod ledger;
 pub mod manager;
 pub mod model;
@@ -14,6 +15,7 @@ mod sessions;
 pub mod tools;
 pub mod work;
 
+pub use knowledge::*;
 pub use model::*;
 pub use sessions::{Core, MAX_ATTACHMENT_BYTES, ProbeBurst};
 pub use work::*;

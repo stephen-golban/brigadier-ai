@@ -185,6 +185,109 @@ pub struct QueryBrain {
     pub query: String,
 }
 
+/// What `remember` records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryKind {
+    /// Something the user settled, or you decided, that later work must respect.
+    Decision,
+    /// How this project does things (naming, structure, style, commit messages).
+    Convention,
+    /// What the user likes in general, across projects.
+    Preference,
+    /// An interface between parts or services that both sides rely on.
+    Contract,
+}
+
+/// `remember`: record a decision, convention, preference or contract in the Brain.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Remember {
+    pub kind: MemoryKind,
+    /// One line that states it, e.g. "Commit subjects are imperative and under 60 characters".
+    pub title: String,
+    /// Why, and any detail that matters later.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// True for a preference of the user's that holds in every project (it goes to their
+    /// Personal Brain); false for this project only.
+    #[serde(default)]
+    pub personal: bool,
+    /// Repository-relative files or folders it is about, if any.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// The id of an earlier decision this one replaces.
+    #[serde(default)]
+    pub replaces: Option<String>,
+}
+
+/// `search_transcript`: search this conversation's full transcript.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchTranscript {
+    /// Words to look for.
+    pub query: String,
+    /// At most this many passages (default 8).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `code_search`: find symbols and files in the repository's code index.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodeSearch {
+    /// A name or path fragment.
+    pub query: String,
+    /// "symbol", "file" or "any" (default).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Only this language, e.g. "rust", "typescript", "python".
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Only under this repository-relative folder.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// At most this many hits (default 30).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `code_refs`: where a symbol is defined and used.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodeRefs {
+    /// The symbol's name.
+    pub symbol: String,
+    /// At most this many references (default 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// A node a Brain job records.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInput {
+    /// "module", "service", "fileSummary", "convention", "contract" or "decision".
+    pub kind: String,
+    /// For modules and file summaries: the repository-relative folder or file it describes.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// A short title ("crates/store: the event store").
+    pub title: String,
+    /// What it is for and what matters about it, in a few sentences.
+    pub body: String,
+    /// Repository-relative files it was learned from.
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+/// `record_nodes`: a Brain job's findings.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordNodes {
+    pub nodes: Vec<NodeInput>,
+}
+
 /// One step of a proposed plan.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

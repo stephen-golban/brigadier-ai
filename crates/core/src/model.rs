@@ -6,6 +6,7 @@ use brigadier_providers::{
     Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
 };
 
+use crate::knowledge::{BrainJob, MemoryChange};
 use crate::work::{
     Approval, AttachmentRef, Compaction, MessageQueue, OrchestratorEntry, OrchestratorStep, Plan,
     Question, RunState, Task, UserRequest, WorkerStep,
@@ -463,6 +464,8 @@ pub struct Settings {
     pub show_context_usage: bool,
     /// A notice above the composer while a conversation is in Full access.
     pub show_full_access_notice: bool,
+    /// Spend quota left over before a usage window resets on deepening the Project Brains.
+    pub enrich_brain: bool,
 }
 
 impl Default for Settings {
@@ -475,6 +478,7 @@ impl Default for Settings {
             hibernate_after_minutes: 30,
             show_context_usage: true,
             show_full_access_notice: true,
+            enrich_brain: true,
         }
     }
 }
@@ -899,6 +903,16 @@ pub enum DomainEvent {
         scope: String,
         attachments: Vec<AttachmentRef>,
     },
+    /// A Brain job started or changed (full snapshot), on the project's `brain:` stream.
+    BrainJobUpdated {
+        job: BrainJob,
+    },
+    /// A Chat's model saved a memory to the Personal Brain, or the user removed it (a Memory
+    /// chip in the thread).
+    MemoryUpdated {
+        conversation_id: ConversationId,
+        memory: MemoryChange,
+    },
     /// Diagnostic probe used to measure ingest → paint latency end to end.
     Probe {
         burst_id: String,
@@ -946,6 +960,8 @@ impl DomainEvent {
             Self::WorkerEvent { .. } => "worker.event",
             Self::OrchestratorLogged { .. } => "orchestrator.logged",
             Self::DraftPinned { .. } => "draft.pinned",
+            Self::BrainJobUpdated { .. } => "brain.job",
+            Self::MemoryUpdated { .. } => "memory.updated",
             Self::Probe { .. } => "diag.probe",
         }
     }
@@ -982,6 +998,11 @@ pub mod streams {
     /// The orchestrator's CLI events and context injections (Inspector).
     pub fn orchestrator(id: &ConversationId) -> String {
         format!("orch:{id}")
+    }
+
+    /// A project's Brain jobs.
+    pub fn brain(id: &super::ProjectId) -> String {
+        format!("brain:{id}")
     }
 
     /// A composer draft's pinned attachments: a conversation id, or `new` for a new chat.

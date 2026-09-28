@@ -82,9 +82,21 @@ function summary(event: DomainEvent): string {
     case "workerEvent":
       return event.event.type;
     case "orchestratorLogged":
-      return event.entry.type === "injection"
-        ? `${event.entry.injection.kind} ${event.entry.injection.label}`
-        : event.entry.event.type;
+      switch (event.entry.type) {
+        case "injection":
+          return `${event.entry.injection.kind} ${event.entry.injection.label}`;
+        case "provider":
+          return event.entry.event.type;
+        case "rebirth":
+          return `rebirth ${event.entry.record.generation}`;
+        case "contractBreach":
+          return event.entry.message;
+      }
+      break;
+    case "brainJobUpdated":
+      return `${event.job.kind} ${event.job.state.type}`;
+    case "memoryUpdated":
+      return `${event.memory.forgotten ? "forgot" : "saved"} “${event.memory.text.slice(0, 80)}”`;
   }
 }
 

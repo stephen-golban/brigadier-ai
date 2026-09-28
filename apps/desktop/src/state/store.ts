@@ -153,6 +153,7 @@ export const useApp = create<AppState>()(() => ({
     hibernateAfterMinutes: 30,
     showContextUsage: true,
     showFullAccessNotice: true,
+    enrichBrain: true,
   },
   threads: {},
   pending: [],
@@ -428,6 +429,8 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "queueChanged":
     case "workerEvent":
     case "orchestratorLogged":
+    case "brainJobUpdated":
+    case "memoryUpdated":
       return slice;
   }
 }

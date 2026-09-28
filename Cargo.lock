@@ -343,12 +343,20 @@ dependencies = [
 [[package]]
 name = "brigadier-brain"
 version = "0.1.0"
+dependencies = [
+ "brigadier-index",
+ "serde",
+ "thiserror 2.0.21",
+ "ts-rs",
+]
 
 [[package]]
 name = "brigadier-core"
 version = "0.1.0"
 dependencies = [
+ "brigadier-brain",
  "brigadier-git",
+ "brigadier-index",
  "brigadier-providers",
  "brigadier-router",
  "brigadier-sandbox",
@@ -427,12 +435,19 @@ dependencies = [
 [[package]]
 name = "brigadier-index"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "ts-rs",
+]
 
 [[package]]
 name = "brigadier-ipc"
 version = "0.1.0"
 dependencies = [
+ "brigadier-brain",
  "brigadier-core",
+ "brigadier-index",
  "brigadier-providers",
  "brigadier-sandbox",
  "getrandom 0.4.3",

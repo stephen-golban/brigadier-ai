@@ -31,4 +31,8 @@ showContextUsage: boolean,
 /**
  * A notice above the composer while a conversation is in Full access.
  */
-showFullAccessNotice: boolean, };
+showFullAccessNotice: boolean, 
+/**
+ * Spend quota left over before a usage window resets on deepening the Project Brains.
+ */
+enrichBrain: boolean, };

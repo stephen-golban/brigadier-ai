@@ -2,11 +2,14 @@
 import type { Access } from "./Access";
 import type { ApprovalDecision } from "./ApprovalDecision";
 import type { AttachmentRef } from "./AttachmentRef";
+import type { BrainJobKind } from "./BrainJobKind";
+import type { BrainQuery } from "./BrainQuery";
 import type { CardId } from "./CardId";
 import type { ConversationId } from "./ConversationId";
 import type { ConversationKind } from "./ConversationKind";
 import type { ForkPlace } from "./ForkPlace";
 import type { Mention } from "./Mention";
+import type { NodeFilter } from "./NodeFilter";
 import type { ProjectId } from "./ProjectId";
 import type { ProjectPatch } from "./ProjectPatch";
 import type { ProviderKind } from "./ProviderKind";
@@ -22,7 +25,7 @@ import type { TaskId } from "./TaskId";
 /**
  * Commands and queries.
  */
-export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, 
+export type Request = { "method": "getCatalog" } | { "method": "getActivity" } | { "method": "createProject", name: string, repo: string | null, } | { "method": "updateProject", id: ProjectId, patch: ProjectPatch, } | { "method": "getBrain", projectId: ProjectId | null, } | { "method": "queryBrain", projectId: ProjectId | null, query: BrainQuery, } | { "method": "getBrainGraph", projectId: ProjectId | null, filter: NodeFilter, } | { "method": "listMemories" } | { "method": "forgetMemory", nodeId: string, } | { "method": "exportConventions", projectId: ProjectId, path: string, } | { "method": "runBrainJob", projectId: ProjectId, kind: BrainJobKind, } | { "method": "rebuildIndex", projectId: ProjectId, } | { "method": "getRepoInfo", path: string, } | { "method": "listFiles", conversationId: ConversationId, 
 /**
  * Only the files whose path has these letters in order (ignoring case), searched in
  * the whole checkout: how the Files tab finds files past the listed ones.

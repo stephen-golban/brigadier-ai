@@ -7,13 +7,15 @@
 //! Requests carry a client-chosen id echoed on the response. Responses reuse the request's
 //! `method` tag, so TypeScript can pair them with `Extract<Response, { method: M }>`.
 
+use brigadier_brain::{BrainAnswer, BrainGraph, BrainQuery, Node, NodeFilter};
 use brigadier_core::{
-    AttachmentRef, CardId, Catalog, CheckoutFile, CommitOutcome, Conversation,
-    ConversationActivity, ConversationId, ConversationKind, ConversationStatus, ConversationView,
-    DiffStat, ForkPlace, GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage,
-    ProbeBurst, Project, ProjectId, ProjectPatch, ProvidersView, PullRequest, QueuedMessage,
-    Rating, RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
-    ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerPage,
+    AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
+    ConventionsExport, Conversation, ConversationActivity, ConversationId, ConversationKind,
+    ConversationStatus, ConversationView, DiffStat, ForkPlace, GitState, Mention, Message,
+    MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project, ProjectId, ProjectPatch,
+    ProvidersView, PullRequest, QueuedMessage, Rating, RawApprovals, RawPage, RawSession,
+    RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, Settings, Setup, SetupRequest,
+    TaskId, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use serde::{Deserialize, Serialize};
@@ -23,7 +25,7 @@ use ts_rs::TS;
 use crate::metrics::{DaemonMetrics, Diagnostics};
 
 /// Bumped on any incompatible change to these types.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Who is connecting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -87,6 +89,42 @@ pub enum Request {
     UpdateProject {
         id: ProjectId,
         patch: ProjectPatch,
+    },
+    /// A project's Brain at a glance, or the Personal Brain's without `projectId`.
+    GetBrain {
+        project_id: Option<ProjectId>,
+    },
+    /// Runs a Brain query as the orchestrator's `query_brain` does (the Inspector's search).
+    QueryBrain {
+        project_id: Option<ProjectId>,
+        query: BrainQuery,
+    },
+    /// Nodes and their edges, for the Inspector's graph viewer.
+    GetBrainGraph {
+        project_id: Option<ProjectId>,
+        filter: NodeFilter,
+    },
+    /// The Personal Brain's memories (preferences), newest first.
+    ListMemories,
+    /// Removes a memory from the Personal Brain.
+    ForgetMemory {
+        node_id: String,
+    },
+    /// Writes the project's conventions into the marked Brigadier section of an AGENTS.md
+    /// (the native save panel's choice, or a typed path), creating the file if needed.
+    ExportConventions {
+        project_id: ProjectId,
+        path: String,
+    },
+    /// Starts a Brain job now (the Inspector's developer actions); it reports on the project's
+    /// `brain:` stream.
+    RunBrainJob {
+        project_id: ProjectId,
+        kind: BrainJobKind,
+    },
+    /// Rebuilds a project's code index from scratch.
+    RebuildIndex {
+        project_id: ProjectId,
     },
     /// Branches and state of a repository, for the composer's branch picker.
     GetRepoInfo {
@@ -536,6 +574,26 @@ pub enum Response {
     UpdateProject {
         project: Box<Project>,
     },
+    GetBrain {
+        overview: Box<BrainOverview>,
+    },
+    QueryBrain {
+        answer: Box<BrainAnswer>,
+    },
+    GetBrainGraph {
+        graph: Box<BrainGraph>,
+    },
+    ListMemories {
+        memories: Vec<Node>,
+    },
+    ForgetMemory,
+    ExportConventions {
+        export: ConventionsExport,
+    },
+    RunBrainJob {
+        job_id: String,
+    },
+    RebuildIndex,
     GetRepoInfo {
         repo: RepoInfo,
     },

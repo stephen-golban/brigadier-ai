@@ -42,12 +42,14 @@ export const KIND_LABELS: Record<InjectionKind, string> = {
   reseed: "reseed",
   resume: "resume",
   followUp: "follow-up",
+  briefing: "briefing",
 };
 
 export function groupOf(kind: InjectionKind): InjectionGroup {
   switch (kind) {
     case "instructions":
     case "reseed":
+    case "briefing":
       return "instructions";
     case "userMessage":
     case "resume":
@@ -105,7 +107,7 @@ export function deriveLog(entries: readonly OrchestratorLogEntry[]): DerivedLog 
       counts[group] += 1;
       injections.push({ streamSeq, atMs, injection: entry.injection });
       cumulative.push(running);
-    } else if (entry.event.type === "contextSize") {
+    } else if (entry.type === "provider" && entry.event.type === "contextSize") {
       windowTokens = entry.event.windowTokens ?? windowTokens;
       context.push({
         after: injections.length,

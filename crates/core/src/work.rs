@@ -937,6 +937,8 @@ pub enum InjectionKind {
     Resume,
     /// A follow-up the user sent while the answer worked, for the orchestrator to sort.
     FollowUp,
+    /// The briefing a reborn orchestrator starts with.
+    Briefing,
 }
 
 /// One thing Brigadier put into the orchestrator's context, for the Inspector.
@@ -967,5 +969,14 @@ pub enum OrchestratorEntry {
     Provider {
         provider: ProviderKind,
         event: ProviderEvent,
+    },
+    /// The orchestrator was reborn: a fresh CLI session took over from a briefing.
+    Rebirth {
+        record: Box<crate::knowledge::RebirthRecord>,
+    },
+    /// Something broke the orchestrator's contract, such as its CLI compacting the context
+    /// (PLAN.md §2: the orchestrator never compacts).
+    ContractBreach {
+        message: String,
     },
 }
