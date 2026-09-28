@@ -6,7 +6,7 @@ use brigadier_providers::{
     Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
 };
 
-use crate::knowledge::{BrainJob, MemoryChange};
+use crate::knowledge::{BrainJob, MemoryChange, RebirthThresholds};
 use crate::work::{
     Approval, AttachmentRef, Compaction, MessageQueue, OrchestratorEntry, OrchestratorStep, Plan,
     Question, RunState, Task, UserRequest, WorkerStep,
@@ -614,6 +614,8 @@ pub struct WorkerPage {
 pub struct OrchestratorPage {
     pub entries: Vec<OrchestratorLogEntry>,
     pub has_more: bool,
+    /// The conversation's rebirth thresholds for its current model (sessions only).
+    pub thresholds: Option<RebirthThresholds>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

@@ -129,6 +129,18 @@ pub struct RebirthRecord {
     pub new_native_id: Option<String>,
 }
 
+/// When an orchestrator's rebirth is prepared and when it must happen, in context tokens, for
+/// the model it runs on now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RebirthThresholds {
+    /// The handoff note is prepared once the context passes this.
+    pub prepare_tokens: i64,
+    /// The orchestrator is reborn before its next turn once the context passes this.
+    pub swap_tokens: i64,
+    pub window_tokens: Option<i64>,
+}
+
 /// A project's Brain at a glance (or the Personal Brain's), for the Inspector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

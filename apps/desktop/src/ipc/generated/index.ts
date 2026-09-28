@@ -145,6 +145,7 @@ export type { RawSessionId } from "./RawSessionId";
 export type { RawSource } from "./RawSource";
 export type { RawState } from "./RawState";
 export type { RebirthRecord } from "./RebirthRecord";
+export type { RebirthThresholds } from "./RebirthThresholds";
 export type { RebirthTrigger } from "./RebirthTrigger";
 export type { RepoAccess } from "./RepoAccess";
 export type { RepoInfo } from "./RepoInfo";

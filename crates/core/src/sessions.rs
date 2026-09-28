@@ -803,7 +803,11 @@ impl Core {
                 Err(err) => Some(Err(err)),
             })
             .collect::<Result<_>>()?;
-        Ok(OrchestratorPage { entries, has_more })
+        Ok(OrchestratorPage {
+            entries,
+            has_more,
+            thresholds: None,
+        })
     }
 
     /// Up to `limit` events of `kind` before `before`, oldest first, and whether older ones
