@@ -1,66 +1,135 @@
-import type { FC, SVGProps } from "react";
+import { useEffect, useRef, useState, type FC, type SVGProps } from "react";
 
 /**
  * Brigadier's mark, the striped disc: a solid core with bars through it and fifteen thin
  * strokes around it, on the 256-unit grid of its master (`src-tauri/icons/mark.svg`, which
  * also draws the app and menu-bar icons), in the current colour, sized by the caller. The new
- * chat's hero shows it faintly above the heading.
+ * chat's hero shows it above the heading and spins it while hovered: the columns drift
+ * rightward through the disc's outline like a turning globe, each taking the height of the
+ * column ahead as it goes, then coast to rest on the master's pose.
  */
 
-/** Each thin stroke as `[x, y, height]`; all are 4.4 wide with round ends. */
-const STRIPES = [
-  [25.0, 108.8, 38.4],
-  [39.4, 73.6, 108.8],
-  [53.8, 55.2, 145.6],
-  [68.2, 42.4, 171.2],
-  [82.6, 35.2, 185.6],
-  [97.0, 28.8, 198.4],
-  [111.4, 25.6, 204.8],
-  [125.8, 22.4, 211.2],
-  [140.2, 25.6, 204.8],
-  [154.6, 28.8, 198.4],
-  [169.0, 35.2, 185.6],
-  [183.4, 42.4, 171.2],
-  [197.8, 55.2, 145.6],
-  [212.2, 73.6, 108.8],
-  [226.6, 108.8, 38.4],
-] as const;
+/** The strokes and bars stand in columns this far apart, the first centred at x 27.2. */
+const COLUMN_GAP = 14.4;
+const FIRST_COLUMN_X = 27.2;
 
-/** Each bar through the core as `[x, y, height]`; all are 9.6 wide with round ends. */
-const CORE_BARS = [
-  [51.2, 99.2, 57.6],
-  [65.6, 79.2, 97.6],
-  [80.0, 65.6, 124.8],
-  [94.4, 56.0, 144.0],
-  [108.8, 51.2, 153.6],
-  [123.2, 49.6, 156.8],
-  [137.6, 51.2, 153.6],
-  [152.0, 56.0, 144.0],
-  [166.4, 65.6, 124.8],
-  [180.8, 79.2, 97.6],
-  [195.2, 99.2, 57.6],
-] as const;
+/** Each column's thin stroke height, left to right; all are 4.4 wide with round ends. */
+const STRIPE_HEIGHTS = [
+  38.4, 108.8, 145.6, 171.2, 185.6, 198.4, 204.8, 211.2, 204.8, 198.4, 185.6, 171.2, 145.6,
+  108.8, 38.4,
+];
+
+/** The bars through the core stand in columns 2 to 12; all are 9.6 wide with round ends. */
+const CORE_BAR_HEIGHTS = [
+  0, 0, 57.6, 97.6, 124.8, 144, 153.6, 156.8, 153.6, 144, 124.8, 97.6, 57.6, 0, 0,
+];
+
+/** Columns drawn at any moment: one more than at rest, entering from the left while spinning. */
+const COLUMNS = [-1, ...STRIPE_HEIGHTS.keys()];
 
 /** Rounds away float noise (108.8 + 2.2) so the path data reads like the master's. */
 const n = (value: number) => Math.round(value * 100) / 100;
 
-/** A vertical bar with fully rounded ends, as path data (`<rect rx>` in the master). */
-const bar = (width: number) => ([x, y, height]: readonly [number, number, number]) => {
-  const r = width / 2;
-  return `M${n(x)} ${n(y + r)}a${r} ${r} 0 0 1 ${width} 0v${n(height - width)}a${r} ${r} 0 0 1 ${-width} 0Z`;
+/**
+ * A vertical bar with fully rounded ends centred on (`cx`, 128), as path data (`<rect rx>` in
+ * the master). One shorter than it is wide narrows to a dot, so columns fade in and out at the
+ * disc's edges.
+ */
+const bar = (cx: number, width: number, height: number) => {
+  const w = Math.min(width, height);
+  if (w <= 0) return null;
+  const r = n(w / 2);
+  return `M${n(cx - w / 2)} ${n(128 - height / 2 + w / 2)}a${r} ${r} 0 0 1 ${n(w)} 0v${n(height - w)}a${r} ${r} 0 0 1 ${n(-w)} 0Z`;
 };
 
-const STRIPE_PATHS = STRIPES.map(bar(4.4));
-const CORE_BAR_PATHS = CORE_BARS.map(bar(9.6));
+/** Spin speed in grid units per second (a column every 0.4 s), reached this many seconds in. */
+const SPIN_SPEED = 36;
+const SPIN_RAMP_S = 0.3;
+/** How hard a released spin brakes, in units per second², and the crawl it never drops below. */
+const SPIN_BRAKE = 120;
+const SPIN_CRAWL = 6;
 
-export const BrigadierGlyph: FC<SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 256 256" fill="currentColor" aria-hidden {...props}>
-    {STRIPE_PATHS.map((d) => (
-      <path key={d} d={d} />
-    ))}
-    <circle cx={128} cy={128} r={59} />
-    {CORE_BAR_PATHS.map((d) => (
-      <path key={d} d={d} />
-    ))}
-  </svg>
-);
+/**
+ * How far the columns have drifted past their rest, in `[0, COLUMN_GAP)`. While `spinning`
+ * it ramps up to speed; once released it runs on to the next rest and brakes into it. Stays 0
+ * when the system asks for reduced motion.
+ */
+const useSpinOffset = (spinning: boolean) => {
+  const [offset, setOffset] = useState(0);
+  const spinningRef = useRef(spinning);
+  const frame = useRef<number | null>(null);
+
+  useEffect(() => {
+    spinningRef.current = spinning;
+    if (!spinning || frame.current !== null) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let at = 0;
+    let speed = 0;
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min(now - last, 50) / 1000;
+      last = now;
+      if (spinningRef.current) {
+        speed = Math.min(SPIN_SPEED, speed + (SPIN_SPEED / SPIN_RAMP_S) * dt);
+      } else {
+        const left = COLUMN_GAP - at;
+        speed = Math.max(SPIN_CRAWL, Math.min(speed, Math.sqrt(2 * SPIN_BRAKE * left)));
+      }
+      at += speed * dt;
+      if (!spinningRef.current && at >= COLUMN_GAP) {
+        frame.current = null;
+        setOffset(0);
+        return;
+      }
+      at %= COLUMN_GAP;
+      setOffset(at);
+      frame.current = requestAnimationFrame(step);
+    };
+    frame.current = requestAnimationFrame(step);
+  }, [spinning]);
+
+  useEffect(
+    () => () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+    },
+    [],
+  );
+
+  return offset;
+};
+
+/** Every column's stroke and bar with the columns `offset` units past their rest. */
+const markPaths = (offset: number) => {
+  const t = offset / COLUMN_GAP;
+  const height = (heights: number[], column: number) =>
+    (heights[column] ?? 0) * (1 - t) + (heights[column + 1] ?? 0) * t;
+  const x = (column: number) => FIRST_COLUMN_X + column * COLUMN_GAP + offset;
+  return {
+    stripes: COLUMNS.map((column) => bar(x(column), 4.4, height(STRIPE_HEIGHTS, column))),
+    coreBars: COLUMNS.map((column) => bar(x(column), 9.6, height(CORE_BAR_HEIGHTS, column))),
+  };
+};
+
+type BrigadierGlyphProps = SVGProps<SVGSVGElement> & {
+  /** Spin the disc while the pointer is over it. */
+  spinOnHover?: boolean;
+};
+
+export const BrigadierGlyph: FC<BrigadierGlyphProps> = ({ spinOnHover = false, ...props }) => {
+  const [hovered, setHovered] = useState(false);
+  const { stripes, coreBars } = markPaths(useSpinOffset(spinOnHover && hovered));
+  return (
+    <svg
+      viewBox="0 0 256 256"
+      fill="currentColor"
+      aria-hidden
+      onPointerEnter={spinOnHover ? () => setHovered(true) : undefined}
+      onPointerLeave={spinOnHover ? () => setHovered(false) : undefined}
+      {...props}
+    >
+      {stripes.map((d, i) => d && <path key={COLUMNS[i]} d={d} />)}
+      <circle cx={128} cy={128} r={59} />
+      {coreBars.map((d, i) => d && <path key={COLUMNS[i]} d={d} />)}
+    </svg>
+  );
+};

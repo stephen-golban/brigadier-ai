@@ -809,7 +809,10 @@ const Welcome: FC = () => {
   }
   return (
     <div className="flex flex-col items-center gap-6 select-none">
-      <BrigadierGlyph className="text-foreground size-14 opacity-30" />
+      <BrigadierGlyph
+        spinOnHover
+        className="text-foreground size-16 opacity-60 transition-opacity duration-300 hover:opacity-100 motion-reduce:transition-none"
+      />
       <h1 className="font-display tracking-hero text-hero px-2 text-center font-normal">
         {project ? (
           <>
