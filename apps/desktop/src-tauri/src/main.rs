@@ -19,6 +19,7 @@ mod smoke;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use brigadier_core::{ConventionsExport, ProjectId};
 use brigadier_ipc::app::{AppInfo, BridgeEvent, RunningChat, SmokeReport, UiMeasurements};
 use brigadier_ipc::protocol::{IpcError, Request, Response};
 use brigadier_sandbox::{Platform, PlatformOptions};
@@ -110,6 +111,55 @@ async fn save_artifact(
         })
         .await?;
     Ok(true)
+}
+
+/// Exports a project's conventions to the AGENTS.md the user picks in the system save dialog,
+/// starting in `directory` (the project's repository). `None` when they cancel. Scripts use the
+/// `exportConventions` request with a path instead.
+#[tauri::command]
+async fn export_conventions(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    directory: Option<String>,
+) -> Result<Option<ConventionsExport>, IpcError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Export conventions")
+        .set_file_name("AGENTS.md");
+    if let Some(window) = app.get_webview_window(shell::MAIN_WINDOW) {
+        dialog = dialog.set_parent(&window);
+    }
+    if let Some(directory) = directory.filter(|dir| std::path::Path::new(dir).is_dir()) {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx
+        .await
+        .ok()
+        .flatten()
+        .and_then(|path| path.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let Response::ExportConventions { export } = state
+        .bridge
+        .request(Request::ExportConventions {
+            project_id,
+            path: path.display().to_string(),
+        })
+        .await?
+    else {
+        return Err(IpcError {
+            code: brigadier_ipc::protocol::ErrorCode::Internal,
+            message: "unexpected response".into(),
+        });
+    };
+    Ok(Some(export))
 }
 
 /// Opens an artifact with the system's default app for its type (a copy of it, named
@@ -323,6 +373,7 @@ fn main() {
             smoke_finish,
             pick_folder,
             save_artifact,
+            export_conventions,
             open_artifact,
             open_folder,
             open_url,
