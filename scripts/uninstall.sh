@@ -74,6 +74,14 @@ no_symlink_components() {
     [[ ! -L "$prefix" ]] || return 1
   done
 }
+# Device:inode, and owner uid plus permission bits, of a path itself (links not followed).
+if [[ "$(uname -s)" = Darwin ]]; then
+  file_id() { stat -f '%d:%i' "$1" 2>/dev/null; }
+  owner_mode() { stat -f '%u %Lp' "$1" 2>/dev/null; }
+else
+  file_id() { stat -c '%d:%i' "$1" 2>/dev/null; }
+  owner_mode() { stat -c '%u %a' "$1" 2>/dev/null; }
+fi
 no_symlink_components "$DATA" || error 'data directory contains a symlink or unsafe component'
 [[ -d "$DATA" ]] || error 'data directory does not exist'
 DATA=$(cd "$DATA" && pwd -L)
@@ -82,6 +90,7 @@ DATA=$(cd "$DATA" && pwd -L)
 [[ ! -L "$DATA/brigadier.db" && ! -L "$DATA/run" ]] || error 'data directory markers must not be symlinks'
 [[ -x /usr/bin/sqlite3 ]] || error '/usr/bin/sqlite3 is required'
 [[ "$DATA" != *$'\n'* && "$DATA" != *$'\037'* ]] || error 'data directory contains unsupported control characters'
+DATA_ID=$(file_id "$DATA") || error 'cannot identify the data directory'
 bundle_id() {
   [[ -f "$1/Contents/Info.plist" ]] || return 1
   /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$1/Contents/Info.plist" 2>/dev/null
@@ -89,6 +98,7 @@ bundle_id() {
 if [[ -n "$APP" && -e "$APP" ]]; then
   no_symlink_components "$APP" || error 'app bundle path contains a symlink or unsafe component'
   [[ "$(bundle_id "$APP")" = "$ID" ]] || error 'app bundle identifier does not match --app-id'
+  APP_ID=$(file_id "$APP") || error 'cannot identify the app bundle'
 fi
 
 SQLITE=(/usr/bin/sqlite3 -readonly -noheader -separator $'\037' "$DATA/brigadier.db")
@@ -101,14 +111,18 @@ valid_external() {
 }
 
 TRASH_DIR='' DATA_MOVE_ALLOWED=0
+# trash PATH [ID]: moves PATH to the Trash if it is still the file ID names (the one checked
+# earlier), or, without ID, the one seen when this starts.
 trash() {
-  local path=$1 name dest
+  local path=$1 expected=${2:-} name dest id
   [[ -e "$path" ]] || return 0
   if (( ! DATA_MOVE_ALLOWED )) && [[ "$DATA" = "$path" || "$DATA" = "$path/"* ]]; then
     uncertain "path contains the data directory and must be resolved separately: $path"
     return 1
   fi
   if ! valid_external "$path" || [[ -L "$path" ]]; then uncertain "unsafe path left in place: $path"; return 1; fi
+  id=$(file_id "$path") || { uncertain "cannot identify $path"; return 1; }
+  if [[ -n "$expected" && "$id" != "$expected" ]]; then uncertain "changed since it was checked, left in place: $path"; return 1; fi
   if (( DRY )); then TRASHED+=("$path"); say "DRY RUN: move to Trash $path"; return 0; fi
   if [[ -z "$TRASH_DIR" ]]; then
     mkdir -p "$HOME/.Trash" || { uncertain 'cannot create Trash'; return 1; }
@@ -116,6 +130,9 @@ trash() {
   fi
   name=${path##*/}; dest="$TRASH_DIR/$name"; local n=1
   while [[ -e "$dest" ]]; do dest="$TRASH_DIR/$name.$n"; ((n++)); done
+  if [[ -L "$path" || "$(file_id "$path")" != "$id" ]] || ! no_symlink_components "$path"; then
+    uncertain "changed since it was checked, left in place: $path"; return 1
+  fi
   if mv "$path" "$dest" && [[ ! -e "$path" ]]; then in_trash "$path -> $dest"; return 0; fi
   uncertain "could not move to Trash: $path"; return 1
 }
@@ -352,7 +369,10 @@ else
 fi
 
 for path in /tmp/brigadier-*; do
-  [[ -d "$path" && ! -L "$path" && -f "$path/.brigadier-owner" ]] || continue
+  # Only Brigadier's own session temp folders: brigadier-<12 lowercase hex>, this user's, 0700.
+  [[ "${path#/tmp/}" =~ ^brigadier-[0-9a-f]{12}$ ]] || continue
+  [[ -d "$path" && ! -L "$path" && -f "$path/.brigadier-owner" && ! -L "$path/.brigadier-owner" ]] || continue
+  [[ "$(owner_mode "$path")" = "$(id -u) 700" ]] || continue
   owner_data=$(sed -n '2p' "$path/.brigadier-owner")
   [[ "$owner_data" = "$DATA" ]] && trash "$path"
 done
@@ -387,11 +407,11 @@ if (( KEEP_DATA )); then kept "data directory $DATA (--keep-data)"
 elif (( remaining )); then kept "data directory $DATA (worktrees remain)"
 else
   DATA_MOVE_ALLOWED=1
-  trash "$DATA"
+  trash "$DATA" "$DATA_ID"
 fi
 if [[ -n "$APP" && -e "$APP" ]]; then
   if (( APP_RUNNING )); then kept "app bundle $APP (process still running)"
-  else trash "$APP"; fi
+  else trash "$APP" "${APP_ID:-}"; fi
 fi
 
 say ''; say 'Summary:'
