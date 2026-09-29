@@ -34,6 +34,18 @@ pub(super) struct BranchRecord {
     tip: Option<String>,
 }
 
+impl BranchRecord {
+    /// A branch a kept-branch record names, at the tip it had then.
+    pub(super) fn kept(repo: String, kept: KeptBranch) -> Self {
+        Self {
+            repo: PathBuf::from(repo),
+            name: kept.name,
+            target: kept.target,
+            tip: Some(kept.tip),
+        }
+    }
+}
+
 /// What removing a project takes, with what the removal itself needs.
 struct Plan {
     preview: ProjectRemoval,
@@ -77,35 +89,8 @@ impl SessionManager {
 
         let git = self.git.clone();
         let branches = plan.preview.branches;
-        let (kept, mut failures) = blocking(move || {
-            let (mut kept, mut failures) = (Vec::new(), Vec::new());
-            for branch in branches {
-                let repo = Path::new(&branch.repo);
-                let picked = !branch.checked_out
-                    && delete
-                        .iter()
-                        .any(|choice| choice.name == branch.name && choice.tip == branch.tip);
-                if picked {
-                    let listed = KeptBranch {
-                        name: branch.name.clone(),
-                        target: branch.target.clone(),
-                        tip: branch.tip.clone(),
-                    };
-                    match delete_branch_checked(&git, repo, &listed, branch.merged) {
-                        Ok(()) => continue,
-                        Err(err) => failures.push(format!("{} stays: {err}", branch.name)),
-                    }
-                }
-                // As it stands now: a worktree's changes may have become a WIP commit on it.
-                if let Some(now) = git.open(repo).ok().and_then(|repo| {
-                    branch_standing(&repo, &branch.name, &branch.target, None, &[])
-                }) {
-                    kept.push(now);
-                }
-            }
-            Ok((kept, failures))
-        })
-        .await?;
+        let (kept, mut failures) =
+            blocking(move || Ok(settle_branches(&git, branches, &delete))).await?;
         self.record_kept(&kept).await;
 
         let brain_trashed_bytes = if keep_brain {
@@ -258,67 +243,13 @@ impl SessionManager {
             .collect();
         for (repo, kept) in self.kept_branches().await? {
             if repos.contains(repo.as_str()) && !shared.contains(repo.as_str()) {
-                records.push(BranchRecord {
-                    repo: PathBuf::from(repo),
-                    name: kept.name,
-                    target: kept.target,
-                    tip: Some(kept.tip),
-                });
+                records.push(BranchRecord::kept(repo, kept));
             }
         }
-        let mut seen = HashSet::new();
-        worktrees.retain(|path| seen.insert(path.clone()) && path.exists());
-
         let (git, brain) = (self.git.clone(), self.project_brain_dir(id));
         let (worktrees, branches, brain_bytes) = blocking(move || {
-            let listed: Vec<RemovalWorktree> = worktrees
-                .iter()
-                .map(|path| RemovalWorktree {
-                    path: path.display().to_string(),
-                    bytes: removal::allocated_size(path),
-                    has_changes: git
-                        .open(path)
-                        .and_then(|worktree| worktree.state())
-                        .map_or(true, |state| !state.dirty_files.is_empty()),
-                })
-                .collect();
-            let dirty: Vec<PathBuf> = listed
-                .iter()
-                .filter(|w| w.has_changes)
-                .map(|w| PathBuf::from(&w.path))
-                .collect();
-            let mut seen = HashSet::new();
-            let mut branches = Vec::new();
-            for record in records {
-                if !seen.insert((record.repo.clone(), record.name.clone())) {
-                    continue;
-                }
-                let Ok(repo) = git.open(&record.repo) else {
-                    continue;
-                };
-                let Some(mut standing) = branch_standing(
-                    &repo,
-                    &record.name,
-                    &record.target,
-                    record.tip.as_deref(),
-                    &worktrees,
-                ) else {
-                    continue;
-                };
-                // Its worktree's changes become a WIP commit on it before the worktree goes.
-                let gains_wip = repo.worktrees().is_ok_and(|list| {
-                    list.iter().any(|w| {
-                        w.branch.as_deref() == Some(record.name.as_str())
-                            && same_path_in(&w.path, &dirty)
-                    })
-                });
-                if gains_wip {
-                    standing.merged = false;
-                    standing.ahead += 1;
-                }
-                branches.push(standing);
-            }
-            Ok((listed, branches, removal::allocated_size(&brain)))
+            let (worktrees, branches) = survey(&git, worktrees, records);
+            Ok((worktrees, branches, removal::allocated_size(&brain)))
         })
         .await?;
         let blocked = (!working.is_empty()).then(|| {
@@ -348,6 +279,102 @@ impl SessionManager {
             conversations: all,
         })
     }
+}
+
+/// How `worktrees` (all about to go) and the branches in `records` stand: sizes, uncommitted
+/// changes, and each branch against the branch its work goes to.
+pub(super) fn survey(
+    git: &brigadier_git::Git,
+    mut worktrees: Vec<PathBuf>,
+    records: Vec<BranchRecord>,
+) -> (Vec<RemovalWorktree>, Vec<RemovalBranch>) {
+    let mut seen = HashSet::new();
+    worktrees.retain(|path| seen.insert(path.clone()) && path.exists());
+    let listed: Vec<RemovalWorktree> = worktrees
+        .iter()
+        .map(|path| RemovalWorktree {
+            path: path.display().to_string(),
+            bytes: removal::allocated_size(path),
+            has_changes: git
+                .open(path)
+                .and_then(|worktree| worktree.state())
+                .map_or(true, |state| !state.dirty_files.is_empty()),
+        })
+        .collect();
+    let dirty: Vec<PathBuf> = listed
+        .iter()
+        .filter(|w| w.has_changes)
+        .map(|w| PathBuf::from(&w.path))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut branches = Vec::new();
+    for record in records {
+        if !seen.insert((record.repo.clone(), record.name.clone())) {
+            continue;
+        }
+        let Ok(repo) = git.open(&record.repo) else {
+            continue;
+        };
+        let Some(mut standing) = branch_standing(
+            &repo,
+            &record.name,
+            &record.target,
+            record.tip.as_deref(),
+            &worktrees,
+        ) else {
+            continue;
+        };
+        // Its worktree's changes become a WIP commit on it before the worktree goes.
+        let gains_wip = repo.worktrees().is_ok_and(|list| {
+            list.iter().any(|w| {
+                w.branch.as_deref() == Some(record.name.as_str()) && same_path_in(&w.path, &dirty)
+            })
+        });
+        if gains_wip {
+            standing.merged = false;
+            standing.ahead += 1;
+        }
+        branches.push(standing);
+    }
+    (listed, branches)
+}
+
+/// Deletes the branches the user `picked` (each at the tip it was listed with; a merged one
+/// only while still merged); the others stay. The ones that stay, as they stand now, and what
+/// failed.
+pub(super) fn settle_branches(
+    git: &brigadier_git::Git,
+    branches: Vec<RemovalBranch>,
+    picked: &[BranchChoice],
+) -> (Vec<RemovalBranch>, Vec<String>) {
+    let (mut kept, mut failures) = (Vec::new(), Vec::new());
+    for branch in branches {
+        let repo = Path::new(&branch.repo);
+        let chosen = !branch.checked_out
+            && picked
+                .iter()
+                .any(|choice| choice.name == branch.name && choice.tip == branch.tip);
+        if chosen {
+            let listed = KeptBranch {
+                name: branch.name.clone(),
+                target: branch.target.clone(),
+                tip: branch.tip.clone(),
+            };
+            match delete_branch_checked(git, repo, &listed, branch.merged) {
+                Ok(()) => continue,
+                Err(err) => failures.push(format!("{} stays: {err}", branch.name)),
+            }
+        }
+        // As it stands now: a worktree's changes may have become a WIP commit on it.
+        if let Some(now) = git
+            .open(repo)
+            .ok()
+            .and_then(|repo| branch_standing(&repo, &branch.name, &branch.target, None, &[]))
+        {
+            kept.push(now);
+        }
+    }
+    (kept, failures)
 }
 
 /// The Brigadier branches a conversation created: its session branch and its tasks' branches,

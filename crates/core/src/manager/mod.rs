@@ -40,6 +40,7 @@ mod secrets;
 mod side_chat;
 mod tools;
 mod undo;
+mod uninstall;
 mod workers;
 
 use std::collections::HashMap;
@@ -63,6 +64,7 @@ use crate::{Core, Error, Result};
 
 pub use brains::{BrainCounters, IndexRunStats};
 pub use conversation::SendOutcome;
+pub use uninstall::TearDown;
 
 use self::cards::Waiters;
 use self::conversation::ConvLive;

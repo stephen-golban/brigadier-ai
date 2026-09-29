@@ -31,6 +31,7 @@ use crate::metrics::Metrics;
 use crate::storage::Storage;
 use crate::supervisor::Supervisor;
 use crate::terminals::Terminals;
+use crate::uninstall::Uninstall;
 use crate::upgrade;
 
 /// Frames buffered between a connection's reader task and its handler.
@@ -70,6 +71,8 @@ pub struct Daemon {
     pub awake: Arc<Awake>,
     /// Settings → Storage's scans and cleaning.
     pub storage: Storage,
+    /// Uninstall Brigadier…'s plans and teardown.
+    pub uninstall: Uninstall,
     next_connection: AtomicU64,
 }
 
@@ -105,6 +108,7 @@ impl Daemon {
             dictation,
             awake,
             storage: Storage::default(),
+            uninstall: Uninstall::default(),
             next_connection: AtomicU64::new(1),
         }
     }
@@ -413,7 +417,9 @@ impl Session {
             request @ (Request::ScanStorage
             | Request::CleanStorage { .. }
             | Request::PreviewRemoveProject { .. }
-            | Request::RemoveProject { .. }) => {
+            | Request::RemoveProject { .. }
+            | Request::PreviewUninstall { .. }
+            | Request::Uninstall { .. }) => {
                 let daemon = self.daemon.clone();
                 let late = self.late_tx.clone();
                 self.daemon.supervisor.spawn(async move {
@@ -1261,6 +1267,26 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             report: daemon
                 .storage
                 .clean(daemon, &scan_id, items)
+                .await
+                .map_err(invalid)?,
+        },
+        Request::PreviewUninstall { app } => Response::PreviewUninstall {
+            plan: Box::new(
+                daemon
+                    .uninstall
+                    .preview(daemon, app)
+                    .await
+                    .map_err(invalid)?,
+            ),
+        },
+        Request::Uninstall {
+            plan_id,
+            keep_data,
+            delete_branches,
+        } => Response::Uninstall {
+            report: daemon
+                .uninstall
+                .run(daemon, &plan_id, keep_data, delete_branches)
                 .await
                 .map_err(invalid)?,
         },

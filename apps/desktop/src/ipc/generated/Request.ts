@@ -22,6 +22,7 @@ import type { Settings } from "./Settings";
 import type { Setup } from "./Setup";
 import type { SetupRequest } from "./SetupRequest";
 import type { TaskId } from "./TaskId";
+import type { UninstallApp } from "./UninstallApp";
 
 /**
  * Commands and queries.
@@ -89,4 +90,4 @@ record: boolean, } | { "method": "resumeRawSession", id: RawSessionId, } | { "me
 /**
  * Only entries with a smaller `streamSeq` (for paging backwards).
  */
-before: number | null, limit: number, } | { "method": "replayFixture", fixtureId: string, } | { "method": "simulateUsageLimit", provider: ProviderKind, } | { "method": "getDaemonActivity" } | { "method": "scanStorage" } | { "method": "cleanStorage", scanId: string, items: Array<string>, } | { "method": "shutdown" };
+before: number | null, limit: number, } | { "method": "replayFixture", fixtureId: string, } | { "method": "simulateUsageLimit", provider: ProviderKind, } | { "method": "getDaemonActivity" } | { "method": "scanStorage" } | { "method": "cleanStorage", scanId: string, items: Array<string>, } | { "method": "previewUninstall", app: UninstallApp, } | { "method": "uninstall", planId: string, keepData: boolean, deleteBranches: Array<BranchChoice>, } | { "method": "shutdown" };

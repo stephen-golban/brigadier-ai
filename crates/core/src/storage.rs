@@ -269,9 +269,9 @@ pub enum AppRemoval {
 #[serde(rename_all = "camelCase")]
 pub struct UninstallReport {
     pub steps: Vec<UninstallStep>,
-    /// Branches left in place, with the command that deletes each.
-    pub kept_branches: Vec<String>,
-    /// Moved to the Trash after the app quit.
+    /// Branches left in place, each with the command that deletes it.
+    pub kept_branches: Vec<RemovalBranch>,
+    /// What goes once Brigadier quit (the data directory, per-app folders, the app).
     pub after_quit: Vec<String>,
 }
 

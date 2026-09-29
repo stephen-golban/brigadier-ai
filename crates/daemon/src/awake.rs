@@ -42,6 +42,8 @@ struct State {
     #[cfg(target_os = "macos")]
     authorized: Option<bool>,
     error: Option<String>,
+    /// Shut down: nothing keeps the computer awake any more, whatever the settings say.
+    stopped: bool,
 }
 
 impl Awake {
@@ -83,8 +85,9 @@ impl Awake {
             KeepAwake::Always => true,
             KeepAwake::Agents => self.sessions.agents_working().await,
         };
-        let lid_wanted = wanted && settings.keep_awake_lid_closed;
         let mut state = self.state.lock().await;
+        let wanted = wanted && !state.stopped;
+        let lid_wanted = wanted && settings.keep_awake_lid_closed;
         state.error = None;
 
         let running = state.blocker.as_mut().is_some_and(Blocker::running);
@@ -124,9 +127,11 @@ impl Awake {
         self.apply().await
     }
 
-    /// Stops keeping awake and restores sleep, before the daemon exits.
+    /// Stops keeping awake and restores sleep for good, before the daemon exits (or while
+    /// Brigadier is uninstalled).
     pub async fn shutdown(&self) {
         let mut state = self.state.lock().await;
+        state.stopped = true;
         state.blocker = None;
         #[cfg(target_os = "macos")]
         if let Some(held) = state.lid.take()
@@ -338,6 +343,23 @@ mod battery {
     }
 }
 
+/// Whether the keep-awake-with-the-lid-closed sudoers rule is installed.
+pub fn lid_rule_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    return lid::rule_installed();
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// Removes the keep-awake-with-the-lid-closed sudoers rule behind one administrator prompt, if
+/// it is installed. What happened, said plainly.
+pub async fn remove_lid_rule() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    return lid::remove_rule().await;
+    #[cfg(not(target_os = "macos"))]
+    Ok("There is no such rule on this system.".into())
+}
+
 #[cfg(target_os = "macos")]
 mod lid {
     use std::path::{Path, PathBuf};
@@ -434,6 +456,53 @@ mod lid {
             "The administrator password was not given.".to_owned()
         } else {
             format!("Setting up failed: {}", stderr.trim())
+        })
+    }
+
+    pub fn rule_installed() -> bool {
+        std::fs::symlink_metadata(RULE).is_ok()
+    }
+
+    /// A development build started with `BRIGADIER_LID_RULE_DRY_RUN=1` only says what it would
+    /// run, so uninstalling can be tried without touching the rule the installed app uses.
+    fn dry_run() -> bool {
+        cfg!(debug_assertions)
+            && std::env::var_os("BRIGADIER_LID_RULE_DRY_RUN").is_some_and(|value| value == "1")
+    }
+
+    /// Removes the sudoers rule behind an administrator prompt.
+    pub async fn remove_rule() -> Result<String, String> {
+        if !rule_installed() {
+            return Ok("It wasn't installed.".into());
+        }
+        let script = format!("/bin/rm -f {RULE}");
+        if dry_run() {
+            tracing::info!(command = %script, "dry run: would remove the lid-closed sudoers rule as administrator");
+            return Ok(format!("Dry run: would run “{script}” as administrator."));
+        }
+        let apple_script = format!(
+            "do shell script \"{}\" with administrator privileges with prompt \
+             \"Brigadier is being uninstalled and removes the rule that let it keep your Mac \
+             awake with the lid closed.\"",
+            applescript_escape(&script)
+        );
+        let output = tokio::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &apple_script])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|err| err.to_string())?;
+        if output.status.success() && !rule_installed() {
+            return Ok("Removed.".into());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(if stderr.contains("-128") {
+            format!("The administrator password was not given; remove it with: sudo rm {RULE}")
+        } else {
+            format!(
+                "It stays ({}); remove it with: sudo rm {RULE}",
+                stderr.trim()
+            )
         })
     }
 

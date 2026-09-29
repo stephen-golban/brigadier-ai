@@ -40,15 +40,14 @@ const LOG_MAX_AGE: Duration = Duration::from_secs(8 * 24 * 60 * 60);
 const RECORDING_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// Compacting the database is offered from this much free space on.
 const COMPACT_MIN_BYTES: u64 = 1024 * 1024;
-/// Where Claude sessions' own temp folders are (see the Claude adapter).
-#[cfg(unix)]
-const SESSION_TEMP_BASE: &str = "/tmp";
 
 /// A removal the daemon runs for a picked item.
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Rebuildable data, deleted for good.
     Delete(Vec<(Bound, u64)>),
+    /// A folder removed only while it is still empty.
+    RemoveEmptyDir(Bound),
     /// What the user may want back, moved to the Trash.
     Trash(Vec<(Bound, u64)>),
     /// A worktree removed through git, its uncommitted work kept as a WIP commit first.
@@ -79,6 +78,9 @@ pub enum Action {
 pub struct ScanItem {
     pub item: CleanItem,
     pub action: Action,
+    /// Purely Brigadier's, rebuildable, and clearly left over: housekeeping removes it without
+    /// asking.
+    pub routine: bool,
 }
 
 /// What the daemon knows that the session manager doesn't.
@@ -200,6 +202,7 @@ impl SessionManager {
                     true,
                 ),
                 action: Action::CollectBlobs,
+                routine: false,
             });
         }
         if let Some(space) = space
@@ -216,6 +219,7 @@ impl SessionManager {
                     true,
                 ),
                 action: Action::Compact,
+                routine: false,
             });
         }
         Ok((items, usage))
@@ -317,6 +321,14 @@ impl SessionManager {
                         cleaned.reclaimed += bytes;
                     }
                     Ok(cleaned)
+                })
+                .await
+            }
+            Action::RemoveEmptyDir(bound) => {
+                blocking(move || {
+                    removal::remove_empty_dir(&bound)
+                        .map_err(|err| Error::Invalid(err.to_string()))?;
+                    Ok(Cleaned::default())
                 })
                 .await
             }
@@ -503,7 +515,7 @@ pub struct ScanUsage {
 
 /// Keeps a worktree's uncommitted changes as a WIP commit on its branch. Refuses when they
 /// can't be kept (no branch), so they are never lost with the worktree.
-fn keep_changes(git: &brigadier_git::Git, path: &Path) -> Result<()> {
+pub(super) fn keep_changes(git: &brigadier_git::Git, path: &Path) -> Result<()> {
     let worktree = git.open_worktree(path).map_err(git_error)?;
     match worktree
         .commit_wip("WIP: uncommitted changes kept by Brigadier before removing its worktree")
@@ -740,7 +752,20 @@ impl Scanner<'_> {
     }
 
     fn push(&mut self, item: CleanItem, action: Action) {
-        self.items.push(ScanItem { item, action });
+        self.items.push(ScanItem {
+            item,
+            action,
+            routine: false,
+        });
+    }
+
+    /// An item housekeeping may remove on its own too.
+    fn push_routine(&mut self, item: CleanItem, action: Action) {
+        self.items.push(ScanItem {
+            item,
+            action,
+            routine: true,
+        });
     }
 
     /// Worktree folders in the data directory that nothing live uses.
@@ -751,7 +776,7 @@ impl Scanner<'_> {
             if worktrees.is_empty() {
                 let empty = std::fs::read_dir(&project_dir).is_ok_and(|mut e| e.next().is_none());
                 if empty && let Some(bound) = self.bind_data(&project_dir) {
-                    self.push(
+                    self.push_routine(
                         item(
                             CleanCategory::Worktrees,
                             "Empty worktree folder".into(),
@@ -760,7 +785,7 @@ impl Scanner<'_> {
                             "A project's worktree folder with nothing left in it.",
                             true,
                         ),
-                        Action::Delete(vec![(bound, 0)]),
+                        Action::RemoveEmptyDir(bound),
                     );
                 }
                 continue;
@@ -784,6 +809,7 @@ impl Scanner<'_> {
                     self.items.push(ScanItem {
                         item: report,
                         action: Action::External("none".into()),
+                        routine: false,
                     });
                     continue;
                 };
@@ -1196,47 +1222,21 @@ impl Scanner<'_> {
     /// Claude sessions' own temp folders under /tmp that this data directory made.
     #[cfg(unix)]
     fn session_temp_folders(&mut self) {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let Ok(uid) = std::fs::metadata(&self.records.data_dir).map(|meta| meta.uid()) else {
-            return;
-        };
         let instance = self.platform.paths().instance.clone();
         let held = self.held(|_| true);
-        let base = Path::new(SESSION_TEMP_BASE);
-        let Ok(entries) = std::fs::read_dir(base) else {
-            return;
-        };
+        let base = Path::new(brigadier_sandbox::footprint::SESSION_TEMP_BASE);
         let mut ours = Vec::new();
         let mut legacy = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let is_session_dir = name.strip_prefix("brigadier-").is_some_and(|id| {
-                id.len() == 12
-                    && id
-                        .chars()
-                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-            });
-            if !is_session_dir {
+        for folder in brigadier_sandbox::footprint::session_temp_folders() {
+            if held.contains(&folder.path.display().to_string()) {
                 continue;
             }
-            let path = base.join(&name);
-            let Ok(meta) = std::fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o777 != 0o700 {
-                continue;
-            }
-            if held.contains(&path.display().to_string()) {
-                continue;
-            }
-            match removal::read_owner_marker(&path) {
-                Some(marker) if marker.lines().next() == Some(instance.as_str()) => {
-                    if older_than(&path, TEMP_MIN_AGE) && !self.busy(&path) {
-                        ours.push(path);
-                    }
+            if folder.made_by(&instance) {
+                if older_than(&folder.path, TEMP_MIN_AGE) && !self.busy(&folder.path) {
+                    ours.push(folder.path);
                 }
-                Some(_) => {}
-                None => legacy.push(path),
+            } else if folder.marker.is_none() {
+                legacy.push(folder.path);
             }
         }
         let mut entries = Vec::new();
@@ -1248,7 +1248,7 @@ impl Scanner<'_> {
         }
         if !entries.is_empty() {
             let bytes = entries.iter().map(|(_, bytes)| bytes).sum();
-            self.push(
+            self.push_routine(
                 item(
                     CleanCategory::SessionFiles,
                     format!("{} session temp folders", entries.len()),
@@ -1280,6 +1280,7 @@ impl Scanner<'_> {
             self.items.push(ScanItem {
                 item: entry,
                 action: Action::External("none".into()),
+                routine: false,
             });
         }
     }

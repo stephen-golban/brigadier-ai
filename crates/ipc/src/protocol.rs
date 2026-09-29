@@ -9,7 +9,8 @@
 
 use brigadier_brain::{BrainAnswer, BrainGraph, BrainQuery, Node, NodeFilter};
 use brigadier_core::storage::{
-    BranchChoice, CleanReport, ProjectRemoval, RemoveProjectReport, StorageReport,
+    BranchChoice, CleanReport, ProjectRemoval, RemoveProjectReport, StorageReport, UninstallApp,
+    UninstallPlan, UninstallReport,
 };
 use brigadier_core::{
     AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
@@ -631,6 +632,18 @@ pub enum Request {
         scan_id: String,
         items: Vec<String>,
     },
+    /// What uninstalling Brigadier removes (Settings → Storage, or the app menu).
+    PreviewUninstall {
+        app: UninstallApp,
+    },
+    /// Uninstalls Brigadier as the plan said: everything stops and what Brigadier created goes
+    /// (the picked branches too); the data directory (unless `keep_data`), the per-app folders
+    /// and the app go to the Trash once the app and the daemon quit.
+    Uninstall {
+        plan_id: String,
+        keep_data: bool,
+        delete_branches: Vec<BranchChoice>,
+    },
     /// Orderly quit: stop admitting writes, commit what is queued, acknowledge, exit.
     Shutdown,
 }
@@ -909,6 +922,12 @@ pub enum Response {
     },
     CleanStorage {
         report: CleanReport,
+    },
+    PreviewUninstall {
+        plan: Box<UninstallPlan>,
+    },
+    Uninstall {
+        report: UninstallReport,
     },
     Shutdown,
 }

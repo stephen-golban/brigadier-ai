@@ -7,6 +7,7 @@
 //! report [`Error::Unsupported`] for the worker sandbox, credential storage and login-shell
 //! resolution until their platform phase.
 
+pub mod footprint;
 mod paths;
 mod process;
 pub mod removal;

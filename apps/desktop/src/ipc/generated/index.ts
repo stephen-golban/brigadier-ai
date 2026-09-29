@@ -1,5 +1,6 @@
 export type { Access } from "./Access";
 export type { AppInfo } from "./AppInfo";
+export type { AppRemoval } from "./AppRemoval";
 export type { Approval } from "./Approval";
 export type { ApprovalDecision } from "./ApprovalDecision";
 export type { ApprovalKind } from "./ApprovalKind";
@@ -212,6 +213,11 @@ export type { TerminalOutput } from "./TerminalOutput";
 export type { TokenUsage } from "./TokenUsage";
 export type { TurnStatus } from "./TurnStatus";
 export type { UiMeasurements } from "./UiMeasurements";
+export type { UninstallApp } from "./UninstallApp";
+export type { UninstallItem } from "./UninstallItem";
+export type { UninstallPlan } from "./UninstallPlan";
+export type { UninstallReport } from "./UninstallReport";
+export type { UninstallStep } from "./UninstallStep";
 export type { UserRequest } from "./UserRequest";
 export type { WorkerAccess } from "./WorkerAccess";
 export type { WorkerDiff } from "./WorkerDiff";

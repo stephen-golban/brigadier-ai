@@ -32,6 +32,7 @@ mod server;
 mod storage;
 mod supervisor;
 mod terminals;
+mod uninstall;
 mod upgrade;
 
 use std::path::PathBuf;
@@ -114,6 +115,14 @@ fn main() -> ExitCode {
     // `brigadierd quit [--data-dir PATH]`: asks that data directory's daemon to quit.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "quit") {
         return quit::main(std::env::args_os().skip(2));
+    }
+    // `brigadierd uninstall-finish …`: what uninstalling removes once Brigadier quit (see
+    // `uninstall`).
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "uninstall-finish")
+    {
+        return uninstall::finish_main(std::env::args_os().skip(2));
     }
     // `brigadierd index-scan <db> <root> <threads>`: one code index scan (see
     // `brigadier_index::ScanHelper`).
@@ -312,6 +321,7 @@ async fn run(
     supervisor.spawn_critical("wal checkpointer", checkpoint_loop(store.clone()));
     supervisor.spawn(awake.clone().run(stopping.clone()));
     supervisor.spawn(idle::exit_when_idle(daemon.clone(), stopping.clone()));
+    supervisor.spawn(storage::housekeeping(daemon.clone(), stopping.clone()));
     tracing::info!("brigadierd ready");
 
     let reason = tokio::select! {

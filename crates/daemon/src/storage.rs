@@ -5,13 +5,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use brigadier_core::manager::disk::{Action, ScanContext, ScanItem};
 use brigadier_core::storage::{CleanCategory, CleanFailure, CleanItem, CleanReport, StorageReport};
 use brigadier_ipc::protocol::{ClientFrame, ClientInfo, Outcome, Request, Response, ServerFrame};
 use brigadier_sandbox::AppPaths;
+
+use tokio_util::sync::CancellationToken;
 
 use crate::server::Daemon;
 
@@ -21,6 +23,10 @@ const SCAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long another daemon gets to quit.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Housekeeping's first run after the daemon starts, once launch-time work has settled.
+const HOUSEKEEPING_DELAY: Duration = Duration::from_secs(2 * 60);
+/// And then once a day.
+const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// What the daemon removes itself.
 #[derive(Debug, Clone)]
@@ -82,12 +88,19 @@ impl Storage {
             items.push(ScanItem {
                 item,
                 action: Action::External(key),
+                routine: false,
             });
         }
         let scan_id = uuid::Uuid::now_v7().to_string();
         let mut entries = HashMap::new();
         let mut listed = Vec::new();
-        for (index, ScanItem { mut item, action }) in items.into_iter().enumerate() {
+        for (
+            index,
+            ScanItem {
+                mut item, action, ..
+            },
+        ) in items.into_iter().enumerate()
+        {
             item.id = format!("item-{index}");
             let own = match &action {
                 Action::External(key) => Some(own.get(key).cloned().unwrap_or(DaemonAction::None)),
@@ -182,6 +195,57 @@ impl Storage {
     }
 }
 
+/// Removes on its own, shortly after the daemon starts and then daily, what is clearly left
+/// over, purely Brigadier's and rebuildable: empty worktree folders, this data directory's
+/// session temp folders untouched for a day with nothing working in them, connection folders
+/// nobody listens on. Never user data, never git branches, never anything with changes.
+pub async fn housekeeping(daemon: Arc<Daemon>, stop: CancellationToken) -> anyhow::Result<()> {
+    let mut wait = HOUSEKEEPING_DELAY;
+    loop {
+        tokio::select! {
+            () = stop.cancelled() => return Ok(()),
+            () = tokio::time::sleep(wait) => {}
+        }
+        wait = HOUSEKEEPING_EVERY;
+        if daemon.uninstall.started() {
+            return Ok(());
+        }
+        daemon.storage.housekeep(&daemon).await;
+    }
+}
+
+impl Storage {
+    async fn housekeep(&self, daemon: &Daemon) {
+        let _one = self.cleaning.lock().await;
+        let items = match daemon.sessions.scan_storage(ScanContext::default()).await {
+            Ok((items, _)) => items,
+            Err(err) => {
+                tracing::warn!(error = %err, "housekeeping could not look around");
+                return;
+            }
+        };
+        let paths = daemon.runtime.platform().paths().clone();
+        let sockets = tokio::task::spawn_blocking(move || stale_sockets(&paths))
+            .await
+            .unwrap_or_default();
+        let mut removed = 0;
+        for ScanItem { item, action, .. } in
+            items.into_iter().chain(sockets).filter(|item| item.routine)
+        {
+            match daemon.sessions.clean_storage(action).await {
+                Ok(_) => {
+                    removed += 1;
+                    tracing::info!(item = %item.label, path = item.path.as_deref().unwrap_or(""), "housekeeping removed a leftover");
+                }
+                Err(error) => {
+                    tracing::debug!(item = %item.label, %error, "housekeeping left an item");
+                }
+            }
+        }
+        tracing::info!(removed, "housekeeping done");
+    }
+}
+
 /// The order removals run in: processes first (nothing then writes what goes next), then what
 /// the ledger holds, worktrees before their records and branches, blobs and the database last.
 fn rank(action: &Action) -> u8 {
@@ -191,7 +255,7 @@ fn rank(action: &Action) -> u8 {
         Action::RemoveWorktree { .. } => 2,
         Action::PruneWorktrees { .. } => 3,
         Action::DeleteBranch { .. } => 4,
-        Action::Delete(_) | Action::Trash(_) => 5,
+        Action::Delete(_) | Action::Trash(_) | Action::RemoveEmptyDir(_) => 5,
         Action::CollectBlobs => 6,
         Action::Compact => 7,
     }
@@ -270,6 +334,7 @@ fn stale_sockets(paths: &AppPaths) -> Vec<ScanItem> {
     vec![ScanItem {
         item,
         action: Action::Delete(stale),
+        routine: true,
     }]
 }
 

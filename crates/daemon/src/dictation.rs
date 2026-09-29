@@ -270,6 +270,12 @@ impl Dictation {
     pub fn cancel(&self, id: &str) {
         lock(&self.live).remove(id);
     }
+
+    /// Drops every dictation and stops the model's download.
+    pub fn stop_all(&self) {
+        lock(&self.live).clear();
+        self.cancel_download();
+    }
 }
 
 /// The helper's answer: its JSON line on stdout, then its exit.

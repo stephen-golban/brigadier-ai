@@ -249,7 +249,7 @@ impl SessionManager {
     }
 
     /// Stops everything a conversation runs and removes what it created.
-    async fn wind_down(&self, conversation: &Conversation) {
+    pub(super) async fn wind_down(&self, conversation: &Conversation) {
         let id = &conversation.id;
         let conv = self.convs_lock().remove(id);
         if let Some(conv) = conv {

@@ -126,6 +126,18 @@ pub fn delete(bound: &Bound) -> Result<()> {
     sys::delete(bound)
 }
 
+/// Removes `bound`, a folder, only while it is empty, after checking it again. What something
+/// put in it meanwhile keeps it.
+pub fn remove_empty_dir(bound: &Bound) -> Result<()> {
+    recheck(bound)?;
+    std::fs::remove_dir(&bound.path).map_err(|err| RemovalError::io(&bound.path, err))?;
+    if is_gone(&bound.path) {
+        Ok(())
+    } else {
+        Err(RemovalError::StillThere(bound.path.clone()))
+    }
+}
+
 /// Moves `bound` to the Trash, after checking it again, through a quarantine folder named for
 /// `owner` (this instance's id) in its root.
 pub fn trash(bound: &Bound, owner: &str) -> Result<()> {
