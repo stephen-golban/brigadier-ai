@@ -19,23 +19,28 @@ import { Check, Copy, ExpandLg } from "@openai/apps-sdk-ui/components/Icon";
 
 import { CodeBlock, CodeHeader } from "@/components/assistant-ui/code-block";
 import { FileTypeIcon } from "@/components/assistant-ui/elements/file-type-icon";
+import { createWordFade } from "@/components/assistant-ui/word-fade";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { openUrl, revealPath } from "@/ipc/client";
-import { rehypeTailFade } from "@/lib/tail-fade";
 import { cn } from "@/lib/utils";
 import { selectedConversation, useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
-  /** The text is still streaming: its newest words fade in. */
+  /** The text is still streaming: it shows at a steady pace and each word fades in. */
   streaming?: boolean | undefined;
 };
 
-const TAIL_FADE = [rehypeTailFade];
+/**
+ * The pace streaming text shows at: it trails what has arrived, steered so whatever waits
+ * shows in about a second (never slower than a character a second), and the shown text
+ * updates at most every 50ms. Off when the system asks for less motion.
+ */
+const STREAM_PACE = { drainMs: 1000, maxCharIntervalMs: 1000, minCommitMs: 50 };
 
 /**
  * Keeps file links like `notes.py:36`, which react-markdown's default would drop as an
@@ -75,16 +80,18 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, streaming }) => {
       ...memoizeMarkdownComponents(stableComponents),
     };
   }, [stableComponents]);
+  // One per streaming text: it remembers which of its words already faded in.
+  const rehypePlugins = useMemo(() => (streaming ? [createWordFade()] : undefined), [streaming]);
 
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={streaming ? TAIL_FADE : undefined}
+      rehypePlugins={rehypePlugins}
       // Only text that still streams is revealed as it arrives. Settled text shows whole at
       // once, also when it mounts again (the stored reply replacing the streamed one, a work
       // block folding): revealed from nothing, it would shrink the thread for a moment and
-      // pull it off the newest message.
-      smooth={streaming === true}
+      // pull it off the newest message. The end of a stream shows the rest at once.
+      smooth={streaming === true && STREAM_PACE}
       className="aui-md"
       urlTransform={keepLinks}
       components={markdownComponents}

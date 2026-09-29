@@ -30,7 +30,6 @@
  *               max-h-queue-max               the queue card's maximum height (then it scrolls)
  *               size-attachment-thumb, w-attachment-card  an image attachment, a file attachment
  *               mx-rail-inset, -mb-rail-tuck  the composer rail: its side inset, the tuck under the card
- *               message-contain               skip rendering off-screen messages
  *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
  *               h-status-bar                  the status bar along the bottom of the window
@@ -146,7 +145,6 @@
   --spacing-setup-card: 13rem;
   --spacing-user-message: 22.5rem;
   /* Placeholder height for off-screen messages skipped by content-visibility. */
-  --message-intrinsic-size: 12rem;
 
   --container-2xs: 14rem;
   --container-xs: 20rem;
@@ -170,6 +168,7 @@
   --radius-dialog: 0.75rem;
   --radius-thread: 1rem;
   --radius-composer: 1.375rem;
+  --radius-bubble: 1.375rem;
   --radius-rail: 1.25rem;
   /* Menus and tooltips: rounder than cards. */
   --radius-menu: 1.25rem;
@@ -375,7 +374,6 @@
   --spacing-inspector-wide: 36rem;
   --spacing-agents: 22rem;
   --spacing-user-message: 18.75rem;
-  --message-intrinsic-size: 9rem;
 
   --radius-xs: 0.125rem;
   --radius-sm: 0.25rem;
@@ -389,6 +387,7 @@
   --radius-dialog: 0.625rem;
   --radius-thread: 0.75rem;
   --radius-composer: 1.125rem;
+  --radius-bubble: 1.125rem;
   --radius-rail: 1rem;
   --radius-menu: 1rem;
   --radius-tooltip: 0.75rem;

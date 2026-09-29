@@ -40,6 +40,7 @@ import {
   MessageText,
   StreamingMessageText,
 } from "@/components/assistant-ui/thread";
+import { preserveAnchor } from "@/components/assistant-ui/preserve-anchor";
 import { RateItem, RateMenu } from "@/components/assistant-ui/rate-menu";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
@@ -123,7 +124,8 @@ const WorkHeader: FC<{
   meta: BlockMeta;
   open: boolean;
   foldable: boolean;
-  onToggle: () => void;
+  /** Called with the header, before the fold opens or closes. */
+  onToggle: (header: HTMLElement) => void;
 }> = ({ meta, open, foldable, onToggle }) => {
   const elapsed = useElapsed(meta.startedAtMs, meta.endedAtMs, isLive(meta.state));
   if (meta.state === "working" && !foldable && elapsed < HEADER_AFTER_MS) return null;
@@ -153,14 +155,14 @@ const WorkHeader: FC<{
       type="button"
       data-slot="request-work-header"
       aria-expanded={open}
-      onClick={onToggle}
+      onClick={(event) => onToggle(event.currentTarget)}
       className="group border-border flex h-control-sm items-center gap-1 border-b text-start"
     >
       {text}
       <ChevronRight
         aria-hidden
         className={cn(
-          "text-muted-foreground size-icon-xs transition-[rotate,opacity] duration-200 motion-reduce:transition-none",
+          "text-muted-foreground size-icon-xs transition-[rotate] duration-150 ease-in-out motion-reduce:transition-none",
           open ? "rotate-90" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
         )}
       />
@@ -284,7 +286,7 @@ function compactionLabel({ automatic, state }: BlockCompaction): string {
 const CompactionRow: FC<{ compaction: BlockCompaction }> = ({ compaction }) => (
   <div data-slot="compaction" data-state={compaction.state} className={STEP_ROW}>
     <TextShorterConcise aria-hidden className="size-icon-md shrink-0" />
-    <span className={cn("min-w-0 truncate", compaction.state === "running" && "shimmer motion-reduce:animate-none")}>
+    <span className={cn("min-w-0 truncate", compaction.state === "running" && "shimmer")}>
       {compactionLabel(compaction)}
       {compaction.error && ` · ${compaction.error}`}
     </span>
@@ -366,17 +368,35 @@ const ActivityRow: FC<{ requestIds: string[] }> = ({ requestIds }) => {
   if (worker) {
     return (
       <div data-slot="request-activity" className="flex min-w-0 items-center gap-1.5 text-sm">
-        <span className="shimmer shrink-0 motion-reduce:animate-none">{label}</span>
+        <span className="shimmer shrink-0">{label}</span>
         <WorkerMention taskId={worker} />
       </div>
     );
   }
   return (
-    <div data-slot="request-activity" className="shimmer truncate text-sm motion-reduce:animate-none">
+    // As wide as its words, so the sweep crosses them rather than the whole row.
+    <div data-slot="request-activity" className="shimmer w-fit max-w-full truncate text-sm">
       {label}
     </div>
   );
 };
+
+/**
+ * Where a turn is, for the thread's scrolling: its final answer streams (`final_answer`), it
+ * shows work before that (`prework`), or it is over or shows nothing yet (`idle`).
+ */
+function turnPhase(
+  meta: BlockMeta,
+  live: boolean,
+  answering: boolean,
+): "idle" | "prework" | "final_answer" {
+  if (!live) return "idle";
+  const streaming = meta.texts.at(-1)?.position === Number.POSITIVE_INFINITY;
+  const work = meta.steps.length > 0 || meta.orchestratorSteps.length > 0 || meta.cards.length > 0;
+  if (answering || (!work && streaming)) return "final_answer";
+  if (work || meta.texts.some((text) => text.position !== Number.POSITIVE_INFINITY)) return "prework";
+  return "idle";
+}
 
 /**
  * One request's answer, shown as a turn. While the request works (and after it was stopped
@@ -387,7 +407,7 @@ const ActivityRow: FC<{ requestIds: string[] }> = ({ requestIds }) => {
  */
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
-  const [open, setOpen] = useState(false);
+  const fold = useFold();
   const requestIds = meta?.requestIds;
   const workersActive = useBoard((s) =>
     Object.values(s.board?.tasks ?? {}).some(
@@ -415,6 +435,8 @@ export const RequestBlock: FC = () => {
   );
   const kept = meta.cards.filter((card) => card.keep);
   const foldable = done && folded.length > 0;
+  const shown = foldable && fold.state !== null;
+  const phase = turnPhase(meta, live, answering);
   const header =
     foldable ||
     meta.state === "stopped" ||
@@ -426,23 +448,36 @@ export const RequestBlock: FC = () => {
       data-slot="aui_assistant-message-root"
       data-role="assistant"
       data-state={meta.state}
-      className="group/answer fade-in animate-in message-contain relative flex flex-col gap-2 px-2 duration-150"
+      data-turn-phase={phase}
+      data-turn-live={live ? "true" : undefined}
+      data-turn-steers={String(meta.steers.length)}
+      className="group/answer relative flex flex-col gap-2 px-2"
     >
       <ModelChanged model={meta.texts[last]?.model ?? null} picked={meta.picked} />
       {header && (
-        <WorkHeader meta={meta} open={open} foldable={foldable} onToggle={() => setOpen(!open)} />
+        <WorkHeader meta={meta} open={fold.open} foldable={foldable} onToggle={fold.toggle} />
       )}
       {done ? (
         <>
-          {open && foldable && (
-            <div data-slot="request-fold" className="flex flex-col gap-3">
-              {folded.map((entry) => (
-                <SequenceEntry key={entryKey(entry)} entry={entry} streaming={false} />
-              ))}
+          {shown && (
+            <div
+              data-slot="request-fold"
+              data-fold={fold.state}
+              className={cn(
+                "grid grid-rows-[1fr]",
+                fold.state === "opening" && "animate-fold-open motion-reduce:animate-fold-fade-in",
+                fold.state === "closing" && "animate-fold-close motion-reduce:animate-fold-fade-out",
+              )}
+            >
+              <div className={cn("flex min-h-0 flex-col gap-3", fold.state !== "open" && "overflow-hidden")}>
+                {folded.map((entry) => (
+                  <SequenceEntry key={entryKey(entry)} entry={entry} streaming={false} />
+                ))}
+              </div>
             </div>
           )}
           {/* The user's own follow-ups stay in view when the work folds. */}
-          {!(open && foldable) &&
+          {!shown &&
             meta.steers.map((steer) => (
               <SteerBubble key={`steer:${steer.position}`} text={steer.text} atMs={steer.atMs} />
             ))}
@@ -459,7 +494,7 @@ export const RequestBlock: FC = () => {
           )}
         </>
       ) : (
-        <div data-slot="request-work" className="flex flex-col gap-3">
+        <div data-slot="request-work" data-follow-content className="flex flex-col gap-3">
           {sequence.map((entry) => (
             <SequenceEntry
               key={entryKey(entry)}
@@ -494,6 +529,32 @@ export const RequestBlock: FC = () => {
   );
 };
 
+/** How long the folded work takes to open and to close; keep in step with globals.css. */
+const FOLD_OPEN_MS = 300;
+const FOLD_CLOSE_MS = 150;
+
+/**
+ * The folded work of a turn: shut (`null`), opening, open or closing. It stays mounted while it
+ * closes, and the header keeps its place on screen while the work opens or closes under it.
+ */
+function useFold() {
+  const [state, setState] = useState<"opening" | "open" | "closing" | null>(null);
+  useEffect(() => {
+    if (state !== "opening" && state !== "closing") return;
+    const timer = window.setTimeout(
+      () => setState(state === "opening" ? "open" : null),
+      state === "opening" ? FOLD_OPEN_MS : FOLD_CLOSE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  const open = state === "opening" || state === "open";
+  const toggle = (header: HTMLElement) => {
+    preserveAnchor(header);
+    setState(open ? "closing" : "opening");
+  };
+  return { state, open, toggle };
+}
+
 /** The line shown when a turn ran on another model than the one picked (a fallback). */
 const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }> = ({
   model,
@@ -509,8 +570,9 @@ const ModelChanged: FC<{ model: ModelChoice | null; picked: ModelChoice | null }
 };
 
 /**
- * Under the answer, always shown: copy it, rate it and, in a Chat, ask for another answer and
- * move between answers (a session's answers have neither); when it came shows on hover.
+ * Under the answer: copy it, rate it and, in a Chat, ask for another answer and move between
+ * answers (a session's answers have neither). The latest answer always shows them, an older one
+ * on hover or focus; when it came shows on hover.
  */
 const AnswerActions: FC<{
   session: boolean;
@@ -528,12 +590,16 @@ const AnswerActions: FC<{
     const type = s.message.metadata.submittedFeedback?.type;
     return type === "positive" ? "good" : type === "negative" ? "bad" : null;
   });
+  const latest = useAuiState((s) => s.message.isLast);
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   const now = useNow(60_000);
   return (
     <ActionBarPrimitive.Root
       autohide="never"
-      className="text-muted-foreground animate-in fade-in -ms-1 flex min-h-7.5 items-center gap-1 duration-200"
+      className={cn(
+        "text-muted-foreground -ms-1 flex min-h-7.5 items-center gap-1",
+        !latest && "opacity-0 group-hover/answer:opacity-100 group-focus-within/answer:opacity-100",
+      )}
     >
       <TooltipIconButton tooltip={isCopied ? "Copied" : "Copy"} onClick={() => copyToClipboard(answer)}>
         {isCopied ? (
@@ -563,7 +629,7 @@ const AnswerActions: FC<{
         <ForkMenu conversationId={conversation.id} kind={conversation.kind} messageId={answerId} />
       )}
       {atMs !== null && (
-        <span className="ps-1 text-xs tabular-nums opacity-0 transition-opacity group-hover/answer:opacity-100 group-focus-within/answer:opacity-100">
+        <span className="ps-1 text-xs tabular-nums opacity-0 group-hover/answer:opacity-100 group-focus-within/answer:opacity-100">
           {formatSentAt(atMs, now)}
         </span>
       )}

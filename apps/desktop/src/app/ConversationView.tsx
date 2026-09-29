@@ -778,6 +778,10 @@ export function ConversationView({
                             components={THREAD_COMPONENTS}
                             // One placeholder, in every conversation.
                             placeholder="Do anything"
+                            // A session's work comes before its answer, and is followed once it
+                            // reaches the composer; a Chat's answer fills the room made for it.
+                            scrollMode={conversation?.kind === "chat" ? "chat" : "session"}
+                            scrollKey={conversation?.id}
                           />
                         </SummaryPane>
                       </div>

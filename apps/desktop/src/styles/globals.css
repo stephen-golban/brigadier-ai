@@ -6,8 +6,9 @@
 /* macOS draws the traffic lights over the window content (overlay title bar). */
 @custom-variant macos (&:where([data-platform="macos"], [data-platform="macos"] *));
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
-/* The thread's column inside the element: the thread's pane moves it aside for the pinned summary. */
-@custom-variant thread-column (& [data-slot="aui_thread-column"]);
+/* The thread's column and its composer's inside the element: the thread's pane moves them aside
+   for the pinned summary. */
+@custom-variant thread-column (& :is([data-slot="aui_thread-column"], [data-slot="aui_thread-footer-column"]));
 /* The pinned summary's card while hidden: unpinned, or in a pane where it floats instead. */
 @custom-variant summary-hidden (&:where([data-state="closed"], [data-summary="float"] *));
 
@@ -28,16 +29,19 @@
       height: 0;
     }
   }
+  /* One sweep in the first second of every four, in 48 steps; at rest the band is past the end. */
   @keyframes shimmer {
-    from {
-      background-position: 100% 0;
-    }
-    to {
+    0% {
       background-position: -100% 0;
+      animation-timing-function: steps(48, end);
+    }
+    25%,
+    100% {
+      background-position: 250% 0;
     }
   }
   --animate-collapsible-down: collapsible-down 150ms ease-out;
-  --animate-shimmer: shimmer 2s linear infinite;
+  --animate-shimmer: shimmer 4s 600ms infinite;
   --animate-collapsible-up: collapsible-up 150ms ease-out;
   /* A rail card opens from nothing to its height. */
   @keyframes rail-open {
@@ -51,6 +55,36 @@
     }
   }
   --animate-rail-open: rail-open 300ms cubic-bezier(0.19, 1, 0.22, 1);
+  /* A turn's folded work opens from nothing down to its height, and closes quicker; with less
+     motion it only fades. */
+  @keyframes fold-open {
+    from {
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+  }
+  @keyframes fold-close {
+    to {
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+  }
+  @keyframes fold-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes fold-fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  --animate-fold-open: fold-open 300ms cubic-bezier(0.19, 1, 0.22, 1);
+  --animate-fold-close: fold-close 150ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  --animate-fold-fade-in: fold-fade-in 150ms cubic-bezier(0.19, 1, 0.22, 1);
+  --animate-fold-fade-out: fold-fade-out 150ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
   /* A worker's glyph joins a row sliding in from the left and settling with a slight overshoot. */
   @keyframes glyph-in {
     from {
@@ -59,6 +93,36 @@
     }
   }
   --animate-glyph-in: glyph-in 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* The thread's scroll element, laid out bottom-up: the browser's own scroll anchoring is off (the
+   thread keeps its place itself), and focus scrolls keep clear of the floating composer. */
+@utility thread-scroll-padding {
+  overflow-anchor: none;
+  scroll-padding-bottom: var(--thread-scroll-padding-bottom, 0px);
+}
+
+/* The pad after the thread's content: as tall as the floating composer (the padding less its gap). */
+@utility thread-bottom-pad {
+  height: calc(var(--thread-scroll-padding-bottom, 1rem) - 1rem);
+}
+
+/* Behind the floating composer the background is solid, then fades out over 2rem above it. */
+@utility thread-bottom-fade {
+  background-image: linear-gradient(
+    to top,
+    var(--color-background) 0%,
+    var(--color-background) calc(100% - 2rem),
+    transparent 100%
+  );
+}
+
+/* 1.5rem above the composer's column, or above the capsule floating over it. */
+@utility above-composer {
+  bottom: calc(100% + 1.5rem);
+  [data-slot="aui_thread-footer-column"]:has([data-slot="composer-capsule"]) > & {
+    bottom: calc(100% + 4rem);
+  }
 }
 
 /* A row that scrolls sideways without showing a scrollbar (the composer's utility bar). */
@@ -79,53 +143,95 @@
   mask-image: linear-gradient(to bottom, transparent, black var(--spacing-row-sm));
 }
 
-/* Live text: a highlight sweeps across muted text ("Working for 12s"). */
+/* Live text ("Thinking", a running step): muted text a highlight band sweeps across now and
+   then, the first time 600ms after it shows, then every 4s. Still with less motion. */
 @utility shimmer {
+  --shimmer-base: color-mix(in oklab, var(--color-foreground) 55%, transparent);
+  --shimmer-highlight: color-mix(in oklab, var(--color-foreground) 75%, transparent);
+  background-color: var(--shimmer-base);
   background-image: linear-gradient(
-    90deg,
-    var(--color-muted-foreground) 35%,
-    var(--color-foreground) 50%,
-    var(--color-muted-foreground) 65%
+    to right,
+    transparent 0%,
+    var(--shimmer-highlight) 40%,
+    var(--shimmer-highlight) 60%,
+    transparent 100%
   );
-  background-size: 200% 100%;
+  background-position: -100% 0;
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
   background-clip: text;
-  color: transparent;
+  -webkit-text-fill-color: transparent;
   animation: var(--animate-shimmer);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
 }
 
-/* The newest words of a streaming reply, dimmest last; they brighten as more arrive. */
-@layer components {
-  .aui-tail {
-    transition: opacity 200ms ease-out;
-  }
-  .aui-tail-1 {
-    opacity: 0.25;
-  }
-  .aui-tail-2 {
-    opacity: 0.45;
-  }
-  .aui-tail-3 {
-    opacity: 0.65;
-  }
-  .aui-tail-4 {
-    opacity: 0.85;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .aui-tail {
-      transition: none;
+/* The dots of "still working" in a wave, each a little after the one before. */
+@utility wave-dot {
+  @media (prefers-reduced-motion: no-preference) {
+    animation: typing-dot-wave 1s ease-in-out infinite;
+    &:nth-child(2) {
+      animation-delay: 0.1s;
+    }
+    &:nth-child(3) {
+      animation-delay: 0.2s;
     }
   }
 }
 
-/* Lets the browser skip layout and paint for messages scrolled out of view. The newest two (the
-   last message and its answer) always render: a skipped one would mount at the placeholder
-   height and then shrink, or keep its old height while its answer streams in out of view, and
-   either way the thread would lose the bottom it follows. */
-@utility message-contain {
-  content-visibility: auto;
-  contain-intrinsic-size: auto var(--message-intrinsic-size);
-  &:nth-last-child(-n + 2) {
-    content-visibility: visible;
+@keyframes typing-dot-wave {
+  0%,
+  10%,
+  100% {
+    transform: translateY(0);
+  }
+  25% {
+    transform: translateY(1.2px);
+  }
+  55% {
+    transform: translateY(-2px);
+  }
+  70% {
+    transform: translateY(0);
+  }
+}
+
+/* A streaming reply's words fade in as they show (see word-fade.ts); rules, table rows and
+   quotes fade in quicker, list markers with their words. */
+@layer components {
+  .aui-fade,
+  .aui-fade-block {
+    opacity: 0;
+    animation: word-fade-in 700ms cubic-bezier(0.37, 0.55, 0.86, 0.88) forwards;
+  }
+  .aui-fade-block {
+    animation-duration: 150ms;
+  }
+  .aui-fade-marker::marker {
+    animation: marker-fade-in 700ms cubic-bezier(0.37, 0.55, 0.86, 0.88) forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .aui-fade,
+    .aui-fade-block {
+      opacity: 1;
+      animation: none;
+    }
+    .aui-fade-marker::marker {
+      animation: none;
+    }
+  }
+}
+
+@keyframes word-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes marker-fade-in {
+  from {
+    color: transparent;
   }
 }
 
