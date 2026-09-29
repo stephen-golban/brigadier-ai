@@ -457,6 +457,12 @@ impl Repo {
         Ok(())
     }
 
+    /// Remove the records of worktrees whose folders are gone (`git worktree prune`).
+    pub fn prune_worktrees(&self) -> Result<()> {
+        self.cmd(&["worktree", "prune", "--expire=now"], false)?;
+        Ok(())
+    }
+
     /// List registered worktrees using NUL-delimited porcelain metadata.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         parse::worktrees(&self.cmd(&["worktree", "list", "--porcelain", "-z"], true)?)

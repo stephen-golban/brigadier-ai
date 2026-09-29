@@ -1,0 +1,511 @@
+//! Settings → Storage, the daemon's side: it runs the session manager's scan, adds what only
+//! the daemon can see (other data directories' daemons, stale connection sockets), keeps each
+//! scan's items (bound to what was found) for a while, and removes the items the app picks by
+//! id. The app never names a path.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use brigadier_core::manager::disk::{Action, ScanContext, ScanItem};
+use brigadier_core::storage::{CleanCategory, CleanFailure, CleanItem, CleanReport, StorageReport};
+use brigadier_ipc::protocol::{ClientFrame, ClientInfo, Outcome, Request, Response, ServerFrame};
+use brigadier_sandbox::AppPaths;
+
+use crate::server::Daemon;
+
+/// How long a scan's items can be cleaned.
+const SCAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
+/// How long another daemon gets to answer.
+const ASK_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long another daemon gets to quit.
+const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What the daemon removes itself.
+#[derive(Debug, Clone)]
+enum DaemonAction {
+    /// Another data directory's daemon, found unused: asked to quit, SIGTERM only if asking
+    /// fails.
+    QuitDaemon {
+        data_dir: PathBuf,
+        pid: u32,
+        started_at: u64,
+    },
+    /// Shown only.
+    None,
+}
+
+struct Entry {
+    item: CleanItem,
+    action: Action,
+    own: Option<DaemonAction>,
+}
+
+struct Scan {
+    at: Instant,
+    entries: HashMap<String, Entry>,
+}
+
+#[derive(Default)]
+pub struct Storage {
+    scans: Mutex<HashMap<String, Scan>>,
+    /// One clean at a time.
+    cleaning: tokio::sync::Mutex<()>,
+}
+
+impl Storage {
+    fn scans(&self) -> std::sync::MutexGuard<'_, HashMap<String, Scan>> {
+        self.scans.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub async fn scan(&self, daemon: &Daemon) -> Result<StorageReport, String> {
+        let context = ScanContext {
+            speech_busy: !daemon.dictation.work().is_empty(),
+        };
+        let (mut items, usage) = daemon
+            .sessions
+            .scan_storage(context)
+            .await
+            .map_err(|err| err.to_string())?;
+        let mut own = HashMap::new();
+        let paths = daemon.runtime.platform().paths().clone();
+        let found =
+            tokio::task::spawn_blocking(move || (stale_sockets(&paths), other_daemons(&paths)))
+                .await
+                .map_err(|err| err.to_string())?;
+        let (sockets, daemons) = found;
+        items.extend(sockets);
+        for (item, action) in ask_daemons(daemons).await {
+            let key = format!("daemon-{}", own.len());
+            own.insert(key.clone(), action);
+            items.push(ScanItem {
+                item,
+                action: Action::External(key),
+            });
+        }
+        let scan_id = uuid::Uuid::now_v7().to_string();
+        let mut entries = HashMap::new();
+        let mut listed = Vec::new();
+        for (index, ScanItem { mut item, action }) in items.into_iter().enumerate() {
+            item.id = format!("item-{index}");
+            let own = match &action {
+                Action::External(key) => Some(own.get(key).cloned().unwrap_or(DaemonAction::None)),
+                _ => None,
+            };
+            listed.push(item.clone());
+            entries.insert(item.id.clone(), Entry { item, action, own });
+        }
+        let cleanable_bytes = listed
+            .iter()
+            .filter(|item| item.checked && item.selectable)
+            .map(|item| item.bytes)
+            .sum();
+        {
+            let mut scans = self.scans();
+            scans.retain(|_, scan| scan.at.elapsed() < SCAN_LIFETIME);
+            scans.insert(
+                scan_id.clone(),
+                Scan {
+                    at: Instant::now(),
+                    entries,
+                },
+            );
+        }
+        Ok(StorageReport {
+            scan_id,
+            data_dir: daemon.info.data_dir.clone(),
+            total_bytes: usage.total_bytes,
+            cleanable_bytes,
+            projects: usage.projects,
+            shared: usage.shared,
+            items: listed,
+        })
+    }
+
+    /// Removes the picked items of a scan. Each is checked again first; what fails is
+    /// reported and left in place.
+    pub async fn clean(
+        &self,
+        daemon: &Daemon,
+        scan_id: &str,
+        picked: Vec<String>,
+    ) -> Result<CleanReport, String> {
+        let _one = self.cleaning.lock().await;
+        let mut entries: Vec<Entry> = {
+            let mut scans = self.scans();
+            let scan = scans
+                .get_mut(scan_id)
+                .filter(|scan| scan.at.elapsed() < SCAN_LIFETIME)
+                .ok_or("This scan is too old; scan again.")?;
+            picked
+                .iter()
+                .filter_map(|id| scan.entries.remove(id))
+                .filter(|entry| entry.item.selectable)
+                .collect()
+        };
+        entries.sort_by_key(|entry| rank(&entry.action));
+        let mut report = CleanReport::default();
+        for entry in entries {
+            let outcome = match (&entry.action, entry.own) {
+                (
+                    Action::External(_),
+                    Some(DaemonAction::QuitDaemon {
+                        data_dir,
+                        pid,
+                        started_at,
+                    }),
+                ) => quit_daemon(&data_dir, pid, started_at)
+                    .await
+                    .map(|()| Default::default()),
+                (Action::External(_), _) => Err("This item can't be removed from here.".into()),
+                (action, _) => daemon.sessions.clean_storage(action.clone()).await,
+            };
+            match outcome {
+                Ok(cleaned) => {
+                    report.removed += 1;
+                    report.reclaimed_bytes += cleaned.reclaimed;
+                    report.trashed_bytes += cleaned.trashed;
+                    tracing::info!(item = %entry.item.label, "cleaned");
+                }
+                Err(error) => {
+                    tracing::warn!(item = %entry.item.label, %error, "could not clean");
+                    report.failures.push(CleanFailure {
+                        label: entry.item.label,
+                        path: entry.item.path,
+                        error,
+                    });
+                }
+            }
+        }
+        Ok(report)
+    }
+}
+
+/// The order removals run in: processes first (nothing then writes what goes next), then what
+/// the ledger holds, worktrees before their records and branches, blobs and the database last.
+fn rank(action: &Action) -> u8 {
+    match action {
+        Action::External(_) => 0,
+        Action::Dispose { .. } => 1,
+        Action::RemoveWorktree { .. } => 2,
+        Action::PruneWorktrees { .. } => 3,
+        Action::DeleteBranch { .. } => 4,
+        Action::Delete(_) | Action::Trash(_) => 5,
+        Action::CollectBlobs => 6,
+        Action::Compact => 7,
+    }
+}
+
+fn plain_item(
+    category: CleanCategory,
+    label: String,
+    path: Option<&Path>,
+    reason: String,
+    checked: bool,
+    selectable: bool,
+) -> CleanItem {
+    CleanItem {
+        id: String::new(),
+        category,
+        label,
+        path: path.map(|path| path.display().to_string()),
+        bytes: 0,
+        reason,
+        checked,
+        selectable,
+        to_trash: false,
+        badges: Vec::new(),
+    }
+}
+
+/// Connection folders other data directories' daemons left (`<temp>/brigadier-<uid>-<id>`,
+/// used when a data directory's path is too long for a socket) with nobody listening.
+#[cfg(unix)]
+fn stale_sockets(paths: &AppPaths) -> Vec<ScanItem> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let uid = nix::unistd::getuid().as_raw();
+    let temp = std::env::temp_dir();
+    let prefix = format!("brigadier-{uid}-");
+    let own = paths.socket_dir().map(Path::to_owned);
+    let Ok(entries) = std::fs::read_dir(&temp) else {
+        return Vec::new();
+    };
+    let mut stale = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_ours = name
+            .strip_prefix(&prefix)
+            .is_some_and(|id| id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit()));
+        let path = temp.join(&name);
+        if !is_ours || own.as_deref() == Some(path.as_path()) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
+            continue;
+        }
+        let socket = path.join("d.sock");
+        let listening = std::os::unix::net::UnixStream::connect(&socket).is_ok();
+        if listening {
+            continue;
+        }
+        if let Ok(bound) = brigadier_sandbox::removal::bind(&temp, &path) {
+            stale.push((bound, brigadier_sandbox::removal::allocated_size(&path)));
+        }
+    }
+    if stale.is_empty() {
+        return Vec::new();
+    }
+    let item = plain_item(
+        CleanCategory::Processes,
+        format!("{} stale connection folders", stale.len()),
+        Some(&temp),
+        "Left by Brigadier daemons that are no longer running; nothing listens on them.".into(),
+        true,
+        true,
+    );
+    vec![ScanItem {
+        item,
+        action: Action::Delete(stale),
+    }]
+}
+
+#[cfg(not(unix))]
+fn stale_sockets(_paths: &AppPaths) -> Vec<ScanItem> {
+    Vec::new()
+}
+
+/// Another data directory's daemon.
+struct OtherDaemon {
+    pid: u32,
+    started_at: u64,
+    data_dir: Option<PathBuf>,
+}
+
+/// This user's other `brigadierd` daemons (not their helpers), with their data directories.
+fn other_daemons(paths: &AppPaths) -> Vec<OtherDaemon> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_user(UpdateKind::Always),
+    );
+    let me = std::process::id();
+    let my_user = system
+        .process(sysinfo::Pid::from_u32(me))
+        .and_then(|process| process.user_id().cloned());
+    let mut found = Vec::new();
+    for (pid, process) in system.processes() {
+        let pid = pid.as_u32();
+        if pid == me || process.user_id().cloned() != my_user {
+            continue;
+        }
+        let cmd = process.cmd();
+        let is_daemon =
+            cmd.first().and_then(|exe| Path::new(exe).file_name()) == Some("brigadierd".as_ref());
+        // Its helpers (`mcp`, `transcribe`, `index-scan`, `quit`) take a subcommand first.
+        let helper = cmd
+            .get(1)
+            .is_some_and(|arg| !arg.to_string_lossy().starts_with("--"));
+        if !is_daemon || helper {
+            continue;
+        }
+        let data_dir = cmd
+            .iter()
+            .position(|arg| arg == "--data-dir")
+            .and_then(|at| cmd.get(at + 1))
+            .map(PathBuf::from);
+        if data_dir.as_deref() == Some(paths.data_dir.as_path()) {
+            continue;
+        }
+        found.push(OtherDaemon {
+            pid,
+            started_at: process.start_time(),
+            data_dir,
+        });
+    }
+    found
+}
+
+/// Asks each other daemon whether it is in use: only an unused one is offered.
+async fn ask_daemons(daemons: Vec<OtherDaemon>) -> Vec<(CleanItem, DaemonAction)> {
+    let mut items = Vec::new();
+    for daemon in daemons {
+        let label = match &daemon.data_dir {
+            Some(dir) => format!(
+                "Brigadier daemon for {} (pid {})",
+                dir.display(),
+                daemon.pid
+            ),
+            None => format!("Brigadier daemon (pid {})", daemon.pid),
+        };
+        let path = daemon.data_dir.clone();
+        let Some(data_dir) = daemon.data_dir else {
+            items.push((
+                plain_item(
+                    CleanCategory::Processes,
+                    label,
+                    None,
+                    "It doesn't say which data directory it serves, so it can't be asked \
+                     whether it is in use."
+                        .into(),
+                    false,
+                    false,
+                ),
+                DaemonAction::None,
+            ));
+            continue;
+        };
+        let (reason, unused) = match activity(&data_dir).await {
+            Ok(activity) if activity.clients > 0 => {
+                ("An app is connected to it.".to_owned(), false)
+            }
+            Ok(activity) if !activity.running.is_empty() => (
+                format!("It is working: {}.", activity.running.join(", ")),
+                false,
+            ),
+            Ok(_) => (
+                "No app is connected and nothing runs in it. It is asked to quit the way the \
+                 app's Quit does."
+                    .to_owned(),
+                true,
+            ),
+            Err(err) => (
+                format!("It couldn't be asked whether it is in use ({err}), so it is left alone."),
+                false,
+            ),
+        };
+        items.push((
+            plain_item(
+                CleanCategory::Processes,
+                label,
+                path.as_deref(),
+                reason,
+                false,
+                unused,
+            ),
+            if unused {
+                DaemonAction::QuitDaemon {
+                    data_dir,
+                    pid: daemon.pid,
+                    started_at: daemon.started_at,
+                }
+            } else {
+                DaemonAction::None
+            },
+        ));
+    }
+    items
+}
+
+/// Connects to `data_dir`'s daemon with its own token.
+async fn connect(data_dir: &Path) -> Result<brigadier_ipc::Connection, String> {
+    let paths = AppPaths::resolve(data_dir.to_owned()).map_err(|err| err.to_string())?;
+    let client = ClientInfo {
+        name: "Brigadier storage".into(),
+        pid: std::process::id(),
+    };
+    let (connection, _, _) =
+        tokio::time::timeout(ASK_TIMEOUT, brigadier_ipc::connect_to(&paths, client))
+            .await
+            .map_err(|_| "it did not answer".to_owned())?
+            .map_err(|err| err.to_string())?;
+    Ok(connection)
+}
+
+async fn ask(
+    connection: &mut brigadier_ipc::Connection,
+    request: Request,
+    timeout: Duration,
+) -> Result<Option<Response>, String> {
+    connection
+        .writer
+        .write(&ClientFrame::Request { id: 1, request })
+        .await
+        .map_err(|err| err.to_string())?;
+    tokio::time::timeout(timeout, async {
+        loop {
+            match connection.reader.read::<ServerFrame>().await {
+                Ok(Some(ServerFrame::Response { id: 1, result })) => {
+                    return match result {
+                        Outcome::Ok { value } => Ok(Some(value)),
+                        Outcome::Err { error } => Err(error.message),
+                    };
+                }
+                Ok(Some(ServerFrame::Closing) | None) => return Ok(None),
+                Ok(Some(_)) => {}
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| "it did not answer".to_owned())?
+}
+
+async fn activity(data_dir: &Path) -> Result<brigadier_ipc::protocol::DaemonActivity, String> {
+    let mut connection = connect(data_dir).await?;
+    match ask(&mut connection, Request::GetDaemonActivity, ASK_TIMEOUT).await? {
+        Some(Response::GetDaemonActivity { activity }) => Ok(activity),
+        _ => Err("it gave no answer".into()),
+    }
+}
+
+/// Asks an unused daemon to quit, checking again that it is unused; SIGTERM (which quits it the
+/// same orderly way) only when it can't be asked, and only while its pid is still that process.
+async fn quit_daemon(data_dir: &Path, pid: u32, started_at: u64) -> Result<(), String> {
+    let same_process = move || {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut system = System::new();
+        let sys_pid = sysinfo::Pid::from_u32(pid);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sys_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        system
+            .process(sys_pid)
+            .is_some_and(|process| process.start_time() == started_at)
+    };
+    let asked = async {
+        let activity = activity(data_dir).await?;
+        if activity.clients > 0 || !activity.running.is_empty() {
+            return Err::<bool, String>("it is in use again, so it stays".into());
+        }
+        let mut connection = connect(data_dir).await?;
+        ask(&mut connection, Request::Shutdown, QUIT_TIMEOUT).await?;
+        Ok(true)
+    }
+    .await;
+    match asked {
+        Ok(_) => {}
+        Err(err) if err.contains("in use") => return Err(err),
+        Err(err) => {
+            tracing::info!(pid, error = %err, "asking a daemon to quit failed; sending SIGTERM");
+            if !same_process() {
+                return Ok(());
+            }
+            #[cfg(unix)]
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(i32::try_from(pid).map_err(|err| err.to_string())?),
+                nix::sys::signal::Signal::SIGTERM,
+            )
+            .map_err(|err| err.to_string())?;
+            #[cfg(not(unix))]
+            return Err(format!("it could not be asked to quit: {err}"));
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while same_process() {
+        if Instant::now() > deadline {
+            return Err("it is still running".into());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
+}

@@ -111,6 +111,16 @@ impl BlobStore {
         self.root.join(&hash.0[..2]).join(&hash.0)
     }
 
+    /// The file holding a blob (which may not exist).
+    pub fn file_of(&self, hash: &BlobHash) -> PathBuf {
+        self.path(hash)
+    }
+
+    /// The blob store's folder.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn lock(&self) -> MutexGuard<'_, ()> {
         // The guarded state is the filesystem, which a panic cannot leave half-updated.
         self.gc_lock.lock().unwrap_or_else(PoisonError::into_inner)

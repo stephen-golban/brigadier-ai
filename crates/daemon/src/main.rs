@@ -29,6 +29,7 @@ mod logging;
 mod metrics;
 mod quit;
 mod server;
+mod storage;
 mod supervisor;
 mod terminals;
 mod upgrade;

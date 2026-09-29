@@ -838,6 +838,17 @@ pub struct RawPage {
     pub has_more: bool,
 }
 
+/// A branch Brigadier created and left in place, and where its work was meant to go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptBranch {
+    pub name: String,
+    /// The branch its work lands on (a task's target, a session's base).
+    pub target: String,
+    /// Its commit when it was kept.
+    pub tip: String,
+}
+
 /// Every change the core records. Serialized as the payload of a stored event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -885,6 +896,13 @@ pub enum DomainEvent {
     CleanupRecorded {
         owner: String,
         artifact: Artifact,
+    },
+    /// Branches Brigadier created in `repo` that a deleted conversation or removed project
+    /// left in place (unmerged work the user kept): what proves them Brigadier's, so Storage
+    /// can offer them later, while they still point where they did.
+    BranchesKept {
+        repo: String,
+        branches: Vec<KeptBranch>,
     },
     /// These artifacts of `owner` are gone.
     CleanupRemoved {
@@ -1035,6 +1053,7 @@ impl DomainEvent {
             Self::RawEvent { .. } => "raw.event",
             Self::CleanupRecorded { .. } => "cleanup.recorded",
             Self::CleanupRemoved { .. } => "cleanup.removed",
+            Self::BranchesKept { .. } => "branches.kept",
             Self::CleanupRequested { .. } => "cleanup.requested",
             Self::CleanupCompleted { .. } => "cleanup.completed",
             Self::ProviderChecked { .. } => "provider.checked",

@@ -440,6 +440,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
+ "uuid",
  "whisper-rs",
  "windows-sys 0.61.2",
 ]

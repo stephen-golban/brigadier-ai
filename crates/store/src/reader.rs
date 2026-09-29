@@ -153,3 +153,44 @@ pub(crate) fn stream_heads(conn: &Connection, prefix: &str) -> Result<Vec<Stream
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+
+/// Every distinct blob hash the events of `streams` reference.
+pub(crate) fn blob_hashes_of(conn: &Connection, streams: &[String]) -> Result<Vec<String>> {
+    let mut hashes = std::collections::BTreeSet::new();
+    let mut statement = conn.prepare_cached(
+        "SELECT DISTINCT r.hash FROM blob_refs r JOIN events e ON e.seq = r.seq \
+         WHERE e.stream = ?1",
+    )?;
+    for stream in streams {
+        let rows = statement.query_map(params![stream], |row| row.get::<_, String>(0))?;
+        for hash in rows {
+            hashes.insert(hash?);
+        }
+    }
+    Ok(hashes.into_iter().collect())
+}
+
+/// Which of `hashes` no stored event references.
+pub(crate) fn unreferenced(conn: &Connection, hashes: &[String]) -> Result<Vec<String>> {
+    let mut statement = conn.prepare_cached("SELECT 1 FROM blob_refs WHERE hash = ?1 LIMIT 1")?;
+    let mut free = Vec::new();
+    for hash in hashes {
+        if !statement.exists(params![hash])? {
+            free.push(hash.clone());
+        }
+    }
+    Ok(free)
+}
+
+/// The database's page size, page count and free pages.
+pub(crate) fn pages(conn: &Connection) -> Result<(u64, u64, u64)> {
+    let get = |pragma: &str| -> Result<u64> {
+        let value: i64 = conn.query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))?;
+        Ok(u64::try_from(value).unwrap_or_default())
+    };
+    Ok((
+        get("page_size")?,
+        get("page_count")?,
+        get("freelist_count")?,
+    ))
+}

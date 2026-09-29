@@ -8,6 +8,7 @@
 //! `method` tag, so TypeScript can pair them with `Extract<Response, { method: M }>`.
 
 use brigadier_brain::{BrainAnswer, BrainGraph, BrainQuery, Node, NodeFilter};
+use brigadier_core::storage::{CleanReport, StorageReport};
 use brigadier_core::{
     AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
     ConventionsExport, Conversation, ConversationActivity, ConversationId, ConversationKind,
@@ -615,6 +616,13 @@ pub enum Request {
     },
     /// Whether this daemon is in use: another Brigadier asks before offering to stop it.
     GetDaemonActivity,
+    /// What Brigadier keeps on disk and what it can clean up (Settings → Storage).
+    ScanStorage,
+    /// Removes the picked items of a scan (by the ids it gave them), each checked again first.
+    CleanStorage {
+        scan_id: String,
+        items: Vec<String>,
+    },
     /// Orderly quit: stop admitting writes, commit what is queued, acknowledge, exit.
     Shutdown,
 }
@@ -882,6 +890,12 @@ pub enum Response {
     },
     GetDaemonActivity {
         activity: DaemonActivity,
+    },
+    ScanStorage {
+        report: Box<StorageReport>,
+    },
+    CleanStorage {
+        report: CleanReport,
     },
     Shutdown,
 }

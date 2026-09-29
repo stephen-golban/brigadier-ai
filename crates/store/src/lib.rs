@@ -161,6 +161,15 @@ pub struct StoreStats {
     pub checkpoints: u64,
 }
 
+/// The database's size and the space compacting it would give back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DbSpace {
+    pub file_bytes: u64,
+    /// Free pages inside the file.
+    pub free_bytes: u64,
+    pub wal_bytes: u64,
+}
+
 /// What a [`Store::gc_blobs`] run found and did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GcStats {
@@ -359,6 +368,69 @@ impl Store {
         }
         tracing::info!(?stats, "blob gc finished");
         Ok(stats)
+    }
+
+    /// Every distinct blob the events of `streams` reference.
+    pub async fn blob_hashes_of(&self, streams: Vec<String>) -> Result<Vec<BlobHash>> {
+        let hashes = self
+            .reads
+            .run(move |conn| reader::blob_hashes_of(conn, &streams))
+            .await?;
+        Ok(hashes
+            .into_iter()
+            .filter_map(|hash| hash.parse().ok())
+            .collect())
+    }
+
+    /// What [`Store::gc_blobs`] would remove now: the blobs no event references, outside their
+    /// grace period, and the space they take.
+    pub async fn collectable_blobs(&self) -> Result<(u64, u64)> {
+        let cutoff = SystemTime::now()
+            .checked_sub(BLOB_GC_GRACE)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let blobs = self.blobs.clone();
+        let listed = tokio::task::spawn_blocking(move || blobs.list_blocking())
+            .await
+            .map_err(|err| Error::Io(std::io::Error::other(err)))??;
+        let old: Vec<String> = listed
+            .into_iter()
+            .filter(|entry| entry.modified <= cutoff)
+            .map(|entry| entry.hash.as_str().to_owned())
+            .collect();
+        let free = self
+            .reads
+            .run(move |conn| reader::unreferenced(conn, &old))
+            .await?;
+        let count = free.len() as u64;
+        let blobs = self.blobs.clone();
+        let bytes = tokio::task::spawn_blocking(move || {
+            free.iter()
+                .filter_map(|hash| hash.parse::<BlobHash>().ok())
+                .map(|hash| std::fs::metadata(blobs.file_of(&hash)).map_or(0, |meta| meta.len()))
+                .sum::<u64>()
+        })
+        .await
+        .map_err(|err| Error::Io(std::io::Error::other(err)))?;
+        Ok((count, bytes))
+    }
+
+    /// The database file's free space (pages a `VACUUM` gives back) and the WAL's size.
+    pub async fn free_space(&self) -> Result<DbSpace> {
+        let (page_size, pages, free) = self.reads.run(reader::pages).await?;
+        Ok(DbSpace {
+            file_bytes: page_size * pages,
+            free_bytes: page_size * free,
+            wal_bytes: self.counters.wal_bytes.load(Ordering::Relaxed),
+        })
+    }
+
+    /// Rebuilds the database without its free pages and truncates the WAL, through the writer
+    /// (so between batches). Only when nothing is working: it holds up every write meanwhile.
+    pub async fn compact(&self) -> Result<()> {
+        if !self.admitting.load(Ordering::Acquire) {
+            return Err(Error::ShuttingDown);
+        }
+        self.command(|reply| WriteOp::Compact { reply }).await?
     }
 
     /// Asks the writer for a PASSIVE WAL checkpoint without waiting behind a full queue.

@@ -20,6 +20,7 @@ mod brains;
 mod branches;
 mod cards;
 mod conversation;
+pub mod disk;
 mod files;
 mod fork;
 mod gate;

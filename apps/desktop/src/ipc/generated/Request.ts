@@ -88,4 +88,4 @@ record: boolean, } | { "method": "resumeRawSession", id: RawSessionId, } | { "me
 /**
  * Only entries with a smaller `streamSeq` (for paging backwards).
  */
-before: number | null, limit: number, } | { "method": "replayFixture", fixtureId: string, } | { "method": "simulateUsageLimit", provider: ProviderKind, } | { "method": "getDaemonActivity" } | { "method": "shutdown" };
+before: number | null, limit: number, } | { "method": "replayFixture", fixtureId: string, } | { "method": "simulateUsageLimit", provider: ProviderKind, } | { "method": "getDaemonActivity" } | { "method": "scanStorage" } | { "method": "cleanStorage", scanId: string, items: Array<string>, } | { "method": "shutdown" };

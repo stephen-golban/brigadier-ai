@@ -292,6 +292,22 @@ impl CleanupLedger {
         }
     }
 
+    /// Every owner with what it still holds, and whether it is being disposed of.
+    pub fn owners(&self) -> Vec<(String, Vec<Artifact>, bool)> {
+        let state = self.state();
+        state
+            .artifacts
+            .iter()
+            .map(|(owner, artifacts)| {
+                (
+                    owner.clone(),
+                    artifacts.clone(),
+                    state.disposing.contains(owner),
+                )
+            })
+            .collect()
+    }
+
     /// Owners marked for disposal.
     pub fn disposing(&self) -> Vec<String> {
         self.state().disposing.iter().cloned().collect()

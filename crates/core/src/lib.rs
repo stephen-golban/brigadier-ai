@@ -12,6 +12,7 @@ pub mod model;
 mod projection;
 pub mod runtime;
 mod sessions;
+pub mod storage;
 pub mod tools;
 pub mod work;
 

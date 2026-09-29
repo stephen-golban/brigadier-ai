@@ -28,6 +28,7 @@ use crate::awake::Awake;
 use crate::dictation::Dictation;
 use crate::idle;
 use crate::metrics::Metrics;
+use crate::storage::Storage;
 use crate::supervisor::Supervisor;
 use crate::terminals::Terminals;
 use crate::upgrade;
@@ -67,6 +68,8 @@ pub struct Daemon {
     pub dictation: Arc<Dictation>,
     /// Keeps the computer awake per the settings.
     pub awake: Arc<Awake>,
+    /// Settings → Storage's scans and cleaning.
+    pub storage: Storage,
     next_connection: AtomicU64,
 }
 
@@ -101,6 +104,7 @@ impl Daemon {
             terminals: Terminals::new(),
             dictation,
             awake,
+            storage: Storage::default(),
             next_connection: AtomicU64::new(1),
         }
     }
@@ -405,6 +409,16 @@ impl Session {
                 });
                 return Ok(Flow::Continue);
             }
+            // Long: answered beside the connection's other requests.
+            request @ (Request::ScanStorage | Request::CleanStorage { .. }) => {
+                let daemon = self.daemon.clone();
+                let late = self.late_tx.clone();
+                self.daemon.supervisor.spawn(async move {
+                    let outcome = handle_request(&daemon, request).await;
+                    let _ = late.send((id, outcome)).await;
+                });
+                return Ok(Flow::Continue);
+            }
             Request::Shutdown => {
                 // Stop admission and drain first; acknowledge only once writes are committed.
                 let _ = self.daemon.quit.try_send("quit requested by a client");
@@ -625,6 +639,13 @@ fn envelope(event: &StoredEvent) -> EventEnvelope {
         stream_seq: event.stream_seq,
         at_ms: event.at_ms,
         event: RawJson(event.payload.clone()),
+    }
+}
+
+fn invalid(message: String) -> IpcError {
+    IpcError {
+        code: ErrorCode::Invalid,
+        message,
     }
 }
 
@@ -1218,6 +1239,16 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                     .unwrap_or(u32::MAX),
                 running: idle::running(daemon).await,
             },
+        },
+        Request::ScanStorage => Response::ScanStorage {
+            report: Box::new(daemon.storage.scan(daemon).await.map_err(invalid)?),
+        },
+        Request::CleanStorage { scan_id, items } => Response::CleanStorage {
+            report: daemon
+                .storage
+                .clean(daemon, &scan_id, items)
+                .await
+                .map_err(invalid)?,
         },
         Request::Subscribe { .. } | Request::SetMetricsStreaming { .. } | Request::Shutdown => {
             return Err(IpcError {

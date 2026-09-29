@@ -36,6 +36,10 @@ pub(crate) enum WriteOp {
     Checkpoint {
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Rebuilds the database file without its free pages (`VACUUM`), then truncates the WAL.
+    Compact {
+        reply: oneshot::Sender<Result<()>>,
+    },
     Shutdown {
         reply: oneshot::Sender<Result<()>>,
     },
@@ -81,6 +85,7 @@ struct Sorted {
     mutations: Vec<Mutation>,
     collections: Vec<Collection>,
     checkpoints: Vec<oneshot::Sender<Result<()>>>,
+    compactions: Vec<oneshot::Sender<Result<()>>>,
     shutdown: Option<oneshot::Sender<Result<()>>>,
 }
 
@@ -115,6 +120,7 @@ impl Sorted {
                 reply,
             }),
             WriteOp::Checkpoint { reply } => self.checkpoints.push(reply),
+            WriteOp::Compact { reply } => self.compactions.push(reply),
             WriteOp::Shutdown { reply } => match self.shutdown {
                 // A second shutdown racing the first just succeeds.
                 Some(_) => {
@@ -257,6 +263,7 @@ impl Writer {
                 mutations,
                 collections,
                 checkpoints,
+                compactions,
                 shutdown,
             } = sorted;
             if !mutations.is_empty() {
@@ -270,6 +277,9 @@ impl Writer {
             }
             for reply in checkpoints {
                 let _ = reply.send(self.checkpoint("PASSIVE"));
+            }
+            for reply in compactions {
+                let _ = reply.send(self.compact());
             }
             if let Some(reply) = shutdown {
                 let result = self.checkpoint("TRUNCATE");
@@ -408,6 +418,13 @@ impl Writer {
         self.counters.checkpoints.fetch_add(1, Ordering::Relaxed);
         self.record_wal_size();
         Ok(())
+    }
+
+    /// `VACUUM` (outside any transaction: the batch's has committed), then a TRUNCATE
+    /// checkpoint so the WAL gives its space back too.
+    fn compact(&self) -> Result<()> {
+        self.conn.execute_batch("VACUUM")?;
+        self.checkpoint("TRUNCATE")
     }
 
     fn record_wal_size(&self) {

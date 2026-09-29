@@ -37,6 +37,8 @@ function summary(event: DomainEvent): string {
       return event.artifact.type;
     case "cleanupRemoved":
       return `${event.artifacts.length} removed`;
+    case "branchesKept":
+      return `${event.branches.length} kept`;
     case "cleanupRequested":
       return event.owner;
     case "cleanupCompleted":
