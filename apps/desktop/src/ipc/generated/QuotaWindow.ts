@@ -18,7 +18,9 @@ usedPercent: number, resetsAtMs: number | null, windowMinutes: number | null,
  */
 bucket: string | null, 
 /**
- * The one model this window limits (Claude's per-model weekly limits, a Codex bucket's
- * model); absent for a window every model of the provider draws on.
+ * The one model this window limits; absent for a window every model of the provider
+ * draws on. Claude's per-model weekly windows name a family word (`opus`, `sonnet`), a
+ * Codex bucket names a model id (its `normalModelSlug`, such as `gpt-5.6-luna`): match it
+ * against a model's id, the id its alias resolves to, or its family.
  */
 model: string | null, };

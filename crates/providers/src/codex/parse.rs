@@ -264,8 +264,11 @@ impl Parser {
                 if let Some(update) =
                     decode::<p::AccountRateLimitsUpdatedNotification>(method, params, out)
                 {
-                    let quota = quota_snapshot(&update.rate_limits, QuotaSource::Event);
-                    self.quota = Some(quota.clone());
+                    let quota = quota_event(&update.rate_limits);
+                    match &mut self.quota {
+                        Some(known) => known.merge(&quota),
+                        None => self.quota = Some(quota.clone()),
+                    }
                     out.push(Output::Event(ProviderEvent::RateLimits { quota }));
                 }
             }
@@ -658,12 +661,15 @@ impl Parser {
 
     /// The window that ran out, from the latest rate limits: the fullest one.
     fn limit_hit(&self) -> LimitHit {
+        if let Some(limit) = self.quota.as_ref().and_then(|quota| quota.limit.clone()) {
+            return limit;
+        }
         let window = self.quota.as_ref().and_then(|quota| {
-            quota.windows.iter().max_by(|a, b| {
-                a.used_percent
-                    .partial_cmp(&b.used_percent)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            quota
+                .windows
+                .iter()
+                .filter(|window| window.model.is_none())
+                .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
         });
         LimitHit {
             window: window.map(|window| window.id.clone()),
@@ -673,44 +679,153 @@ impl Parser {
     }
 }
 
-/// Normalizes a Codex rate-limit snapshot.
-pub fn quota_snapshot(limits: &p::RateLimitSnapshot, source: QuotaSource) -> QuotaSnapshot {
-    let windows: Vec<QuotaWindow> = [
-        ("primary", &limits.primary),
-        ("secondary", &limits.secondary),
-    ]
-    .into_iter()
-    .filter_map(|(id, window)| {
-        let window = window.as_ref()?;
-        Some(QuotaWindow {
-            id: id.into(),
-            label: window_label(id, window.window_duration_mins),
-            used_percent: f64::from(window.used_percent),
-            resets_at_ms: window.resets_at.map(|seconds| seconds * 1_000),
-            window_minutes: window.window_duration_mins,
-            bucket: None,
-            model: None,
-        })
-    })
-    .collect();
-    let limit = limits.rate_limit_reached_type.as_ref().map(|_| {
-        let full = windows
-            .iter()
-            .find(|window| window.used_percent >= 100.0)
-            .or(windows.first());
-        LimitHit {
-            window: full.map(|window| window.id.clone()),
-            resets_at_ms: full.and_then(|window| window.resets_at_ms),
-            kind: LimitKind::UsageWindow,
-        }
+/// The bucket every Codex model draws on (`limitId` of the legacy single-bucket view).
+pub(crate) const MAIN_BUCKET: &str = "codex";
+
+/// Normalizes what `account/rateLimits/read` answers: every metered bucket, the main one's
+/// windows as `primary` and `secondary`, the others' prefixed with their bucket and tied to the
+/// model they meter. A spend control (or ordinary usage not being allowed) stops the provider.
+pub fn quota_read(read: &p::GetAccountRateLimitsResponse) -> QuotaSnapshot {
+    let mut buckets: Vec<&p::RateLimitSnapshot> = match &read.rate_limits_by_limit_id {
+        Some(by_id) if !by_id.is_empty() => by_id.values().collect(),
+        _ => vec![&read.rate_limits],
+    };
+    // The main bucket first, then the others by id, so the order is stable.
+    buckets.sort_by_key(|bucket| {
+        let id = bucket_id(bucket);
+        (id != MAIN_BUCKET, id.to_owned())
     });
+    let mut quota = QuotaSnapshot {
+        provider: ProviderKind::Codex,
+        windows: buckets
+            .iter()
+            .flat_map(|bucket| bucket_windows(bucket))
+            .collect(),
+        limit: None,
+        observed_at_ms: now_ms(),
+        source: QuotaSource::Read,
+    };
+    let main = buckets
+        .iter()
+        .find(|bucket| bucket_id(bucket) == MAIN_BUCKET)
+        .copied()
+        .unwrap_or(&read.rate_limits);
+    quota.limit = bucket_limit(main, &quota.windows);
+    let stopped = read.ordinary_usage_allowed == Some(false)
+        || buckets
+            .iter()
+            .any(|bucket| bucket.spend_control_reached == Some(true));
+    if stopped {
+        quota.limit = Some(LimitHit {
+            window: None,
+            resets_at_ms: None,
+            kind: LimitKind::SpendControl,
+        });
+    }
+    quota
+}
+
+/// Normalizes an `account/rateLimits/updated` notification: one bucket, possibly partial, to be
+/// merged into what is known ([`QuotaSnapshot::merge`]).
+pub fn quota_event(update: &p::RateLimitSnapshot) -> QuotaSnapshot {
+    let windows = bucket_windows(update);
+    let main = bucket_id(update) == MAIN_BUCKET;
+    let mut limit = if main {
+        bucket_limit(update, &windows)
+    } else {
+        None
+    };
+    if update.spend_control_reached == Some(true) {
+        limit = Some(LimitHit {
+            window: None,
+            resets_at_ms: None,
+            kind: LimitKind::SpendControl,
+        });
+    }
     QuotaSnapshot {
         provider: ProviderKind::Codex,
         windows,
         limit,
         observed_at_ms: now_ms(),
-        source,
+        source: QuotaSource::Event,
     }
+}
+
+fn bucket_id(bucket: &p::RateLimitSnapshot) -> &str {
+    bucket.limit_id.as_deref().unwrap_or(MAIN_BUCKET)
+}
+
+/// A bucket's windows. A bucket other than the main one that reports it was reached has its
+/// fullest window marked used up, since only that model is refused.
+fn bucket_windows(bucket: &p::RateLimitSnapshot) -> Vec<QuotaWindow> {
+    let id = bucket_id(bucket);
+    let main = id == MAIN_BUCKET;
+    let name = bucket
+        .limit_name
+        .as_deref()
+        .or(bucket.normal_model_slug.as_deref())
+        .unwrap_or(id);
+    let mut windows: Vec<QuotaWindow> = [
+        ("primary", &bucket.primary),
+        ("secondary", &bucket.secondary),
+    ]
+    .into_iter()
+    .filter_map(|(slot, window)| {
+        let window = window.as_ref()?;
+        let label = window_label(slot, window.window_duration_mins);
+        Some(QuotaWindow {
+            id: if main {
+                slot.to_owned()
+            } else {
+                format!("{id}.{slot}")
+            },
+            label: if main {
+                label
+            } else {
+                format!("{label} ({name})")
+            },
+            used_percent: f64::from(window.used_percent),
+            resets_at_ms: window.resets_at.map(|seconds| seconds * 1_000),
+            window_minutes: window.window_duration_mins,
+            bucket: Some(id.to_owned()),
+            model: if main {
+                None
+            } else {
+                bucket.normal_model_slug.clone()
+            },
+        })
+    })
+    .collect();
+    if !main
+        && bucket.rate_limit_reached_type.is_some()
+        && let Some(fullest) = windows
+            .iter_mut()
+            .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+    {
+        fullest.used_percent = fullest.used_percent.max(100.0);
+    }
+    windows
+}
+
+/// The provider-wide limit the main bucket reports, with the window that ran out (the fullest).
+fn bucket_limit(bucket: &p::RateLimitSnapshot, windows: &[QuotaWindow]) -> Option<LimitHit> {
+    let reached = bucket.rate_limit_reached_type.as_ref()?;
+    let kind = match reached {
+        p::RateLimitReachedType::WorkspaceOwnerCreditsDepleted
+        | p::RateLimitReachedType::WorkspaceMemberCreditsDepleted => LimitKind::Credits,
+        p::RateLimitReachedType::RateLimitReached
+        | p::RateLimitReachedType::WorkspaceOwnerUsageLimitReached
+        | p::RateLimitReachedType::WorkspaceMemberUsageLimitReached => LimitKind::UsageWindow,
+    };
+    let full = windows
+        .iter()
+        .filter(|window| window.model.is_none())
+        .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent));
+    Some(LimitHit {
+        window: full.map(|window| window.id.clone()),
+        resets_at_ms: full.and_then(|window| window.resets_at_ms),
+        kind,
+    })
 }
 
 fn window_label(id: &str, minutes: Option<i64>) -> String {

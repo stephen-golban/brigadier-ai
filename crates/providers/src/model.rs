@@ -173,8 +173,10 @@ pub struct QuotaWindow {
     /// The metered bucket it belongs to, when the provider has several (Codex's `limitId`).
     #[serde(default)]
     pub bucket: Option<String>,
-    /// The one model this window limits (Claude's per-model weekly limits, a Codex bucket's
-    /// model); absent for a window every model of the provider draws on.
+    /// The one model this window limits; absent for a window every model of the provider
+    /// draws on. Claude's per-model weekly windows name a family word (`opus`, `sonnet`), a
+    /// Codex bucket names a model id (its `normalModelSlug`, such as `gpt-5.6-luna`): match it
+    /// against a model's id, the id its alias resolves to, or its family.
     #[serde(default)]
     pub model: Option<String>,
 }
@@ -202,6 +204,47 @@ pub struct QuotaSnapshot {
     pub observed_at_ms: i64,
     #[serde(default)]
     pub source: QuotaSource,
+}
+
+impl QuotaSnapshot {
+    /// Takes in what a running session reported (`Event`) or a fresh read (`Read`):
+    /// - a read replaces everything, its limit included;
+    /// - an event updates the windows it names (for a Codex bucket: all of that bucket's
+    ///   windows) and keeps the others; it sets or clears a usage-window limit, but a spend
+    ///   control or credits stop is lifted only by a read.
+    pub fn merge(&mut self, incoming: &QuotaSnapshot) {
+        if incoming.source == QuotaSource::Read {
+            *self = incoming.clone();
+            return;
+        }
+        let buckets: Vec<&str> = incoming
+            .windows
+            .iter()
+            .filter_map(|window| window.bucket.as_deref())
+            .collect();
+        self.windows.retain(|known| {
+            !incoming.windows.iter().any(|window| window.id == known.id)
+                && known
+                    .bucket
+                    .as_deref()
+                    .is_none_or(|bucket| !buckets.contains(&bucket))
+        });
+        self.windows.extend(incoming.windows.iter().cloned());
+        self.windows.sort_by_key(|window| {
+            (
+                window.model.is_some(),
+                window.window_minutes.unwrap_or(i64::MAX),
+            )
+        });
+        let sticky = self
+            .limit
+            .as_ref()
+            .is_some_and(|limit| limit.kind != LimitKind::UsageWindow);
+        if !sticky || incoming.limit.is_some() {
+            self.limit.clone_from(&incoming.limit);
+        }
+        self.observed_at_ms = self.observed_at_ms.max(incoming.observed_at_ms);
+    }
 }
 
 /// Why a provider refuses work.

@@ -495,46 +495,7 @@ impl Provider for Claude {
             usage.insert("skip_behaviors".into(), true.into());
             let answers = self.control(vec![usage]).await?;
             let answer = answers.first().cloned().unwrap_or(Value::Null);
-            let limits = answer
-                .get("rate_limits")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            let mut windows: Vec<QuotaWindow> = limits
-                .iter()
-                .filter(|(_, window)| window.get("utilization").is_some_and(|u| !u.is_null()))
-                .map(|(id, window)| QuotaWindow {
-                    id: id.clone(),
-                    label: parse::window_label(id),
-                    used_percent: window
-                        .get("utilization")
-                        .and_then(Value::as_f64)
-                        .unwrap_or_default(),
-                    resets_at_ms: window
-                        .get("resets_at")
-                        .and_then(Value::as_str)
-                        .and_then(crate::time::parse_rfc3339_ms),
-                    window_minutes: parse::window_minutes(id),
-                    bucket: None,
-                    model: None,
-                })
-                .collect();
-            windows.sort_by_key(|window| window.window_minutes.unwrap_or(i64::MAX));
-            let limit = windows
-                .iter()
-                .find(|window| window.used_percent >= 100.0)
-                .map(|window| LimitHit {
-                    window: Some(window.id.clone()),
-                    resets_at_ms: window.resets_at_ms,
-                    kind: LimitKind::UsageWindow,
-                });
-            Ok(QuotaSnapshot {
-                provider: ProviderKind::Claude,
-                windows,
-                limit,
-                observed_at_ms: now_ms(),
-                source: QuotaSource::Read,
-            })
+            Ok(parse::usage_snapshot(&answer))
         })
     }
 

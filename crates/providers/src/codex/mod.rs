@@ -389,10 +389,7 @@ impl Provider for Codex {
             let limits: p::GetAccountRateLimitsResponse = self
                 .control(async |rpc: &Rpc| rpc.call("account/rateLimits/read", &Value::Null).await)
                 .await?;
-            Ok(parse::quota_snapshot(
-                &limits.rate_limits,
-                QuotaSource::Read,
-            ))
+            Ok(parse::quota_read(&limits))
         })
     }
 

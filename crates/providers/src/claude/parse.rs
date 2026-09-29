@@ -701,7 +701,10 @@ impl Parser {
             return;
         };
         let status = str_of(info, "status").unwrap_or("allowed");
-        let window = str_of(info, "rateLimitType").map(str::to_owned);
+        // Only the subscription's own windows; overage and other kinds are not usage windows.
+        let window = str_of(info, "rateLimitType")
+            .filter(|id| is_window(id))
+            .map(str::to_owned);
         let resets_at_ms = info
             .get("resetsAt")
             .and_then(Value::as_i64)
@@ -710,22 +713,21 @@ impl Parser {
         if let Some(windows) = info.get("unifiedWindows").and_then(Value::as_object) {
             self.quota = windows
                 .iter()
-                .map(|(id, window)| QuotaWindow {
-                    id: id.clone(),
-                    label: window_label(id),
-                    // Reported as a fraction here and as a percentage by `get_usage`.
-                    used_percent: window
-                        .get("utilization")
-                        .and_then(Value::as_f64)
-                        .map(|used| if used <= 1.0 { used * 100.0 } else { used })
-                        .unwrap_or_default(),
-                    resets_at_ms: window
-                        .get("resetsAt")
-                        .and_then(Value::as_i64)
-                        .map(|s| s * 1000),
-                    window_minutes: window_minutes(id),
-                    bucket: None,
-                    model: None,
+                .filter(|(id, _)| is_window(id))
+                .map(|(id, window)| {
+                    quota_window(
+                        id,
+                        // Reported as a fraction here and as a percentage by `get_usage`.
+                        window
+                            .get("utilization")
+                            .and_then(Value::as_f64)
+                            .map(|used| if used <= 1.0 { used * 100.0 } else { used })
+                            .unwrap_or_default(),
+                        window
+                            .get("resetsAt")
+                            .and_then(Value::as_i64)
+                            .map(|s| s * 1000),
+                    )
                 })
                 .collect();
         } else if let (Some(id), Some(used)) =
@@ -734,34 +736,38 @@ impl Parser {
             let used = if used <= 1.0 { used * 100.0 } else { used };
             match self.quota.iter_mut().find(|quota| &quota.id == id) {
                 Some(quota) => quota.used_percent = used,
-                None => self.quota.push(QuotaWindow {
-                    id: id.clone(),
-                    label: window_label(id),
-                    used_percent: used,
-                    resets_at_ms,
-                    window_minutes: window_minutes(id),
-                    bucket: None,
-                    model: None,
-                }),
+                None => self.quota.push(quota_window(id, used, resets_at_ms)),
             }
         }
 
         let rejected = status == "rejected";
-        let hit = LimitHit {
-            window: window.clone(),
-            resets_at_ms,
-            kind: LimitKind::UsageWindow,
-        };
+        // A per-model weekly window running out refuses that model only: it shows as that
+        // window used up, not as the provider at its limit.
+        let scoped = window.as_deref().and_then(window_model);
+        if rejected
+            && scoped.is_some()
+            && let Some(id) = &window
+        {
+            match self.quota.iter_mut().find(|quota| &quota.id == id) {
+                Some(quota) => quota.used_percent = quota.used_percent.max(100.0),
+                None => self.quota.push(quota_window(id, 100.0, resets_at_ms)),
+            }
+        }
+        let provider_wide = rejected && scoped.is_none();
         self.limit = LimitState {
-            rejected,
-            window,
+            rejected: provider_wide,
+            window: window.clone(),
             resets_at_ms,
         };
         out.push(Output::Event(ProviderEvent::RateLimits {
             quota: QuotaSnapshot {
                 provider: ProviderKind::Claude,
                 windows: self.quota.clone(),
-                limit: rejected.then_some(hit),
+                limit: provider_wide.then_some(LimitHit {
+                    window,
+                    resets_at_ms,
+                    kind: LimitKind::UsageWindow,
+                }),
                 observed_at_ms: now_ms(),
                 source: QuotaSource::Event,
             },
@@ -950,15 +956,48 @@ fn content_text(value: &Value) -> String {
     }
 }
 
+/// Claude's usage windows: the 5-hour session window, the weekly one, and weekly windows that
+/// meter one model family (`seven_day_opus`). Other `rate_limits` entries (overage, extra
+/// usage, internal buckets) are not windows work waits on.
+fn is_window(id: &str) -> bool {
+    id == "five_hour" || id == "seven_day" || window_model(id).is_some()
+}
+
+/// The model family a per-model weekly window meters (`seven_day_opus` → `opus`).
+fn window_model(id: &str) -> Option<&str> {
+    id.strip_prefix("seven_day_").filter(|family| {
+        !family.is_empty()
+            && family.chars().all(|c| c.is_ascii_lowercase())
+            && !matches!(*family, "overage" | "oauth")
+    })
+}
+
+fn quota_window(id: &str, used_percent: f64, resets_at_ms: Option<i64>) -> QuotaWindow {
+    QuotaWindow {
+        id: id.to_owned(),
+        label: window_label(id),
+        used_percent,
+        resets_at_ms,
+        window_minutes: window_minutes(id),
+        bucket: None,
+        model: window_model(id).map(str::to_owned),
+    }
+}
+
 pub(crate) fn window_label(id: &str) -> String {
     match id {
         "five_hour" => "5-hour".into(),
         "seven_day" => "Weekly".into(),
-        "seven_day_opus" => "Weekly (Opus)".into(),
-        "seven_day_sonnet" => "Weekly (Sonnet)".into(),
-        "seven_day_overage_included" => "Weekly (with overage)".into(),
-        "overage" => "Overage".into(),
-        other => other.replace('_', " "),
+        other => match window_model(other) {
+            Some(family) => {
+                let mut name = family.to_owned();
+                if let Some(first) = name.get_mut(..1) {
+                    first.make_ascii_uppercase();
+                }
+                format!("Weekly ({name})")
+            }
+            None => other.replace('_', " "),
+        },
     }
 }
 
@@ -970,6 +1009,88 @@ pub(crate) fn window_minutes(id: &str) -> Option<i64> {
     } else {
         None
     }
+}
+
+/// Normalizes a `get_usage` answer. Its `limits` list is read first: the session window, the
+/// weekly one and weekly windows scoped to one model (surface-scoped ones are left out); older
+/// versions without it give the named windows (`five_hour`, `seven_day`,
+/// `seven_day_<family>`). A provider-wide window at 100% is a limit.
+pub(crate) fn usage_snapshot(answer: &Value) -> QuotaSnapshot {
+    let rates = answer.get("rate_limits").filter(|rates| !rates.is_null());
+    let available = answer
+        .get("rate_limits_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let listed = rates
+        .and_then(|rates| rates.get("limits"))
+        .and_then(Value::as_array);
+    let mut windows: Vec<QuotaWindow> = match (available, rates, listed) {
+        (false, _, _) | (_, None, _) => Vec::new(),
+        (true, _, Some(limits)) => limits.iter().filter_map(listed_window).collect(),
+        (true, Some(rates), None) => rates
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(id, _)| is_window(id))
+            .filter_map(|(id, window)| {
+                let used = window.get("utilization").and_then(Value::as_f64)?;
+                Some(quota_window(id, used, iso_ms(window.get("resets_at"))))
+            })
+            .collect(),
+    };
+    windows.sort_by_key(|window| {
+        (
+            window.model.is_some(),
+            window.window_minutes.unwrap_or(i64::MAX),
+        )
+    });
+    windows.dedup_by(|a, b| a.id == b.id);
+    let limit = windows
+        .iter()
+        .find(|window| window.model.is_none() && window.used_percent >= 100.0)
+        .map(|window| LimitHit {
+            window: Some(window.id.clone()),
+            resets_at_ms: window.resets_at_ms,
+            kind: LimitKind::UsageWindow,
+        });
+    QuotaSnapshot {
+        provider: ProviderKind::Claude,
+        windows,
+        limit,
+        observed_at_ms: now_ms(),
+        source: QuotaSource::Read,
+    }
+}
+
+/// One entry of `get_usage`'s `limits` list as a window, if it is one work waits on.
+fn listed_window(limit: &Value) -> Option<QuotaWindow> {
+    let used = limit.get("percent").and_then(Value::as_f64)?;
+    let resets_at_ms = iso_ms(limit.get("resets_at"));
+    let scope = limit.get("scope").filter(|scope| !scope.is_null());
+    match str_of(limit, "kind")? {
+        "session" if scope.is_none() => Some(quota_window("five_hour", used, resets_at_ms)),
+        "weekly_all" if scope.is_none() => Some(quota_window("seven_day", used, resets_at_ms)),
+        "weekly_scoped" => {
+            let model = scope?.get("model").filter(|model| !model.is_null())?;
+            let name = str_of(model, "display_name").or_else(|| str_of(model, "id"))?;
+            let family: String = name
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .find(|word| word.chars().any(|c| c.is_ascii_alphabetic()))?
+                .to_ascii_lowercase();
+            Some(quota_window(
+                &format!("seven_day_{family}"),
+                used,
+                resets_at_ms,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn iso_ms(value: Option<&Value>) -> Option<i64> {
+    value
+        .and_then(Value::as_str)
+        .and_then(crate::time::parse_rfc3339_ms)
 }
 
 fn notice(level: NoticeLevel, message: String) -> Output {
