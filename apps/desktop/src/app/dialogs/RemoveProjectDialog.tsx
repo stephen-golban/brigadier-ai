@@ -220,7 +220,7 @@ function RemoveForm({
             Checked ones are deleted. Merged ones hold nothing their target lacks; unchecked ones
             stay in the repository.
           </p>
-          <div className="grid max-h-60 gap-2 overflow-y-auto">
+          <div className="grid gap-2">
             {preview.branches.map((branch) => (
               <CheckboxRow
                 key={branchKey(branch)}

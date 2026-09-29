@@ -600,10 +600,21 @@ pub(super) fn branch_standing(
     let checked_out = repo.worktrees().ok()?.iter().any(|worktree| {
         worktree.branch.as_deref() == Some(name) && !same_path_in(&worktree.path, leaving)
     });
-    let target_tip = repo.branch_tip(target).ok().flatten();
+    // A worker's branch targets its session's branch; once that is gone, its work would land
+    // on the repository's default branch.
+    let (target, target_tip) = match repo.branch_tip(target).ok().flatten() {
+        Some(tip) => (target.to_owned(), Some(tip)),
+        None => match repo.default_branch().ok().flatten() {
+            Some(fallback) => {
+                let tip = repo.branch_tip(&fallback).ok().flatten();
+                (fallback, tip)
+            }
+            None => (target.to_owned(), None),
+        },
+    };
     let (merged, ahead) = match &target_tip {
         Some(target_tip) => (
-            repo.is_merged(name, target).unwrap_or(false),
+            repo.is_merged(name, &target).unwrap_or(false),
             repo.count_commits(target_tip, &tip).unwrap_or(0),
         ),
         None => (false, 0),
@@ -611,7 +622,7 @@ pub(super) fn branch_standing(
     Some(crate::storage::RemovalBranch {
         repo: repo.root().display().to_string(),
         name: name.to_owned(),
-        target: target.to_owned(),
+        target,
         tip: tip.0,
         merged,
         ahead,
@@ -1059,12 +1070,13 @@ impl Scanner<'_> {
             if standing.checked_out {
                 continue;
             }
+            let target = &standing.target;
             let reason = if standing.merged {
                 format!("{why} Everything on it is in {target}.")
             } else {
                 format!(
-                    "{why} It has {} commits {target} doesn't have.",
-                    standing.ahead
+                    "{why} It has {} {target} doesn't have.",
+                    counted(standing.ahead as usize, "commit", "commits")
                 )
             };
             let mut entry = item(
@@ -1086,7 +1098,7 @@ impl Scanner<'_> {
                     repo: repo_path,
                     branch: KeptBranch {
                         name,
-                        target,
+                        target: standing.target,
                         tip: standing.tip,
                     },
                     merged: standing.merged,

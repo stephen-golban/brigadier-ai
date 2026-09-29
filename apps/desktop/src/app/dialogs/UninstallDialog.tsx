@@ -197,7 +197,7 @@ function Plan({
             Checked ones are deleted. Unchecked ones stay, and the end lists the command that
             deletes each.
           </p>
-          <div className="grid max-h-60 gap-2 overflow-y-auto">
+          <div className="grid gap-2">
             {plan.branches.map((branch) => (
               <CheckboxRow
                 key={key(branch)}
