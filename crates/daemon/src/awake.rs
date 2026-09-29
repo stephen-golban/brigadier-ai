@@ -459,15 +459,24 @@ mod lid {
         })
     }
 
-    pub fn rule_installed() -> bool {
-        std::fs::symlink_metadata(RULE).is_ok()
+    /// A development build started with `BRIGADIER_LID_RULE_DRY_RUN=<file>` looks at that
+    /// stand-in instead of the rule and only says what it would run, so uninstalling can be
+    /// tried without touching the rule an installed Brigadier uses.
+    fn dry_run() -> Option<PathBuf> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        std::env::var_os("BRIGADIER_LID_RULE_DRY_RUN")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
     }
 
-    /// A development build started with `BRIGADIER_LID_RULE_DRY_RUN=1` only says what it would
-    /// run, so uninstalling can be tried without touching the rule the installed app uses.
-    fn dry_run() -> bool {
-        cfg!(debug_assertions)
-            && std::env::var_os("BRIGADIER_LID_RULE_DRY_RUN").is_some_and(|value| value == "1")
+    fn rule_path() -> PathBuf {
+        dry_run().unwrap_or_else(|| PathBuf::from(RULE))
+    }
+
+    pub fn rule_installed() -> bool {
+        std::fs::symlink_metadata(rule_path()).is_ok()
     }
 
     /// Removes the sudoers rule behind an administrator prompt.
@@ -475,11 +484,12 @@ mod lid {
         if !rule_installed() {
             return Ok("It wasn't installed.".into());
         }
-        let script = format!("/bin/rm -f {RULE}");
-        if dry_run() {
+        if let Some(stand_in) = dry_run() {
+            let script = format!("/bin/rm -f {}", stand_in.display());
             tracing::info!(command = %script, "dry run: would remove the lid-closed sudoers rule as administrator");
             return Ok(format!("Dry run: would run “{script}” as administrator."));
         }
+        let script = format!("/bin/rm -f {RULE}");
         let apple_script = format!(
             "do shell script \"{}\" with administrator privileges with prompt \
              \"Brigadier is being uninstalled and removes the rule that let it keep your Mac \

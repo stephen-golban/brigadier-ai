@@ -352,11 +352,11 @@ fn step(steps: &mut Vec<UninstallStep>, label: &str, result: Result<Option<Strin
     });
 }
 
-/// `BRIGADIER_LID_RULE_DRY_RUN=1` in a development build: the rule step only says what it
-/// would run (see `awake`).
+/// `BRIGADIER_LID_RULE_DRY_RUN=<file>` in a development build: the rule step looks at that
+/// stand-in and only says what it would run (see `awake`).
 fn lid_dry_run() -> bool {
     cfg!(debug_assertions)
-        && std::env::var_os("BRIGADIER_LID_RULE_DRY_RUN").is_some_and(|value| value == "1")
+        && std::env::var_os("BRIGADIER_LID_RULE_DRY_RUN").is_some_and(|value| !value.is_empty())
 }
 
 async fn reset_microphone(identifier: &str) -> Result<(), String> {
