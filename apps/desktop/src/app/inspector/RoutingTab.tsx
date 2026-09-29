@@ -1,5 +1,5 @@
 import { ChevronRight, Clock, Reload } from "@openai/apps-sdk-ui/components/Icon";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { ExplanationView } from "@/app/conversation/cards/RouteDetails";
 import { useAction } from "@/app/conversation/useAction";
@@ -61,11 +61,20 @@ function PreviewSection() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [routes, setRoutes] = useState<RoutePreview[] | null>(null);
   const preview = useAction();
-  const run = () =>
+  // Only the latest question's answer is shown; an older one arriving late is dropped.
+  const asked = useRef(0);
+  const run = () => {
+    const seq = ++asked.current;
+    setRoutes(null);
     preview.run(async () => {
-      const { routes: next } = await request({ method: "previewRoutes", projectId, areas });
-      setRoutes(next);
+      try {
+        const { routes: next } = await request({ method: "previewRoutes", projectId, areas });
+        if (seq === asked.current) setRoutes(next);
+      } catch (error) {
+        if (seq === asked.current) throw error;
+      }
     });
+  };
   // Read again whenever the question changes.
   // oxlint-disable-next-line react-hooks/exhaustive-deps
   useEffect(run, [projectId, areas]);
@@ -144,7 +153,7 @@ function PreviewRow({ route, groups }: { route: RoutePreview; groups: readonly M
   return (
     <li data-slot="route-preview" className="flex flex-col gap-1 py-2 text-xs">
       <div className="flex items-baseline gap-2">
-        <span className="w-24 shrink-0 capitalize">{category}</span>
+        <span className="w-28 shrink-0 truncate capitalize">{category}</span>
         {outcome.type === "chosen" ? (
           <span className="min-w-0 flex-1 truncate font-medium">
             {choiceName(groups, outcome.choice)}
@@ -159,12 +168,12 @@ function PreviewRow({ route, groups }: { route: RoutePreview; groups: readonly M
           </span>
         )}
       </div>
-      <p className="text-muted-foreground ms-26">{outcome.reason}</p>
+      <p className="text-muted-foreground ms-30">{outcome.reason}</p>
       {outcome.type === "wait" && outcome.rule && (
-        <p className="text-muted-foreground ms-26">Your rule: {outcome.rule}</p>
+        <p className="text-muted-foreground ms-30">Your rule: {outcome.rule}</p>
       )}
       {outcome.type === "chosen" && outcome.explanation && (
-        <Collapsible className="ms-26">
+        <Collapsible className="ms-30">
           <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group flex items-center gap-1">
             <ChevronRight
               aria-hidden

@@ -220,7 +220,7 @@ export function FaultControl() {
         <Button size="xs" variant="outline" disabled={!valid || inject.busy} onClick={submit}>
           Inject limit
         </Button>
-        <span className="text-muted-foreground">0 tool calls: at once.</span>
+        <span className="text-muted-foreground">With 0 tool calls, the limit hits at once.</span>
       </div>
       {sent && !inject.error && <p className="text-muted-foreground">{sent}</p>}
       {inject.error && <p className="text-destructive">{inject.error}</p>}

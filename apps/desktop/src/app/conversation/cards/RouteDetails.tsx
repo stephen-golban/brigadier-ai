@@ -50,8 +50,9 @@ export function HandoffLine({
   className?: string;
 }) {
   const providers = useApp((s) => s.providers.view?.providers);
-  const now = useNow(60_000);
   const last = handoffs(task.attempts).at(-1);
+  // The reset time in the line ticks only when there is a hand-off to show.
+  const now = useNow(last ? 60_000 : null);
   if (!last) return null;
   const line = `Handed off: ${handoffLine(last[0], last[1], groups, providers, now)}`;
   return (

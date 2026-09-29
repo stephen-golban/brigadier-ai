@@ -104,11 +104,18 @@ export function ModelsSection({
   const projects = useApp((s) => s.projects);
   // The pick shows at once; the view says which project its adjustments are for once read.
   const picked = useUsage((s) => s.projectId);
+  // Adjustments read for another project than the one picked are not shown while it is read.
+  const forPicked = view.projectId === picked;
   const learned = useMemo(
-    () => new Map(view.learned.map((entry) => [learnedKey(entry.provider, entry.model, entry.category), entry])),
-    [view.learned],
+    () =>
+      new Map(
+        forPicked
+          ? view.learned.map((entry) => [learnedKey(entry.provider, entry.model, entry.category), entry])
+          : [],
+      ),
+    [view.learned, forPicked],
   );
-  const projectName = view.projectId ? (projects[view.projectId]?.name ?? "Project") : null;
+  const projectName = picked ? (projects[picked]?.name ?? "Project") : null;
   return (
     <section aria-labelledby="usage-models" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">

@@ -75,24 +75,39 @@ export function applyUsageEvents(batch: readonly EventEnvelope[]): void {
   if (batch.some(({ event }) => event.type === "providerChecked")) void loadUsage();
 }
 
-/** Asks the repository for a newer registry now, then shows the registry in use. */
+/**
+ * Asks the repository for a newer registry now, then reads the whole view again: a new
+ * revision changes the models' strengths too.
+ */
 export async function checkRegistry(): Promise<void> {
   const { registry } = await request({ method: "checkRegistry" });
   const view = useUsage.getState().view;
   if (view) useUsage.setState({ view: { ...view, registry } });
+  await loadUsage();
+}
+
+/**
+ * Rule changes, one at a time: each starts from the settings the one before it saved, so two
+ * quick changes can't answer out of order and drop one of them.
+ */
+let ruleWrites: Promise<void> = Promise.resolve();
+
+function changeRules(change: (rules: readonly OverrideRule[]) => OverrideRule[]): Promise<void> {
+  const write = ruleWrites.then(() => {
+    const settings = useApp.getState().settings;
+    return updateSettings({ ...settings, routingOverrides: change(settings.routingOverrides) });
+  });
+  // A failed write is the caller's to report; the next one still runs.
+  ruleWrites = write.catch(() => undefined);
+  return write;
 }
 
 /** Adds a routing rule to the user's settings. */
-export async function addOverride(rule: OverrideRule): Promise<void> {
-  const settings = useApp.getState().settings;
-  await updateSettings({ ...settings, routingOverrides: [...settings.routingOverrides, rule] });
+export function addOverride(rule: OverrideRule): Promise<void> {
+  return changeRules((rules) => [...rules, rule]);
 }
 
 /** Removes a routing rule from the user's settings. */
-export async function removeOverride(id: string): Promise<void> {
-  const settings = useApp.getState().settings;
-  await updateSettings({
-    ...settings,
-    routingOverrides: settings.routingOverrides.filter((rule) => rule.id !== id),
-  });
+export function removeOverride(id: string): Promise<void> {
+  return changeRules((rules) => rules.filter((rule) => rule.id !== id));
 }
