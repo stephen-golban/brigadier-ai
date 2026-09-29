@@ -67,6 +67,11 @@ impl Projection {
                     conversation.updated_at_ms = conversation.updated_at_ms.max(at_ms);
                 }
             }
+            DomainEvent::ConversationFallback { id, fallback } => {
+                if let Some(conversation) = self.conversations.get_mut(id) {
+                    conversation.fallback.clone_from(fallback);
+                }
+            }
             DomainEvent::ConversationPinned { id, pinned_at_ms } => {
                 if let Some(conversation) = self.conversations.get_mut(id)
                     && latest(&mut self.pinned_seqs, &id.0, seq)

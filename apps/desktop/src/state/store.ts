@@ -377,13 +377,16 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
         },
       };
     case "conversationRenamed":
-    case "conversationPinned": {
+    case "conversationPinned":
+    case "conversationFallback": {
       const current = slice.conversations[event.id];
       if (!current) return slice;
       const next =
         event.type === "conversationRenamed"
           ? { ...current, title: event.title }
-          : { ...current, pinnedAtMs: event.pinnedAtMs };
+          : event.type === "conversationPinned"
+            ? { ...current, pinnedAtMs: event.pinnedAtMs }
+            : { ...current, fallback: event.fallback };
       return {
         ...slice,
         conversations: { ...slice.conversations, [event.id]: next },

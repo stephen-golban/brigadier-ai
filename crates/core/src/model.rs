@@ -1038,6 +1038,12 @@ pub enum DomainEvent {
         id: ConversationId,
         pinned_at_ms: Option<i64>,
     },
+    /// A stand-in model took over the conversation because its chosen one hit a limit
+    /// (`fallback` set), or the chosen one took over again (`fallback` absent).
+    ConversationFallback {
+        id: ConversationId,
+        fallback: Option<ModelFallback>,
+    },
     MessageAppended {
         message: Message,
     },
@@ -1213,6 +1219,7 @@ impl DomainEvent {
             Self::ConversationCreated { .. } => "conversation.created",
             Self::ConversationRenamed { .. } => "conversation.renamed",
             Self::ConversationPinned { .. } => "conversation.pinned",
+            Self::ConversationFallback { .. } => "conversation.fallback",
             Self::MessageAppended { .. } => "message.appended",
             Self::SettingsChanged { .. } => "settings.changed",
             Self::RawSessionCreated { .. } => "raw.created",

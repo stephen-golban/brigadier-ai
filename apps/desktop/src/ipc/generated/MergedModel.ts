@@ -19,7 +19,12 @@ id: string, displayName: string, status: ModelStatus,
 /**
  * The registry entry it is (or inherits), if any.
  */
-registryKey: string | null, tier: QualityTier, strengths: { [key in TaskCategory]?: number }, areaStrengths: { [key in Area]?: number }, efforts: Array<string>, contextWindow: number | null, knowledgeCutoff: string | null, modalities: Modalities, 
+registryKey: string | null, 
+/**
+ * Its family word (`opus`, `sol`), the registry's `match.family`: what a user rule about
+ * a family names. Absent for a model of no known family.
+ */
+family: string | null, tier: QualityTier, strengths: { [key in TaskCategory]?: number }, areaStrengths: { [key in Area]?: number }, efforts: Array<string>, contextWindow: number | null, knowledgeCutoff: string | null, modalities: Modalities, 
 /**
  * An older model the CLI still lists beside a newer one.
  */

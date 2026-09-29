@@ -205,6 +205,9 @@ pub struct MergedModel {
     pub status: ModelStatus,
     /// The registry entry it is (or inherits), if any.
     pub registry_key: Option<String>,
+    /// Its family word (`opus`, `sol`), the registry's `match.family`: what a user rule about
+    /// a family names. Absent for a model of no known family.
+    pub family: Option<String>,
     pub tier: QualityTier,
     pub strengths: BTreeMap<TaskCategory, f64>,
     pub area_strengths: BTreeMap<Area, f64>,

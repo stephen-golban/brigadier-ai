@@ -19,6 +19,10 @@ function summary(event: DomainEvent): string {
       return `“${event.title}”`;
     case "conversationPinned":
       return event.pinnedAtMs === null ? "unpinned" : "pinned";
+    case "conversationFallback":
+      return event.fallback === null
+        ? "chosen model back"
+        : `stand-in ${event.fallback.choice.provider} ${event.fallback.choice.model ?? "default"}`;
     case "messageAppended":
       return event.message.text.slice(0, 120).replace(/\s+/g, " ");
     case "settingsChanged":
