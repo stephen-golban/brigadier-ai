@@ -33,7 +33,11 @@ output: string | null, durationMs: number | null, } | { "type": "commandOutputDe
 /**
  * Totals for the session so far.
  */
-total: TokenUsage, } | { "type": "contextSize", usedTokens: number, windowTokens: number | null, } | { "type": "compactionStarted", automatic: boolean, } | { "type": "compactionEnded", automatic: boolean, tokensBefore: number | null, tokensAfter: number | null, error: string | null, } | { "type": "rateLimits", quota: QuotaSnapshot, } | { "type": "approvalRequested", request: ApprovalRequest, } | { "type": "approvalResolved", id: string, decision: ApprovalDecision, decidedBy: Decider, } | { "type": "turnCompleted", turnId: string | null, status: TurnStatus, durationMs: number | null, usage: TokenUsage | null, } | { "type": "error", error: ProviderError, } | { "type": "notice", level: NoticeLevel, message: string, } | { "type": "exited", code: number | null, 
+total: TokenUsage, 
+/**
+ * What the latest request used, when the CLI says (Codex).
+ */
+last: TokenUsage | null, } | { "type": "contextSize", usedTokens: number, windowTokens: number | null, } | { "type": "compactionStarted", automatic: boolean, } | { "type": "compactionEnded", automatic: boolean, tokensBefore: number | null, tokensAfter: number | null, error: string | null, } | { "type": "rateLimits", quota: QuotaSnapshot, } | { "type": "approvalRequested", request: ApprovalRequest, } | { "type": "approvalResolved", id: string, decision: ApprovalDecision, decidedBy: Decider, } | { "type": "turnCompleted", turnId: string | null, status: TurnStatus, durationMs: number | null, usage: TokenUsage | null, } | { "type": "error", error: ProviderError, } | { "type": "notice", level: NoticeLevel, message: string, } | { "type": "exited", code: number | null, 
 /**
  * The last lines it wrote to stderr, when it failed.
  */

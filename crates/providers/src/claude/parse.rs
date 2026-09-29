@@ -645,6 +645,7 @@ impl Parser {
             self.totals.cost_usd = turn.cost_usd.or(self.totals.cost_usd);
             out.push(Output::Event(ProviderEvent::Usage {
                 total: self.totals.clone(),
+                last: None,
             }));
         }
 

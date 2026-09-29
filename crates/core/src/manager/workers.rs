@@ -1244,14 +1244,16 @@ impl SessionManager {
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
             }
-            ProviderEvent::Usage { total } => {
+            ProviderEvent::Usage { total, last } => {
                 self.note_tokens(
                     &cli.meter,
                     cli.provider,
                     cli.model.model.as_deref(),
                     TokenOwner::Task(&live.conversation_id, &live.id),
                     total,
-                );
+                    last.as_ref(),
+                )
+                .await;
             }
             ProviderEvent::TurnStarted { .. } => {
                 live.state.lock().await.last_message = None;

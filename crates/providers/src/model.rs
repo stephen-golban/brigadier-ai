@@ -521,6 +521,9 @@ pub enum ProviderEvent {
     Usage {
         /// Totals for the session so far.
         total: TokenUsage,
+        /// What the latest request used, when the CLI says (Codex).
+        #[serde(default)]
+        last: Option<TokenUsage>,
     },
     ContextSize {
         used_tokens: i64,

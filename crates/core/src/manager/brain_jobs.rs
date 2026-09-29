@@ -583,13 +583,14 @@ impl SessionManager {
                         ProviderEvent::RateLimits { quota } => {
                             self.runtime.note_quota_snapshot(quota).await;
                         }
-                        ProviderEvent::Usage { total } => self.note_tokens(
+                        ProviderEvent::Usage { total, last } => self.note_tokens(
                             &meter,
                             provider,
                             job.model.as_deref(),
                             TokenOwner::Project(&job.project_id),
                             &total,
-                        ),
+                            last.as_ref(),
+                        ).await,
                         ProviderEvent::ApprovalRequested { request } => {
                             // It stays inside its sandbox; nobody is asked on its behalf.
                             let decision = match policy::route(&request, &access, ApprovalMode::Delegated) {

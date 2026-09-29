@@ -17,7 +17,8 @@ enum Baseline {
     /// Nothing reported yet: the first report is all this session used.
     #[default]
     Fresh,
-    /// Nothing reported yet, and the first report includes turns counted before.
+    /// Nothing reported yet, and the first report includes turns counted before: only its
+    /// latest request (when the CLI says what that used) is new.
     Continued,
     Seen(TokenUsage),
 }
@@ -36,12 +37,16 @@ impl TokenMeter {
         }
     }
 
-    /// What was used since the last report, if anything.
-    pub fn delta(&self, total: &TokenUsage) -> Option<TokenUsage> {
+    /// What was used since the last report, if anything. `latest` is what the report's latest
+    /// request used, when the CLI says.
+    pub fn delta(&self, total: &TokenUsage, latest: Option<&TokenUsage>) -> Option<TokenUsage> {
         let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
         let previous = std::mem::replace(&mut *last, Baseline::Seen(total.clone()));
         let delta = match previous {
-            Baseline::Continued => return None,
+            Baseline::Continued => TokenUsage {
+                cost_usd: None,
+                ..latest?.clone()
+            },
             Baseline::Seen(previous) if sum(total) >= sum(&previous) => TokenUsage {
                 input_tokens: (total.input_tokens - previous.input_tokens).max(0),
                 cached_input_tokens: (total.cached_input_tokens - previous.cached_input_tokens)

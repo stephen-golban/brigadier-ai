@@ -247,6 +247,7 @@ impl Parser {
                 let usage = update.token_usage;
                 out.push(Output::Event(ProviderEvent::Usage {
                     total: token_usage(&usage.total),
+                    last: Some(token_usage(&usage.last)),
                 }));
                 // The last request is what the model saw: the context in use. (What a
                 // compaction left counts only in its total.)

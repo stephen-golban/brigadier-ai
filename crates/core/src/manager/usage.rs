@@ -22,16 +22,17 @@ pub(crate) enum TokenOwner<'a> {
 
 impl SessionManager {
     /// Records what the turn just reported used, from `meter`'s view of the CLI session's
-    /// running totals.
-    pub(crate) fn note_tokens(
+    /// running totals. Awaited, so an outcome recorded next counts it.
+    pub(crate) async fn note_tokens(
         &self,
         meter: &TokenMeter,
         provider: ProviderKind,
         model: Option<&str>,
         owner: TokenOwner<'_>,
         total: &TokenUsage,
+        last: Option<&TokenUsage>,
     ) {
-        let Some(used) = meter.delta(total) else {
+        let Some(used) = meter.delta(total, last) else {
             return;
         };
         let Some(store) = self.runtime.routing_store().cloned() else {
@@ -64,10 +65,8 @@ impl SessionManager {
             cache_write: used.cache_write_tokens,
             output: used.output_tokens,
         };
-        self.spawn(async move {
-            if let Err(err) = store.add_turn(turn).await {
-                tracing::warn!(error = %err, "could not record a turn's token use");
-            }
-        });
+        if let Err(err) = store.add_turn(turn).await {
+            tracing::warn!(error = %err, "could not record a turn's token use");
+        }
     }
 }

@@ -232,14 +232,16 @@ impl SessionManager {
                         ProviderEvent::RateLimits { quota } => {
                             self.runtime.note_quota_snapshot(quota).await;
                         }
-                        ProviderEvent::Usage { total } => {
+                        ProviderEvent::Usage { total, last } => {
                             self.note_tokens(
                                 &meter,
                                 runs_on,
                                 Some(&cheap),
                                 TokenOwner::Upkeep,
                                 &total,
-                            );
+                                last.as_ref(),
+                            )
+                            .await;
                         }
                         ProviderEvent::Message {
                             role: Role::Assistant,

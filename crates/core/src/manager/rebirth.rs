@@ -281,13 +281,17 @@ impl SessionManager {
                     ProviderEvent::RateLimits { quota } => {
                         self.runtime.note_quota_snapshot(quota).await;
                     }
-                    ProviderEvent::Usage { total } => self.note_tokens(
-                        &meter,
-                        provider,
-                        choice.model.as_deref(),
-                        TokenOwner::Conversation(id),
-                        &total,
-                    ),
+                    ProviderEvent::Usage { total, last } => {
+                        self.note_tokens(
+                            &meter,
+                            provider,
+                            choice.model.as_deref(),
+                            TokenOwner::Conversation(id),
+                            &total,
+                            last.as_ref(),
+                        )
+                        .await
+                    }
                     ProviderEvent::ApprovalRequested { request } => {
                         let _ = session
                             .answer(

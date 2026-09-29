@@ -2170,14 +2170,16 @@ impl SessionManager {
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
             }
-            ProviderEvent::Usage { total } => {
+            ProviderEvent::Usage { total, last } => {
                 self.note_tokens(
                     &cli.meter,
                     cli.provider,
                     cli.model.model.as_deref(),
                     TokenOwner::Conversation(&conv.id),
                     total,
-                );
+                    last.as_ref(),
+                )
+                .await;
             }
             ProviderEvent::ContextSize {
                 used_tokens,
