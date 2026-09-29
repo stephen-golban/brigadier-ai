@@ -7,19 +7,21 @@ import {
   Play,
   Stop,
 } from "@openai/apps-sdk-ui/components/Icon";
-import {
-  createContext,
-  memo,
-  useContext,
-  useMemo,
-  useState,
-} from "react";
+import { memo, useContext, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { isFinal, isWorking } from "@/app/conversation/blocks";
-import { isStoppable, TASK_STATE_LABELS } from "@/app/conversation/cards/TaskCardView";
+import { isStoppable } from "@/app/conversation/cards/TaskCardView";
+import {
+  AgentsPanelContext,
+  glyphTone,
+  TASK_STATE_LABELS,
+  useWorkerName,
+  WorkerChip,
+  WorkerGlyph,
+  WorkerMention,
+} from "@/app/conversation/WorkerChip";
 import { WorkerThread } from "@/app/conversation/WorkerThread";
-import { IdGlyph } from "@/components/glyphs/worker-glyphs";
 import { effortLabel } from "@/components/assistant-ui/elements/model-selector";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -46,39 +48,6 @@ export const WORKERS_LABEL = "Workers";
  * side panel listing them all, where one opens to show its live transcript, commands and diff.
  */
 
-/** Which worker the Workers tab shows: `null` for the list, `undefined` when the tab is closed. */
-export type AgentsPanelState = string | null | undefined;
-
-export const AgentsPanelContext = createContext<{
-  panel: AgentsPanelState;
-  setPanel: (panel: AgentsPanelState) => void;
-}>({ panel: undefined, setPanel: () => {} });
-
-/** The colour a worker's glyph takes for how it ended: interrupted or failed. */
-export function glyphTone(state: Task["state"] | WorkerStepKind): string | undefined {
-  if (state === "stopped") return "text-warning";
-  if (state === "failed") return "text-destructive";
-  return undefined;
-}
-
-/**
- * A worker's own glyph and colour, the same wherever it appears; `working` adds its status dot,
- * `tone` recolours it for a state.
- */
-export function WorkerGlyph({
-  taskId,
-  working,
-  tone,
-  className,
-}: {
-  taskId: string;
-  working?: boolean | undefined;
-  tone?: string | undefined;
-  className?: string | undefined;
-}) {
-  return <IdGlyph id={taskId} dot={working} className={cn(className, tone)} />;
-}
-
 /** Glyphs stacked in a summary row. */
 const STACKED = 4;
 
@@ -104,10 +73,6 @@ export function WorkerGlyphs({
   );
 }
 
-function stepTitle(task: Task): string {
-  return `task-${task.number} · ${TASK_STATE_LABELS[task.state]}`;
-}
-
 /** Pills in one activity line; the others go on as "and N other workers". */
 const PILLS = 3;
 
@@ -125,11 +90,12 @@ const STEP_VERBS: Record<WorkerStepKind, [one: string, many: string]> = {
 };
 
 /**
- * Workers' steps as one activity line in the thread. One worker is its glyph and name in grey
- * ("Scout started working"); several are pills, three at most, then the rest counted: "[Scout]
- * [Verify] [Review] and 2 other workers updated", on one line where long names give way. A
- * glyph takes the colour of an interruption or a failure. A pill or name opens that worker in
- * the panel; "N other workers" opens the list.
+ * Workers' steps as one activity line in the thread: each worker as its chip, three at most,
+ * then the rest counted, then the verb: "[Scout] started working", "[Scout] [Verify] [Review]
+ * and 2 other workers updated", on one line where long names give way. A review of another
+ * worker names it too: "[Review] of [Scout] finished". A glyph takes the colour of an
+ * interruption or a failure. A chip opens that worker in the panel; "N other workers" opens
+ * the list.
  */
 export const WorkerStepRow = memo(function WorkerStepRow({
   kind,
@@ -139,59 +105,24 @@ export const WorkerStepRow = memo(function WorkerStepRow({
   taskIds: readonly string[];
 }) {
   const { setPanel } = useContext(AgentsPanelContext);
-  const tasks = useBoard(
-    useShallow((s) => taskIds.map((id) => s.board?.tasks[id]).filter((task) => task !== undefined)),
-  );
-  const [first] = tasks;
+  // Only which of them the board has, so their updates re-render their chips, not the line.
+  const ids = useBoard(useShallow((s) => taskIds.filter((id) => s.board?.tasks[id] !== undefined)));
+  const [first] = ids;
   if (!first) return null;
   const [one, many] = STEP_VERBS[kind];
-  const tone = glyphTone(kind);
-  if (tasks.length === 1) {
-    return (
-      <div
-        data-slot="worker-step"
-        data-kind={kind}
-        className="text-muted-foreground flex min-h-row-sm items-center gap-2 text-sm"
-      >
-        <WorkerGlyph
-          taskId={first.id}
-          tone={tone}
-          className="animate-glyph-in motion-reduce:animate-none"
-        />
-        <span className="min-w-0 truncate">
-          <button
-            type="button"
-            title={stepTitle(first)}
-            onClick={() => setPanel(first.id)}
-            className="hover:text-foreground align-bottom transition-colors"
-          >
-            {first.title}
-          </button>{" "}
-          {one}
-        </span>
-      </div>
-    );
-  }
-  const others = tasks.length - PILLS;
+  const tone = glyphTone(kind) ?? null;
+  const others = ids.length - PILLS;
   return (
     <div
       data-slot="worker-step"
       data-kind={kind}
-      className="text-foreground flex min-h-row min-w-0 items-center gap-1.5 text-sm"
+      className="text-foreground flex min-h-row-sm min-w-0 items-center gap-1.5 text-sm"
     >
-      {tasks.slice(0, PILLS).map((task) => (
-        <button
-          key={task.id}
-          type="button"
-          data-slot="worker-pill"
-          title={stepTitle(task)}
-          onClick={() => setPanel(task.id)}
-          className="bg-muted/60 border-border hover:bg-muted rounded-capsule animate-glyph-in inline-flex h-control-xs max-w-2xs min-w-0 shrink items-center gap-1.5 border ps-2 pe-2.5 transition-colors motion-reduce:animate-none"
-        >
-          <WorkerGlyph taskId={task.id} tone={tone} className="size-icon-sm" />
-          <span className="min-w-0 truncate">{task.title}</span>
-        </button>
-      ))}
+      {ids.length === 1 ? (
+        <WorkerMention taskId={first} tone={tone} />
+      ) : (
+        ids.slice(0, PILLS).map((id) => <WorkerChip key={id} taskId={id} tone={tone} />)
+      )}
       <span className="shrink-0 whitespace-nowrap">
         {others > 0 && (
           <>
@@ -205,7 +136,7 @@ export const WorkerStepRow = memo(function WorkerStepRow({
             </button>{" "}
           </>
         )}
-        {many}
+        {ids.length === 1 ? one : many}
       </span>
     </div>
   );
@@ -258,6 +189,7 @@ function RowTime({ task, summary }: { task: Task; summary: WorkerSummary | undef
 const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
   const task = useBoard((s) => s.board?.tasks[taskId]);
   const summary = useBoard((s) => s.board?.summaries[taskId]);
+  const name = useWorkerName(taskId);
   const { setPanel } = useContext(AgentsPanelContext);
   if (!task) return null;
   const status = statusLine(task, summary);
@@ -273,7 +205,7 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
         <WorkerGlyph taskId={task.id} tone={glyphTone(task.state)} className="size-6" />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
+            <span className="min-w-0 flex-1 truncate text-sm">{name}</span>
             <RowTime task={task} summary={summary} />
           </span>
           {status && (
@@ -483,6 +415,7 @@ function WorkerList({ conversationId }: { conversationId: string }) {
 /** One worker: its glyph, name and model in the header, its thread below. */
 function WorkerDetail({ task }: { task: Task }) {
   const { setPanel } = useContext(AgentsPanelContext);
+  const name = useWorkerName(task.id);
   const groups = useModelGroups();
   const choice = task.route.choice;
   const model = `${modelName(groups, choice)}${choice.effort ? ` · ${effortLabel(choice.effort)}` : ""}`;
@@ -499,9 +432,9 @@ function WorkerDetail({ task }: { task: Task }) {
         <WorkerGlyph taskId={task.id} className="size-6" />
         <h2
           className="min-w-0 flex-1 truncate text-sm font-medium"
-          title={`${task.title} · task-${task.number}`}
+          title={`${name ?? task.title} · task-${task.number}`}
         >
-          {task.title}
+          {name ?? task.title}
         </h2>
         <span className="text-muted-foreground shrink-0 text-xs">{model}</span>
         <WorkerMenu task={task} />

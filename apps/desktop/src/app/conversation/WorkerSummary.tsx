@@ -1,15 +1,15 @@
 import { ChevronDown, ChevronRight } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 
+import { useWorkerIds, WORKERS_LABEL, WorkerGlyphs } from "@/app/conversation/Agents";
+import { isFinal, isWorking } from "@/app/conversation/blocks";
 import {
   AgentsPanelContext,
   glyphTone,
-  useWorkerIds,
-  WORKERS_LABEL,
+  useWorkerName,
+  WorkerChip,
   WorkerGlyph,
-  WorkerGlyphs,
-} from "@/app/conversation/Agents";
-import { isFinal, isWorking } from "@/app/conversation/blocks";
+} from "@/app/conversation/WorkerChip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { DiffStat, Task } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
@@ -17,8 +17,8 @@ import { refreshWorkerDiffs } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
 /**
- * The session's workers summed up: rows of glyph, name, state and +N −N, shared by the pinned
- * summary's Workers section and the composer's background-workers strip.
+ * The session's workers summed up: rows of glyph, name, state and +N −N in the pinned summary's
+ * Workers section, and of chip, state and +N −N on the composer's background-workers strip.
  */
 
 /** What a worker is at, in plain words ("is working", "is awaiting instruction"). */
@@ -117,6 +117,25 @@ export function WorkerDiffs({ conversationId }: { conversationId: string }) {
   return null;
 }
 
+/** How a worker in a summary row is doing: its state in words, then its +N −N. */
+const RowState: FC<{ task: Task }> = ({ task }) => (
+  <>
+    <span
+      className={cn(
+        "shrink-0",
+        task.state === "failed"
+          ? "text-destructive"
+          : isFinal(task)
+            ? "text-muted-foreground"
+            : "text-foreground/70",
+      )}
+    >
+      {stateLine(task)}
+    </span>
+    <WorkerChanges task={task} />
+  </>
+);
+
 /** One worker in a summary: its glyph (with a dot while it works), name, state and +N −N. */
 export const WorkerSummaryRow = memo(function WorkerSummaryRow({
   taskId,
@@ -126,9 +145,9 @@ export const WorkerSummaryRow = memo(function WorkerSummaryRow({
   className?: string;
 }) {
   const task = useBoard((s) => s.board?.tasks[taskId]);
+  const name = useWorkerName(taskId);
   const { setPanel } = useContext(AgentsPanelContext);
   if (!task) return null;
-  const final = isFinal(task);
   return (
     <button
       type="button"
@@ -142,21 +161,36 @@ export const WorkerSummaryRow = memo(function WorkerSummaryRow({
       )}
     >
       <WorkerGlyph taskId={task.id} working={isWorking(task)} tone={glyphTone(task.state)} />
-      <span className="min-w-0 flex-1 truncate">{task.title}</span>
-      <span
-        className={cn(
-          "shrink-0",
-          task.state === "failed"
-            ? "text-destructive"
-            : final
-              ? "text-muted-foreground"
-              : "text-foreground/70",
-        )}
-      >
-        {stateLine(task)}
-      </span>
-      <WorkerChanges task={task} />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <RowState task={task} />
     </button>
+  );
+});
+
+/**
+ * One worker on the composer's background-workers strip: its chip, which opens it, then its
+ * state and +N −N.
+ */
+export const WorkerChipRow = memo(function WorkerChipRow({
+  taskId,
+  className,
+}: {
+  taskId: string;
+  className?: string;
+}) {
+  const task = useBoard((s) => s.board?.tasks[taskId]);
+  if (!task) return null;
+  return (
+    <div
+      data-slot="worker-chip-row"
+      data-state={task.state}
+      className={cn("flex h-control-sm min-w-0 items-center gap-2 text-sm", className)}
+    >
+      <span className="flex min-w-0 flex-1">
+        <WorkerChip taskId={task.id} />
+      </span>
+      <RowState task={task} />
+    </div>
   );
 });
 

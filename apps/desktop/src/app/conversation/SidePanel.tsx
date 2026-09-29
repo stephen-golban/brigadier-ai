@@ -25,8 +25,9 @@ import {
   useState,
 } from "react";
 
-import { type AgentsPanelState, WORKERS_LABEL, WorkersTab } from "@/app/conversation/Agents";
+import { WORKERS_LABEL, WorkersTab } from "@/app/conversation/Agents";
 import type { FileTarget } from "@/app/conversation/FilesTab";
+import type { AgentsPanelState } from "@/app/conversation/WorkerChip";
 import { DiffGlyph } from "@/components/assistant-ui/elements/diff-glyph";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Kbd } from "@/components/ui/kbd";

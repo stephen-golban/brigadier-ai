@@ -1,0 +1,158 @@
+import { createContext, memo, useContext } from "react";
+
+import { IdGlyph } from "@/components/glyphs/worker-glyphs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { Task, TaskState, WorkerStepKind } from "@/ipc/generated";
+import { cn } from "@/lib/utils";
+import { type Board, useBoard } from "@/state/board";
+
+/**
+ * A worker named anywhere in the conversation: its chip (glyph and name in a pill, which opens
+ * it in the Workers panel), and what the chip is made of, shared by every place that names one.
+ */
+
+/** Which worker the Workers tab shows: `null` for the list, `undefined` when the tab is closed. */
+export type AgentsPanelState = string | null | undefined;
+
+export const AgentsPanelContext = createContext<{
+  panel: AgentsPanelState;
+  setPanel: (panel: AgentsPanelState) => void;
+}>({ panel: undefined, setPanel: () => {} });
+
+export const TASK_STATE_LABELS: Record<TaskState, string> = {
+  queued: "Queued",
+  starting: "Starting",
+  running: "Running",
+  blocked: "Blocked",
+  paused: "Paused",
+  reported: "Reported",
+  reviewing: "In review",
+  awaitingApproval: "Waiting for approval",
+  readyToLand: "Ready to land",
+  landed: "Landed",
+  done: "Done",
+  rejected: "Rejected",
+  stopped: "Stopped",
+  failed: "Failed",
+};
+
+/** The colour a worker's glyph takes for how it ended: interrupted or failed. */
+export function glyphTone(state: Task["state"] | WorkerStepKind): string | undefined {
+  if (state === "stopped") return "text-warning";
+  if (state === "failed") return "text-destructive";
+  return undefined;
+}
+
+/**
+ * A worker's own glyph and colour, the same wherever it appears; `working` adds its status dot,
+ * `tone` recolours it for a state.
+ */
+export function WorkerGlyph({
+  taskId,
+  working,
+  tone,
+  className,
+}: {
+  taskId: string;
+  working?: boolean | undefined;
+  tone?: string | undefined;
+  className?: string | undefined;
+}) {
+  return <IdGlyph id={taskId} dot={working} className={cn(className, tone)} />;
+}
+
+/** The task a review worker reviews, while the board still has it. */
+function reviewSubject(board: Board | null | undefined, task: Task | undefined): Task | undefined {
+  if (task?.kind !== "review" || !task.subject) return undefined;
+  return board?.tasks[task.subject];
+}
+
+/**
+ * What a worker is called: its title, or for a review of another worker "Review of" and that
+ * worker's title, rather than its `task-N`.
+ */
+export function useWorkerName(taskId: string): string | null {
+  return useBoard((s) => {
+    const task = s.board?.tasks[taskId];
+    if (!task) return null;
+    const subject = reviewSubject(s.board, task);
+    return subject ? `Review of ${subject.title}` : task.title;
+  });
+}
+
+/**
+ * A worker named in a line: its glyph and name in a pill that truncates a long name, shows it
+ * whole with the worker's number and state on hover, and opens the worker in the panel. The
+ * glyph takes the colour of the worker's state, or `tone` when the line gives it one (`null`
+ * for none). `label` names it shorter where the line says the rest.
+ */
+export const WorkerChip = memo(function WorkerChip({
+  taskId,
+  tone,
+  label,
+  className,
+}: {
+  taskId: string;
+  tone?: string | null | undefined;
+  label?: string | undefined;
+  className?: string | undefined;
+}) {
+  const { setPanel } = useContext(AgentsPanelContext);
+  const name = useWorkerName(taskId);
+  const number = useBoard((s) => s.board?.tasks[taskId]?.number);
+  const state = useBoard((s) => s.board?.tasks[taskId]?.state);
+  if (name === null || number === undefined || state === undefined) {
+    return <span className="shrink-0">a worker</span>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          data-slot="worker-chip"
+          data-task={`task-${number}`}
+          onClick={() => setPanel(taskId)}
+          className={cn(
+            "bg-muted/60 border-border text-foreground hover:bg-muted rounded-capsule inline-flex h-control-xs max-w-2xs min-w-0 shrink items-center gap-1.5 border ps-2 pe-2.5 align-middle text-sm transition-colors",
+            className,
+          )}
+        >
+          <WorkerGlyph
+            taskId={taskId}
+            tone={tone === undefined ? glyphTone(state) : (tone ?? undefined)}
+            className="size-icon-sm animate-glyph-in motion-reduce:animate-none"
+          />
+          <span className="min-w-0 truncate">{label ?? name}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="flex-col gap-0.5">
+        <span className="wrap-break-word">{name}</span>
+        <span className="text-muted-foreground text-xs">
+          task-{number} · {TASK_STATE_LABELS[state]}
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+});
+
+/**
+ * How a line names a worker: its chip, and for a review of another worker the review's chip,
+ * then "of" and that worker's chip ("[Review] of [Add tests]"). Items of a flex line.
+ */
+export const WorkerMention = memo(function WorkerMention({
+  taskId,
+  tone,
+}: {
+  taskId: string;
+  tone?: string | null | undefined;
+}) {
+  const subject = useBoard((s) => reviewSubject(s.board, s.board?.tasks[taskId])?.id ?? null);
+  if (subject === null) return <WorkerChip taskId={taskId} tone={tone} />;
+  return (
+    <>
+      <WorkerChip taskId={taskId} tone={tone} label="Review" className="shrink-0" />
+      <span className="shrink-0">of</span>
+      <WorkerChip taskId={subject} />
+    </>
+  );
+});

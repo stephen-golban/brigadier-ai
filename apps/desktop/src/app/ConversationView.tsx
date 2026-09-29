@@ -22,7 +22,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { AgentsPanelContext } from "@/app/conversation/Agents";
+import { AgentsPanelContext } from "@/app/conversation/WorkerChip";
 import { ChatActions, RenameDialog } from "@/app/conversation/ChatActions";
 import { PinnedSummary, PinnedSummaryToggle } from "@/app/conversation/PinnedSummary";
 import { WorkerDiffs } from "@/app/conversation/WorkerSummary";
@@ -52,7 +52,12 @@ import { StatusCardContext } from "@/app/conversation/StatusCard";
 import { ComposerCapsule } from "@/app/conversation/ComposerCapsule";
 import { useAction } from "@/app/conversation/useAction";
 import { ViewContext } from "@/app/conversation/viewContext";
-import { MentionMemory, mentionsIn, type MentionTarget } from "@/app/conversation/Mentions";
+import {
+  MentionMemory,
+  mentionsIn,
+  type MentionTarget,
+  UserMessageText,
+} from "@/app/conversation/Mentions";
 import { TopBar } from "@/app/TopBar";
 import { MessageAttachments } from "@/components/assistant-ui/elements/message-attachment";
 import {
@@ -941,4 +946,5 @@ const THREAD_COMPONENTS: ThreadComponents = {
   AboveComposer,
   Capsule: ComposerCapsule,
   Composer: ConversationComposer,
+  UserText: UserMessageText,
 };

@@ -11,6 +11,7 @@ import { memo, type ReactNode } from "react";
 
 import { DiffStatView } from "@/app/conversation/cards/common";
 import { WaitingRow } from "@/app/conversation/cards/common";
+import { WorkerChip } from "@/app/conversation/WorkerChip";
 import {
   ApprovalCard,
   ApprovalCardCode,
@@ -52,14 +53,27 @@ export function Resolution({ state }: { state: CardState }) {
   }
 }
 
-type Shown = { icon: ReactNode; title: string; subtitle?: string; body: ReactNode };
+type Shown = { icon: ReactNode; title: ReactNode; subtitle?: ReactNode; body: ReactNode };
+
+/** "[Add tests] · why", leaving out what is missing. */
+function byline(by: ReactNode, text: string | null): ReactNode {
+  if (!by) return text ?? "";
+  return text ? (
+    <>
+      {by} · {text}
+    </>
+  ) : (
+    by
+  );
+}
 
 function describe(
   approval: Approval,
-  taskNumber: number | undefined,
-  landingNumber: number | undefined,
+  actorId: string | null,
+  landingId: string | null,
 ): Shown {
-  const by = taskNumber === undefined ? "" : `task-${taskNumber}`;
+  // The worker that asks, and the one to land, as their chips.
+  const by = actorId === null ? null : <WorkerChip taskId={actorId} />;
   const { subject } = approval;
   switch (subject.type) {
     case "cli": {
@@ -67,7 +81,7 @@ function describe(
       return {
         icon: <Terminal />,
         title: `Allow ${request.tool}?`,
-        subtitle: [by, request.reason].filter(Boolean).join(" · "),
+        subtitle: byline(by, request.reason),
         body: (
           <>
             {request.escalation && (
@@ -93,7 +107,7 @@ function describe(
       return {
         icon: <Globe />,
         title: "Run a command that reaches outside?",
-        subtitle: [by, ALWAYS_ASK_NOTE].filter(Boolean).join(" · "),
+        subtitle: byline(by, ALWAYS_ASK_NOTE),
         body: (
           <>
             <ApprovalCardCode>{subject.argv.map(quote).join(" ")}</ApprovalCardCode>
@@ -104,7 +118,12 @@ function describe(
     case "landing":
       return {
         icon: <Commit />,
-        title: `Land ${landingNumber === undefined ? "this task" : `task-${landingNumber}`} on ${subject.branch}?`,
+        title: (
+          <>
+            Land {landingId === null ? "this task" : <WorkerChip taskId={landingId} />} on{" "}
+            {subject.branch}?
+          </>
+        ),
         subtitle: "One reviewed commit",
         body: <DiffStatView stat={subject.diffStat} />,
       };
@@ -128,15 +147,17 @@ function describe(
 /** In the thread: a waiting row while the card is in the composer, then who decided. */
 export const ApprovalCardView = memo(function ApprovalCardView({ cardId }: { cardId: string }) {
   const approval = useBoard((s) => s.board?.approvals[cardId]);
-  const taskNumber = useBoard((s) =>
-    approval?.taskId ? s.board?.tasks[approval.taskId]?.number : undefined,
+  const actorId = useBoard((s) =>
+    approval?.taskId && s.board?.tasks[approval.taskId] ? approval.taskId : null,
   );
-  const landingNumber = useBoard((s) =>
-    approval?.subject.type === "landing" ? s.board?.tasks[approval.subject.taskId]?.number : undefined,
+  const landingId = useBoard((s) =>
+    approval?.subject.type === "landing" && s.board?.tasks[approval.subject.taskId]
+      ? approval.subject.taskId
+      : null,
   );
   if (!approval) return null;
 
-  const shown = describe(approval, taskNumber, landingNumber);
+  const shown = describe(approval, actorId, landingId);
   if (approval.state.type === "pending") {
     return <WaitingRow icon={shown.icon}>Waiting for your approval</WaitingRow>;
   }

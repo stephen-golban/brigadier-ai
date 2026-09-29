@@ -20,6 +20,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { DiffStatView } from "@/app/conversation/cards/common";
 import { useAction } from "@/app/conversation/useAction";
+import { WorkerChip } from "@/app/conversation/WorkerChip";
 import {
   ActionCard,
   ActionCardCode,
@@ -144,11 +145,12 @@ function quote(arg: string): string {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
-type Shown = { icon: ReactNode; kind: string; title: string; detail?: string | undefined; body: ReactNode };
+type Shown = { icon: ReactNode; kind: ReactNode; title: ReactNode; detail?: ReactNode; body: ReactNode };
 
 /** The kinds shown ("Terminal", "Edit files", "Internet access") for what is asked. */
-function describe(approval: Approval, taskNumber?: number, landingNumber?: number): Shown {
-  const actor = taskNumber === undefined ? null : `task-${taskNumber}`;
+function describe(approval: Approval, actorId: string | null, landingId: string | null): Shown {
+  // The worker that asks, and the one to land, as their chips.
+  const actor = actorId === null ? null : <WorkerChip taskId={actorId} />;
   const { subject } = approval;
   switch (subject.type) {
     case "cli": {
@@ -167,8 +169,12 @@ function describe(approval: Approval, taskNumber?: number, landingNumber?: numbe
         icon,
         kind,
         // The asker's own justification, when it has one; else the plain question.
-        title: request.reason || `Do you want ${actor ?? "the model"} to ${what}?`,
-        detail: request.reason && actor ? `Asked by ${actor}` : undefined,
+        title: request.reason || (
+          <>
+            Do you want {actor ?? "the model"} to {what}?
+          </>
+        ),
+        detail: request.reason && actor ? <>Asked by {actor}</> : undefined,
         body: (
           <>
             {request.escalation && (
@@ -189,16 +195,20 @@ function describe(approval: Approval, taskNumber?: number, landingNumber?: numbe
       return {
         icon: <Terminal />,
         kind: "Terminal",
-        title: `Do you want ${actor ?? "the model"} to run a command that reaches outside?`,
+        title: <>Do you want {actor ?? "the model"} to run a command that reaches outside?</>,
         detail: ALWAYS_ASK_NOTE,
         body: <ActionCardCode>{subject.argv.map(quote).join(" ")}</ActionCardCode>,
       };
     case "landing": {
-      const task = landingNumber === undefined ? "this task" : `task-${landingNumber}`;
+      const task = landingId === null ? "this task" : <WorkerChip taskId={landingId} />;
       return {
         icon: <Commit />,
-        kind: `Land ${task}`,
-        title: `Land ${task} on ${subject.branch}?`,
+        kind: "Land a change",
+        title: (
+          <>
+            Land {task} on {subject.branch}?
+          </>
+        ),
         detail: "One reviewed commit",
         body: <DiffStatView stat={subject.diffStat} />,
       };
@@ -224,18 +234,20 @@ function describe(approval: Approval, taskNumber?: number, landingNumber?: numbe
 /** "Deny `Esc`" and "Allow once `↩`", the primary focused so Enter allows. */
 function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   const approval = useBoard((s) => s.board?.approvals[id]);
-  const taskNumber = useBoard((s) =>
-    approval?.taskId ? s.board?.tasks[approval.taskId]?.number : undefined,
+  const actorId = useBoard((s) =>
+    approval?.taskId && s.board?.tasks[approval.taskId] ? approval.taskId : null,
   );
-  const landingNumber = useBoard((s) =>
-    approval?.subject.type === "landing" ? s.board?.tasks[approval.subject.taskId]?.number : undefined,
+  const landingId = useBoard((s) =>
+    approval?.subject.type === "landing" && s.board?.tasks[approval.subject.taskId]
+      ? approval.subject.taskId
+      : null,
   );
   const action = useAction();
   const allow = useRef<HTMLButtonElement>(null);
   useEffect(() => allow.current?.focus(), []);
   if (!approval) return null;
 
-  const shown = describe(approval, taskNumber, landingNumber);
+  const shown = describe(approval, actorId, landingId);
   const request = approval.subject.type === "cli" ? approval.subject.request : null;
   const grant = request?.grant ?? null;
   const answer = (decision: ApprovalDecision) =>
@@ -361,8 +373,8 @@ function QuestionAction({
   footer: ReactNode;
 }) {
   const question = useBoard((s) => s.board?.questions[id]);
-  const taskNumber = useBoard((s) =>
-    question?.taskId ? s.board?.tasks[question.taskId]?.number : undefined,
+  const askerId = useBoard((s) =>
+    question?.taskId && s.board?.tasks[question.taskId] ? question.taskId : null,
   );
   const action = useAction();
   const [highlight, setHighlight] = useState(() => question?.recommended ?? 0);
@@ -408,9 +420,13 @@ function QuestionAction({
         detail={
           uncommitted
             ? "Brigadier asks once, before the first worker starts. They are never committed either way."
-            : taskNumber === undefined
+            : askerId === null
               ? undefined
-              : `task-${taskNumber} waits for this`
+              : (
+                  <>
+                    <WorkerChip taskId={askerId} /> waits for this
+                  </>
+                )
         }
       >
         {uncommitted ? "Should workers see your uncommitted changes?" : question.text}

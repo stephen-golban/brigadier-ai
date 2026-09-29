@@ -4,7 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { isFinal } from "@/app/conversation/blocks";
 import { useAction } from "@/app/conversation/useAction";
-import { Changes, WorkerSummaryRow, workerStat } from "@/app/conversation/WorkerSummary";
+import { Changes, WorkerChipRow, workerStat } from "@/app/conversation/WorkerSummary";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { stopTask } from "@/state/actions";
@@ -13,8 +13,8 @@ import { ComposerRailItem } from "@/components/assistant-ui/elements/composer-ra
 
 /**
  * The "N background agents" strip on the composer: while any worker of the session is still
- * at work, the workers of those requests, what each is doing and its +N −N (a row opens the
- * worker), with the total and Stop all.
+ * at work, the workers of those requests as chips (one opens its worker), what each is doing
+ * and its +N −N, with the total and Stop all.
  */
 export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversationId }) => {
   const tasks = useBoard(
@@ -70,7 +70,7 @@ export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversation
         )}
         <CollapsibleContent className="flex flex-col">
           {listed.map((task) => (
-            <WorkerSummaryRow key={task.id} taskId={task.id} className="px-1" />
+            <WorkerChipRow key={task.id} taskId={task.id} className="px-1" />
           ))}
         </CollapsibleContent>
       </Collapsible>

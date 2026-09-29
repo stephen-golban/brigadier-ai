@@ -3,7 +3,7 @@ import { Chat, Folder, Lightbulb, Paperclip, Plus } from "@openai/apps-sdk-ui/co
 import { type FC, type ReactNode, useCallback, useContext, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { WorkerGlyph } from "@/app/conversation/Agents";
+import { WorkerGlyph } from "@/app/conversation/WorkerChip";
 import {
   COMPOSER_EDITABLE,
   type ComposerTarget,

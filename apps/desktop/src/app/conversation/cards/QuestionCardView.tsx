@@ -2,6 +2,7 @@ import { Check, QuestionMarkCircle } from "@openai/apps-sdk-ui/components/Icon";
 import { memo } from "react";
 
 import { WaitingRow } from "@/app/conversation/cards/common";
+import { WorkerChip } from "@/app/conversation/WorkerChip";
 import {
   ApprovalCard,
   ApprovalCardCode,
@@ -14,8 +15,8 @@ import { useBoard } from "@/state/board";
  */
 export const QuestionCardView = memo(function QuestionCardView({ cardId }: { cardId: string }) {
   const question = useBoard((s) => s.board?.questions[cardId]);
-  const taskNumber = useBoard((s) =>
-    question?.taskId ? s.board?.tasks[question.taskId]?.number : undefined,
+  const askerId = useBoard((s) =>
+    question?.taskId && s.board?.tasks[question.taskId] ? question.taskId : null,
   );
   if (!question) return null;
 
@@ -32,9 +33,13 @@ export const QuestionCardView = memo(function QuestionCardView({ cardId }: { car
       subtitle={
         uncommitted
           ? "Brigadier asks once, before the first worker starts"
-          : taskNumber === undefined
+          : askerId === null
             ? "From the orchestrator"
-            : `task-${taskNumber} waited for this`
+            : (
+                <>
+                  <WorkerChip taskId={askerId} /> waited for this
+                </>
+              )
       }
       pending={false}
       resolution={

@@ -23,8 +23,9 @@ import {
 } from "react";
 
 import { isFinal, isWorking } from "@/app/conversation/blocks";
-import { TASK_STATE_LABELS, TaskDetails } from "@/app/conversation/cards/TaskCardView";
+import { TaskDetails } from "@/app/conversation/cards/TaskCardView";
 import { useAction } from "@/app/conversation/useAction";
+import { TASK_STATE_LABELS } from "@/app/conversation/WorkerChip";
 import { RateItem, RateMenu } from "@/components/assistant-ui/rate-menu";
 import { MarkdownBlock } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";

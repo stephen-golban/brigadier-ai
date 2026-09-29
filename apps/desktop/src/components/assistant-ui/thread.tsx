@@ -58,6 +58,8 @@ export type ThreadComponents = {
   MessageFooter?: ComponentType | undefined;
   UserAttachments?: ComponentType | undefined;
   AboveComposer?: ComponentType | undefined;
+  /** A user message's text, where the app shows what it mentions. */
+  UserText?: ComponentType<TextMessagePartProps> | undefined;
   /** Floats centred just above the composer, over the thread (the capsule). */
   Capsule?: ComponentType | undefined;
   Composer?: ComponentType<ComposerProps> | undefined;
@@ -508,6 +510,7 @@ const DaySeparator: FC = () => {
 
 /** The user's text in its bubble; a long message is clipped until "Show more". */
 const UserMessageText: FC = () => {
+  const { UserText } = useContext(ThreadComponentsContext);
   const ref = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
@@ -534,7 +537,7 @@ const UserMessageText: FC = () => {
           !expanded && "max-h-user-message overflow-hidden",
         )}
       >
-        <MessagePrimitive.Parts />
+        {UserText ? <MessagePrimitive.Parts components={{ Text: UserText }} /> : <MessagePrimitive.Parts />}
       </div>
       {(clipped || expanded) && (
         <button

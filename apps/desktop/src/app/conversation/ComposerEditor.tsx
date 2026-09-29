@@ -15,7 +15,7 @@ import {
 } from "lexical";
 import { useCallback, useContext, useEffect, useMemo } from "react";
 
-import { WorkerGlyph } from "@/app/conversation/Agents";
+import { WorkerGlyph } from "@/app/conversation/WorkerChip";
 import { usePromptHistory } from "@/app/conversation/composerDraft";
 import { ComposerTargetContext } from "@/app/conversation/composerTarget";
 import { mentionOf } from "@/app/conversation/Mentions";

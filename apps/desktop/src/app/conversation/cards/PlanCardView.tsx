@@ -1,15 +1,13 @@
 import { memo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { TASK_STATE_LABELS } from "@/app/conversation/cards/TaskCardView";
+import { WorkerChip } from "@/app/conversation/WorkerChip";
 import {
   AgentPlan,
   type AgentPlanStepStatus,
 } from "@/components/assistant-ui/elements/agent-plan";
-import { mono } from "@/components/assistant-ui/elements/surfaces";
 import { Badge } from "@/components/ui/badge";
 import type { PlanState, TaskState } from "@/ipc/generated";
-import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
@@ -30,16 +28,12 @@ function stepStatus(state: TaskState | undefined): AgentPlanStepStatus {
   }
 }
 
-function PlanStateBadge({ state, reviewNumber }: { state: PlanState; reviewNumber?: number }) {
+function PlanStateBadge({ state }: { state: PlanState }) {
   switch (state.type) {
     case "proposed":
       return <Badge variant="warning">Proposed</Badge>;
     case "inReview":
-      return (
-        <Badge variant="secondary">
-          In plan review{reviewNumber === undefined ? "" : ` · task-${reviewNumber}`}
-        </Badge>
-      );
+      return <Badge variant="secondary">In plan review</Badge>;
     case "approved":
       return state.by === "user" ? (
         <Badge variant="success">Approved by you</Badge>
@@ -65,12 +59,12 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
     useShallow((s) =>
       (plan?.steps ?? []).flatMap((step) => {
         const task = step.taskId ? s.board?.tasks[step.taskId] : undefined;
-        return [task?.number ?? null, task?.state ?? null];
+        return [task?.id ?? null, task?.state ?? null];
       }),
     ),
   );
-  const reviewNumber = useBoard((s) =>
-    plan?.state.type === "inReview" ? s.board?.tasks[plan.state.taskId]?.number : undefined,
+  const reviewer = useBoard((s) =>
+    plan?.state.type === "inReview" && s.board?.tasks[plan.state.taskId] ? plan.state.taskId : null,
   );
   // Who decides a proposed plan: the user under Ask for approval or in plan mode.
   const decider = useApp((s) => {
@@ -89,24 +83,20 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
       badges={
         <>
           {plan.risky && <Badge variant="warning">Risky</Badge>}
-          <PlanStateBadge state={plan.state} {...(reviewNumber === undefined ? {} : { reviewNumber })} />
+          <PlanStateBadge state={plan.state} />
+          {reviewer !== null && <WorkerChip taskId={reviewer} label="Review" className="shrink-0" />}
         </>
       }
       steps={plan.steps.map((step, index) => {
-        const number = steps[index * 2] as number | null | undefined;
+        const taskId = steps[index * 2] as string | null | undefined;
         const state = steps[index * 2 + 1] as TaskState | null | undefined;
         return {
           key: `${index}`,
           title: step.title,
           detail: step.detail,
           status: stepStatus(state ?? undefined),
-          aside:
-            number != null ? (
-              <span className={cn(mono, "text-muted-foreground shrink-0")}>
-                task-{number}
-                {state ? ` · ${TASK_STATE_LABELS[state]}` : ""}
-              </span>
-            ) : undefined,
+          // The worker carrying it out; its state shows on hover and in the step's mark.
+          aside: taskId ? <WorkerChip taskId={taskId} /> : undefined,
         };
       })}
       footer={

@@ -4,6 +4,7 @@ import { memo, type ReactNode, useState } from "react";
 import { ArtifactDialog } from "@/app/conversation/ArtifactDialog";
 import { DiffStatView, Lines, Section, short } from "@/app/conversation/cards/common";
 import { useAction } from "@/app/conversation/useAction";
+import { TASK_STATE_LABELS, WorkerChip } from "@/app/conversation/WorkerChip";
 import { WorkerTranscript } from "@/app/conversation/WorkerTranscript";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
 import { mono } from "@/components/assistant-ui/elements/surfaces";
@@ -22,23 +23,6 @@ import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { pauseTask, restoreKeptWork, resumeTask, stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
-
-export const TASK_STATE_LABELS: Record<TaskState, string> = {
-  queued: "Queued",
-  starting: "Starting",
-  running: "Running",
-  blocked: "Blocked",
-  paused: "Paused",
-  reported: "Reported",
-  reviewing: "In review",
-  awaitingApproval: "Waiting for approval",
-  readyToLand: "Ready to land",
-  landed: "Landed",
-  done: "Done",
-  rejected: "Rejected",
-  stopped: "Stopped",
-  failed: "Failed",
-};
 
 const CARD_STATES: Record<TaskState, TaskCardState> = {
   queued: "waiting",
@@ -373,11 +357,12 @@ export function TaskDetails({
 }) {
   const [artifact, setArtifact] = useState<ArtifactRef | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
-  const subjectNumber = useBoard((s) =>
-    task.subject ? s.board?.tasks[task.subject]?.number : undefined,
+  // The worker this one reviews or works on, and the one that reviews it, while the board has them.
+  const subject = useBoard((s) =>
+    task.subject && s.board?.tasks[task.subject] ? task.subject : null,
   );
-  const reviewNumber = useBoard((s) =>
-    task.review ? s.board?.tasks[task.review.taskId]?.number : undefined,
+  const reviewer = useBoard((s) =>
+    task.review && s.board?.tasks[task.review.taskId] ? task.review.taskId : null,
   );
   const { report, candidate, review, workspace, kept } = task;
 
@@ -392,11 +377,12 @@ export function TaskDetails({
         <p className="text-muted-foreground text-xs">Why this model: {task.route.reason}</p>
       </Section>
 
-      {(workspace || subjectNumber !== undefined) && (
+      {(workspace || subject !== null) && (
         <Section title="Workspace">
-          {subjectNumber !== undefined && (
-            <p className="text-xs">
-              {task.kind === "review" ? "Reviews" : "Works on"} task-{subjectNumber}
+          {subject !== null && (
+            <p className="flex min-w-0 items-center gap-1.5 text-xs">
+              <span className="shrink-0">{task.kind === "review" ? "Reviews" : "Works on"}</span>
+              <WorkerChip taskId={subject} />
             </p>
           )}
           {workspace?.branch && (
@@ -497,7 +483,11 @@ export function TaskDetails({
                 {review.verdict === "approve" ? "Approved" : "Changes requested"}
               </Badge>
             )}
-            {reviewNumber !== undefined && <span className="text-xs">by task-{reviewNumber}</span>}
+            {reviewer !== null && (
+              <span className="flex min-w-0 items-center gap-1.5 text-xs">
+                by <WorkerChip taskId={reviewer} label="Review" />
+              </span>
+            )}
             <span className="text-muted-foreground text-xs">
               {review.crossVendor
                 ? "cross-vendor"

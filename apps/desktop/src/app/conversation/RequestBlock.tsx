@@ -14,9 +14,11 @@ import {
   TextShorterConcise,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, lazy, Suspense, useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import { WorkerStepRow } from "@/app/conversation/Agents";
 import { ForkMenu } from "@/app/conversation/ForkMenu";
+import { MentionText } from "@/app/conversation/Mentions";
 import { OrchestratorSteps, STEP_ROW } from "@/app/conversation/OrchestratorSteps";
 import {
   type BlockCard,
@@ -31,6 +33,7 @@ import {
 import { TurnDiff } from "@/app/conversation/TurnDiff";
 import { TurnMemories } from "@/app/conversation/TurnMemories";
 import { useViewConversation } from "@/app/conversation/viewContext";
+import { WorkerMention } from "@/app/conversation/WorkerChip";
 import {
   BranchPicker,
   MessageError,
@@ -318,7 +321,7 @@ const SteerBubble: FC<{ text: string; atMs: number }> = ({ text, atMs }) => {
       className="group/steer flex max-w-7/10 min-w-0 flex-col items-end gap-y-1 self-end"
     >
       <div className="bg-muted text-foreground rounded-thread px-4 py-2 whitespace-pre-wrap wrap-break-word">
-        {text}
+        <MentionText text={text} />
       </div>
       <div className="text-muted-foreground flex items-center gap-1 opacity-0 transition-opacity group-hover/steer:opacity-100 group-focus-within/steer:opacity-100">
         <span className="pe-1 text-xs tabular-nums">{formatSentAt(atMs, now)}</span>
@@ -330,28 +333,44 @@ const SteerBubble: FC<{ text: string; atMs: number }> = ({ text, atMs }) => {
   );
 };
 
-/** The last line of a working block: what happens right now ("Thinking", "Delegating…"). */
+/**
+ * The last line of a working block: what happens right now ("Thinking", "Delegating…"), or
+ * the worker it waits for ("Waiting for [Add tests]").
+ */
 const ActivityRow: FC<{ requestIds: string[] }> = ({ requestIds }) => {
-  const label = useBoard((s) => {
-    const board = s.board;
-    if (!board) return null;
-    const turn =
-      board.runRequest !== null &&
-      requestIds.includes(board.runRequest) &&
-      (board.run === "running" || board.run === "starting");
-    if (turn) {
-      if (board.doing) return board.doing;
-      // Streaming text shows itself.
-      return board.streaming?.text ? null : "Thinking";
-    }
-    const working = Object.values(board.tasks)
-      .filter((task) => task.requestId !== null && requestIds.includes(task.requestId) && isWorking(task))
-      .toSorted((a, b) => a.number - b.number);
-    const [first] = working;
-    if (working.length === 1 && first) return `Waiting for task-${first.number} · ${first.title}`;
-    return working.length > 1 ? `Waiting for ${working.length} workers` : null;
-  });
+  const { label, worker } = useBoard(
+    useShallow((s): { label: string | null; worker: string | null } => {
+      const board = s.board;
+      if (!board) return { label: null, worker: null };
+      const turn =
+        board.runRequest !== null &&
+        requestIds.includes(board.runRequest) &&
+        (board.run === "running" || board.run === "starting");
+      if (turn) {
+        // Streaming text shows itself.
+        const doing = board.doing || (board.streaming?.text ? null : "Thinking");
+        return { label: doing, worker: null };
+      }
+      const working = Object.values(board.tasks)
+        .filter((task) => task.requestId !== null && requestIds.includes(task.requestId) && isWorking(task))
+        .toSorted((a, b) => a.number - b.number);
+      const [first] = working;
+      if (working.length === 1 && first) return { label: "Waiting for", worker: first.id };
+      return {
+        label: working.length > 1 ? `Waiting for ${working.length} workers` : null,
+        worker: null,
+      };
+    }),
+  );
   if (!label) return null;
+  if (worker) {
+    return (
+      <div data-slot="request-activity" className="flex min-w-0 items-center gap-1.5 text-sm">
+        <span className="shimmer shrink-0 motion-reduce:animate-none">{label}</span>
+        <WorkerMention taskId={worker} />
+      </div>
+    );
+  }
   return (
     <div data-slot="request-activity" className="shimmer truncate text-sm motion-reduce:animate-none">
       {label}

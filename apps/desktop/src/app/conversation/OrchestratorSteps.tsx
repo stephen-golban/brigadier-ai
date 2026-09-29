@@ -5,14 +5,13 @@ import {
   ChevronRight,
   Globe,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { type FC, type ReactNode, useContext } from "react";
+import type { FC, ReactNode } from "react";
 
-import { AgentsPanelContext } from "@/app/conversation/Agents";
 import type { BlockOrchestratorStep } from "@/app/conversation/blocks";
+import { WorkerMention } from "@/app/conversation/WorkerChip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { OrchestratorStepKind } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
-import { useBoard } from "@/state/board";
 
 type Kind = OrchestratorStepKind["type"];
 
@@ -39,22 +38,6 @@ const PLURALS: Record<Kind, [one: string, many: string]> = {
 export const STEP_ROW = "text-muted-foreground flex min-h-row-sm min-w-0 items-center gap-2 text-sm";
 const row = STEP_ROW;
 
-/** A worker's name in a row: it opens the worker in the panel. */
-const WorkerName: FC<{ taskId: string }> = ({ taskId }) => {
-  const { setPanel } = useContext(AgentsPanelContext);
-  const title = useBoard((s) => s.board?.tasks[taskId]?.title ?? null);
-  if (title === null) return <>a worker</>;
-  return (
-    <button
-      type="button"
-      onClick={() => setPanel(taskId)}
-      className="hover:text-foreground inline-block max-w-xs truncate align-bottom transition-colors"
-    >
-      {title}
-    </button>
-  );
-};
-
 function hostOf(url: string): string {
   try {
     return new URL(url).host || url;
@@ -63,32 +46,46 @@ function hostOf(url: string): string {
   }
 }
 
+/**
+ * Plain words of a line that names workers: they keep their width, the chips give way.
+ * `attached` words follow a chip closely, as a possessive does.
+ */
+const Words: FC<{ attached?: boolean; children: ReactNode }> = ({ attached, children }) => (
+  <span className={cn("shrink-0 whitespace-nowrap", attached && "-ms-1")}>{children}</span>
+);
+
+/** A step's line; a worker it names is its chip ("Accepted [Add tests]’s change"). */
 function label(kind: OrchestratorStepKind): ReactNode {
   switch (kind.type) {
     case "messaged":
       return (
         <>
-          Sent message to <WorkerName taskId={kind.taskId} />
+          <Words>Sent message to</Words>
+          <WorkerMention taskId={kind.taskId} />
         </>
       );
     case "readReport":
       return (
         <>
-          Read <WorkerName taskId={kind.taskId} />’s report
+          <Words>Read</Words>
+          <WorkerMention taskId={kind.taskId} />
+          <Words attached>’s report</Words>
         </>
       );
     case "readArtifact":
-      return `Read ${kind.name}`;
+      return <span className="min-w-0 truncate">Read {kind.name}</span>;
     case "accepted":
       return (
         <>
-          Accepted <WorkerName taskId={kind.taskId} />’s change
+          <Words>Accepted</Words>
+          <WorkerMention taskId={kind.taskId} />
+          <Words attached>’s change</Words>
         </>
       );
     case "searchedWeb":
-      return `Searched the web for ${kind.query}`;
+      return <span className="min-w-0 truncate">Searched the web for {kind.query}</span>;
     case "readPage":
-      return `Read ${hostOf(kind.url)}`;
+      return <span className="min-w-0 truncate">Read {hostOf(kind.url)}</span>;
   }
 }
 
@@ -97,7 +94,7 @@ const StepRow: FC<{ step: BlockOrchestratorStep }> = ({ step }) => {
   return (
     <div data-slot="orchestrator-step" data-kind={step.kind.type} className={row}>
       <Icon aria-hidden className="size-icon-md shrink-0" />
-      <span className="min-w-0 truncate">{label(step.kind)}</span>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">{label(step.kind)}</span>
     </div>
   );
 };
