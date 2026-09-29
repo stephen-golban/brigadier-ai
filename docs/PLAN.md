@@ -255,7 +255,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 - **Skeleton pass** on project add, using a cheap model for a few minutes. It records the purpose of each module, the stack, conventions, and the run/build/verify recipe.
 - **Idle-quota enrichment** (toggle, on by default). When a usage window is about to reset with quota left over, Brigadier spends it deepening the Brain.
 - **Orchestrator rebirth.**
-  - Triggers at about 150–200k tokens, between turns only.
+  - Triggers at about 150–200k tokens, between turns only, or when a new message arrives after the session's cache has expired (§7 item 5).
   - The outgoing orchestrator writes a handoff note.
   - The new session gets a briefing of about 15–25k tokens built from the Brain, the handoff note, and the last N messages verbatim.
   - It can search the full transcript on demand.
@@ -422,22 +422,124 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 - **No budgets or caps.** Nothing stops, throttles or interrupts work to save usage.
 - **No shortening sessions.** Earlier compaction, smaller context windows and ending sessions sooner all lose context and invite hallucination. They are not the fix.
 - **Lossless.** Whatever leaves the model's view stays exactly retrievable, and the model is told where it is. Nothing is cut silently.
-- **Judged per completed task.** A change ships only if usage per successfully completed task goes down at equal quality. Fewer tokens in one call that cause extra calls later are a loss.
+- **Judged per completed task.** A change ships only if usage per successfully completed task goes down at equal quality. Fewer tokens in one call that cause extra calls later are a loss. An independent study found that cutting tool output by 38% raised the bill by 7%, because agents made up for it with extra steps ([arXiv 2607.12161](https://arxiv.org/abs/2607.12161)).
+  - Usage is measured as the provider reports it: the share of each quota window a task used, and how often work hit a limit.
+  - Results are kept separate per provider and per project. API price ratios are only a first estimate.
 
-**What the usage is made of** (measured 2026-09-28 on one heavy user's machine: 30 days, 15,830 Claude Code calls, weighted by Anthropic's API price ratios; neither vendor publishes how its subscription limits weigh each token type)
-- Every call re-sends the whole conversation. 73% of usage is those cache reads; 16% is cache writes and 11% output. 62% of usage came from calls made at 200k–500k tokens of context.
-- The re-read context is about one third fixed or uncounted (system prompt, tools, instructions, images), one third the model's own earlier output, and one third tool results.
-- The model's output is 65% thinking, 21% shell commands, 9% written files and 3.7% visible prose. Earlier thinking stays in the context and is re-read on every later call.
-- The costly tool results are successful file reads through the shell (`cat` 21%, `sed` 20%, `grep` 8% of the shell-output cost). Failed commands are 2% of it, build and test logs very little, and exact repeats almost none.
-- Codex shows the same shape (59.5M cached input tokens against 3.4M uncached).
+**What the usage is made of**
+
+These numbers are provisional. They come from two measurements on one heavy user's machine, weighted by Anthropic's API price ratios. Neither vendor publishes how its subscription limits weigh each token type. Both measurements cover Claude Code sessions the user ran by hand, not workers run by Brigadier. They pick the order below. They do not decide what ships.
+
+- **All projects** (2026-09-28: 30 days, 15,830 Claude Code calls, cache reads weighted at 0.1×):
+  - Every call re-sends the whole conversation. 73% of usage is those cache reads, 16% is cache writes and 11% is output.
+  - 62% of usage came from calls made at 200k–500k tokens of context.
+- **Brigadier's own sessions** (2026-09-30: 30 days, 19,656 calls, 98% Opus 5.5). This time each model's own cache price is used, and Opus 5.5 reads its cache at 0.05×:
+  - Cache reads are 61%, cache writes 23% (almost all at the 1-hour price of 2×) and output 16.5%.
+  - A token that enters the context costs as much when written as 40 later re-reads. So what enters the context matters as much as how long it stays.
+- **The re-read context:** about one third fixed or uncounted (system prompt, tools, instructions, images), one third the model's own earlier output, and one third tool results.
+- **The fixed start of a session:** a median of 21k tokens. Carried through every call, it is up to 10% of usage.
+- **The model's output:** 65% thinking, 21% shell commands, 9% written files and 3.7% visible prose. Earlier thinking stays in the context and is re-read on every later call.
+- **Tool results** are about 24% of usage:
+  - The costly ones are successful file reads through the shell (`sed` 26%, `cat` 22%, `grep` 13% of the shell-output cost).
+  - Failed commands are 2%, and build and test logs very little.
+  - Reading lines already read earlier in the same session is 0.01% of usage.
+- **Idle gaps:** a full re-cache after more than an hour idle is 2.4% of usage. Gaps under an hour cost nothing, because Claude Code keeps a subscription session's cache for one hour.
+- **Orientation** (listing folders, git status and log, reading README and plan docs before the first edit) is about 3%.
+- **Codex** shows the same shape (59.5M cached input tokens against 3.4M uncached).
 
 **Work, in order**
-1. **Precise, batched reads.** Worker tools backed by the static code index (Phase 4) return only what is needed: a file's outline, one symbol's source, references with their lines. A batched read returns several files or searches in one call, with a result per item. This makes each read smaller and removes model calls, which cost a full re-read of the context each.
-2. **Thinking.** Choose the effort level per step. Research whether the CLIs can keep old thinking out of the re-read context without losing anything the model concluded (Anthropic's API has `clear_thinking_20251015`; no Claude Code setting for it was found in 2.1.283).
-3. **Terse orchestrator voice.** The orchestrator's chat and internal notes follow the caveman skill ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman); its skill text is MIT and is bundled with its notice; the setting gets its own name, since the project restricts use of its name). Worker task specs stay structured and complete: goal, scope, constraints, relevant files, acceptance checks. Visible prose is only 3.7% of output, so the direct saving is small.
-4. **Log store.** Large build, test and CI logs are stored in the blob store under the owning session's cleanup-ledger entry. The model sees the exit status, the failures with their locations, and an ID it can read exact lines or search through. For Claude this uses a `PostToolUse` hook's `updatedToolOutput`, verified on Claude Code 2.1.283. That hook does not run for commands that fail, and Codex hooks cannot replace output, so Codex gets it as a Brigadier tool. File contents a model asked for are never replaced.
-5. **Measure it.** Record usage per task, model and step, the context size at each call, and the cache hit rate per CLI version, so each change above can be checked and a CLI release that breaks caching is caught.
-6. **Cheap-model digests for non-code reads.** Long docs, logs, web pages and worker transcripts are read by a cheap model instead of the worker, which gets back only the part it asked about. The source stays in the blob store with an ID, so the worker can still read it in full. The digest uses a local model (Phase 7) or the cheapest model of an installed CLI (Claude, Codex, opencode). Code reads stay with item 1: the index is exact and free. A digest pays only when it keeps text out of a long session. Every CLI call also carries that CLI's own system prompt and tools, so short reads stay direct, and the cutoff is set from item 5's numbers. Cheap cloud models still count against the user's plan limits, and opencode's free cloud models send code to third parties, so local models come first and cloud models need the user's consent.
+1. **Measure it.** This comes first, because every item below is judged by it.
+   - Record usage per task, model and step: the context size at each call, cache writes by cause (new content, idle gap, prefix change, CLI upgrade), and the cache hit rate per CLI version.
+   - Estimate token costs with each model's own cache prices.
+   - The ship gate is not the token estimate. It is completed-task quality plus the quota monitor's own readings (Phase 5): the share of each quota window used per completed task, and how often work hit a limit.
+   - Keep a baseline per provider and per project, and compare before and after each change, so a CLI release that breaks caching is caught.
+   - Record merge and conflict-fixing tasks separately, so overlapping parallel work shows up.
+2. **Precise, batched reads.**
+   - Worker tools backed by the static code index (Phase 4) return only what is needed: a file's outline, one symbol's source, references with their lines, or a line range.
+   - A batched read returns several files or searches in one call, with a result per item.
+   - This makes each read smaller and removes model calls, which cost a full re-read of the context each.
+   - A worker's task spec carries a short map of the area it works in: files, symbols, and the run and verify recipe from the Brain. The whole-project map stays a tool (`project_map`), not part of every prompt.
+   - Re-reads are too rare to be worth a "you already have this" reply.
+3. **A lean, stable fixed start.**
+   - Each role gets only the built-in tools it uses, and each task only the plugins and skills it needs (Phase 7). Tool search stays on, so other tools load only when asked for, and nothing is out of reach.
+   - Brigadier's own tool descriptions stay short.
+   - Everything Brigadier controls stays the same for a session's whole life, including across hibernation and resume: its appended prompt, settings, plugin set and order, and tool descriptions. Parts that change, such as the date, go after the CLI's dynamic boundary.
+   - Some cache misses come from the CLI itself, such as a CLI upgrade or its own start-of-session snapshots. Brigadier can't prevent these. Item 1 measures and reports them.
+   - Plugins are not added or removed inside a running session. A change of model starts a new worker or a rebirth, since each model has its own cache.
+4. **Thinking.**
+   - Choose the effort level per step where the model keeps its cache across effort changes. Current Claude Code docs say Opus 5.5, Sonnet 5.5 and Fable 5.1 do, on a subscription or an API key, but not through Bedrock, Google Cloud or a gateway.
+   - On models, sign-in methods or CLI versions where an effort change rebuilds the cache, effort is chosen once per task.
+   - Item 1 checks the cache hit rate observed after each effort change, and switches a combination to per-task if it misses.
+   - Research whether the CLIs can keep old thinking out of the re-read context without losing anything the model concluded. Anthropic's API has `clear_thinking_20251015`, but clearing rebuilds the cache from that point, and no Claude Code setting for it was found up to 2.1.285. It pays only if the thinking removed outweighs the rebuild.
+5. **Cache-aware idle.**
+   - Hibernation and resume keep Brigadier's part of the request unchanged (item 3), so coming back within the cache lifetime can read the cache.
+   - **Rebirth instead of resume when the cache is cold.**
+     - When a hibernated or idle session gets a new message after its cache has expired, Brigadier rebirths the CLI session instead of resuming it. The rebirth is the one from Phase 4: a briefing from the Brain, the handoff note, the last N messages verbatim, and the full transcript searchable on demand.
+     - The cache lifetime is one hour for a Claude main session on a subscription. Item 1 measures the real value per CLI.
+     - Resuming a cold session would write the whole history into the cache again at the write price anyway, so rebirth loses nothing it wasn't already going to pay for.
+     - The Brigadier session itself goes on unchanged. Only the disposable CLI session underneath is replaced, as with any rebirth.
+     - Rough numbers at Opus 5.5 prices (read 0.05×, one-hour write 2×), for a 150k history and 5 calls per turn:
+       - Cold: resuming costs about 330k token-equivalents (300k to rewrite the history, plus re-reads). Rebirth costs about 45k (a 20k briefing written at 2×, plus re-reads).
+       - Warm: a fresh session per message costs more than resuming until the history reaches about 800k divided by the calls per turn. At 5 calls per turn that is about 160k, which matches the existing 150–200k rebirth trigger.
+     - Evidence: full re-caches after gaps of more than an hour were 2.4% of usage in hand-run development sessions. The orchestrator's share may be higher, since it spends most of its time waiting on the user.
+     - Later, tune the 150–200k rebirth trigger from item 1's measured calls per turn and idle gaps.
+     - Implementation note: `claude -p --no-session-persistence` and `codex exec --ephemeral` exist on the installed CLIs (Claude Code 2.1.285, codex-cli 0.158.0), so short-lived side sessions leave no transcript files. The Codex adapter uses app-server, whose equivalent is unverified.
+   - For gaps where the cache is still warm but about to expire, a measured experiment: refreshing the cache with a tiny side call on a copy of the session, so the real transcript is untouched.
+   - No saving is assumed. Forks and other side calls default to a five-minute cache lifetime, while a subscription's main conversation gets one hour. So the experiment must establish:
+     - which lifetime the side call's cache writes actually get;
+     - what the side call costs in full;
+     - whether the main session's next request after the gap really reads the cache.
+   - It is built only if those numbers show a gain per completed task.
+   - A Brigadier session is never ended or shrunk because it is idle. Nothing it knew is lost.
+6. **Terse orchestrator voice.**
+   - The orchestrator's chat and internal notes follow the caveman skill ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman)). Its skill text is MIT and is bundled with its notice. The setting gets its own name, since the project restricts use of its name.
+   - Worker task specs stay structured and complete: goal, scope, constraints, relevant files, acceptance checks.
+   - Visible prose is only 3.7% of output, so the direct saving is small.
+7. **Command-output store.**
+   - Output from noisy local commands (tests, builds, linters, package installs, CI and container logs, `git fetch` progress) goes through one small Brigadier wrapper.
+   - The wrapper stores the full stdout and stderr in the blob store, under the owning session's cleanup-ledger entry, before it prints anything.
+   - The model sees:
+     - the exit status;
+     - the failures with their locations;
+     - a count of what was left out (for example "312 passing tests not shown");
+     - an ID it can read exact lines from or search through.
+   - Permissions:
+     - The wrapper never touches outward or approval-gated commands: push, publish, deploy, remote database or cloud, credentials, and anything else §5 says always asks. These run exactly as written and go through the normal approval.
+     - Only commands on a fixed list of local families are rewritten.
+     - Permission is decided on the original command, and the hook never grants approval itself. Claude checks permission on the rewritten command, and Brigadier answers every permission prompt (`--permission-prompt-tool stdio`). So Brigadier unwraps the command and decides on the original.
+     - The wrapper checks the original command against the same policy again, and refuses to run anything the policy says must ask.
+     - It runs inside the same OS sandbox as the command would have.
+   - Claude workers:
+     - Brigadier supplies its own `PreToolUse` hook in the settings it passes with `--settings`. Workers load only project settings plus Brigadier's (`--setting-sources project`), so the user's personal hooks still never run.
+     - The hook rewrites a matching command to the wrapper (`updatedInput`). Because the wrapper runs the command, failing commands are covered too. Claude's `PostToolUse` output replacement misses them.
+   - Codex workers:
+     - Brigadier turns off Codex hooks today, because turning them on would also load the user's personal hooks.
+     - Codex runs a hook only once its exact definition is trusted, unless it comes from a managed source or the session passes `--dangerously-bypass-hook-trust`. It also requires an explicit allow for a rewrite, which would bypass approval.
+     - So Codex workers get the wrapper as a Brigadier tool (`run`): same store, same digest, same policy check.
+     - Hooks on Codex are used only if a test on the installed version shows Brigadier can load just its own hook, with no personal hooks and without the rewrite granting approval.
+   - Checking that it worked:
+     - Every wrapper run records the worker's tool call it served. For each command that matched the list, Brigadier checks that the record exists.
+     - If it doesn't (the hook was missing, untrusted or broken), Brigadier marks the hook as not working for that CLI version. From then on, that session and later ones get the Brigadier `run` tool, and the worker is told to use it for these commands.
+     - Output is never lost either way: a command that wasn't wrapped just shows its full output as before.
+   - Safety rules:
+     - Unknown commands pass through unchanged.
+     - The digest is never longer than the original.
+     - File contents, search hits and diffs a model asked for are never replaced.
+   - Large results from Brigadier's own tools follow the same pattern.
+   - The open-source RTK project (Apache-2.0) is a reference for per-command filters. Unlike it, we always keep the raw output, not only on failure.
+   - On Brigadier's own sessions this would save about 1% of usage at most. It matters more in projects with heavy test and build output.
+8. **Cheap-model digests for non-code reads.**
+   - Long docs, logs, web pages and worker transcripts are read by a cheap model instead of the worker, which gets back only the part it asked about. The source stays in the blob store with an ID, so the worker can still read it in full.
+   - The digest uses a local model (Phase 7) or the cheapest model of an installed CLI (Claude, Codex, opencode).
+   - Code reads stay with item 2: the index is exact and free.
+   - A digest pays only when it keeps text out of a long session. Every CLI call also carries that CLI's own system prompt and tools, so short reads stay direct, and the cutoff is set from item 1's numbers.
+   - Cheap cloud models still count against the user's plan limits, and opencode's free cloud models send code to third parties. So local models come first, and cloud models need the user's consent.
+
+**Not doing, and why**
+- Output caps, per-step token limits and history trimming break the rules above.
+- Lossy prompt compression, and answering from a cache of similar past questions, lose information. Coding turns almost never repeat anyway.
+- Batch APIs are discounted only on API billing, not on subscriptions.
+- A fresh `claude -p` or `codex` session for every user message (considered 2026-09-30). It costs more than resuming while the cache is warm, and it breaks "No shortening sessions". Rebirth happens only at the size trigger or when the cache is cold (item 5).
 
 ---
 
@@ -485,4 +587,4 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 | Q26 | One permission picker combining autonomy and sandbox; outward actions always ask (levels finalized in Q27) |
 | Q27 | Levels: Ask for approval / Approve for me (default; stricter fusion review approves big plans on your behalf; stops only for questions only you can answer) / Full access (no sandbox, orange pill) |
 | — | Additions (2026-09-24): leave-no-litter cleanup ledger and litter guard; BB-parity composer; message queue (steer, edit, reorder, pause/resume); a sidebar with Projects and Chats; assistant-ui design system + elements as the full UI kit; dark-only theme with Compact / Normal density, everything token-driven |
-| — | Token economy (2026-09-28): no budgets and no shortening sessions; lossless reductions judged per completed task; precise and batched reads, thinking, a terse orchestrator voice (caveman), a log store and measurement, in that order (§7) |
+| — | Token economy (2026-09-28, revised 2026-09-30): no budgets and no shortening sessions; lossless reductions judged per completed task on quality plus observed quota-window use; in order: measure first, precise and batched reads, a lean stable fixed start, thinking (effort per step where the cache survives), cache-aware idle with rebirth instead of resume when the cache is cold, a terse orchestrator voice (caveman), a command-output store (own filters, a Brigadier `run` tool for Codex), cheap-model digests; no fresh session per user message (§7) |
