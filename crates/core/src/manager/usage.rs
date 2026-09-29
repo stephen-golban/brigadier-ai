@@ -16,6 +16,8 @@ pub(crate) enum TokenOwner<'a> {
     Task(&'a ConversationId, &'a TaskId),
     /// A Brain job of a project.
     Project(&'a ProjectId),
+    /// Brigadier's own upkeep for no conversation or project (researching a new model).
+    Upkeep,
 }
 
 impl SessionManager {
@@ -48,6 +50,7 @@ impl SessionManager {
                 (Some(id.0.clone()), project_of(id), Some(task.0.clone()))
             }
             TokenOwner::Project(project) => (None, Some(project.0.clone()), None),
+            TokenOwner::Upkeep => (None, None, None),
         };
         let turn = TurnUsage {
             at_ms: now_ms(),

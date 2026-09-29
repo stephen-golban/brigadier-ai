@@ -117,6 +117,15 @@ pub struct DelegateTask {
     /// Ids of the user's attachments the worker should get as files.
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// Optional: the parts of the codebase it touches ("frontend", "backend", "infra",
+    /// "docs", "tests"), when the spec's paths don't make it plain. Routing and the user's
+    /// routing rules go by them.
+    #[serde(default)]
+    pub areas: Vec<String>,
+    /// Optional: "high" when the task needs the vendors' best models (hard or risky work);
+    /// leave it out otherwise.
+    #[serde(default)]
+    pub quality: Option<String>,
     /// For a task that carries out a step of the approved plan: that step's number (1 is the
     /// first step). The user follows the plan's progress by it.
     #[serde(default)]

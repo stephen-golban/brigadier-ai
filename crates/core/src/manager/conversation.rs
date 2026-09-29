@@ -2350,7 +2350,7 @@ impl SessionManager {
             && status != TurnStatus::Completed
         {
             self.runtime.note_limit(cli.provider, limit.clone()).await;
-            if let Some(next) = self.stand_in_choice(conv, cli) {
+            if let Some(next) = self.stand_in_choice(conv, cli).await {
                 // Not from inside the CLI's own event pump: closing the CLI waits for it.
                 let (manager, conv, cli) = (self.arc(), conv.clone(), cli.clone());
                 self.spawn(async move {
@@ -2441,22 +2441,44 @@ impl SessionManager {
         });
     }
 
-    /// The model a conversation continues on after `cli`'s vendor hit a usage limit: the
-    /// other vendor's equivalent, if it is usable (and, for an orchestrator on Codex, can be
-    /// limited to talking only).
-    fn stand_in_choice(&self, conv: &ConvLive, cli: &Arc<Cli>) -> Option<brigadier_router::Choice> {
-        let from = brigadier_router::Choice {
-            provider: cli.provider,
-            model: cli.model.model.clone(),
-            effort: cli.model.effort.clone(),
-            reason: String::new(),
-            cross_vendor: None,
-        };
+    /// The model a conversation continues on after `cli`'s model hit a usage limit: the
+    /// router's choice for its kind of conversation, less that model (its provider too when
+    /// the limit is provider-wide), if one is usable, and, for an orchestrator on Codex, can
+    /// be limited to talking only.
+    async fn stand_in_choice(
+        &self,
+        conv: &ConvLive,
+        cli: &Arc<Cli>,
+    ) -> Option<brigadier_router::Routed> {
         let category = match conv.kind {
             ConversationKind::Session => brigadier_router::TaskCategory::Orchestrate,
             ConversationKind::Chat => brigadier_router::TaskCategory::Chat,
         };
-        let next = brigadier_router::fallback(&from, category, &self.availability())?;
+        let project = self
+            .core
+            .conversation(&conv.id)
+            .ok()
+            .and_then(|conversation| conversation.project_id);
+        let exclude = [brigadier_router::Exclusion {
+            provider: cli.provider,
+            model: cli.model.model.clone(),
+        }];
+        let decision = self
+            .decide(&super::routing::Ask {
+                category,
+                areas: &[],
+                floor: brigadier_router::default_floor(category),
+                needs: brigadier_router::Needs::default(),
+                pin: None,
+                avoid: None,
+                exclude: &exclude,
+                project_id: project.as_ref(),
+                starting: false,
+            })
+            .await;
+        let brigadier_router::Decision::Run(next) = decision else {
+            return None;
+        };
         if conv.kind == ConversationKind::Session
             && next.provider == ProviderKind::Codex
             && brigadier_providers::codex::orchestrator_lockdown().is_err()
@@ -2475,13 +2497,13 @@ impl SessionManager {
         &self,
         conv: &Arc<ConvLive>,
         cli: &Arc<Cli>,
-        next: brigadier_router::Choice,
+        next: brigadier_router::Routed,
         limit: LimitHit,
         carried: Vec<Message>,
     ) {
         let choice = ModelChoice {
             provider: next.provider,
-            model: next.model.clone(),
+            model: Some(next.model.clone()),
             effort: next.effort.clone(),
             fast: None,
         };
@@ -2494,10 +2516,7 @@ impl SessionManager {
                 .unwrap_or_else(|| cli.model.clone()),
             Err(_) => cli.model.clone(),
         };
-        let stand_in = next.model.clone().map_or_else(
-            || format!("{}'s default model", next.provider.label()),
-            |model| format!("{} {model}", next.provider.label()),
-        );
+        let stand_in = format!("{} {}", next.provider.label(), next.model);
         let reason = format!("{} hit its usage limit", cli.provider.label());
         self.notice(
             &conv.id,
@@ -2575,23 +2594,6 @@ impl SessionManager {
             )
             .await;
         }
-    }
-
-    /// What each provider can offer right now, for the router.
-    pub(crate) fn availability(&self) -> Vec<brigadier_router::Availability> {
-        [ProviderKind::Claude, ProviderKind::Codex]
-            .into_iter()
-            .map(|provider| brigadier_router::Availability {
-                provider,
-                usable: self.provider_usable(provider),
-                models: self
-                    .runtime
-                    .overview(provider)
-                    .and_then(|overview| overview.models)
-                    .map(|catalog| catalog.models)
-                    .unwrap_or_default(),
-            })
-            .collect()
     }
 
     /// The native id of the conversation's last CLI session with `provider`, to resume it.

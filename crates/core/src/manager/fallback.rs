@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use brigadier_providers::{
-    ErrorKind, LimitHit, LimitKind, ProviderError, ProviderEvent, ProviderKind, TurnInput,
+    ErrorKind, LimitHit, LimitKind, ProviderError, ProviderEvent, TurnInput,
 };
 use brigadier_store::StreamPage;
 
@@ -216,27 +216,11 @@ impl SessionManager {
         })
     }
 
-    /// Who may take `task` over now: the router's choice among the usable providers.
+    /// Who may take `task` over now: the router's choice with the same floor, areas and rules
+    /// the task started with, less the models that stopped on an error (a limit leaves its
+    /// provider or bucket unavailable by itself). A context window too small asks for a bigger
+    /// one.
     async fn reroute(&self, task: &Task) -> std::result::Result<Route, Waiting> {
-        let mut available = self.availability();
-        // A provider whose model just stopped on an error is left out while another is usable.
-        let failed = task
-            .attempts
-            .last()
-            .filter(|attempt| matches!(attempt.end, Some(AttemptEnd::Error { .. })))
-            .map(|attempt| attempt.route.choice.provider);
-        if let Some(failed) = failed
-            && available
-                .iter()
-                .any(|other| other.provider != failed && other.usable)
-        {
-            for other in &mut available {
-                if other.provider == failed {
-                    other.usable = false;
-                }
-            }
-        }
-        let running = self.running_workers();
         let avoid = match &task.subject {
             Some(id) if task.kind == crate::work::TaskKind::Review => self
                 .task_by_id(&task.conversation_id, id)
@@ -248,66 +232,68 @@ impl SessionManager {
                 }),
             _ => None,
         };
-        match brigadier_router::route(&brigadier_router::RouteRequest {
-            category: super::workers::category(task.kind),
-            available: &available,
-            pin: None,
-            avoid,
-            running: &running,
-        }) {
-            Ok(choice) => {
-                let choice = super::workers::cheap_for_development(choice, &available);
-                Ok(Route {
-                    choice: ModelChoice {
-                        provider: choice.provider,
-                        model: choice.model,
-                        effort: choice.effort,
-                        fast: None,
-                    },
-                    reason: choice.reason,
-                    explanation: None,
+        let exclude: Vec<brigadier_router::Exclusion> = task
+            .attempts
+            .iter()
+            .filter(|attempt| matches!(attempt.end, Some(AttemptEnd::Error { .. })))
+            .map(|attempt| brigadier_router::Exclusion {
+                provider: attempt.route.choice.provider,
+                model: attempt.route.choice.model.clone(),
+            })
+            .collect();
+        let mut needs = brigadier_router::Needs {
+            image_input: task
+                .attachments
+                .iter()
+                .any(|attachment| attachment.mime.starts_with("image/")),
+            ..brigadier_router::Needs::default()
+        };
+        if let Some(attempt) = task.attempts.last()
+            && matches!(
+                attempt.end,
+                Some(AttemptEnd::Error {
+                    kind: ErrorKind::ContextWindow,
+                    ..
                 })
-            }
-            Err(_) => Err(self.waiting()),
+            )
+            && let Some(window) = self
+                .routing_inputs(None, now_ms())
+                .await
+                .models
+                .iter()
+                .find(|model| {
+                    model.provider == attempt.route.choice.provider
+                        && Some(&model.id) == attempt.route.choice.model.as_ref()
+                })
+                .and_then(|model| model.context_window)
+        {
+            needs.context_tokens = Some(window + 1);
         }
-    }
-
-    /// What a task with no usable provider waits for.
-    fn waiting(&self) -> Waiting {
-        let now = now_ms();
-        let mut parts = Vec::new();
-        let mut earliest: Option<i64> = None;
-        for kind in ProviderKind::ALL {
-            let logged_in = self.runtime.overview(kind).is_some_and(|overview| {
-                overview
-                    .status
-                    .as_ref()
-                    .is_some_and(|status| status.logged_in)
-            });
-            if !logged_in {
-                parts.push(format!("{} is not logged in", kind.label()));
-                continue;
-            }
-            let limit = self
-                .runtime
-                .monitor()
-                .current(kind, now)
-                .and_then(|quota| quota.limit);
-            if let Some(limit) = limit {
-                if let Some(at) = limit.resets_at_ms {
-                    earliest = Some(earliest.map_or(at, |known| known.min(at)));
-                }
-                parts.push(limit_phrase(kind, &limit));
-            }
-        }
-        Waiting {
-            reason: if parts.is_empty() {
-                "No model is available for it right now".into()
-            } else {
-                parts.join("; ")
-            },
-            resets_at_ms: earliest,
-            rule: None,
+        let project = self
+            .core
+            .conversation(&task.conversation_id)
+            .ok()
+            .and_then(|conversation| conversation.project_id);
+        let decision = self
+            .decide(&super::routing::Ask {
+                category: super::workers::category(task.kind),
+                areas: &task.areas,
+                floor: task.floor,
+                needs,
+                pin: None,
+                avoid,
+                exclude: &exclude,
+                project_id: project.as_ref(),
+                starting: false,
+            })
+            .await;
+        match decision {
+            brigadier_router::Decision::Run(routed) => Ok(super::routing::route_from(routed)),
+            brigadier_router::Decision::Wait(waiting) => Err(Waiting {
+                reason: waiting.reason,
+                resets_at_ms: waiting.resets_at_ms,
+                rule: waiting.rule,
+            }),
         }
     }
 
@@ -662,22 +648,6 @@ fn end_phrase(end: &AttemptEnd) -> String {
             LimitKind::Credits => " because its account ran out of credits".into(),
         },
         AttemptEnd::Error { message, .. } => format!(" on an error ({message})"),
-    }
-}
-
-/// What a provider's limit means for a waiting task.
-fn limit_phrase(kind: ProviderKind, limit: &LimitHit) -> String {
-    match limit.kind {
-        LimitKind::UsageWindow => match limit.window.as_deref() {
-            Some(window) => format!(
-                "{}'s {} window is used up until it resets",
-                kind.label(),
-                window_name(window)
-            ),
-            None => format!("{} is at its usage limit until it resets", kind.label()),
-        },
-        LimitKind::SpendControl => format!("a spend control stopped {}", kind.label()),
-        LimitKind::Credits => format!("{}'s account is out of credits", kind.label()),
     }
 }
 

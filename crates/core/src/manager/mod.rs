@@ -39,13 +39,16 @@ mod prompts;
 mod pull_request;
 mod rebirth;
 mod requests;
+mod research;
 mod review;
+mod routing;
 mod secrets;
 mod side_chat;
 mod tools;
 mod undo;
 mod uninstall;
 mod usage;
+mod usage_view;
 mod workers;
 
 use std::collections::HashMap;
@@ -106,6 +109,7 @@ pub struct SessionManager {
     /// Development builds: usage limits armed to exercise fallback.
     #[cfg(debug_assertions)]
     faults: fault::Faults,
+    research: research::Research,
 }
 
 impl SessionManager {
@@ -157,6 +161,7 @@ impl SessionManager {
             brains,
             #[cfg(debug_assertions)]
             faults: fault::Faults::default(),
+            research: research::Research::default(),
         });
         manager.install_worktree_remover();
         manager.recover().await;

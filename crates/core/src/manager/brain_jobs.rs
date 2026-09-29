@@ -54,7 +54,7 @@ const JOB_TOOL_TIMEOUT_SECS: u64 = 120;
 /// How long a skeleton pass that could not start waits before it is asked for again.
 const SKELETON_RETRY: Duration = Duration::from_secs(5 * 60);
 /// Enrichment waits until a provider has run none of the user's work for this long.
-const ENRICH_IDLE_MS: i64 = 10 * 60 * 1000;
+pub(super) const ENRICH_IDLE_MS: i64 = 10 * 60 * 1000;
 /// … and a usage window resets within this …
 const ENRICH_RESET_WITHIN_MS: i64 = 60 * 60 * 1000;
 /// … with at most this much of it used …
@@ -850,6 +850,19 @@ impl SessionManager {
         Ok(reply)
     }
 
+    /// How long no conversation or worker has been at work on `kind` (as of the last tick).
+    pub(super) fn provider_idle_ms(&self, kind: ProviderKind, now: i64) -> i64 {
+        now - self
+            .brains
+            .jobs
+            .idle_since
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&kind)
+            .copied()
+            .unwrap_or(now)
+    }
+
     /// Each minute: starts enrichment when a provider has quota to spare and is idle, and
     /// makes a running enrichment yield when that stops being true.
     pub(super) async fn brain_job_tick(&self) {
@@ -1118,7 +1131,7 @@ impl SessionManager {
 
 /// A window of `quota` that resets within the hour with plenty left, while no window runs hot:
 /// when it resets.
-fn spare_window(quota: &QuotaSnapshot, now: i64) -> Option<i64> {
+pub(super) fn spare_window(quota: &QuotaSnapshot, now: i64) -> Option<i64> {
     if quota.limit.is_some() || quota.windows.is_empty() || hottest(quota) >= ENRICH_HOT {
         return None;
     }

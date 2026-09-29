@@ -125,7 +125,7 @@ pub use forecast::{
     active_limit, heat, provider_quota, quota_penalty, window_applies, window_state,
 };
 pub use learn::{learn, learned_for};
-pub use load::{Parsed, RegistryError};
+pub use load::{MAX_REGISTRY_BYTES, Parsed, RegistryError};
 pub use merge::{OutcomeCount, TRIAL_OUTCOMES, merge, outcome_counts};
 pub use outcome::{Learned, Outcome, OutcomeResult};
 pub use overrides::{OverrideEffect, OverrideRule, OverrideTarget};

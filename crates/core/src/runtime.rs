@@ -41,7 +41,7 @@ use crate::model::{
     DomainEvent, Fixture, ProviderOverview, ProvidersView, RawApprovals, RawEntry, RawPage,
     RawSession, RawSessionId, RawSource, RawState, streams,
 };
-use crate::routing::{QuotaMonitor, RoutingStore};
+use crate::routing::{QuotaMonitor, RegistryHolder, RoutingStore};
 use crate::{Core, Error, Result, now_ms};
 
 /// Text deltas arriving within this window are stored as one event.
@@ -103,6 +103,7 @@ pub struct Runtime {
     env: Arc<CliEnv>,
     monitor: Arc<QuotaMonitor>,
     routing: Option<Arc<RoutingStore>>,
+    registry: Arc<RegistryHolder>,
     /// Cancelled when the daemon shuts down (ends the quota poller).
     quit: CancellationToken,
 }
@@ -149,9 +150,16 @@ impl Runtime {
             }
         };
         let monitor = QuotaMonitor::load(routing.clone(), now_ms()).await;
+        let registry = {
+            let cache = data_dir.join("cache");
+            tokio::task::spawn_blocking(move || RegistryHolder::load(&cache))
+                .await
+                .map_err(|err| Error::Invalid(format!("loading the model registry: {err}")))?
+        };
         let runtime = Arc::new(Self {
             monitor,
             routing,
+            registry,
             quit: CancellationToken::new(),
             claude,
             codex,
@@ -181,6 +189,37 @@ impl Runtime {
     /// The quota monitor: every provider's windows as last reported, and their history.
     pub fn monitor(&self) -> &Arc<QuotaMonitor> {
         &self.monitor
+    }
+
+    /// A provider's quota as routing sees it: each window with its rolling estimate, from the
+    /// monitor's samples over the window's span.
+    pub fn provider_usage(
+        &self,
+        kind: ProviderKind,
+        now: i64,
+    ) -> Option<brigadier_router::ProviderQuota> {
+        let snapshot = self.monitor.current(kind, now)?;
+        let history: Vec<(String, Vec<brigadier_router::QuotaSample>)> = snapshot
+            .windows
+            .iter()
+            .map(|window| {
+                let span_ms = window.window_minutes.unwrap_or(7 * 24 * 60) * 60 * 1000;
+                (
+                    window.id.clone(),
+                    self.monitor.history(kind, &window.id, now - span_ms),
+                )
+            })
+            .collect();
+        let history: Vec<(&str, &[brigadier_router::QuotaSample])> = history
+            .iter()
+            .map(|(id, samples)| (id.as_str(), samples.as_slice()))
+            .collect();
+        Some(brigadier_router::provider_quota(&snapshot, &history, now))
+    }
+
+    /// The model registry in use.
+    pub fn registry(&self) -> &Arc<RegistryHolder> {
+        &self.registry
     }
 
     /// `routing.sqlite`, when it could be opened.
@@ -579,7 +618,9 @@ impl Runtime {
         overview
     }
 
-    async fn record_overview(&self, overview: ProviderOverview) {
+    async fn record_overview(&self, mut overview: ProviderOverview) {
+        // The monitor's view with its estimates, as of this check.
+        overview.usage = self.provider_usage(overview.provider, now_ms());
         self.state()
             .overviews
             .insert(overview.provider, overview.clone());

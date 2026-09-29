@@ -43,15 +43,13 @@ use super::usage::TokenOwner;
 use super::{
     EventSource, SessionManager, blocking, fallback, git_error, instructions, prompts, secrets,
 };
-use crate::model::{
-    ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
-};
+use crate::model::{ConversationId, DomainEvent, Environment, PermissionLevel, Setup, streams};
 use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
     ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, InjectionKind,
-    QuestionKind, RepoAccess, Report, Route, Task, TaskId, TaskKind, TaskState, TaskWorkspace,
+    QuestionKind, RepoAccess, Report, Task, TaskId, TaskKind, TaskState, TaskWorkspace,
     WorkerAccess,
 };
 use crate::{Error, Result, now_ms};
@@ -371,30 +369,39 @@ impl SessionManager {
         avoid: Option<brigadier_router::Author>,
         subject: Option<Task>,
         attachments: Vec<AttachmentRef>,
+        areas: Option<Vec<brigadier_router::Area>>,
+        floor: Option<QualityTier>,
     ) -> Result<Task> {
         self.admit()?;
         let conversation = self.core.conversation(conversation_id)?;
         let Some(Setup::Session { permission, .. }) = &conversation.setup else {
             return Err(Error::Invalid("tasks belong to a session".into()));
         };
-        let available = self.availability();
-        let running = self.running_workers();
-        let cross_checked = avoid.is_some();
-        let choice = brigadier_router::route(&brigadier_router::RouteRequest {
-            category: category(kind),
-            available: &available,
-            pin,
-            avoid,
-            running: &running,
-        })
-        .map_err(|err| Error::Invalid(err.to_string()))?;
-        let choice = cheap_for_development(choice, &available);
-        let reason = match (cross_checked, choice.cross_vendor) {
-            (true, Some(false)) => format!(
-                "{} (not cross-vendor: only one vendor is available)",
-                choice.reason
-            ),
-            _ => choice.reason.clone(),
+        let category = category(kind);
+        let areas = areas.unwrap_or_else(|| brigadier_router::infer_areas(&spec));
+        let floor = floor.unwrap_or_else(|| brigadier_router::default_floor(category));
+        let decision = self
+            .decide(&super::routing::Ask {
+                category,
+                areas: &areas,
+                floor,
+                needs: needs_of(&attachments),
+                pin,
+                avoid,
+                exclude: &[],
+                project_id: conversation.project_id.as_ref(),
+                starting: true,
+            })
+            .await;
+        let route = match decision {
+            brigadier_router::Decision::Run(routed) => super::routing::route_from(routed),
+            // Nothing it may use is available: the orchestrator hears why and can wait or ask.
+            brigadier_router::Decision::Wait(waiting) => {
+                return Err(Error::Invalid(format!(
+                    "no model can take this task now: {}",
+                    waiting.reason
+                )));
+            }
         };
         let number = self.core.next_task_number(conversation_id).await?;
         let request_id = match &subject {
@@ -402,16 +409,6 @@ impl SessionManager {
             None => self.request_for(conversation_id, None).await,
         };
         let now = now_ms();
-        let route = Route {
-            choice: ModelChoice {
-                provider: choice.provider,
-                model: choice.model.clone(),
-                effort: choice.effort.clone(),
-                fast: None,
-            },
-            reason,
-            explanation: None,
-        };
         let task = Task {
             id: TaskId::generate(),
             conversation_id: conversation_id.clone(),
@@ -428,8 +425,8 @@ impl SessionManager {
                 end: None,
             }],
             route,
-            floor: QualityTier::default(),
-            areas: Vec::new(),
+            floor,
+            areas,
             state: TaskState::Queued,
             quota_wait: None,
             subject: subject.as_ref().map(|task| task.id.clone()),
@@ -2333,41 +2330,14 @@ impl SessionManager {
     }
 }
 
-/// `BRIGADIER_ROUTE_CHEAP=1`, in development builds only (verification runs): after routing
-/// picks the vendor, use its cheapest model at low effort. The routing reason is kept and says
-/// so.
-#[cfg(debug_assertions)]
-pub(crate) fn cheap_for_development(
-    mut choice: brigadier_router::Choice,
-    available: &[brigadier_router::Availability],
-) -> brigadier_router::Choice {
-    if std::env::var_os("BRIGADIER_ROUTE_CHEAP").is_none_or(|value| value != "1") {
-        return choice;
+/// What a task's attachments need from its model.
+fn needs_of(attachments: &[AttachmentRef]) -> brigadier_router::Needs {
+    brigadier_router::Needs {
+        image_input: attachments
+            .iter()
+            .any(|attachment| attachment.mime.starts_with("image/")),
+        ..brigadier_router::Needs::default()
     }
-    let family = match choice.provider {
-        ProviderKind::Claude => "haiku",
-        ProviderKind::Codex => "luna",
-    };
-    let model = available
-        .iter()
-        .filter(|a| a.provider == choice.provider)
-        .flat_map(|a| a.models.iter())
-        .find(|m| m.id.contains(family))
-        .map(|m| m.id.clone())
-        .unwrap_or_else(|| family.to_owned());
-    choice.model = Some(model);
-    choice.effort = (choice.provider == ProviderKind::Codex).then(|| "low".to_owned());
-    choice.reason = format!("{} (dev: cheapest model substituted)", choice.reason);
-    choice
-}
-
-/// Release builds route as the router says.
-#[cfg(not(debug_assertions))]
-pub(crate) fn cheap_for_development(
-    choice: brigadier_router::Choice,
-    _available: &[brigadier_router::Availability],
-) -> brigadier_router::Choice {
-    choice
 }
 
 /// The router's category for a task kind.

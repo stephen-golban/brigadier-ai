@@ -78,6 +78,16 @@ impl SessionManager {
                     self.plan_step(id, step).await?;
                 }
                 let pin = pin(args.provider.as_deref(), args.model, args.effort)?;
+                let areas = task_areas(&args.areas)?;
+                let floor = match args.quality.as_deref().map(str::trim) {
+                    None | Some("" | "normal") => None,
+                    Some("high") => Some(brigadier_router::QualityTier::Frontier),
+                    Some(other) => {
+                        return Err(Error::Invalid(format!(
+                            "unknown quality \"{other}\": use \"high\" or leave it out"
+                        )));
+                    }
+                };
                 let attachments = self.find_attachments(id, &args.attachments).await?;
                 let avoid = subject
                     .as_ref()
@@ -96,6 +106,8 @@ impl SessionManager {
                         avoid,
                         subject,
                         attachments,
+                        areas,
+                        floor,
                     )
                     .await?;
                 if let Some(step) = args.step {
@@ -599,4 +611,24 @@ fn pin(
         model,
         effort,
     }))
+}
+
+/// `delegate_task`'s areas; none given: routing infers them from the spec.
+fn task_areas(names: &[String]) -> Result<Option<Vec<brigadier_router::Area>>> {
+    if names.is_empty() {
+        return Ok(None);
+    }
+    names
+        .iter()
+        .map(|name| {
+            serde_json::from_value(serde_json::Value::String(name.trim().to_lowercase())).map_err(
+                |_| {
+                    Error::Invalid(format!(
+                        "unknown area \"{name}\": use frontend, backend, infra, docs or tests"
+                    ))
+                },
+            )
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }

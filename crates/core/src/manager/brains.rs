@@ -584,6 +584,7 @@ impl SessionManager {
         })
         .await;
         self.brain_job_tick().await;
+        self.research_tick().await;
     }
 
     /// The Brains' counters for the daemon's metrics.
