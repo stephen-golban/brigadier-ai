@@ -54,8 +54,8 @@ impl RemovalError {
 
 pub type Result<T> = std::result::Result<T, RemovalError>;
 
-/// What an entry was when it was looked at. On Unix its device and inode; on Windows its
-/// creation time and volume-independent size, which is as close as stable Rust gets there.
+/// What an entry was when it was looked at: its device and inode on Unix, its volume serial
+/// number and file index on Windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Identity {
     a: u64,
@@ -485,21 +485,42 @@ mod sys {
         std::fs::symlink_metadata(&at).map_err(|err| RemovalError::io(&at, err))
     }
 
-    fn identity(meta: &std::fs::Metadata) -> Identity {
-        Identity {
-            a: meta.creation_time(),
-            b: if meta.is_dir() { 0 } else { meta.file_size() },
+    /// The entry's volume serial number and file index, read through a handle to the entry
+    /// itself (a link or junction is opened, not followed).
+    #[allow(unsafe_code)]
+    fn identity(path: &Path) -> Result<Identity> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+        };
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|err| RemovalError::io(path, err))?;
+        // SAFETY: all-zero is a valid BY_HANDLE_FILE_INFORMATION (plain integers).
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle stays open for the call and `info` is a valid place to write.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(RemovalError::io(path, std::io::Error::last_os_error()));
         }
+        Ok(Identity {
+            a: u64::from(info.dwVolumeSerialNumber),
+            b: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        })
     }
 
     pub fn identify(root: &Path, rel: &Path) -> Result<(Identity, bool)> {
         let meta = walk(root, rel)?;
-        Ok((identity(&meta), meta.is_dir()))
+        Ok((identity(&root.join(rel))?, meta.is_dir()))
     }
 
     fn checked(bound: &Bound) -> Result<()> {
-        let meta = walk(&bound.root, &bound.rel)?;
-        if identity(&meta) != bound.identity {
+        walk(&bound.root, &bound.rel)?;
+        if identity(&bound.path)? != bound.identity {
             return Err(RemovalError::Changed(bound.path.clone()));
         }
         Ok(())
