@@ -232,9 +232,13 @@ impl SessionManager {
                 }),
             _ => None,
         };
+        // Right after an error, the models that failed are left out. A task that waited since
+        // tries them again: the cause may be gone, and the hand-off cap still ends a model that
+        // keeps failing.
         let exclude: Vec<brigadier_router::Exclusion> = task
             .attempts
             .iter()
+            .filter(|_| task.quota_wait.is_none())
             .filter(|attempt| matches!(attempt.end, Some(AttemptEnd::Error { .. })))
             .map(|attempt| brigadier_router::Exclusion {
                 provider: attempt.route.choice.provider,

@@ -67,7 +67,9 @@ struct Finding {
 impl SessionManager {
     /// Each minute: researches one unknown model when a provider has quota to spare.
     pub(super) async fn research_tick(&self) {
+        // Without the store a finding couldn't be kept, and the model would be researched again.
         if !self.core.settings().enrich_brain
+            || self.runtime.routing_store().is_none()
             || self.admit().is_err()
             || self.brains.jobs.running()
             || self
@@ -110,25 +112,20 @@ impl SessionManager {
             tracing::info!(model = %model, runs_on = %provider, "researching a new model on spare quota");
             let researched = manager.research_model(provider, model_provider, &model).await;
             let key = (model_provider, model.clone());
-            match researched {
-                Ok(note) => {
-                    let stored = match manager.runtime.routing_store() {
-                        Some(store) => store.put_research(note).await,
-                        None => Ok(()),
-                    };
-                    if let Err(err) = stored {
-                        tracing::warn!(model = %model, error = %err, "could not store the research");
-                    }
-                }
-                Err(err) => {
-                    tracing::info!(model = %model, error = %err, "model research failed");
-                    manager
-                        .research
-                        .failed
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .insert(key, now_ms());
-                }
+            let stored = match (researched, manager.runtime.routing_store()) {
+                (Ok(note), Some(store)) => store.put_research(note).await,
+                (Ok(_), None) => Err(Error::Invalid("the routing store is gone".into())),
+                (Err(err), _) => Err(err),
+            };
+            // A finding that isn't kept counts as a failure: the model waits a day.
+            if let Err(err) = stored {
+                tracing::info!(model = %model, error = %err, "model research failed");
+                manager
+                    .research
+                    .failed
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(key, now_ms());
             }
             *manager
                 .research

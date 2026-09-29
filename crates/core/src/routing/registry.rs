@@ -78,12 +78,12 @@ impl RegistryHolder {
                 }
             });
         let (registry, source) = Registry::effective(cached);
-        let fetched_at_ms = meta
-            .as_ref()
-            .filter(|meta| {
-                source == RegistrySource::Downloaded && meta.revision == registry.revision
-            })
-            .map(|meta| meta.fetched_at_ms);
+        // The meta speaks for the copy in use only if that is the cached download it describes:
+        // otherwise its ETag could get a 304 for a copy that isn't in use.
+        let meta = meta.filter(|meta| {
+            source == RegistrySource::Downloaded && meta.revision == registry.revision
+        });
+        let fetched_at_ms = meta.as_ref().map(|meta| meta.fetched_at_ms);
         tracing::info!(
             revision = registry.revision,
             ?source,
