@@ -256,10 +256,13 @@ function ProviderSection({
   );
 }
 
-/** "≈72% at reset at the recent rate", "Runs out ≈20:40, 30m before reset". */
+/**
+ * "≈72% at reset at the recent rate", "Runs out ≈20:40, 30m before reset". None once the window
+ * is at its limit: it has run out already, and the heat badge says so.
+ */
 function forecastLine(state: WindowState, now: number): string | null {
-  const { forecast, window } = state;
-  if (!forecast) return null;
+  const { forecast, window, heat } = state;
+  if (!forecast || heat === "limited") return null;
   if (forecast.runsOutAtMs !== null && window.resetsAtMs !== null) {
     return `Runs out ≈${formatResetAt(forecast.runsOutAtMs, now)}, ${formatCountdown(
       window.resetsAtMs,
@@ -336,7 +339,7 @@ function WindowRow({
           endMs={span.end}
           nowMs={now}
           usedPercent={window.usedPercent}
-          forecast={forecast}
+          forecast={heat === "limited" ? null : forecast}
           label={window.label}
         />
       )}

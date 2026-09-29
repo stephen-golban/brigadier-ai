@@ -50,12 +50,19 @@ pub fn window_state(
     limited: bool,
     now_ms: i64,
 ) -> WindowState {
-    let forecast = forecast(window, samples, observed_at_ms, now_ms);
+    let mut forecast = forecast(window, samples, observed_at_ms, now_ms);
     let projected = forecast.map_or(window.used_percent, |f| f.projected_at_reset);
+    let heat = heat(window.used_percent, projected, limited);
+    // A window at its limit has run out already: no "runs out at" estimate.
+    if heat == Heat::Limited
+        && let Some(forecast) = &mut forecast
+    {
+        forecast.runs_out_at_ms = None;
+    }
     WindowState {
         window: window.clone(),
         forecast,
-        heat: heat(window.used_percent, projected, limited),
+        heat,
     }
 }
 
