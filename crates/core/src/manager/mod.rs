@@ -31,6 +31,7 @@ mod git_actions;
 mod instructions;
 mod landing;
 mod lifecycle;
+mod outcomes;
 mod outputs;
 mod past_projects;
 mod project_removal;

@@ -140,6 +140,15 @@ impl SessionManager {
         let Ok(task) = ended else {
             return;
         };
+        if let Some(attempt) = task.attempts.last() {
+            // A limit says something about the model's quota; an error (an outage, a logout,
+            // a crashed CLI) nothing about the model.
+            let result = match &end {
+                AttemptEnd::Limit { .. } => brigadier_router::OutcomeResult::HandedOff,
+                AttemptEnd::Error { .. } => brigadier_router::OutcomeResult::Stopped,
+            };
+            self.record_outcome(&task, attempt, result).await;
+        }
         tracing::info!(task = %task.id, from = %from.provider, "handing the task on");
         self.continue_task(live, task).await;
     }

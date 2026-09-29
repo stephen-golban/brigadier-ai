@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::model::{ConversationId, ProjectId, TaskId};
-use crate::work::{ReviewVerdict, TaskKind};
+use crate::work::{ChecksResult, ReviewVerdict, TaskKind};
 
 /// What a grant allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,6 +448,10 @@ pub struct SubmitReport {
     /// Review tasks only: the verdict on the reviewed change.
     #[serde(default)]
     pub verdict: Option<ReviewVerdict>,
+    /// Verify tasks only: whether every check you ran passed, one failed, or you could not
+    /// run them.
+    #[serde(default)]
+    pub checks: Option<ChecksResult>,
     /// Files from your scratch folder with details the report leaves out.
     #[serde(default)]
     pub artifacts: Vec<ArtifactInput>,

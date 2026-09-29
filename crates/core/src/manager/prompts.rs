@@ -137,7 +137,7 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
             "merge: resolve the conflicts described below in this worktree, keeping both sides' intent, then verify."
         }
         TaskKind::Verify => {
-            "verify: run the project's checks (typecheck, lint, build, existing tests, a runtime smoke check) on this worktree and report exactly what passed and failed. Fix nothing."
+            "verify: run the project's checks (typecheck, lint, build, existing tests, a runtime smoke check) on this worktree and report exactly what passed and failed, and set submit_report's checks. Fix nothing."
         }
     };
     let write_rules = if task.kind.writes() {

@@ -446,6 +446,7 @@ impl SessionManager {
             outputs: Vec::new(),
             request_id,
             messages: Vec::new(),
+            rework_rounds: 0,
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -716,6 +717,9 @@ impl SessionManager {
         self.update_task(&task.conversation_id, &task.id, |t| {
             t.candidate = None;
             t.review = None;
+            if t.report.is_some() {
+                t.rework_rounds += 1;
+            }
         })
         .await?;
         self.launch_worker(
@@ -1673,7 +1677,7 @@ impl SessionManager {
             verification: self.redact_all(&live, &input.verification).await,
             open_questions: self.redact_all(&live, &input.open_questions).await,
             verdict: input.verdict,
-            checks: None,
+            checks: input.checks.filter(|_| task.kind == TaskKind::Verify),
             artifacts,
             submitted_at_ms: now_ms(),
         };
@@ -1880,6 +1884,7 @@ impl SessionManager {
                 task.state = TaskState::Running;
                 task.candidate = None;
                 task.review = None;
+                task.rework_rounds += 1;
             })
             .await?;
         self.sent_back(&task).await;
@@ -2179,8 +2184,11 @@ impl SessionManager {
                 }
             })
             .await;
-        if let Err(err) = result {
-            tracing::warn!(task = %task.id, error = %err, "could not record the task's end");
+        match result {
+            Ok(ended) => self.record_task_outcome(&ended, state).await,
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "could not record the task's end");
+            }
         }
         let owner = format!("task:{}", task.id);
         self.grants.revoke_owner(&owner);

@@ -386,6 +386,10 @@ pub struct Task {
     /// changes to the task that its review checks the work against too.
     #[serde(default)]
     pub messages: Vec<String>,
+    /// Times it was sent back to work after reporting (a review asking for changes, or a
+    /// message from the orchestrator).
+    #[serde(default)]
+    pub rework_rounds: u32,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
