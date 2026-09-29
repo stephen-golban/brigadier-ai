@@ -152,7 +152,7 @@
   --container-md: 28rem;
   --container-lg: 32rem;
   --container-setup: min(68rem, calc(100vw - 2rem));
-  --container-thread: 46rem;
+  --container-thread: 52rem;
   /* The pinned summary's card. */
   --container-summary: 18.75rem;
 
