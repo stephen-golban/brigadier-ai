@@ -12,7 +12,15 @@ import {
   PullRequestOpen,
   Tasks,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type UIEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
@@ -45,6 +53,9 @@ import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
 const NO_TASKS: Readonly<Record<string, Task>> = {};
+
+/** How long a reopened summary card keeps restoring its offset while its rows arrive. */
+const RESTORE_MS = 1000;
 
 /** The branch's +N −N against its base, read again whenever a worker lands. */
 function useSessionDiff(conversationId: string, worktree: boolean): DiffStat | null {
@@ -406,6 +417,50 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
       current = false;
     };
   }, [visible, content]);
+  // Where the card was scrolled to, so it reopens there. While it shows, every scroll counts, a
+  // clamp too (so a card that stops overflowing forgets its offset). Just after it shows it is
+  // restoring instead: rows that read asynchronously (the branch's diff, a pull request) may not
+  // be there yet, so the offset is applied again as they arrive, until it is reached, the card is
+  // scrolled by hand, or a moment has passed.
+  const scrolled = useRef({ conversationId: conversation.id, top: 0 });
+  const restoring = useRef(false);
+  const onScroll = (event: UIEvent<HTMLElement>) => {
+    const { scrollTop } = event.currentTarget;
+    if (!visible) return;
+    if (restoring.current) {
+      if (scrollTop !== scrolled.current.top) return;
+      restoring.current = false;
+    }
+    scrolled.current = { conversationId: conversation.id, top: scrollTop };
+  };
+  useLayoutEffect(() => {
+    const element = card.current;
+    if (!visible || !content || !element) return;
+    if (scrolled.current.conversationId !== conversation.id) {
+      scrolled.current = { conversationId: conversation.id, top: 0 };
+    }
+    const { top } = scrolled.current;
+    if (top === 0) return;
+    restoring.current = true;
+    const restore = () => {
+      if (restoring.current && element.scrollTop !== top) element.scrollTop = top;
+    };
+    const stop = () => {
+      restoring.current = false;
+    };
+    restore();
+    const observer = new ResizeObserver(restore);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    const timer = setTimeout(stop, RESTORE_MS);
+    for (const type of ["wheel", "pointerdown", "keydown"]) element.addEventListener(type, stop);
+    return () => {
+      stop();
+      observer.disconnect();
+      clearTimeout(timer);
+      for (const type of ["wheel", "pointerdown", "keydown"]) element.removeEventListener(type, stop);
+    };
+  }, [visible, content, conversation.id]);
   if (conversation.setup?.type !== "session") return null;
 
   return (
@@ -415,6 +470,7 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
         aria-label="Session summary"
         aria-hidden={!visible || undefined}
         data-state={shown ? "open" : "closed"}
+        onScroll={onScroll}
         className="bg-card border-border rounded-2xl shadow-summary summary-hidden:invisible summary-hidden:translate-x-full summary-hidden:scale-80 summary-hidden:opacity-0 pointer-events-auto flex max-h-full w-full origin-top-right flex-col overflow-y-auto border px-3 py-2.5 motion-safe:group-data-settled/pane:transition-[opacity,translate,scale,visibility] motion-safe:group-data-settled/pane:duration-300 motion-safe:group-data-settled/pane:ease-summary-card"
       >
         {content && <SummaryContent conversation={conversation} />}
