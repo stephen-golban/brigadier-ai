@@ -25,6 +25,7 @@ import { cachedPinnedSummary } from "@/lib/pinnedSummary";
 export type Selection =
   | { type: "none" }
   | { type: "archived" }
+  | { type: "usage" }
   | { type: "conversation"; id: string }
   | { type: "draft"; kind: "chat" }
   | { type: "draft"; kind: "session"; projectId: string };
@@ -129,7 +130,8 @@ export type InspectorTab =
   | "brain"
   | "processes"
   | "performance"
-  | "providers";
+  | "providers"
+  | "routing";
 
 /** Newest inspector events kept in memory. */
 export const INSPECTOR_EVENTS = 500;

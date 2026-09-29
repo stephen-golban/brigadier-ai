@@ -1,4 +1,5 @@
 import {
+  Analytics,
   Archive,
   ChatCompose,
   DotsHorizontal,
@@ -148,6 +149,7 @@ export function AppSidebar() {
     (s) => s.selection.type === "draft" && s.selection.kind === "chat",
   );
   const isArchived = useApp((s) => s.selection.type === "archived");
+  const isUsage = useApp((s) => s.selection.type === "usage");
   const archivedCount = useApp(
     (s) =>
       Object.values(s.conversations).filter(
@@ -210,6 +212,12 @@ export function AppSidebar() {
               <MagnifyingGlassSearch />
               <span className="flex-1">Search</span>
               <Kbd className="ms-auto">{searchShortcut}</Kbd>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton isActive={isUsage} onClick={() => select({ type: "usage" })}>
+              <Analytics />
+              <span>Usage</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

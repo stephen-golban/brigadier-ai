@@ -37,8 +37,9 @@ function useTitle(): {
           session: false,
         };
       }
-      if (selection.type === "archived") {
-        return { project: null, title: "Archived", lifecycle: null, session: false };
+      if (selection.type === "archived" || selection.type === "usage") {
+        const title = selection.type === "archived" ? "Archived" : "Usage";
+        return { project: null, title, lifecycle: null, session: false };
       }
       return { project: null, title: "New chat", lifecycle: null, session: false };
     }),

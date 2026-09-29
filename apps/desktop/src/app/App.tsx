@@ -25,6 +25,11 @@ const Inspector = lazy(() =>
   import("@/app/inspector/Inspector").then((module) => ({ default: module.Inspector })),
 );
 
+// The Usage page loads when first opened, off the cold-start path too.
+const UsagePage = lazy(() =>
+  import("@/app/usage/UsagePage").then((module) => ({ default: module.UsagePage })),
+);
+
 let readyReported = false;
 
 /** Drafts share one key: switching the composer's project must not lose the typed text. */
@@ -36,6 +41,8 @@ function viewKey(selection: Selection): string {
       return "draft";
     case "archived":
       return "archived";
+    case "usage":
+      return "usage";
     case "none":
       return "none";
   }
@@ -101,11 +108,17 @@ export function App() {
         <AppSidebar />
         <SidebarInset className="h-full flex-row overflow-hidden">
           <div className="relative flex h-full min-w-0 flex-1 flex-col">
-            {selection.type === "archived" ? (
+            {selection.type === "archived" || selection.type === "usage" ? (
               <>
                 <TopBar />
                 <div className="min-h-0 flex-1">
-                  <ArchivedView />
+                  {selection.type === "archived" ? (
+                    <ArchivedView />
+                  ) : (
+                    <Suspense fallback={null}>
+                      <UsagePage />
+                    </Suspense>
+                  )}
                 </div>
               </>
             ) : (

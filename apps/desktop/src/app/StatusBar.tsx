@@ -1,11 +1,9 @@
-import { Lightbulb, Reload } from "@openai/apps-sdk-ui/components/Icon";
+import { Lightbulb } from "@openai/apps-sdk-ui/components/Icon";
 import { useEffect, useState } from "react";
 
-import { useAction } from "@/app/conversation/useAction";
 import { errorText } from "@/app/dialogs/fields";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
 import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -16,17 +14,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type {
   KeepAwake,
-  ProviderKind,
   ProviderOverview,
   QuotaSnapshot,
   QuotaWindow,
 } from "@/ipc/generated";
-import { formatAgo } from "@/lib/format";
+import { formatCountdown } from "@/lib/format";
+import { HEAT_LABELS } from "@/lib/routing";
 import { cn } from "@/lib/utils";
-import { loadProviders, refreshProviders } from "@/state/actions";
+import { loadProviders, refreshProviders, select } from "@/state/actions";
 import {
   KEEP_AWAKE_OPTIONS,
   lidClosedHint,
@@ -36,8 +33,6 @@ import {
   useKeepAwake,
 } from "@/state/keepAwake";
 import { useApp } from "@/state/store";
-
-const PROVIDERS: readonly ProviderKind[] = ["claude", "codex"];
 
 /** Usage is checked again this often while Brigadier is in front… */
 const USAGE_EVERY_MS = 15 * 60_000;
@@ -54,8 +49,8 @@ function refreshUsage(): void {
 }
 
 /**
- * The bar along the bottom of the window: each agent's usage windows on the left (details on
- * click), keeping the computer awake on the right.
+ * The bar along the bottom of the window: each agent's usage windows on the left (the Usage
+ * page on click), keeping the computer awake on the right.
  */
 export function StatusBar() {
   return (
@@ -78,17 +73,6 @@ function useNow(): number {
     return () => window.clearInterval(timer);
   }, []);
   return now;
-}
-
-/** "now", "42m", "2h 5m", "3d 4h": the time left until `ms`. */
-function countdown(ms: number, now: number): string {
-  const minutes = Math.ceil((ms - now) / 60_000);
-  if (minutes <= 0) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
-  const days = Math.floor(hours / 24);
-  return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
 }
 
 function used(window: QuotaWindow): number {
@@ -166,30 +150,37 @@ function useUsageRefresh(): void {
 function Usage() {
   useUsageRefresh();
   const providers = useApp((s) => s.providers.view?.providers);
+  const onPage = useApp((s) => s.selection.type === "usage");
   const now = useNow();
   const shown = (providers ?? []).filter(withQuota);
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label="Agent usage"
-          className="hover:bg-accent/70 hover:text-foreground focus-visible:ring-ring/50 flex min-w-0 items-center gap-3 overflow-hidden rounded-xs px-1 py-0.5 outline-none focus-visible:ring-1"
-        >
-          {shown.length === 0 ? (
-            <span>Usage</span>
-          ) : (
-            shown.map((overview) => (
-              <UsageChip key={overview.provider} overview={overview} now={now} />
-            ))
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-xs p-0">
-        <UsageDetails providers={providers ?? []} now={now} />
-      </PopoverContent>
-    </Popover>
+    <button
+      type="button"
+      aria-label="Agent usage: open the Usage page"
+      aria-current={onPage ? "page" : undefined}
+      onClick={() => select({ type: "usage" })}
+      className="hover:bg-accent/70 hover:text-foreground focus-visible:ring-ring/50 flex min-w-0 items-center gap-3 overflow-hidden rounded-xs px-1 py-0.5 outline-none focus-visible:ring-1"
+    >
+      {shown.length === 0 ? (
+        <span>Usage</span>
+      ) : (
+        shown.map((overview) => (
+          <UsageChip key={overview.provider} overview={overview} now={now} />
+        ))
+      )}
+    </button>
   );
+}
+
+/**
+ * The chip's tone: the quota monitor's heat when it has one (hot or limited show), else how
+ * full the tightest window is.
+ */
+function chipTone(overview: ProviderOverview, tightest: number): { text: string; fill: string } {
+  const heat = overview.usage?.heat;
+  if (heat === "limited") return { text: "text-destructive", fill: "bg-destructive" };
+  if (heat === "hot") return { text: "text-warning", fill: "bg-warning" };
+  return tone(tightest);
 }
 
 function UsageChip({
@@ -201,14 +192,19 @@ function UsageChip({
 }) {
   const windows = inline(overview.quota);
   const tightest = Math.max(...windows.map(used));
-  const limit = overview.quota.limit;
+  const limit = overview.usage?.limit ?? overview.quota.limit;
+  const chip = chipTone(overview, tightest);
+  const heat = overview.usage?.heat;
   return (
-    <span className="flex min-w-0 items-center gap-1.5" title={PROVIDER_LABELS[overview.provider]}>
+    <span
+      className="flex min-w-0 items-center gap-1.5"
+      title={`${PROVIDER_LABELS[overview.provider]}${heat ? ` · ${HEAT_LABELS[heat]}` : ""}`}
+    >
       <ProviderGlyph provider={overview.provider} className="size-icon-sm shrink-0" />
       {limit ? (
         <span className="text-destructive">
           Limit reached
-          {limit.resetsAtMs !== null && ` · ${countdown(limit.resetsAtMs, now)}`}
+          {limit.resetsAtMs !== null && ` · ${formatCountdown(limit.resetsAtMs, now)}`}
         </span>
       ) : (
         <>
@@ -216,139 +212,24 @@ function UsageChip({
             aria-hidden
             className="bg-muted rounded-capsule h-1.5 w-10 shrink-0 overflow-hidden"
           >
-            <span
-              className={cn("block h-full", tone(tightest).fill)}
-              style={{ width: `${tightest}%` }}
-            />
+            <span className={cn("block h-full", chip.fill)} style={{ width: `${tightest}%` }} />
           </span>
           {windows.map((window, index) => (
             <span key={window.id} className="flex items-center gap-1.5 tabular-nums">
               {index > 0 && <span className="text-muted-foreground/60">·</span>}
-              <span className="text-foreground">{used(window)}% used</span>
+              <span className={heat === "hot" ? chip.text : "text-foreground"}>
+                {used(window)}% used
+              </span>
               <span>
-                {window.resetsAtMs !== null ? countdown(window.resetsAtMs, now) : window.label}
+                {window.resetsAtMs !== null
+                  ? formatCountdown(window.resetsAtMs, now)
+                  : window.label}
               </span>
             </span>
           ))}
         </>
       )}
     </span>
-  );
-}
-
-function UsageDetails({ providers, now }: { providers: ProviderOverview[]; now: number }) {
-  const refresh = useAction();
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-2">
-        <span className="flex-1 text-sm font-medium">Usage</span>
-        <Button
-          size="icon-xs"
-          variant="ghost"
-          aria-label="Check usage again"
-          disabled={refresh.busy}
-          onClick={() => refresh.run(async () => refreshUsage())}
-        >
-          <Reload className={refresh.busy ? "animate-spin" : undefined} />
-        </Button>
-      </div>
-      <ul className="divide-y">
-        {PROVIDERS.map((provider) => (
-          <ProviderUsage
-            key={provider}
-            provider={provider}
-            overview={providers.find((entry) => entry.provider === provider)}
-            now={now}
-          />
-        ))}
-      </ul>
-      <p className="text-muted-foreground border-t px-3 py-2 text-2xs">
-        Checked every 15 minutes while Brigadier is in front.
-      </p>
-    </div>
-  );
-}
-
-function ProviderUsage({
-  provider,
-  overview,
-  now,
-}: {
-  provider: ProviderKind;
-  overview: ProviderOverview | undefined;
-  now: number;
-}) {
-  const status = overview?.status;
-  const quota = overview?.quota ?? null;
-  const plan = status?.plan
-    ? ` · ${status.plan.charAt(0).toUpperCase()}${status.plan.slice(1)}`
-    : "";
-  const missing = !status
-    ? "Checking…"
-    : !status.path
-      ? "Not installed"
-      : !status.loggedIn
-        ? "Not signed in"
-        : !quota || quota.windows.length === 0
-          ? "No usage yet"
-          : null;
-  return (
-    <li className="flex flex-col gap-2 px-3 py-2.5">
-      <div className="flex items-center gap-2">
-        <ProviderGlyph provider={provider} className="size-icon-md shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-sm">
-          {PROVIDER_LABELS[provider]}
-          <span className="text-muted-foreground">{plan}</span>
-        </span>
-        {quota && !missing && (
-          <span className="text-muted-foreground text-2xs">
-            Updated {formatAgo(quota.observedAtMs, now)}
-          </span>
-        )}
-      </div>
-      {missing ? (
-        <p className="text-muted-foreground text-xs">{missing}</p>
-      ) : (
-        quota && (
-          <div className="flex flex-col gap-2.5">
-            {quota.limit && (
-              <p className="text-destructive text-xs">
-                Limit reached
-                {quota.limit.resetsAtMs !== null &&
-                  ` · resets in ${countdown(quota.limit.resetsAtMs, now)}`}
-              </p>
-            )}
-            {ordered(quota)
-              // Windows the CLI reports without a known length say nothing until used.
-              .filter((window) => window.windowMinutes !== null || used(window) > 0)
-              .map((window) => {
-                const percent = used(window);
-                return (
-                  <div key={window.id} className="flex flex-col gap-1">
-                    <div className="flex items-baseline gap-2 text-xs">
-                      <span className="flex-1">{window.label}</span>
-                      <span className={cn("tabular-nums", tone(percent).text)}>
-                        {percent}% used
-                      </span>
-                    </div>
-                    <div className="bg-muted rounded-capsule h-1.5 overflow-hidden">
-                      <div
-                        className={cn("h-full", tone(percent).fill)}
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                    {window.resetsAtMs !== null && (
-                      <span className="text-muted-foreground text-2xs">
-                        Resets in {countdown(window.resetsAtMs, now)}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-          </div>
-        )
-      )}
-    </li>
   );
 }
 
