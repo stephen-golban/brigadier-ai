@@ -12,7 +12,7 @@
 //! - Windows: `SetThreadExecutionState` from a thread of its own; the lid follows the power
 //!   plan.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -340,9 +340,8 @@ mod battery {
 
 #[cfg(target_os = "macos")]
 mod lid {
+    use std::path::{Path, PathBuf};
     use std::process::Stdio;
-
-    use super::{Path, PathBuf};
 
     const SUDO: &str = "/usr/bin/sudo";
     const PMSET: &str = "/usr/bin/pmset";
