@@ -477,6 +477,16 @@ impl Core {
         }
         // Each user message starts a request of its own.
         message.request_id = Some(message.id.clone());
+        // What the user wrote: typed text, or else the first thing they pasted.
+        let words = if trimmed.is_empty() {
+            self.pasted_texts(&message.attachments)
+                .await
+                .into_iter()
+                .find(|text| !text.trim().is_empty())
+                .unwrap_or_default()
+        } else {
+            trimmed
+        };
 
         let mut events = vec![
             (
@@ -491,7 +501,7 @@ impl Core {
                     request: UserRequest {
                         id: message.id.clone(),
                         conversation_id: id.clone(),
-                        preview: preview(&message.text),
+                        preview: preview(&words),
                         state: RequestState::Working,
                         started_at_ms: message.created_at_ms,
                         ended_at_ms: None,
@@ -507,14 +517,15 @@ impl Core {
             NEW_SESSION_TITLE | NEW_CHAT_TITLE
         );
         if untitled {
-            let title = if trimmed.is_empty() {
+            let title = if words.is_empty() {
                 message
                     .attachments
-                    .first()
+                    .iter()
+                    .find(|attachment| !attachment.pasted)
                     .map(|attachment| title_from(&attachment.name))
                     .unwrap_or_else(|| conversation.title.clone())
             } else {
-                title_from(&trimmed)
+                title_from(&words)
             };
             events.push((
                 streams::CATALOG.into(),
