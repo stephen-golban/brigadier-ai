@@ -27,6 +27,8 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
 const HOUSEKEEPING_DELAY: Duration = Duration::from_secs(2 * 60);
 /// And then once a day.
 const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// A connection folder younger than this may belong to a daemon about to listen.
+const SOCKET_MIN_AGE: Duration = Duration::from_secs(10 * 60);
 
 /// What the daemon removes itself.
 #[derive(Debug, Clone)]
@@ -66,12 +68,9 @@ impl Storage {
     }
 
     pub async fn scan(&self, daemon: &Daemon) -> Result<StorageReport, String> {
-        let context = ScanContext {
-            speech_busy: !daemon.dictation.work().is_empty(),
-        };
         let (mut items, usage) = daemon
             .sessions
-            .scan_storage(context)
+            .scan_storage(context(daemon))
             .await
             .map_err(|err| err.to_string())?;
         let mut own = HashMap::new();
@@ -172,7 +171,12 @@ impl Storage {
                     .await
                     .map(|()| Default::default()),
                 (Action::External(_), _) => Err("This item can't be removed from here.".into()),
-                (action, _) => daemon.sessions.clean_storage(action.clone()).await,
+                (action, _) => {
+                    daemon
+                        .sessions
+                        .clean_storage(action.clone(), context(daemon))
+                        .await
+                }
             };
             match outcome {
                 Ok(cleaned) => {
@@ -227,7 +231,7 @@ pub async fn housekeeping(daemon: Arc<Daemon>, stop: CancellationToken) -> anyho
 impl Storage {
     async fn housekeep(&self, daemon: &Daemon) {
         let _one = self.cleaning.lock().await;
-        let items = match daemon.sessions.scan_storage(ScanContext::default()).await {
+        let items = match daemon.sessions.scan_storage(context(daemon)).await {
             Ok((items, _)) => items,
             Err(err) => {
                 tracing::warn!(error = %err, "housekeeping could not look around");
@@ -242,7 +246,7 @@ impl Storage {
         for ScanItem { item, action, .. } in
             items.into_iter().chain(sockets).filter(|item| item.routine)
         {
-            match daemon.sessions.clean_storage(action).await {
+            match daemon.sessions.clean_storage(action, context(daemon)).await {
                 Ok(cleaned) if !cleaned.failures.is_empty() => {
                     let error = cleaned.failures.join("; ");
                     tracing::debug!(item = %item.label, %error, "housekeeping left part of an item");
@@ -262,6 +266,13 @@ impl Storage {
 
 /// The order removals run in: processes first (nothing then writes what goes next), then what
 /// the ledger holds, worktrees before their records and branches, blobs and the database last.
+/// What the daemon knows now that the session manager doesn't.
+fn context(daemon: &Daemon) -> ScanContext {
+    ScanContext {
+        speech_busy: !daemon.dictation.work().is_empty(),
+    }
+}
+
 fn rank(action: &Action) -> u8 {
     match action {
         Action::External(_) => 0,
@@ -269,7 +280,10 @@ fn rank(action: &Action) -> u8 {
         Action::RemoveWorktree { .. } => 2,
         Action::PruneWorktrees { .. } => 3,
         Action::DeleteBranch { .. } => 4,
-        Action::Delete(_) | Action::Trash(_) | Action::RemoveEmptyDir(_) => 5,
+        Action::Delete(_)
+        | Action::Trash(_)
+        | Action::RemoveEmptyDir(_)
+        | Action::DeleteModel { .. } => 5,
         Action::CollectBlobs => 6,
         Action::Compact => 7,
     }
@@ -323,6 +337,16 @@ fn stale_sockets(paths: &AppPaths) -> Vec<ScanItem> {
             continue;
         };
         if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
+            continue;
+        }
+        // A daemon makes its folder a moment before it listens; only a folder nobody touched
+        // for a while is left over.
+        let settled = meta
+            .modified()
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age >= SOCKET_MIN_AGE);
+        if !settled {
             continue;
         }
         let socket = path.join("d.sock");

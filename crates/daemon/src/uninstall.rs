@@ -329,8 +329,8 @@ impl Uninstall {
             spawned.map(|()| {
                 (!torn.kept_worktrees.is_empty()).then(|| {
                     format!(
-                        "The data folder {} stays: it still holds worktrees with changes that \
-                         couldn't be kept.",
+                        "The data folder {} stays: it still holds worktrees that git couldn't \
+                         remove or whose changes couldn't be kept.",
                         paths.data_dir.display()
                     )
                 })
@@ -580,14 +580,19 @@ fn finish(
     }
     // Held while removing, so no daemon starts on this data directory meanwhile.
     let lock = match InstanceLock::try_acquire(&paths.lock_path) {
-        Ok(Some(lock)) => Some(lock),
+        Ok(Some(lock)) => lock,
         Ok(None) => {
             return vec![format!(
                 "Brigadier was started again on {}, so nothing more was removed.",
                 data_dir.display()
             )];
         }
-        Err(_) => None,
+        Err(err) => {
+            return vec![format!(
+                "Couldn't make sure no Brigadier runs on {} ({err}), so nothing more was removed.",
+                data_dir.display()
+            )];
+        }
     };
     let mut failures = Vec::new();
     let remove = |target: &Target, failures: &mut Vec<String>| {
@@ -614,12 +619,17 @@ fn finish(
     if !keep_data {
         match removal::check_data_dir(data_dir) {
             Ok(()) => {
+                // Moving the folder keeps the lock held on Unix, so no daemon starts on it
+                // meanwhile; Windows can't move a folder with a file open in it.
+                #[cfg(windows)]
                 drop(lock);
                 remove(&data_target(data_dir), &mut failures);
             }
             Err(err) => failures.push(err.to_string()),
         }
     }
+    #[cfg(not(windows))]
+    drop(lock);
     failures
 }
 

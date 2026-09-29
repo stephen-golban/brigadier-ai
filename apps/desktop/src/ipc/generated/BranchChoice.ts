@@ -3,4 +3,8 @@
 /**
  * A branch the user chose to delete, at the tip they saw.
  */
-export type BranchChoice = { name: string, tip: string, };
+export type BranchChoice = { 
+/**
+ * The repository it is in, as the preview listed it.
+ */
+repo: string, name: string, tip: string, };

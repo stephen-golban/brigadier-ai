@@ -95,8 +95,9 @@ impl SessionManager {
                 .filter(|path| path.exists())
                 .collect();
             let git = self.git.clone();
+            let checked = worktrees.clone();
             let unkept = blocking(move || {
-                Ok(worktrees
+                Ok(checked
                     .into_iter()
                     .filter_map(|path| {
                         keep_changes(&git, &path)
@@ -113,6 +114,14 @@ impl SessionManager {
             }
             let leftovers = self.runtime.ledger().dispose(&owner).await;
             outcome.failures.extend(leftovers.failures);
+            // A worktree git couldn't remove stays, and so does the folder holding it: only git
+            // removes worktrees.
+            outcome.kept_worktrees.extend(
+                worktrees
+                    .iter()
+                    .filter(|path| path.exists())
+                    .map(|path| format!("{}: git couldn't remove it", path.display())),
+            );
         }
         outcome
     }

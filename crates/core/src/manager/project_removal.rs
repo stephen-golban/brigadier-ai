@@ -351,9 +351,9 @@ pub(super) fn settle_branches(
     for branch in branches {
         let repo = Path::new(&branch.repo);
         let chosen = !branch.checked_out
-            && picked
-                .iter()
-                .any(|choice| choice.name == branch.name && choice.tip == branch.tip);
+            && picked.iter().any(|choice| {
+                choice.repo == branch.repo && choice.name == branch.name && choice.tip == branch.tip
+            });
         if chosen {
             let listed = KeptBranch {
                 name: branch.name.clone(),

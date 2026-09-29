@@ -191,6 +191,8 @@ pub struct RemovalBranch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchChoice {
+    /// The repository it is in, as the preview listed it.
+    pub repo: String,
     pub name: String,
     pub tip: String,
 }

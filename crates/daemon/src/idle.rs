@@ -53,6 +53,12 @@ pub async fn exit_when_idle(daemon: Arc<Daemon>, stop: CancellationToken) -> any
             alone_since = None;
             continue;
         }
+        // Uninstalled, and the app went without asking this daemon to quit (it crashed): the
+        // finisher waits for this daemon before it removes the rest.
+        if daemon.uninstall.started() {
+            let _ = daemon.quit.try_send("uninstalled, and no app is connected");
+            return Ok(());
+        }
         let since = *alone_since.get_or_insert_with(Instant::now);
         if since.elapsed() < wait || !running(&daemon).await.is_empty() {
             continue;

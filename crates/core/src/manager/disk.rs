@@ -66,6 +66,13 @@ pub enum Action {
     },
     /// Everything the cleanup ledger records for `owner`.
     Dispose { owner: String, bytes: u64 },
+    /// A downloaded model's folder, deleted only while nothing uses the model.
+    DeleteModel {
+        /// The dictation speech model; otherwise the Brain's embedding model.
+        speech: bool,
+        folder: Bound,
+        bytes: u64,
+    },
     /// Stored content no event references.
     CollectBlobs,
     /// The database rebuilt without its free pages.
@@ -84,7 +91,7 @@ pub struct ScanItem {
 }
 
 /// What the daemon knows that the session manager doesn't.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ScanContext {
     /// Dictation, or the speech model's download, is running.
     pub speech_busy: bool,
@@ -145,11 +152,7 @@ impl SessionManager {
     pub async fn scan_storage(&self, context: ScanContext) -> Result<(Vec<ScanItem>, ScanUsage)> {
         let records = self.storage_records().await?;
         let states = self.owner_states(&records);
-        let embeddings_busy = self
-            .brain_work()
-            .iter()
-            .any(|work| work.contains("embedding"))
-            || self.brain_counters().embedder_loaded;
+        let embeddings_busy = self.embeddings_busy();
         let store = self.core.store().clone();
         let blobs = match store.collectable_blobs().await {
             Ok(found) => found,
@@ -318,14 +321,32 @@ impl SessionManager {
             .collect()
     }
 
-    /// Removes what `action` names, after checking it again. What it gave back.
-    pub async fn clean_storage(&self, action: Action) -> std::result::Result<Cleaned, String> {
+    /// The Brain's embedding model is loaded, or a Brain job embeds.
+    fn embeddings_busy(&self) -> bool {
+        self.brain_work()
+            .iter()
+            .any(|work| work.contains("embedding"))
+            || self.brain_counters().embedder_loaded
+    }
+
+    /// Removes what `action` names, after checking it again (`context` as it is now). What it
+    /// gave back.
+    pub async fn clean_storage(
+        &self,
+        action: Action,
+        context: ScanContext,
+    ) -> std::result::Result<Cleaned, String> {
         let instance = self.runtime.platform().paths().instance.clone();
+        let platform = self.runtime.platform().clone();
         match action {
             Action::Delete(entries) => {
                 blocking(move || {
                     let mut cleaned = Cleaned::default();
                     for (bound, bytes) in &entries {
+                        if let Err(why) = unused(&*platform, bound.path()) {
+                            cleaned.failures.push(why);
+                            continue;
+                        }
                         match removal::delete(bound) {
                             Ok(()) => cleaned.reclaimed += bytes,
                             Err(err) => cleaned.failures.push(err.to_string()),
@@ -347,6 +368,10 @@ impl SessionManager {
                 blocking(move || {
                     let mut cleaned = Cleaned::default();
                     for (bound, bytes) in &entries {
+                        if let Err(why) = unused(&*platform, bound.path()) {
+                            cleaned.failures.push(why);
+                            continue;
+                        }
                         match removal::trash(bound, &instance) {
                             Ok(()) => cleaned.trashed += bytes,
                             Err(err) => cleaned.failures.push(err.to_string()),
@@ -364,6 +389,7 @@ impl SessionManager {
                 if self.holds_live(&worktree.path().to_string_lossy()) {
                     return Err("a conversation or worker uses it now".into());
                 }
+                unused(&*platform, worktree.path())?;
                 let git = self.git.clone();
                 blocking(move || {
                     removal::recheck(&worktree).map_err(|err| Error::Invalid(err.to_string()))?;
@@ -453,6 +479,28 @@ impl SessionManager {
                 } else {
                     Err(Error::Invalid(leftovers.failures.join("; ")))
                 }
+            }
+            Action::DeleteModel {
+                speech,
+                folder,
+                bytes,
+            } => {
+                let busy = if speech {
+                    context.speech_busy
+                } else {
+                    self.embeddings_busy()
+                };
+                if busy {
+                    return Err("the model is in use now".into());
+                }
+                blocking(move || {
+                    removal::delete(&folder).map_err(|err| Error::Invalid(err.to_string()))?;
+                    Ok(Cleaned {
+                        reclaimed: bytes,
+                        ..Cleaned::default()
+                    })
+                })
+                .await
             }
             Action::CollectBlobs => self
                 .core
@@ -718,6 +766,24 @@ fn last_change(path: &Path) -> Option<SystemTime> {
         }
     }
     newest
+}
+
+/// Nothing runs inside `path` now (a file never holds a process). Why not otherwise.
+fn unused(
+    platform: &dyn brigadier_sandbox::Platform,
+    path: &Path,
+) -> std::result::Result<(), String> {
+    if !path.is_dir() {
+        return Ok(());
+    }
+    match platform.processes().in_dir(path) {
+        Ok(pids) if pids.is_empty() => Ok(()),
+        Ok(_) => Err(format!("{}: something runs in it now", path.display())),
+        Err(err) => Err(format!(
+            "{}: couldn't check that nothing runs in it ({err})",
+            path.display()
+        )),
+    }
 }
 
 fn older_than(path: &Path, age: Duration) -> bool {
@@ -1440,7 +1506,14 @@ impl Scanner<'_> {
                 false,
             );
             entry.selectable = !busy;
-            self.push(entry, Action::Delete(vec![(bound, bytes)]));
+            self.push(
+                entry,
+                Action::DeleteModel {
+                    speech: folder == "whisper",
+                    folder: bound,
+                    bytes,
+                },
+            );
         }
     }
 

@@ -68,7 +68,11 @@ function UninstallFlow({ onLocked }: { onLocked: (locked: boolean) => void }) {
     uninstall(
       plan.planId,
       keepData,
-      branches.map((branch) => ({ name: branch.name, tip: branch.tip })),
+      branches.map((branch) => ({
+        repo: branch.repo,
+        name: branch.name,
+        tip: branch.tip,
+      })),
     ).then(
       (report) => setPhase({ type: "done", report }),
       (cause: unknown) => {

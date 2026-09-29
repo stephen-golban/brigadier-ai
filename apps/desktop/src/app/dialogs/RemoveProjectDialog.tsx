@@ -127,7 +127,7 @@ function RemoveForm({
     try {
       const choices = preview.branches
         .filter((b) => picked.has(branchKey(b)))
-        .map((b) => ({ name: b.name, tip: b.tip }));
+        .map((b) => ({ repo: b.repo, name: b.name, tip: b.tip }));
       const report = await removeProject(preview.projectId, choices, !trashBrain);
       if (report.failures.length === 0 && report.keptBranches.every((b) => b.merged)) {
         onOpenChange(false);
