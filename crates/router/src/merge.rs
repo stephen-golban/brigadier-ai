@@ -225,7 +225,21 @@ pub(crate) fn match_entry<'r>(
             .any(|claimed| claimed.eq_ignore_ascii_case(name))
     };
     if let Some(entry) = registry.entries(provider).find(|entry| claims(entry, id)) {
-        return Some((entry, ModelStatus::Curated));
+        // An alias (`opus`) that now resolves to a newer model than the entry knows is that
+        // newer model: it inherits the family entry below instead of passing for the old one.
+        let moved_on = resolved.is_some_and(|resolved| {
+            !claims(&entry, resolved)
+                && entry
+                    .matches
+                    .ids
+                    .iter()
+                    .map(|claimed| version_of(claimed))
+                    .max()
+                    .is_some_and(|known| version_of(resolved) > known)
+        });
+        if !moved_on {
+            return Some((entry, ModelStatus::Curated));
+        }
     }
     if let Some(resolved) = resolved
         && let Some(entry) = registry

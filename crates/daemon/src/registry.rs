@@ -59,15 +59,18 @@ fn registry_url() -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Ok(url) = std::env::var("BRIGADIER_REGISTRY_URL") {
         let url = url.trim().to_owned();
-        let loopback = [
-            "http://127.0.0.1:",
-            "http://127.0.0.1/",
-            "http://[::1]:",
-            "http://[::1]/",
-        ]
-        .iter()
-        .any(|prefix| url.starts_with(prefix));
-        if url.starts_with("https://") || loopback {
+        // By the parsed host, not a prefix: `http://127.0.0.1:80@example.com/` goes to
+        // example.com.
+        let allowed = url.parse::<ureq::http::Uri>().ok().is_some_and(|uri| {
+            match (uri.scheme_str(), uri.host()) {
+                (Some("https"), Some(_)) => true,
+                (Some("http"), Some(host)) => {
+                    host == "127.0.0.1" || host == "[::1]" || host == "::1"
+                }
+                _ => false,
+            }
+        });
+        if allowed {
             return Ok(url);
         }
         return Err(format!(

@@ -102,6 +102,20 @@ impl Registry {
         let Some(models) = root.get_mut("models").and_then(Value::as_array_mut) else {
             return Err(malformed("models is missing"));
         };
+        // An entry for a CLI Brigadier doesn't drive is skipped before the typed read, so its
+        // shape (perhaps fields this app doesn't know) can't refuse the whole document.
+        models.retain(|model| {
+            let cli = model.get("cli").and_then(Value::as_str);
+            let driven = cli.is_some_and(|cli| provider_of(cli).is_some());
+            if !driven {
+                let key = model.get("key").and_then(Value::as_str).unwrap_or("an entry");
+                adjustments.push(format!(
+                    "{key}: skipped, Brigadier doesn't drive the {:?} CLI",
+                    cli.unwrap_or_default()
+                ));
+            }
+            driven
+        });
         for model in models.iter_mut() {
             drop_unknown_names(model, &mut adjustments);
         }
