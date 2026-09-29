@@ -108,7 +108,10 @@ impl Registry {
             let cli = model.get("cli").and_then(Value::as_str);
             let driven = cli.is_some_and(|cli| provider_of(cli).is_some());
             if !driven {
-                let key = model.get("key").and_then(Value::as_str).unwrap_or("an entry");
+                let key = model
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or("an entry");
                 adjustments.push(format!(
                     "{key}: skipped, Brigadier doesn't drive the {:?} CLI",
                     cli.unwrap_or_default()

@@ -67,7 +67,10 @@ pub fn learn(outcomes: &[Outcome], models: &[MergedModel], registry: &Registry) 
             .find(|model| {
                 model.provider == outcome.provider && is_model(model, registry, &outcome.model)
             })
-            .map_or_else(|| outcome.model.to_ascii_lowercase(), |model| model.id.clone());
+            .map_or_else(
+                || outcome.model.to_ascii_lowercase(),
+                |model| model.id.clone(),
+            );
         groups
             .entry((outcome.provider.to_string(), model, outcome.category))
             .or_default()
