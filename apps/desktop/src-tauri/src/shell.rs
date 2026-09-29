@@ -104,6 +104,8 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
 /// Menu id of File › Open Folder….
 #[cfg(target_os = "macos")]
 const OPEN_FOLDER_ITEM: &str = "open-folder";
+/// Menu id of Brigadier › Uninstall Brigadier….
+#[cfg(target_os = "macos")]
 const UNINSTALL_ITEM: &str = "uninstall";
 
 /// The standard app menu with File › Open Folder… (⌘O) first. Choosing it has the webview ask

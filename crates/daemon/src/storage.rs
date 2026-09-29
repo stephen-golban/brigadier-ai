@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brigadier_core::manager::disk::{Action, ScanContext, ScanItem, counted};
+#[cfg(unix)]
+use brigadier_core::manager::disk::counted;
+use brigadier_core::manager::disk::{Action, ScanContext, ScanItem};
 use brigadier_core::storage::{CleanCategory, CleanFailure, CleanItem, CleanReport, StorageReport};
 use brigadier_ipc::protocol::{ClientFrame, ClientInfo, Outcome, Request, Response, ServerFrame};
 use brigadier_sandbox::AppPaths;
@@ -28,6 +30,7 @@ const HOUSEKEEPING_DELAY: Duration = Duration::from_secs(2 * 60);
 /// And then once a day.
 const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// A connection folder younger than this may belong to a daemon about to listen.
+#[cfg(unix)]
 const SOCKET_MIN_AGE: Duration = Duration::from_secs(10 * 60);
 
 /// What the daemon removes itself.
