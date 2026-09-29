@@ -110,6 +110,10 @@
   --spacing-composer: 2.75rem;
   /* The composer grows with its text up to a quarter of the window, then scrolls. */
   --spacing-composer-max: 25dvh;
+  /* The pinned summary's room at the thread's end: the card and a gap on either side of it. */
+  --spacing-summary-room: calc(var(--container-xs) + var(--spacing) * 6);
+  /* Its collapsed header's room at the thread's top: the header row, its padding and gaps. */
+  --spacing-summary-header: calc(var(--spacing-control-xs) + var(--spacing) * 12);
   /* The queue card on the rail grows to this, then scrolls. */
   --spacing-queue-max: 30dvh;
   /* Attachments: an image thumbnail's side, a file card's width. */
@@ -137,6 +141,8 @@
   --container-lg: 32rem;
   --container-setup: 42rem;
   --container-thread: 46rem;
+  /* A thread pane this wide fits the pinned summary beside a thread column of 32rem or more. */
+  --container-summary-room: 53.5rem;
 
   --radius-xs: 0.1875rem;
   --radius-sm: 0.375rem;

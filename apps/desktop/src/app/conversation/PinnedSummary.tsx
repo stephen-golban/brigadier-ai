@@ -1,6 +1,7 @@
 import { useAui } from "@assistant-ui/react";
 import {
   Branch,
+  ChevronDown,
   Copy,
   DotsHorizontal,
   FolderOpen,
@@ -315,7 +316,9 @@ function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
 
 /**
  * A session's summary, pinned at the top right of its thread: the project, the branch (with
- * what it changed, for a worktree session), the workers and the plan.
+ * what it changed, for a worktree session), the workers and the plan. Where the thread's pane
+ * has room it sits beside the thread's column; where it hasn't, it folds to its header, which
+ * unfolds it over the thread.
  */
 export function PinnedSummary({ conversation }: { conversation: Conversation }) {
   const shown = useApp((s) => s.pinnedSummary);
@@ -334,6 +337,8 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
   const diff = useSessionDiff(conversation.id, worktree);
   const sources = useSources(conversation.id).length > 0;
   const pullRequest = usePullRequest(conversation.id);
+  // Opened from its folded header, in a pane too narrow to keep it beside the thread.
+  const [unfolded, setUnfolded] = useState(false);
   if (!shown || !setup) return null;
   const checkout =
     setup.environment.type === "newWorktree" ? (setup.environment.path ?? setup.repo) : setup.repo;
@@ -348,32 +353,48 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
         {conversation.projectId && (
           <ProjectActions projectId={conversation.projectId} path={checkout} />
         )}
+        <TooltipIconButton
+          tooltip={unfolded ? "Fold summary" : "Unfold summary"}
+          size="icon-sm"
+          aria-expanded={unfolded}
+          className="@summary-room/pane:hidden"
+          onClick={() => setUnfolded(!unfolded)}
+        >
+          <ChevronDown
+            className={cn("transition-[rotate] motion-reduce:transition-none", !unfolded && "-rotate-90")}
+          />
+        </TooltipIconButton>
       </div>
-      <GitActions conversationId={conversation.id}>
-        <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
-          <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
-          <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
-            {setup.environment.branch}
-          </span>
-          {diff && (diff.insertions > 0 || diff.deletions > 0) && (
-            <span className="shrink-0 text-xs tabular-nums">
-              <span className="text-success">+{diff.insertions}</span>{" "}
-              <span className="text-destructive">−{diff.deletions}</span>
+      <div
+        data-slot="summary-body"
+        className={cn("flex flex-col gap-2", !unfolded && "@max-summary-room/pane:hidden")}
+      >
+        <GitActions conversationId={conversation.id}>
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+            <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
+            <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
+              {setup.environment.branch}
             </span>
-          )}
-        </div>
-      </GitActions>
-      {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
-      {(workers > 0 || plan || sources) && <div className="border-border border-t" />}
-      {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
-      {plan && (
-        <Section title="Plan">
-          <p className="truncate text-sm" title={plan.title}>
-            {planLine(plan, tasks)}
-          </p>
-        </Section>
-      )}
-      <Sources conversationId={conversation.id} />
+            {diff && (diff.insertions > 0 || diff.deletions > 0) && (
+              <span className="shrink-0 text-xs tabular-nums">
+                <span className="text-success">+{diff.insertions}</span>{" "}
+                <span className="text-destructive">−{diff.deletions}</span>
+              </span>
+            )}
+          </div>
+        </GitActions>
+        {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
+        {(workers > 0 || plan || sources) && <div className="border-border border-t" />}
+        {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
+        {plan && (
+          <Section title="Plan">
+            <p className="truncate text-sm" title={plan.title}>
+              {planLine(plan, tasks)}
+            </p>
+          </Section>
+        )}
+        <Sources conversationId={conversation.id} />
+      </div>
     </aside>
   );
 }

@@ -716,6 +716,7 @@ export function ConversationView({
   );
 
   const fullscreen = sidePanel.state.open && sidePanel.state.fullscreen;
+  const summaryShown = useApp((s) => s.pinnedSummary) && setup?.type === "session" && !embedded;
   // A file link in an answer opens in the Files tab when it is one of the session's files.
   const checkout =
     setup?.type === "session"
@@ -769,7 +770,16 @@ export function ConversationView({
                             </Button>
                           </p>
                         )}
-                        <div className="relative min-h-0 flex-1">
+                        {/* The pinned summary floats at the pane's top end. Where the pane has
+                            room, the thread's column keeps clear of it beside it; where it hasn't,
+                            the summary folds to its header and the thread starts below that. */}
+                        <div
+                          className={cn(
+                            "@container/pane relative min-h-0 flex-1",
+                            summaryShown &&
+                              "@summary-room/pane:thread-viewport:pe-beside-summary @max-summary-room/pane:thread-viewport:pt-summary-header",
+                          )}
+                        >
                           {conversation && !embedded && <PinnedSummary conversation={conversation} />}
                           {conversation?.kind === "session" && <WorkerDiffs conversationId={conversation.id} />}
                           <Thread
