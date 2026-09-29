@@ -1,7 +1,6 @@
 import { useAui } from "@assistant-ui/react";
 import {
   Branch,
-  ChevronDown,
   Copy,
   DotsHorizontal,
   FolderOpen,
@@ -13,7 +12,8 @@ import {
   PullRequestOpen,
   Tasks,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 import { isFinal } from "@/app/conversation/blocks";
@@ -37,6 +37,7 @@ import type {
   PullRequestState,
   Task,
 } from "@/ipc/generated";
+import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { getSessionDiff, select, setPinnedSummary, setProjectExpanded } from "@/state/actions";
 import { useBoard } from "@/state/board";
@@ -315,13 +316,115 @@ function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
 }
 
 /**
- * A session's summary, pinned at the top right of its thread: the project, the branch (with
- * what it changed, for a worktree session), the workers and the plan. Where the thread's pane
- * has room it sits beside the thread's column; where it hasn't, it folds to its header, which
- * unfolds it over the thread.
+ * Where the thread's pane puts the pinned summary, by the room either side of the thread's
+ * column: beside the column, beside it with the column moved aside to make room, or (too little
+ * room) floating over the thread, opened from the top bar.
+ */
+type SummaryLayout = "beside" | "shift" | "float";
+
+/** The open conversation's summary layout, and whether it floats open over the thread. */
+const useSummary = create<{ layout: SummaryLayout; floating: boolean }>(() => ({
+  layout: "beside",
+  floating: false,
+}));
+
+/**
+ * The thread's pane, laid out for the pinned summary when `summary` (a session's own view). It
+ * follows its width without rendering: the layout goes on the element for CSS (the column's move,
+ * the card's visibility), and to the store only when it changes, for the top bar's button. The
+ * first layout lands before the pane eases anything, so a thread opens already in place.
+ */
+export function SummaryPane({ summary, children }: { summary: boolean; children: ReactNode }) {
+  const pinned = useApp((s) => s.pinnedSummary);
+  const pane = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = pane.current;
+    if (!summary || !element) return;
+    const column = tokenPx("--container-thread");
+    const floatBelow = tokenPx("--spacing-summary-float-below");
+    const besideFrom = tokenPx("--spacing-summary-beside-from");
+    let frame = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      const room = (entry.contentRect.width - column) / 2;
+      const layout: SummaryLayout =
+        room < floatBelow ? "float" : room < besideFrom ? "shift" : "beside";
+      element.dataset.summary = layout;
+      if (!("settled" in element.dataset)) {
+        frame = requestAnimationFrame(() => {
+          element.dataset.settled = "";
+        });
+      }
+      // Only a floating summary stays open over the thread.
+      useSummary.setState((state) =>
+        state.layout === layout ? state : { layout, floating: state.floating && layout === "float" },
+      );
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      delete element.dataset.summary;
+      delete element.dataset.settled;
+      useSummary.setState({ layout: "beside", floating: false });
+    };
+  }, [summary]);
+  return (
+    <div
+      ref={pane}
+      data-pinned={(summary && pinned) || undefined}
+      className="group/pane relative min-h-0 flex-1 data-pinned:data-[summary=shift]:thread-column:-translate-x-(--spacing-summary-shift) motion-safe:data-settled:thread-column:transition-[translate] motion-safe:data-settled:thread-column:duration-350 motion-safe:data-settled:thread-column:ease-summary-shift"
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A session's summary, pinned at the top end of its thread's pane: the project, the branch (with
+ * what it changed, for a worktree session), the workers and the plan. It eases in from the pane's
+ * end when pinned and out when unpinned, and hides where the pane has too little room beside the
+ * thread's column (it floats from the top bar there instead).
  */
 export function PinnedSummary({ conversation }: { conversation: Conversation }) {
   const shown = useApp((s) => s.pinnedSummary);
+  const float = useSummary((s) => s.layout === "float");
+  const visible = shown && !float;
+  const card = useRef<HTMLElement>(null);
+  // The card stays for its easing in and out; what it shows is kept only while it can be seen.
+  const [content, setContent] = useState(visible);
+  if (visible && !content) setContent(true);
+  useEffect(() => {
+    if (visible || !content) return;
+    let current = true;
+    // Reading the card's animations applies the hiding first, so its easing out is among them.
+    const easing = card.current?.getAnimations() ?? [];
+    void Promise.allSettled(easing.map((animation) => animation.finished)).then(
+      () => current && setContent(false),
+    );
+    return () => {
+      current = false;
+    };
+  }, [visible, content]);
+  if (conversation.setup?.type !== "session") return null;
+
+  return (
+    <div className="pointer-events-none absolute inset-y-summary-inset end-summary-inset z-10 flex w-summary max-w-full items-start">
+      <aside
+        ref={card}
+        aria-label="Session summary"
+        aria-hidden={!visible || undefined}
+        data-state={shown ? "open" : "closed"}
+        className="bg-card border-border rounded-2xl shadow-summary summary-hidden:invisible summary-hidden:translate-x-full summary-hidden:scale-80 summary-hidden:opacity-0 pointer-events-auto flex max-h-full w-full origin-top-right flex-col overflow-y-auto border px-3 py-2.5 motion-safe:group-data-settled/pane:transition-[opacity,translate,scale,visibility] motion-safe:group-data-settled/pane:duration-300 motion-safe:group-data-settled/pane:ease-summary-card"
+      >
+        {content && <SummaryContent conversation={conversation} />}
+      </aside>
+    </div>
+  );
+}
+
+/** The summary itself, pinned in the pane or floating from the top bar. */
+function SummaryContent({ conversation }: { conversation: Conversation }) {
   const project = useApp((s) =>
     conversation.projectId ? (s.projects[conversation.projectId]?.name ?? null) : null,
   );
@@ -337,80 +440,92 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
   const diff = useSessionDiff(conversation.id, worktree);
   const sources = useSources(conversation.id).length > 0;
   const pullRequest = usePullRequest(conversation.id);
-  // Opened from its folded header, in a pane too narrow to keep it beside the thread.
-  const [unfolded, setUnfolded] = useState(false);
-  if (!shown || !setup) return null;
+  if (!setup) return null;
   const checkout =
     setup.environment.type === "newWorktree" ? (setup.environment.path ?? setup.repo) : setup.repo;
 
   return (
-    <aside
-      aria-label="Session summary"
-      className="bg-card border-border rounded-surface animate-in fade-in absolute end-3 top-3 z-10 flex w-xs flex-col gap-2 border p-3 duration-200"
-    >
+    <div className="flex flex-col gap-2">
       <div className="flex h-control-xs items-center gap-2">
         <h2 className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{project ?? setup.repo}</h2>
         {conversation.projectId && (
           <ProjectActions projectId={conversation.projectId} path={checkout} />
         )}
-        <TooltipIconButton
-          tooltip={unfolded ? "Fold summary" : "Unfold summary"}
-          size="icon-sm"
-          aria-expanded={unfolded}
-          className="@summary-room/pane:hidden"
-          onClick={() => setUnfolded(!unfolded)}
-        >
-          <ChevronDown
-            className={cn("transition-[rotate] motion-reduce:transition-none", !unfolded && "-rotate-90")}
-          />
-        </TooltipIconButton>
       </div>
-      <div
-        data-slot="summary-body"
-        className={cn("flex flex-col gap-2", !unfolded && "@max-summary-room/pane:hidden")}
-      >
-        <GitActions conversationId={conversation.id}>
-          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
-            <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
-            <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
-              {setup.environment.branch}
+      <GitActions conversationId={conversation.id}>
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+          <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
+          <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
+            {setup.environment.branch}
+          </span>
+          {diff && (diff.insertions > 0 || diff.deletions > 0) && (
+            <span className="shrink-0 text-xs tabular-nums">
+              <span className="text-success">+{diff.insertions}</span>{" "}
+              <span className="text-destructive">−{diff.deletions}</span>
             </span>
-            {diff && (diff.insertions > 0 || diff.deletions > 0) && (
-              <span className="shrink-0 text-xs tabular-nums">
-                <span className="text-success">+{diff.insertions}</span>{" "}
-                <span className="text-destructive">−{diff.deletions}</span>
-              </span>
-            )}
-          </div>
-        </GitActions>
-        {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
-        {(workers > 0 || plan || sources) && <div className="border-border border-t" />}
-        {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
-        {plan && (
-          <Section title="Plan">
-            <p className="truncate text-sm" title={plan.title}>
-              {planLine(plan, tasks)}
-            </p>
-          </Section>
-        )}
-        <Sources conversationId={conversation.id} />
-      </div>
-    </aside>
+          )}
+        </div>
+      </GitActions>
+      {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
+      {(workers > 0 || plan || sources) && <div className="border-border border-t" />}
+      {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
+      {plan && (
+        <Section title="Plan">
+          <p className="truncate text-sm" title={plan.title}>
+            {planLine(plan, tasks)}
+          </p>
+        </Section>
+      )}
+      <Sources conversationId={conversation.id} />
+    </div>
   );
 }
 
-/** The header button that shows or hides the pinned summary. */
-export function PinnedSummaryToggle() {
-  const shown = useApp((s) => s.pinnedSummary);
+/**
+ * The top bar's summary button. Where the pane keeps the summary beside the thread it pins and
+ * unpins it; where the summary floats, it opens it over the thread, under the button.
+ */
+export function PinnedSummaryToggle({ conversation }: { conversation: Conversation }) {
+  const pinned = useApp((s) => s.pinnedSummary);
+  const float = useSummary((s) => s.layout === "float");
+  const floating = useSummary((s) => s.floating);
+  if (!float) {
+    return (
+      <TooltipIconButton
+        tooltip="Toggle pinned summary"
+        size="icon-md"
+        aria-pressed={pinned}
+        className={cn(pinned && "bg-muted")}
+        onClick={() => setPinnedSummary(!pinned)}
+      >
+        <Tasks />
+      </TooltipIconButton>
+    );
+  }
   return (
-    <TooltipIconButton
-      tooltip="Toggle pinned summary"
-      size="icon-md"
-      aria-pressed={shown}
-      className={cn(shown && "bg-muted")}
-      onClick={() => setPinnedSummary(!shown)}
-    >
-      <Tasks />
-    </TooltipIconButton>
+    <Popover open={floating} onOpenChange={(open) => useSummary.setState({ floating: open })}>
+      <PopoverTrigger asChild>
+        <TooltipIconButton
+          tooltip="Toggle summary"
+          size="icon-md"
+          aria-pressed={floating}
+          className={cn(floating && "bg-muted")}
+        >
+          <Tasks />
+        </TooltipIconButton>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        aria-label="Session summary"
+        // Focus the summary itself, not its first button (whose tip would open with it).
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
+        }}
+        className="bg-card border-border rounded-2xl shadow-summary text-foreground w-summary max-h-(--radix-popover-content-available-height) overflow-y-auto border px-3 py-2.5 ring-0"
+      >
+        <SummaryContent conversation={conversation} />
+      </PopoverContent>
+    </Popover>
   );
 }

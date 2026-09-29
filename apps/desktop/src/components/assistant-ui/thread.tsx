@@ -169,7 +169,11 @@ const ThreadRoot: FC<{
           data-slot="aui_thread-viewport"
           className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
         >
-          <div className="max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4">
+          {/* The column, composer included: the pane may move it aside for the pinned summary. */}
+          <div
+            data-slot="aui_thread-column"
+            className="max-w-thread mx-auto flex w-full flex-1 flex-col px-4 pt-4"
+          >
             {/* The new chat: the hero ends a little above the middle, the composer sits
                 at the bottom; each takes half the height. */}
             <AuiIf condition={isNewChatView}>

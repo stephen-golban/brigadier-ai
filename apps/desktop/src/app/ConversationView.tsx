@@ -24,7 +24,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { AgentsPanelContext } from "@/app/conversation/WorkerChip";
 import { ChatActions, RenameDialog } from "@/app/conversation/ChatActions";
-import { PinnedSummary, PinnedSummaryToggle } from "@/app/conversation/PinnedSummary";
+import { PinnedSummary, PinnedSummaryToggle, SummaryPane } from "@/app/conversation/PinnedSummary";
 import { WorkerDiffs } from "@/app/conversation/WorkerSummary";
 import { ProjectCombobox } from "@/app/conversation/RailPickers";
 import {
@@ -716,7 +716,8 @@ export function ConversationView({
   );
 
   const fullscreen = sidePanel.state.open && sidePanel.state.fullscreen;
-  const summaryShown = useApp((s) => s.pinnedSummary) && setup?.type === "session" && !embedded;
+  // The pinned summary, in a session's own view.
+  const summary = setup?.type === "session" && !embedded;
   // A file link in an answer opens in the Files tab when it is one of the session's files.
   const checkout =
     setup?.type === "session"
@@ -750,7 +751,7 @@ export function ConversationView({
                             {conversation && (
                               <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
                             )}
-                            {conversation?.kind === "session" && <PinnedSummaryToggle />}
+                            {conversation && summary && <PinnedSummaryToggle conversation={conversation} />}
                             {!sidePanel.state.open && <SidePanelToggle />}
                           </TopBar>
                         )}
@@ -770,24 +771,15 @@ export function ConversationView({
                             </Button>
                           </p>
                         )}
-                        {/* The pinned summary floats at the pane's top end. Where the pane has
-                            room, the thread's column keeps clear of it beside it; where it hasn't,
-                            the summary folds to its header and the thread starts below that. */}
-                        <div
-                          className={cn(
-                            "@container/pane relative min-h-0 flex-1",
-                            summaryShown &&
-                              "@summary-room/pane:thread-viewport:pe-beside-summary @max-summary-room/pane:thread-viewport:pt-summary-header",
-                          )}
-                        >
-                          {conversation && !embedded && <PinnedSummary conversation={conversation} />}
+                        <SummaryPane summary={summary}>
+                          {conversation && summary && <PinnedSummary conversation={conversation} />}
                           {conversation?.kind === "session" && <WorkerDiffs conversationId={conversation.id} />}
                           <Thread
                             components={THREAD_COMPONENTS}
                             // One placeholder, in every conversation.
                             placeholder="Do anything"
                           />
-                        </div>
+                        </SummaryPane>
                       </div>
                       {!embedded && <SidePanel conversationId={conversationId} />}
                     </div>

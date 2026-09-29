@@ -6,8 +6,10 @@
 /* macOS draws the traffic lights over the window content (overlay title bar). */
 @custom-variant macos (&:where([data-platform="macos"], [data-platform="macos"] *));
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
-/* The thread's scrolling viewport inside the element, for layout the thread's pane sets. */
-@custom-variant thread-viewport (& [data-slot="aui_thread-viewport"]);
+/* The thread's column inside the element: the thread's pane moves it aside for the pinned summary. */
+@custom-variant thread-column (& [data-slot="aui_thread-column"]);
+/* The pinned summary's card while hidden: unpinned, or in a pane where it floats instead. */
+@custom-variant summary-hidden (&:where([data-state="closed"], [data-summary="float"] *));
 
 @theme inline {
   @keyframes collapsible-down {
@@ -113,17 +115,6 @@
       transition: none;
     }
   }
-}
-
-/* The thread's end padding beside the pinned summary: just enough that its centred column
-   ends before the card (none in a pane wide enough), and at most the card's room. `100%` is
-   the pane's width. */
-@utility pe-beside-summary {
-  padding-inline-end: clamp(
-    0rem,
-    calc(2 * var(--spacing-summary-room) + var(--container-thread) - 100%),
-    var(--spacing-summary-room)
-  );
 }
 
 /* Lets the browser skip layout and paint for messages scrolled out of view. The newest two (the
