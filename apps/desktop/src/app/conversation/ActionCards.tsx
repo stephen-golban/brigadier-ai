@@ -12,24 +12,30 @@ import {
 import {
   type KeyboardEvent,
   type ReactNode,
+  useContext,
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { DiffStatView } from "@/app/conversation/cards/common";
 import { useAction } from "@/app/conversation/useAction";
+import { ViewContext } from "@/app/conversation/viewContext";
 import { WorkerChip } from "@/app/conversation/WorkerChip";
 import {
   ActionCard,
+  ActionCardActions,
   ActionCardCode,
-  ActionCardKind,
-  ActionCardTitle,
+  ActionCardHeader,
+  ActionCardQuestion,
+  ActionFileList,
   ActionFreeText,
+  ActionKbd,
   ActionOption,
+  actionButton,
+  staggered,
 } from "@/components/assistant-ui/elements/action-card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -37,17 +43,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Approval, ApprovalDecision, Conversation } from "@/ipc/generated";
+import type { Approval, ApprovalDecision, Conversation, DiffStat } from "@/ipc/generated";
 import { ALWAYS_ASK_NOTE } from "@/lib/setup";
 import { answerCard, answerQuestion, decidePlan } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
 /*
  * A pending decision takes the composer's place: the approval card, the question card and
- * "Implement this plan?". Brigadier keeps a one-line message field in each (the user can
- * always talk to the orchestrator; sending steers or queues as usual).
+ * "Implement this plan?". Enter and Esc answer it from anywhere in the view. Brigadier keeps a
+ * one-line message field in each (the user can always talk to the orchestrator; sending
+ * steers or queues as usual).
  */
 
 export type PendingAction = { type: "approval" | "question" | "plan"; id: string };
@@ -95,14 +101,45 @@ export function usePendingActions(conversation: Conversation | null): PendingAct
   });
 }
 
-/** Keys typed into a text field (the composer's is contenteditable) are the field's, not the card's. */
-function typing(event: KeyboardEvent): boolean {
-  const { target } = event;
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
-  );
+/** A field the user types in; its keys are its own, not the card's. */
+const FIELD = "input, textarea, select, [contenteditable]:not([contenteditable='false' i])";
+
+/** Open menus, dialogs and the message field's popovers, which take Enter and Esc first. */
+const OVERLAYS =
+  "[role=dialog], [role=menu], [role=listbox], [data-slot=composer-commands], [data-slot=composer-mentions]";
+
+function inField(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(FIELD) !== null;
+}
+
+/**
+ * Enter and Esc answer the card from anywhere in its view: not from a text field (the card's
+ * message field sends), not Enter on a focused button or link (that clicks it), and not while
+ * a menu or dialog is open (they take their keys first). A side chat's keys are its own.
+ */
+function useCardKeys(enabled: boolean, keys: { enter: () => void; escape: () => void }) {
+  const { embedded } = useContext(ViewContext);
+  const onKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
+    if (event.key !== "Enter" && event.key !== "Escape") return;
+    if (event.defaultPrevented || event.isComposing || event.repeat) return;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if ((target?.closest("[data-embedded-view]") != null) !== embedded) return;
+    if (inField(target)) return;
+    if (event.key === "Enter" && target?.closest("button, a[href], [role=button], summary")) return;
+    if (document.querySelector(OVERLAYS)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Enter") keys.enter();
+    else keys.escape();
+  });
+  useEffect(() => {
+    if (!enabled) return;
+    const listener = (event: globalThis.KeyboardEvent) => onKeyDown(event);
+    // Capture, so the card answers before the composer's Esc-to-stop sees the key.
+    window.addEventListener("keydown", listener, true);
+    return () => window.removeEventListener("keydown", listener, true);
+  }, [enabled]);
 }
 
 /** The card for one pending decision; `message` is the card's one-line message field. */
@@ -118,23 +155,37 @@ export function PendingActionCard({
   onDismiss: () => void;
   message: ReactNode;
 }) {
+  // A card that follows another (rather than the composer) fades its rows in.
+  const [shown, setShown] = useState({ id: action.id, follows: false });
+  if (shown.id !== action.id) setShown({ id: action.id, follows: true });
+  const follows = shown.id !== action.id || shown.follows;
   const footer = (
-    <>
+    <div className="flex flex-col gap-2 px-3 pb-3">
       {more > 0 && (
-        <p className="text-muted-foreground px-1 text-xs">
+        <p className="text-foreground/50 px-1 text-xs">
           {more} more {more === 1 ? "decision waits" : "decisions wait"} after this one
         </p>
       )}
       {message}
-    </>
+    </div>
   );
   switch (action.type) {
     case "approval":
       return <ApprovalAction key={action.id} id={action.id} footer={footer} />;
     case "question":
-      return <QuestionAction key={action.id} id={action.id} onDismiss={onDismiss} footer={footer} />;
+      return (
+        <QuestionAction
+          key={action.id}
+          id={action.id}
+          onDismiss={onDismiss}
+          footer={footer}
+          stagger={follows}
+        />
+      );
     case "plan":
-      return <PlanAction key={action.id} id={action.id} onDismiss={onDismiss} footer={footer} />;
+      return (
+        <PlanAction key={action.id} id={action.id} onDismiss={onDismiss} footer={footer} stagger={follows} />
+      );
   }
 }
 
@@ -145,12 +196,40 @@ function quote(arg: string): string {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
-type Shown = { icon: ReactNode; kind: ReactNode; title: ReactNode; detail?: ReactNode; body: ReactNode };
+type Shown = {
+  icon: ReactNode;
+  kind: ReactNode;
+  title: ReactNode;
+  detail?: ReactNode;
+  /** Under the question (a warning). */
+  note?: ReactNode;
+  body?: ReactNode;
+};
+
+/** A file's line counts, at the end of its row. */
+function fileStats(stat: DiffStat) {
+  return stat.files.map((file) => ({
+    path: file.path,
+    trailing: (
+      <span className="shrink-0 text-xs font-normal tabular-nums">
+        {file.binary ? (
+          <span className="text-foreground/50">binary</span>
+        ) : (
+          <>
+            <span className="text-success">+{file.insertions}</span>{" "}
+            <span className="text-destructive">−{file.deletions}</span>
+          </>
+        )}
+      </span>
+    ),
+  }));
+}
 
 /** The kinds shown ("Terminal", "Edit files", "Internet access") for what is asked. */
 function describe(approval: Approval, actorId: string | null, landingId: string | null): Shown {
-  // The worker that asks, and the one to land, as their chips.
+  // The worker that asks, and the one to land, as their chips; Brigadier asks for itself.
   const actor = actorId === null ? null : <WorkerChip taskId={actorId} />;
+  const who = actor ?? "Brigadier";
   const { subject } = approval;
   switch (subject.type) {
     case "cli": {
@@ -164,30 +243,45 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
           : web
             ? [<Globe key="icon" />, "Internet access"]
             : [<Sparkle key="icon" />, request.tool];
-      const what = request.command ? "run this command" : edits ? "make these edits" : `use ${request.tool}`;
+      const question = request.command ? (
+        actor ? (
+          <>Do you want {actor} to run this command?</>
+        ) : (
+          "Allow Brigadier to run this command?"
+        )
+      ) : edits ? (
+        <>
+          Allow {who} to edit{" "}
+          {request.paths.length === 0
+            ? "files"
+            : request.paths.length === 1
+              ? "the following file"
+              : "the following files"}
+          ?
+        </>
+      ) : web ? (
+        <>Allow {who} to connect to the internet?</>
+      ) : (
+        <>
+          Allow {who} to use {request.tool}?
+        </>
+      );
       return {
         icon,
         kind,
         // The asker's own justification, when it has one; else the plain question.
-        title: request.reason || (
-          <>
-            Do you want {actor ?? "the model"} to {what}?
-          </>
-        ),
-        detail: request.reason && actor ? <>Asked by {actor}</> : undefined,
-        body: (
-          <>
-            {request.escalation && (
-              <Badge variant="warning" className="self-start">
-                Outside the sandbox
-              </Badge>
-            )}
-            {request.command && <ActionCardCode>{request.command}</ActionCardCode>}
-            {request.paths.length > 0 && <ActionCardCode>{request.paths.join("\n")}</ActionCardCode>}
-            {!request.command && request.paths.length === 0 && request.input && (
-              <ActionCardCode>{request.input}</ActionCardCode>
-            )}
-          </>
+        title: request.reason || question,
+        // Who asks and where it runs, quietly under the question.
+        detail:
+          [request.reason && actor ? `Asked by ${actor}` : null, request.escalation ? "Runs outside the sandbox" : null]
+            .filter(Boolean)
+            .join(" · ") || undefined,
+        body: request.command ? (
+          <ActionCardCode>{request.command}</ActionCardCode>
+        ) : request.paths.length > 0 ? (
+          <ActionFileList files={request.paths.map((path) => ({ path }))} />
+        ) : (
+          request.input && <ActionCardCode>{request.input}</ActionCardCode>
         ),
       };
     }
@@ -195,7 +289,11 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
       return {
         icon: <Terminal />,
         kind: "Terminal",
-        title: <>Do you want {actor ?? "the model"} to run a command that reaches outside?</>,
+        title: actor ? (
+          <>Do you want {actor} to run a command that reaches outside?</>
+        ) : (
+          "Allow Brigadier to run a command that reaches outside?"
+        ),
         detail: ALWAYS_ASK_NOTE,
         body: <ActionCardCode>{subject.argv.map(quote).join(" ")}</ActionCardCode>,
       };
@@ -210,7 +308,7 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
           </>
         ),
         detail: "One reviewed commit",
-        body: <DiffStatView stat={subject.diffStat} />,
+        body: <ActionFileList files={fileStats(subject.diffStat)} />,
       };
     }
     case "finishSession":
@@ -219,19 +317,24 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
         kind: "Finish session",
         title: `Merge ${subject.branch} into ${subject.base}?`,
         detail: `${subject.commits} commit${subject.commits === 1 ? "" : "s"}`,
-        body: <DiffStatView stat={subject.diffStat} />,
+        body: <ActionFileList files={fileStats(subject.diffStat)} />,
       };
     case "action":
       return {
         icon: <Sparkle />,
         kind: actor ?? "Action",
         title: subject.action,
-        body: <p className="px-1 text-sm whitespace-pre-wrap">{subject.details}</p>,
+        body: subject.details && (
+          <p className="text-foreground/65 px-4 pb-2 text-sm whitespace-pre-wrap">{subject.details}</p>
+        ),
       };
   }
 }
 
-/** "Deny `Esc`" and "Allow once `↩`", the primary focused so Enter allows. */
+/**
+ * [Deny `Esc`] [Allow once `⏎`], Allow focused so Enter allows; both keys work from
+ * anywhere in the view.
+ */
 function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   const approval = useBoard((s) => s.board?.approvals[id]);
   const actorId = useBoard((s) =>
@@ -244,66 +347,88 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   );
   const action = useAction();
   const allow = useRef<HTMLButtonElement>(null);
-  useEffect(() => allow.current?.focus(), []);
+  // Unless the user is typing somewhere, Allow takes focus.
+  useEffect(() => {
+    // Focused for Enter, without a focus ring: it wasn't reached by keyboard.
+    if (!inField(document.activeElement)) allow.current?.focus({ focusVisible: false });
+  }, []);
+  const answer = (decision: ApprovalDecision) => {
+    if (!approval || action.busy) return;
+    action.run(() => answerCard(approval.conversationId, approval.id, decision));
+  };
+  const deny = () => answer({ type: "deny", message: "" });
+  useCardKeys(approval !== undefined && !action.busy, {
+    enter: () => answer({ type: "allow" }),
+    escape: deny,
+  });
   if (!approval) return null;
 
   const shown = describe(approval, actorId, landingId);
   const request = approval.subject.type === "cli" ? approval.subject.request : null;
   const grant = request?.grant ?? null;
-  const answer = (decision: ApprovalDecision) =>
-    action.run(() => answerCard(approval.conversationId, approval.id, decision));
-  const deny = () => answer({ type: "deny", message: "" });
+  const allowLabel = (
+    <>
+      <span className="truncate">Allow once</span>
+      <ActionKbd variant="primary">⏎</ActionKbd>
+    </>
+  );
   return (
-    <ActionCard
-      aria-label="Approval"
-      data-action="approval"
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && !typing(event) && !action.busy) {
-          event.preventDefault();
-          deny();
-        }
-      }}
-    >
-      <ActionCardKind icon={shown.icon}>{shown.kind}</ActionCardKind>
-      <ActionCardTitle detail={shown.detail}>{shown.title}</ActionCardTitle>
+    <ActionCard aria-label="Approval" data-action="approval">
+      <ActionCardHeader icon={shown.icon} kind={shown.kind} title={shown.title} detail={shown.detail}>
+        {shown.note}
+      </ActionCardHeader>
       {shown.body}
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {action.error && (
-          <span role="alert" className="text-destructive me-auto text-xs">
-            {action.error}
-          </span>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="rounded-capsule"
+      <ActionCardActions
+        leading={
+          action.error && (
+            <span role="alert" className="text-destructive me-auto text-xs">
+              {action.error}
+            </span>
+          )
+        }
+      >
+        <button
+          type="button"
+          className={actionButton("outline", "@max-md/approval-card:justify-center")}
           disabled={action.busy}
           onClick={deny}
         >
           Deny
-          <Kbd>Esc</Kbd>
-        </Button>
-        <div className="flex">
-          <Button
-            ref={allow}
-            size="sm"
-            className={grant ? "rounded-s-capsule rounded-e-none" : "rounded-capsule"}
-            disabled={action.busy}
-            onClick={() => answer({ type: "allow" })}
-          >
-            Allow once
-            <Kbd>↩</Kbd>
-          </Button>
-          {grant && (
+          <ActionKbd variant="outline">Esc</ActionKbd>
+        </button>
+        {grant ? (
+          <div className="rounded-capsule inline-flex min-w-0 items-stretch self-start overflow-hidden @max-md/approval-card:w-full">
+            <button
+              ref={allow}
+              type="button"
+              className={actionButton(
+                "primary",
+                "min-w-0 rounded-e-none border-e-0 pe-1 focus-visible:ring-inset @max-md/approval-card:flex-1 @max-md/approval-card:justify-center @max-md/approval-card:ps-6",
+              )}
+              disabled={action.busy}
+              onClick={() => answer({ type: "allow" })}
+            >
+              {allowLabel}
+            </button>
             <GrantMenu
               command={grant}
               escalation={request?.escalation ?? false}
               disabled={action.busy}
               onAnswer={answer}
             />
-          )}
-        </div>
-      </div>
+          </div>
+        ) : (
+          <button
+            ref={allow}
+            type="button"
+            className={actionButton("primary", "max-w-full @max-md/approval-card:justify-center")}
+            disabled={action.busy}
+            onClick={() => answer({ type: "allow" })}
+          >
+            {allowLabel}
+          </button>
+        )}
+      </ActionCardActions>
       {footer}
     </ActionCard>
   );
@@ -327,22 +452,25 @@ function GrantMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          size="sm"
+        <button
+          type="button"
           aria-label="Approval options"
-          className="border-primary-foreground/20 rounded-s-none rounded-e-capsule border-s px-2"
+          className={actionButton(
+            "primary",
+            "gap-0 rounded-s-none border-s-0 ps-0.5 pe-1.5 focus-visible:ring-inset",
+          )}
           disabled={disabled}
         >
-          <ChevronDown />
-        </Button>
+          <ChevronDown className="size-icon-sm opacity-50" />
+        </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+      <DropdownMenuContent side="top" align="end">
         <DropdownMenuItem onSelect={() => onAnswer({ type: "allow" })}>Allow once</DropdownMenuItem>
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuItem onSelect={() => onAnswer({ type: "allowSimilar" })}>
               Don't ask again for this command
-              <InfoCircle className="text-muted-foreground ms-auto" />
+              <InfoCircle className="ms-auto opacity-75" />
             </DropdownMenuItem>
           </TooltipTrigger>
           <TooltipContent side="right">
@@ -357,126 +485,192 @@ function GrantMenu({
   );
 }
 
-// ----- question ----------------------------------------------------------------------------
+// ----- question and plan -------------------------------------------------------------------
+
+/** How long a picked answer shows its dot before it goes. */
+const COMMIT_MS = 180;
 
 /**
- * The question card: numbered answers (1–9 pick, ↑/↓ move, a pick sends after a beat), then
- * "No, and tell Brigadier what to do differently" and Skip. × puts it aside.
+ * The card shared by questions and "Implement this plan?": numbered answers (1–9 pick, ↑/↓
+ * move, Enter picks the lit one; a pick shows its dot, then goes), then the free-text row
+ * with Skip, which turns into Submit once something is typed. Esc or × puts it aside.
  */
-function QuestionAction({
-  id,
+function ChoiceCard({
+  name,
+  title,
+  detail,
+  extra,
+  choices,
+  initial,
+  placeholder,
+  onChoose,
+  onText,
+  onSkip,
   onDismiss,
+  busy,
+  error,
   footer,
+  stagger,
 }: {
-  id: string;
+  name: "question" | "plan";
+  title: ReactNode;
+  detail?: ReactNode;
+  /** Between the question and the answers (the files asked about). */
+  extra?: ReactNode;
+  choices: { label: string; recommended?: boolean }[];
+  /** The answer lit at first. */
+  initial: number;
+  placeholder: string;
+  onChoose: (index: number) => void;
+  onText: (text: string) => void;
+  onSkip: () => void;
   onDismiss: () => void;
+  busy: boolean;
+  error: string | null;
   footer: ReactNode;
+  /** Fade the rows in one after another. */
+  stagger: boolean;
 }) {
-  const question = useBoard((s) => s.board?.questions[id]);
-  const askerId = useBoard((s) =>
-    question?.taskId && s.board?.tasks[question.taskId] ? question.taskId : null,
-  );
-  const action = useAction();
-  const [highlight, setHighlight] = useState(() => question?.recommended ?? 0);
+  // The lit answer; -1 is the free-text row.
+  const [highlight, setHighlight] = useState(choices.length > 0 ? initial : -1);
+  const [chosen, setChosen] = useState<number | null>(null);
   const [typed, setTyped] = useState("");
   const card = useRef<HTMLElement>(null);
-  useEffect(() => card.current?.focus(), []);
-  if (!question) return null;
+  const field = useRef<HTMLInputElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The card takes focus (the field, when there is nothing to pick), unless the user is
+  // typing somewhere.
+  const pickable = choices.length > 0;
+  useEffect(() => {
+    if (!inField(document.activeElement)) (pickable ? card : field).current?.focus();
+  }, [pickable]);
+  useEffect(() => () => clearTimeout(timer.current), []);
 
-  const uncommitted = question.kind.type === "uncommittedChanges" ? question.kind.files : null;
-  const options = question.options;
-  const answer = (text: string) =>
-    action.run(() => answerQuestion(question.conversationId, question.id, text));
-  // The row lights up, then the answer goes.
-  const choose = (index: number) => {
-    const option = options[index];
-    if (option === undefined || action.busy) return;
+  const idle = !busy && chosen === null;
+  const commit = (index: number) => {
+    if (!idle || choices[index] === undefined) return;
+    setChosen(index);
     setHighlight(index);
-    setTimeout(() => answer(option), 180);
+    timer.current = setTimeout(() => {
+      setChosen(null);
+      onChoose(index);
+    }, COMMIT_MS);
   };
+  const text = typed.trim();
+  const send = () => {
+    if (!idle) return;
+    if (text) onText(text);
+    else onSkip();
+  };
+  useCardKeys(idle, {
+    enter: () => {
+      if (highlight >= 0) commit(highlight);
+    },
+    escape: onDismiss,
+  });
   const onKeyDown = (event: KeyboardEvent) => {
-    if (typing(event)) return;
+    if (!idle || inField(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
     const digit = Number(event.key);
-    if (Number.isInteger(digit) && digit >= 1 && digit <= Math.min(9, options.length)) {
+    const last = choices.length - 1;
+    if (Number.isInteger(digit) && digit >= 1 && digit <= Math.min(9, choices.length)) {
       event.preventDefault();
-      choose(digit - 1);
-    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      commit(digit - 1);
+    } else if (digit === choices.length + 1 && digit <= 9) {
       event.preventDefault();
-      const step = event.key === "ArrowDown" ? 1 : -1;
-      setHighlight((current) => (current + step + options.length) % Math.max(1, options.length));
-    } else if (event.key === "Enter" && event.target === event.currentTarget) {
+      field.current?.focus();
+    } else if (event.key === "ArrowDown") {
       event.preventDefault();
-      choose(highlight);
-    } else if (event.key === "Escape") {
+      if (highlight >= last) field.current?.focus();
+      else setHighlight(highlight + 1);
+    } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      onDismiss();
+      if (highlight === -1) setHighlight(last);
+      else if (highlight > 0) setHighlight(highlight - 1);
     }
   };
 
+  const row = (index: number) => staggered(stagger, index);
   return (
-    <ActionCard ref={card} tabIndex={-1} aria-label="Question" data-action="question" onKeyDown={onKeyDown}>
-      <ActionCardTitle
-        onDismiss={onDismiss}
-        detail={
-          uncommitted
-            ? "Brigadier asks once, before the first worker starts. They are never committed either way."
-            : askerId === null
-              ? undefined
-              : (
-                  <>
-                    <WorkerChip taskId={askerId} /> waits for this
-                  </>
-                )
-        }
-      >
-        {uncommitted ? "Should workers see your uncommitted changes?" : question.text}
-      </ActionCardTitle>
-      {uncommitted && uncommitted.length > 0 && <ActionCardCode>{uncommitted.join("\n")}</ActionCardCode>}
-      {options.length > 0 && (
-        <div role="radiogroup" aria-label="Answers" className="flex flex-col">
-          {options.map((option, index) => (
-            <ActionOption
-              key={option}
-              role="radio"
-              aria-checked={index === highlight}
-              number={index + 1}
-              label={option}
-              recommended={question.recommended === index}
-              highlighted={index === highlight}
-              disabled={action.busy}
-              onPointerMove={() => setHighlight(index)}
-              onClick={() => choose(index)}
-            />
-          ))}
+    <ActionCard
+      ref={card}
+      container="request"
+      tabIndex={0}
+      aria-label={name === "plan" ? "Implement this plan?" : "Question"}
+      data-action={name}
+      onKeyDown={onKeyDown}
+    >
+      <div {...row(0)}>
+        <ActionCardQuestion onDismiss={onDismiss} detail={detail}>
+          {title}
+        </ActionCardQuestion>
+      </div>
+      <div className="flex flex-col gap-3 pt-1 pb-2">
+        {extra && <div {...row(1)}>{extra}</div>}
+        <div className="flex flex-col gap-1 px-2">
+          {choices.length > 0 && (
+            <div role="radiogroup" aria-label="Answers" className="flex flex-col gap-1">
+              {choices.map((choice, index) => (
+                <ActionOption
+                  key={choice.label}
+                  role="radio"
+                  aria-checked={index === highlight}
+                  number={index + 1}
+                  label={choice.label}
+                  recommended={choice.recommended}
+                  highlighted={index === highlight}
+                  chosen={index === chosen}
+                  disabled={busy}
+                  onPointerEnter={() => idle && setHighlight(index)}
+                  onClick={() => commit(index)}
+                  {...row(index + 2)}
+                />
+              ))}
+            </div>
+          )}
+          <ActionFreeText
+            ref={field}
+            value={typed}
+            aria-label={name === "plan" ? "What should change" : "Your answer"}
+            placeholder={placeholder}
+            marker={choices.length > 0}
+            highlighted={choices.length > 0 && highlight === -1}
+            disabled={busy}
+            onFocus={() => setHighlight(-1)}
+            onChange={(event) => {
+              setTyped(event.target.value);
+              if (event.target.value) setHighlight(-1);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                // Never the composer's form around the card.
+                event.preventDefault();
+                if (text) send();
+              } else if (event.key === "ArrowUp" && choices.length > 0) {
+                event.preventDefault();
+                setHighlight(choices.length - 1);
+                card.current?.focus();
+              } else if (event.key === "Escape") {
+                // Back to the answers; a second Esc puts the card aside.
+                event.preventDefault();
+                card.current?.focus();
+              }
+            }}
+            {...row(choices.length + 2)}
+          >
+            <button
+              type="button"
+              className={actionButton(text ? "primary" : "outline", "font-medium")}
+              disabled={busy}
+              onClick={send}
+            >
+              {text ? "Submit" : "Skip"}
+            </button>
+          </ActionFreeText>
         </div>
-      )}
-      <ActionFreeText
-        value={typed}
-        aria-label="Your answer"
-        placeholder={
-          options.length > 0 ? "No, and tell Brigadier what to do differently" : "Type your answer"
-        }
-        onChange={(event) => setTyped(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && typed.trim()) {
-            event.preventDefault();
-            answer(typed.trim());
-          }
-        }}
-      >
-        <Button
-          variant="outline"
-          size="sm"
-          className="rounded-capsule"
-          disabled={action.busy}
-          onClick={() => answer(SKIPPED)}
-        >
-          Skip
-        </Button>
-      </ActionFreeText>
-      {action.error && (
-        <p role="alert" className="text-destructive px-1 text-xs">
-          {action.error}
+      </div>
+      {error && (
+        <p role="alert" className="text-destructive px-4 pb-2 text-xs">
+          {error}
         </p>
       )}
       {footer}
@@ -484,75 +678,103 @@ function QuestionAction({
   );
 }
 
-// ----- plan --------------------------------------------------------------------------------
+/** A question from Brigadier or a worker; Skip tells the asker to use its judgment. */
+function QuestionAction({
+  id,
+  onDismiss,
+  footer,
+  stagger,
+}: {
+  id: string;
+  onDismiss: () => void;
+  footer: ReactNode;
+  stagger: boolean;
+}) {
+  const question = useBoard((s) => s.board?.questions[id]);
+  const askerId = useBoard((s) =>
+    question?.taskId && s.board?.tasks[question.taskId] ? question.taskId : null,
+  );
+  const action = useAction();
+  if (!question) return null;
+
+  const uncommitted = question.kind.type === "uncommittedChanges" ? question.kind.files : null;
+  const answer = (text: string) =>
+    action.run(() => answerQuestion(question.conversationId, question.id, text));
+  return (
+    <ChoiceCard
+      name="question"
+      title={uncommitted ? "Should workers see your uncommitted changes?" : question.text}
+      detail={
+        uncommitted
+          ? "Brigadier asks once, before the first worker starts. They are never committed either way."
+          : askerId === null
+            ? undefined
+            : (
+                <>
+                  <WorkerChip taskId={askerId} /> waits for this
+                </>
+              )
+      }
+      extra={
+        uncommitted &&
+        uncommitted.length > 0 && <ActionFileList files={uncommitted.map((path) => ({ path }))} />
+      }
+      choices={question.options.map((label, index) => ({
+        label,
+        recommended: question.recommended === index,
+      }))}
+      initial={question.recommended ?? 0}
+      placeholder={
+        question.options.length > 0 ? "No, and tell Brigadier what to do differently" : "Type here"
+      }
+      onChoose={(index) => answer(question.options[index] ?? "")}
+      onText={answer}
+      onSkip={() => answer(SKIPPED)}
+      onDismiss={onDismiss}
+      busy={action.busy}
+      error={action.error}
+      footer={footer}
+      stagger={stagger}
+    />
+  );
+}
 
 /** "Implement this plan?": 1 approves, the free-text row rejects with what should change. */
 function PlanAction({
   id,
   onDismiss,
   footer,
+  stagger,
 }: {
   id: string;
   onDismiss: () => void;
   footer: ReactNode;
+  stagger: boolean;
 }) {
   const plan = useBoard((s) => s.board?.plans[id]);
   const action = useAction();
-  const [typed, setTyped] = useState("");
-  const card = useRef<HTMLElement>(null);
-  useEffect(() => card.current?.focus(), []);
   if (!plan) return null;
 
-  const approve = () =>
-    action.run(() => decidePlan(plan.conversationId, plan.id, true, null));
-  const reject = (message: string) =>
-    action.run(() => decidePlan(plan.conversationId, plan.id, false, message));
   return (
-    <ActionCard
-      ref={card}
-      tabIndex={-1}
-      aria-label="Implement this plan?"
-      data-action="plan"
-      onKeyDown={(event) => {
-        if (typing(event)) return;
-        if (event.key === "1" || (event.key === "Enter" && event.target === event.currentTarget)) {
-          event.preventDefault();
-          if (!action.busy) approve();
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          onDismiss();
-        }
-      }}
-    >
-      <ActionCardTitle onDismiss={onDismiss} detail={plan.title}>
-        Implement this plan?
-      </ActionCardTitle>
-      <ActionOption
-        number={1}
-        label="Yes, implement this plan"
-        highlighted
-        disabled={action.busy}
-        onClick={approve}
-      />
-      <ActionFreeText
-        value={typed}
-        aria-label="What should change"
-        placeholder="No, and tell Brigadier what to do differently"
-        onChange={(event) => setTyped(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && typed.trim() && !action.busy) {
-            event.preventDefault();
-            reject(typed.trim());
-          }
-        }}
-      />
-      {action.error && (
-        <p role="alert" className="text-destructive px-1 text-xs">
-          {action.error}
-        </p>
-      )}
-      {footer}
-    </ActionCard>
+    <ChoiceCard
+      name="plan"
+      title="Implement this plan?"
+      detail={plan.title}
+      choices={[{ label: "Yes, implement this plan" }]}
+      initial={0}
+      placeholder="No, and tell Brigadier what to do differently"
+      onChoose={() => action.run(() => decidePlan(plan.conversationId, plan.id, true, null))}
+      onText={(message) =>
+        action.run(() => decidePlan(plan.conversationId, plan.id, false, message))
+      }
+      // Skip leaves the plan undecided, put aside like ×.
+      onSkip={onDismiss}
+      onDismiss={onDismiss}
+      busy={action.busy}
+      error={action.error}
+      footer={footer}
+      stagger={stagger}
+    />
   );
 }
 
