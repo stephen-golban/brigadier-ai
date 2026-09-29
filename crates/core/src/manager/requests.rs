@@ -6,6 +6,8 @@
 //! its last turn ended that way. A done request works again when new work for it arrives
 //! (a late report, a worker's question), so its block in the thread stays one block.
 
+use std::collections::HashSet;
+
 use super::SessionManager;
 use super::conversation::Envelope;
 use super::prompts;
@@ -178,13 +180,20 @@ impl SessionManager {
             })
             .collect();
         if let (Some(request), Some(last)) = (request, notes.last_mut()) {
+            // A task that already ended or reported still counts while the envelope saying so
+            // has not reached a turn: its landing's cleanup can outlast the turn's start.
+            let announced = match self.conv(conversation_id) {
+                Ok(conv) => self.announced(&conv, request).await,
+                Err(_) => HashSet::new(),
+            };
             let mut running: Vec<_> = board
                 .tasks
                 .values()
                 .filter(|task| {
-                    task.request_id.as_deref() == Some(request)
-                        && !task.state.is_final()
-                        && task.state != TaskState::Reported
+                    announced.contains(&task.id)
+                        || (task.request_id.as_deref() == Some(request)
+                            && !task.state.is_final()
+                            && task.state != TaskState::Reported)
                 })
                 .collect();
             running.sort_by_key(|task| task.number);
@@ -195,7 +204,15 @@ impl SessionManager {
                 let list: Vec<String> = running
                     .iter()
                     .map(|task| {
-                        format!("task-{} \"{}\" ({:?})", task.number, task.title, task.state)
+                        let news = if announced.contains(&task.id) {
+                            ", its message follows"
+                        } else {
+                            ""
+                        };
+                        format!(
+                            "task-{} \"{}\" ({:?}{news})",
+                            task.number, task.title, task.state
+                        )
                     })
                     .collect();
                 last.push_str(&format!(

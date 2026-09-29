@@ -169,7 +169,9 @@ your checked-out branch (local checkout) or on the session branch `brigadier/<se
 a fast-forward only; if you switched branches, the tip moved unexpectedly or an untracked or
 ignored file would be overwritten, the task waits as "ready to land" and nothing changes. A
 review that fails or is stopped lands nothing: the task goes back to reported, and the
-orchestrator is told so it can accept it again.
+orchestrator is told so it can accept it again. A task that has landed or failed counts as
+running for the orchestrator until its message is delivered, so a turn in between is never told
+that nothing else is running.
 
 Workers report through `submit_report`; the orchestrator never sees their messages. It can send
 a worker back to fix something (`message_worker`), even while the worker is still finishing

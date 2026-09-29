@@ -1959,6 +1959,9 @@ impl SessionManager {
                 t.error = Some(reason.to_owned());
             })
             .await;
+        if !reviewing {
+            self.announcing(task).await;
+        }
         self.dispose_task(task, TaskState::Failed).await;
         // Kept with the task, as the orchestrator reads it by its id (read_artifact).
         if let Some(message) = &kept {

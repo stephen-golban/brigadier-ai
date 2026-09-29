@@ -49,7 +49,7 @@ use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
     AttachmentRef, Compaction, CompactionState, ContextInjection, InjectionKind, OrchestratorEntry,
-    OrchestratorStepKind, QueuedMessage, RequestState, RunState, TaskId,
+    OrchestratorStepKind, QueuedMessage, RequestState, RunState, Task, TaskId,
 };
 use crate::{Error, Result, now_ms};
 
@@ -119,6 +119,10 @@ struct ConvState {
     closing: bool,
     /// Envelopes for coming turns, each with the request it belongs to.
     inbox: Vec<(Envelope, Option<String>)>,
+    /// Tasks already recorded as ended or sent back whose envelope saying so is still being
+    /// put together (a landing's cleanup runs first), each with its request: until the
+    /// envelope is in the inbox, the request works and a turn counts the task as running.
+    announcing: HashMap<TaskId, Option<String>>,
     /// User messages already in the transcript that the next turn carries.
     pending: Vec<Message>,
     /// The request the running turn serves.
@@ -273,6 +277,9 @@ impl ConvLive {
         state.held = true;
         state.inbox.retain(|(_, of)| of.as_deref() != Some(request));
         state
+            .announcing
+            .retain(|_, of| of.as_deref() != Some(request));
+        state
             .pending
             .retain(|message| message.request_id.as_deref() != Some(request));
         state.withdrawn.extend(tasks);
@@ -346,6 +353,7 @@ impl ConvLive {
                         .iter()
                         .filter_map(|message| message.request_id.clone()),
                 )
+                .chain(state.announcing.values().flatten().cloned())
                 .collect(),
             outcomes: state.outcomes.clone(),
         }
@@ -965,23 +973,61 @@ impl SessionManager {
         request: Option<String>,
     ) -> Option<Arc<ConvLive>> {
         let conv = self.conv(id).ok()?;
-        if matches!(
+        let archived = matches!(
             self.core.conversation(id).map(|c| c.lifecycle),
             Ok(Lifecycle::Archived)
-        ) {
-            return None;
-        }
+        );
         let mut state = conv.state.lock().await;
-        if envelope
-            .task_id
-            .as_ref()
-            .is_some_and(|task| state.withdrawn.contains(task))
+        if let Some(task) = &envelope.task_id {
+            state.announcing.remove(task);
+        }
+        if archived
+            || envelope
+                .task_id
+                .as_ref()
+                .is_some_and(|task| state.withdrawn.contains(task))
         {
             return None;
         }
         state.inbox.push((envelope, request));
         drop(state);
         Some(conv)
+    }
+
+    /// Marks `task` as having news for the orchestrator on its way: call it before the task's
+    /// state changes, when an envelope about that change follows ([`Self::deliver`]). A turn
+    /// that starts in between then does not tell the orchestrator that nothing else runs.
+    pub(crate) async fn announcing(&self, task: &Task) {
+        let Ok(conv) = self.conv(&task.conversation_id) else {
+            return;
+        };
+        let request = self
+            .request_for(&task.conversation_id, Some(&task.id))
+            .await;
+        conv.state
+            .lock()
+            .await
+            .announcing
+            .insert(task.id.clone(), request);
+    }
+
+    /// The tasks of `request` with an envelope still to come: queued for a later turn, or
+    /// being put together.
+    pub(super) async fn announced(&self, conv: &ConvLive, request: &str) -> HashSet<TaskId> {
+        let state = conv.state.lock().await;
+        state
+            .inbox
+            .iter()
+            .filter(|(_, of)| of.as_deref() == Some(request))
+            .filter_map(|(envelope, _)| envelope.task_id.clone())
+            .chain(
+                state
+                    .announcing
+                    .iter()
+                    .filter(|(_, of)| of.as_deref() == Some(request))
+                    .map(|(task, _)| task.clone()),
+            )
+            .collect()
     }
 
     /// Starts the next turn if none runs and there is something to say.

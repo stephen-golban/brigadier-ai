@@ -229,6 +229,7 @@ impl SessionManager {
                             .join(", ")
                     )
                 };
+                self.announcing(task).await;
                 self.dispose_task(task, TaskState::Done).await;
                 self.deliver(
                     &task.conversation_id,
@@ -483,6 +484,7 @@ impl SessionManager {
             })
             .await;
         if verdict != Some(ReviewVerdict::Approve) {
+            self.announcing(&task).await;
             let task = self
                 .set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
                 .await
@@ -546,6 +548,7 @@ impl SessionManager {
         if task.state != TaskState::Reviewing {
             return;
         }
+        self.announcing(&task).await;
         let task = self
             .set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
             .await
@@ -597,6 +600,7 @@ impl SessionManager {
             match rx.await {
                 Ok(CardAnswer::Decision(ApprovalDecision::Allow)) => {}
                 Ok(CardAnswer::Decision(ApprovalDecision::Deny { message })) => {
+                    self.announcing(task).await;
                     self.set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
                         .await?;
                     self.deliver(
@@ -754,6 +758,8 @@ impl SessionManager {
         }
         // The task branch is fully on the target now; it was Brigadier's, so it goes too.
         let branch = task.workspace.as_ref().and_then(|w| w.branch.clone());
+        // The landed envelope follows the cleanup below.
+        self.announcing(task).await;
         self.dispose_task(task, TaskState::Landed).await;
         if let (Some(branch), Ok(repo)) = (branch, self.task_repo(task)) {
             let git = self.git.clone();
@@ -804,6 +810,7 @@ impl SessionManager {
 
     /// Something stopped a landing: the task goes to `state` and the orchestrator hears why.
     async fn landing_problem(&self, task: &Task, reason: &str, state: TaskState) {
+        self.announcing(task).await;
         let _ = self
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.state = state;
