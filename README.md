@@ -400,9 +400,10 @@ factors in its details).
   own tokens, hand-offs and waits, and the models with what routing learned.
 - **Fallback.** A worker whose provider hits a limit (or that keeps failing) hands its task to
   the best eligible model in the same worktree, with the spec, a progress log and the current
-  diff; with none left the task waits for the earliest reset while others go on. An
-  orchestrator or Chat continues on the other vendor and goes back after the reset; your saved
-  model choices are never changed by it.
+  diff; with none left the task waits for the earliest reset while others go on. A task the
+  orchestrator gave to one vendor, or that needs image generation, goes only to a model that
+  qualifies, on hand-off and on resume alike. An orchestrator or Chat continues on the other
+  vendor and goes back after the reset; your saved model choices are never changed by it.
 
 ## Build and sign (macOS)
 
