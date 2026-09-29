@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brigadier_core::manager::disk::{Action, ScanContext, ScanItem};
+use brigadier_core::manager::disk::{Action, ScanContext, ScanItem, counted};
 use brigadier_core::storage::{CleanCategory, CleanFailure, CleanItem, CleanReport, StorageReport};
 use brigadier_ipc::protocol::{ClientFrame, ClientInfo, Outcome, Request, Response, ServerFrame};
 use brigadier_sandbox::AppPaths;
@@ -176,10 +176,20 @@ impl Storage {
             };
             match outcome {
                 Ok(cleaned) => {
-                    report.removed += 1;
                     report.reclaimed_bytes += cleaned.reclaimed;
                     report.trashed_bytes += cleaned.trashed;
-                    tracing::info!(item = %entry.item.label, "cleaned");
+                    if cleaned.failures.is_empty() {
+                        report.removed += 1;
+                        tracing::info!(item = %entry.item.label, "cleaned");
+                    } else {
+                        let error = cleaned.failures.join("; ");
+                        tracing::warn!(item = %entry.item.label, %error, "cleaned only in part");
+                        report.failures.push(CleanFailure {
+                            label: entry.item.label,
+                            path: entry.item.path,
+                            error,
+                        });
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(item = %entry.item.label, %error, "could not clean");
@@ -233,6 +243,10 @@ impl Storage {
             items.into_iter().chain(sockets).filter(|item| item.routine)
         {
             match daemon.sessions.clean_storage(action).await {
+                Ok(cleaned) if !cleaned.failures.is_empty() => {
+                    let error = cleaned.failures.join("; ");
+                    tracing::debug!(item = %item.label, %error, "housekeeping left part of an item");
+                }
                 Ok(_) => {
                     removed += 1;
                     tracing::info!(item = %item.label, path = item.path.as_deref().unwrap_or(""), "housekeeping removed a leftover");
@@ -325,7 +339,11 @@ fn stale_sockets(paths: &AppPaths) -> Vec<ScanItem> {
     }
     let item = plain_item(
         CleanCategory::Processes,
-        format!("{} stale connection folders", stale.len()),
+        counted(
+            stale.len(),
+            "stale connection folder",
+            "stale connection folders",
+        ),
         Some(&temp),
         "Left by Brigadier daemons that are no longer running; nothing listens on them.".into(),
         true,

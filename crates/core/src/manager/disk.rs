@@ -91,10 +91,12 @@ pub struct ScanContext {
 }
 
 /// What one removal gave back.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Cleaned {
     pub reclaimed: u64,
     pub trashed: u64,
+    /// Entries of the item that stayed, and why; the others are gone.
+    pub failures: Vec<String>,
 }
 
 /// The records a scan works from, taken once.
@@ -195,7 +197,14 @@ impl SessionManager {
             items.push(ScanItem {
                 item: item(
                     CleanCategory::LogsAndData,
-                    format!("{} stored files nothing uses any more", blobs.0),
+                    format!(
+                        "{} nothing uses any more",
+                        counted(
+                            usize::try_from(blobs.0).unwrap_or(usize::MAX),
+                            "stored file",
+                            "stored files"
+                        )
+                    ),
                     Some(self.data_dir.join("blobs")),
                     blobs.1,
                     "Attachments, reports and artifacts of conversations that were deleted.",
@@ -317,8 +326,10 @@ impl SessionManager {
                 blocking(move || {
                     let mut cleaned = Cleaned::default();
                     for (bound, bytes) in &entries {
-                        removal::delete(bound).map_err(|err| Error::Invalid(err.to_string()))?;
-                        cleaned.reclaimed += bytes;
+                        match removal::delete(bound) {
+                            Ok(()) => cleaned.reclaimed += bytes,
+                            Err(err) => cleaned.failures.push(err.to_string()),
+                        }
                     }
                     Ok(cleaned)
                 })
@@ -336,9 +347,10 @@ impl SessionManager {
                 blocking(move || {
                     let mut cleaned = Cleaned::default();
                     for (bound, bytes) in &entries {
-                        removal::trash(bound, &instance)
-                            .map_err(|err| Error::Invalid(err.to_string()))?;
-                        cleaned.trashed += bytes;
+                        match removal::trash(bound, &instance) {
+                            Ok(()) => cleaned.trashed += bytes,
+                            Err(err) => cleaned.failures.push(err.to_string()),
+                        }
                     }
                     Ok(cleaned)
                 })
@@ -363,7 +375,7 @@ impl SessionManager {
                     if removal::is_gone(worktree.path()) {
                         Ok(Cleaned {
                             reclaimed: bytes,
-                            trashed: 0,
+                            ..Cleaned::default()
                         })
                     } else {
                         Err(Error::Invalid(format!(
@@ -436,7 +448,7 @@ impl SessionManager {
                 if leftovers.is_clean() {
                     Ok(Cleaned {
                         reclaimed: bytes,
-                        trashed: 0,
+                        ..Cleaned::default()
                     })
                 } else {
                     Err(Error::Invalid(leftovers.failures.join("; ")))
@@ -449,7 +461,7 @@ impl SessionManager {
                 .await
                 .map(|stats| Cleaned {
                     reclaimed: stats.removed_bytes,
-                    trashed: 0,
+                    ..Cleaned::default()
                 })
                 .map_err(Error::from),
             Action::Compact => self.compact_database().await,
@@ -479,7 +491,7 @@ impl SessionManager {
         self.core.store().compact().await?;
         Ok(Cleaned {
             reclaimed: before.saturating_sub(size()),
-            trashed: 0,
+            ..Cleaned::default()
         })
     }
 
@@ -647,6 +659,11 @@ fn project_streams(records: &Records, project: &Project) -> Vec<String> {
         }
     }
     list
+}
+
+/// "1 old log file", "3 old log files".
+pub fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 fn item(
@@ -1206,9 +1223,10 @@ impl Scanner<'_> {
         self.push(
             item(
                 CleanCategory::SessionFiles,
-                format!(
-                    "{} working folders of ended conversations and workers",
-                    entries.len()
+                counted(
+                    entries.len(),
+                    "working folder of an ended conversation or worker",
+                    "working folders of ended conversations and workers",
                 ),
                 Some(self.data("scratch")),
                 bytes,
@@ -1251,7 +1269,7 @@ impl Scanner<'_> {
             self.push_routine(
                 item(
                     CleanCategory::SessionFiles,
-                    format!("{} session temp folders", entries.len()),
+                    counted(entries.len(), "session temp folder", "session temp folders"),
                     Some(base.to_owned()),
                     bytes,
                     "Temp folders of Claude sessions this Brigadier started, untouched for a \
@@ -1268,7 +1286,11 @@ impl Scanner<'_> {
                 .sum();
             let mut entry = item(
                 CleanCategory::SessionFiles,
-                format!("{} older session temp folders", legacy.len()),
+                counted(
+                    legacy.len(),
+                    "older session temp folder",
+                    "older session temp folders",
+                ),
                 Some(base.to_owned()),
                 bytes,
                 "Made by an older Brigadier, which didn't mark which data directory they belong \
@@ -1346,7 +1368,7 @@ impl Scanner<'_> {
             self.push(
                 item(
                     CleanCategory::LogsAndData,
-                    format!("{} old log files", logs.len()),
+                    counted(logs.len(), "old log file", "old log files"),
                     Some(self.data("logs")),
                     bytes,
                     "Logs older than the week Brigadier keeps.",
@@ -1366,7 +1388,10 @@ impl Scanner<'_> {
             let bytes = recordings.iter().map(|(_, bytes)| bytes).sum();
             let mut entry = item(
                 CleanCategory::LogsAndData,
-                format!("{} recordings older than 30 days", recordings.len()),
+                format!(
+                    "{} older than 30 days",
+                    counted(recordings.len(), "recording", "recordings")
+                ),
                 Some(self.data("recordings")),
                 bytes,
                 "Sessions recorded from the Inspector for replay.",
