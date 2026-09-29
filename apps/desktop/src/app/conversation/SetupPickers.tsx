@@ -4,6 +4,7 @@ import {
   Globe,
   HandRaised,
   Settings as SettingsIcon,
+  Shuffle,
   Terminal,
   Warning,
 } from "@openai/apps-sdk-ui/components/Icon";
@@ -33,9 +34,12 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useNow } from "@/hooks/use-now";
 import type {
   Conversation,
   ModelChoice,
+  ModelFallback,
   PermissionLevel,
   Project,
 } from "@/ipc/generated";
@@ -48,8 +52,9 @@ import {
   PERMISSIONS_HELP_URL,
   resolveModel,
 } from "@/lib/setup";
+import { choiceName, formatResetAt, VENDOR_LABELS } from "@/lib/routing";
 import { cn } from "@/lib/utils";
-import { updateSetup } from "@/state/actions";
+import { select, updateSetup } from "@/state/actions";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
@@ -313,6 +318,9 @@ export function ConversationModelPicker({
           {action.error}
         </span>
       )}
+      {conversation.fallback && (
+        <StandInPill fallback={conversation.fallback} groups={groups} />
+      )}
       <ModelSelector
         groups={groups}
         value={current}
@@ -333,6 +341,47 @@ export function ConversationModelPicker({
         }
       />
     </>
+  );
+}
+
+/**
+ * The model standing in while the chosen one is at a limit: "On Codex gpt-6-sol until 21:10 ·
+ * Claude limit", the reason on hover. The picker keeps showing the saved choice.
+ */
+function StandInPill({
+  fallback,
+  groups,
+}: {
+  fallback: ModelFallback;
+  groups: readonly ModelGroup[];
+}) {
+  const now = useNow(60_000);
+  const until = fallback.untilMs !== null ? ` until ${formatResetAt(fallback.untilMs, now)}` : "";
+  const text = `On ${choiceName(groups, fallback.choice)}${until} · ${VENDOR_LABELS[fallback.replaces.provider]} limit`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          data-slot="stand-in-model"
+          aria-label={`${text}. ${fallback.reason} Open the Usage page.`}
+          onClick={() => select({ type: "usage" })}
+          className="h-pill px-pill rounded-capsule bg-warning/15 text-warning hover:bg-warning/25 focus-visible:ring-ring/50 inline-flex max-w-sm min-w-0 shrink items-center gap-1 text-xs transition-colors outline-none focus-visible:ring-1"
+        >
+          <Shuffle aria-hidden className="size-icon-xs shrink-0" />
+          {/* A narrow composer keeps the icon; the rest is on hover. */}
+          <span className="@lg/composer:inline hidden truncate">{text}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs flex-col items-start gap-0.5">
+        <span className="font-medium">{text}</span>
+        <span>{fallback.reason}</span>
+        <span className="text-muted-foreground text-xs">
+          Your choice, {choiceName(groups, fallback.replaces)}, takes over again
+          {fallback.untilMs !== null ? ` at ${formatResetAt(fallback.untilMs, now)}` : " when its limit resets"}.
+        </span>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
