@@ -29,9 +29,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use brigadier_providers::{
-    Access, ApprovalDecision, Artifact, Decider, ErrorKind, InputFile, ItemStatus, McpServer,
-    Origin, ProviderEvent, ProviderKind, ProviderSession, Role as ProviderRole, SessionSpec,
-    Started, ToolSet, TurnInput, TurnStatus,
+    Access, ApprovalDecision, Artifact, Decider, ErrorKind, InputFile, ItemStatus, LimitHit,
+    McpServer, Origin, ProviderEvent, ProviderKind, ProviderSession, Role as ProviderRole,
+    SessionSpec, Started, ToolSet, TurnInput, TurnStatus,
 };
 use brigadier_store::StreamPage;
 use tokio::sync::mpsc;
@@ -44,7 +44,7 @@ use super::{EventSource, SessionManager};
 use crate::knowledge::RebirthTrigger;
 use crate::model::{
     ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Mention, Message,
-    MessageRole, ModelChoice, Notice, Setup, streams,
+    MessageRole, ModelChoice, ModelFallback, Notice, Setup, streams,
 };
 use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
@@ -168,10 +168,9 @@ struct ConvState {
     sent_back: HashMap<String, Unanswered>,
     /// The next CLI session starts fresh and must be given the transcript so far.
     reseed: bool,
-    /// A Chat that hit a usage limit continues on this model (the saved choice is untouched).
-    fallback: Option<ModelChoice>,
-    /// The running turn failed on a usage limit.
-    limit_hit: bool,
+    /// The running turn failed on a usage limit (which window, and its reset, when the CLI
+    /// said).
+    limit_hit: Option<LimitHit>,
     /// The running turn is one of its own that compacts the context: messages sent meanwhile
     /// wait for the next turn.
     compacting: bool,
@@ -890,7 +889,7 @@ impl SessionManager {
             state.compacting = true;
             state.request = None;
             state.turn_error = None;
-            state.limit_hit = false;
+            state.limit_hit = None;
             state.in_turn.clear();
         }
         self.set_run(&id, RunState::Starting, None).await;
@@ -934,10 +933,11 @@ impl SessionManager {
     pub async fn conversation_status(&self, id: ConversationId) -> Result<ConversationStatus> {
         let conversation = self.core.conversation(&id)?;
         let conv = self.conv(&id)?;
-        let (cli, fallback) = {
-            let state = conv.state.lock().await;
-            (state.cli.clone(), state.fallback.clone())
-        };
+        let cli = conv.state.lock().await.cli.clone();
+        let fallback = conversation
+            .fallback
+            .clone()
+            .map(|fallback| fallback.choice);
         let (provider, native_id) = match cli {
             Some(cli) => (cli.provider, Some(cli.session.native_id())),
             None => {
@@ -1061,6 +1061,7 @@ impl SessionManager {
 
     async fn next_turn(self: Arc<Self>, conv: Arc<ConvLive>) {
         self.retire_changed_cli(&conv).await;
+        self.end_stand_in(&conv).await;
         if conv.kind == ConversationKind::Session {
             self.rebirth_if_ready(&conv).await;
         }
@@ -1133,7 +1134,7 @@ impl SessionManager {
                 None => envelopes[0].1.clone(),
             };
             state.busy = true;
-            state.limit_hit = false;
+            state.limit_hit = None;
             state.turn_error = None;
             state.request.clone_from(&request);
             if let Some(request) = &request {
@@ -1327,11 +1328,18 @@ impl SessionManager {
         let dir = self.owned_dir(area, &conv.id.0);
         self.prepare_owned_dir(&owner, &dir).await?;
 
-        let fallback = conv.state.lock().await.fallback.clone();
+        // A stand-in while the chosen model is at its limit (the saved choice is untouched).
+        let fallback = conversation
+            .fallback
+            .clone()
+            .map(|fallback| fallback.choice);
         let mut grant_values = Vec::new();
         let (choice, prompt, mcp) = match (&conversation.setup, conv.kind) {
             (Some(Setup::Session { orchestrator, .. }), _) => {
-                let choice = self.orchestrator_choice(&conv.id, orchestrator).await;
+                let choice = match fallback {
+                    Some(fallback) => fallback,
+                    None => self.orchestrator_choice(&conv.id, orchestrator).await,
+                };
                 let project = conversation
                     .project_id
                     .as_ref()
@@ -2129,7 +2137,12 @@ impl SessionManager {
             }
             ProviderEvent::Error { error } => {
                 if error.kind == ErrorKind::UsageLimit && !error.will_retry {
-                    conv.state.lock().await.limit_hit = true;
+                    conv.state.lock().await.limit_hit =
+                        Some(error.limit.clone().unwrap_or(LimitHit {
+                            window: None,
+                            resets_at_ms: None,
+                            kind: brigadier_providers::LimitKind::UsageWindow,
+                        }));
                 }
                 if !error.will_retry {
                     conv.state.lock().await.turn_error = Some(error.message.clone());
@@ -2322,7 +2335,7 @@ impl SessionManager {
                 state.outcomes.insert(request, ended);
             }
             (
-                state.limit_hit,
+                state.limit_hit.take(),
                 std::mem::take(&mut state.in_turn),
                 std::mem::take(&mut state.asked),
             )
@@ -2331,15 +2344,20 @@ impl SessionManager {
         if let Err(err) = self.core.settle_queued(&conv.id, &asked).await {
             tracing::warn!(conversation = %conv.id, error = %err, "could not settle follow-ups");
         }
-        if limit_hit
-            && status == TurnStatus::Failed
-            && conv.kind == ConversationKind::Chat
-            && let Some(next) = self.chat_fallback_choice(cli)
+        // A CLI at its limit fails the turn; an injected limit (development builds) interrupts
+        // it first.
+        if let Some(limit) = limit_hit
+            && status != TurnStatus::Completed
         {
-            // Not from inside the CLI's own event pump: closing the CLI waits for it.
-            let (manager, conv, cli) = (self.arc(), conv.clone(), cli.clone());
-            self.spawn(async move { manager.chat_fallback(&conv, &cli, next, carried).await });
-            return;
+            self.runtime.note_limit(cli.provider, limit.clone()).await;
+            if let Some(next) = self.stand_in_choice(conv, cli) {
+                // Not from inside the CLI's own event pump: closing the CLI waits for it.
+                let (manager, conv, cli) = (self.arc(), conv.clone(), cli.clone());
+                self.spawn(async move {
+                    manager.stand_in(&conv, &cli, next, limit, carried).await;
+                });
+                return;
+            }
         }
         self.set_run(&conv.id, RunState::Idle, None).await;
         self.settle_requests(&conv.id).await;
@@ -2423,8 +2441,10 @@ impl SessionManager {
         });
     }
 
-    /// The model a Chat continues on after `cli`'s vendor hit a usage limit.
-    fn chat_fallback_choice(&self, cli: &Arc<Cli>) -> Option<brigadier_router::Choice> {
+    /// The model a conversation continues on after `cli`'s vendor hit a usage limit: the
+    /// other vendor's equivalent, if it is usable (and, for an orchestrator on Codex, can be
+    /// limited to talking only).
+    fn stand_in_choice(&self, conv: &ConvLive, cli: &Arc<Cli>) -> Option<brigadier_router::Choice> {
         let from = brigadier_router::Choice {
             provider: cli.provider,
             model: cli.model.model.clone(),
@@ -2432,20 +2452,31 @@ impl SessionManager {
             reason: String::new(),
             cross_vendor: None,
         };
-        brigadier_router::fallback(
-            &from,
-            brigadier_router::TaskCategory::Chat,
-            &self.availability(),
-        )
+        let category = match conv.kind {
+            ConversationKind::Session => brigadier_router::TaskCategory::Orchestrate,
+            ConversationKind::Chat => brigadier_router::TaskCategory::Chat,
+        };
+        let next = brigadier_router::fallback(&from, category, &self.availability())?;
+        if conv.kind == ConversationKind::Session
+            && next.provider == ProviderKind::Codex
+            && brigadier_providers::codex::orchestrator_lockdown().is_err()
+        {
+            return None;
+        }
+        Some(next)
     }
 
-    /// A Chat hit a usage limit: continue on the other vendor's equivalent model, seeded with
-    /// the transcript, and resend the turn. The saved model choice is left alone.
-    async fn chat_fallback(
+    /// A conversation's model hit its usage limit: it continues on `next`, which starts over
+    /// from the transcript (an orchestrator from a recovery briefing), and the turn is sent
+    /// again. Only the conversation's stand-in is recorded: its setup, the project's and the
+    /// app's saved choices are left alone (Q17). The chosen model takes over again after its
+    /// reset ([`Self::end_stand_in`]).
+    async fn stand_in(
         &self,
         conv: &Arc<ConvLive>,
         cli: &Arc<Cli>,
         next: brigadier_router::Choice,
+        limit: LimitHit,
         carried: Vec<Message>,
     ) {
         let choice = ModelChoice {
@@ -2454,29 +2485,96 @@ impl SessionManager {
             effort: next.effort.clone(),
             fast: None,
         };
+        let replaces = match self.core.conversation(&conv.id) {
+            Ok(conversation) => conversation
+                .fallback
+                .clone()
+                .map(|fallback| fallback.replaces)
+                .or_else(|| setup_choice(&conversation))
+                .unwrap_or_else(|| cli.model.clone()),
+            Err(_) => cli.model.clone(),
+        };
+        let stand_in = next.model.clone().map_or_else(
+            || format!("{}'s default model", next.provider.label()),
+            |model| format!("{} {model}", next.provider.label()),
+        );
+        let reason = format!("{} hit its usage limit", cli.provider.label());
         self.notice(
             &conv.id,
             brigadier_providers::NoticeLevel::Info,
-            &format!(
-                "{} hit its usage limit; continuing with {} ({}).",
-                cli.provider.label(),
-                next.provider.label(),
-                next.model
-                    .clone()
-                    .unwrap_or_else(|| "its default model".into())
-            ),
+            &format!("{reason}; continuing with {stand_in}."),
         )
         .await;
         conv.close_cli().await;
+        let fallback = ModelFallback {
+            choice,
+            replaces,
+            reason,
+            since_ms: now_ms(),
+            until_ms: limit.resets_at_ms,
+        };
+        if let Err(err) = self.core.set_fallback(&conv.id, Some(fallback)).await {
+            tracing::warn!(conversation = %conv.id, error = %err, "could not record the stand-in model");
+        }
         {
             let mut state = conv.state.lock().await;
-            state.fallback = Some(choice);
+            // A new session, not an old one of that vendor, briefed from the transcript.
+            state.fresh = true;
             state.reseed = true;
             let mut pending = carried;
             pending.append(&mut state.pending);
             state.pending = pending;
         }
         self.kick(conv);
+    }
+
+    /// Between turns: once the chosen model's provider is usable again (its window reset), or
+    /// the user chose another model, the stand-in steps back and the next turn starts over on
+    /// the chosen model from the transcript.
+    async fn end_stand_in(&self, conv: &Arc<ConvLive>) {
+        let Ok(conversation) = self.core.conversation(&conv.id) else {
+            return;
+        };
+        let Some(fallback) = &conversation.fallback else {
+            return;
+        };
+        let chosen = setup_choice(&conversation);
+        let changed = chosen.is_some() && chosen.as_ref() != Some(&fallback.replaces);
+        if !changed && !self.provider_usable(fallback.replaces.provider) {
+            return;
+        }
+        let cli = {
+            let mut state = conv.state.lock().await;
+            if state.busy || state.closing {
+                return;
+            }
+            state.closing = true;
+            state.cli.take()
+        };
+        if let Some(cli) = cli {
+            cli.session.close().await;
+            cli.ended.cancelled().await;
+        }
+        if let Err(err) = self.core.set_fallback(&conv.id, None).await {
+            tracing::warn!(conversation = %conv.id, error = %err, "could not end the stand-in model");
+        }
+        {
+            let mut state = conv.state.lock().await;
+            state.closing = false;
+            state.fresh = true;
+            state.reseed = true;
+        }
+        if !changed {
+            self.notice(
+                &conv.id,
+                brigadier_providers::NoticeLevel::Info,
+                &format!(
+                    "{} is available again; continuing with it.",
+                    fallback.replaces.provider.label()
+                ),
+            )
+            .await;
+        }
     }
 
     /// What each provider can offer right now, for the router.

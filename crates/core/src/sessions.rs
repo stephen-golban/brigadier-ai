@@ -1549,6 +1549,23 @@ impl Core {
 
     /// Appends events atomically, applies them to the projection, and returns each event's
     /// stream sequence.
+    /// Records the model standing in for a conversation's chosen one (or that none does now).
+    pub(crate) async fn set_fallback(
+        &self,
+        id: &ConversationId,
+        fallback: Option<crate::model::ModelFallback>,
+    ) -> Result<()> {
+        self.record(vec![(
+            streams::CATALOG.into(),
+            DomainEvent::ConversationFallback {
+                id: id.clone(),
+                fallback,
+            },
+        )])
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn record(&self, events: Vec<(String, DomainEvent)>) -> Result<Vec<i64>> {
         let new = events
             .iter()
