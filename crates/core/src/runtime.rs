@@ -41,6 +41,7 @@ use crate::model::{
     DomainEvent, Fixture, ProviderOverview, ProvidersView, RawApprovals, RawEntry, RawPage,
     RawSession, RawSessionId, RawSource, RawState, streams,
 };
+use crate::routing::{QuotaMonitor, RoutingStore};
 use crate::{Core, Error, Result, now_ms};
 
 /// Text deltas arriving within this window are stored as one event.
@@ -100,6 +101,10 @@ pub struct Runtime {
     recordings_dir: PathBuf,
     ledger: Arc<CleanupLedger>,
     env: Arc<CliEnv>,
+    monitor: Arc<QuotaMonitor>,
+    routing: Option<Arc<RoutingStore>>,
+    /// Cancelled when the daemon shuts down (ends the quota poller).
+    quit: CancellationToken,
 }
 
 impl Runtime {
@@ -129,7 +134,25 @@ impl Runtime {
             )
             .await?,
         );
+        let routing = {
+            let path = data_dir.join("routing.sqlite");
+            match tokio::task::spawn_blocking(move || RoutingStore::open(&path)).await {
+                Ok(Ok(store)) => Some(store),
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "routing store unavailable");
+                    None
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "routing store unavailable");
+                    None
+                }
+            }
+        };
+        let monitor = QuotaMonitor::load(routing.clone(), now_ms()).await;
         let runtime = Arc::new(Self {
+            monitor,
+            routing,
+            quit: CancellationToken::new(),
             claude,
             codex,
             ledger,
@@ -150,7 +173,73 @@ impl Runtime {
             .pumps
             .spawn(async move { ledger.archive_codex_threads().await });
         runtime.refresh_providers(None);
+        let poller = runtime.clone();
+        runtime.spawn(async move { poller.poll_quota().await });
         Ok(runtime)
+    }
+
+    /// The quota monitor: every provider's windows as last reported, and their history.
+    pub fn monitor(&self) -> &Arc<QuotaMonitor> {
+        &self.monitor
+    }
+
+    /// `routing.sqlite`, when it could be opened.
+    pub fn routing_store(&self) -> Option<&Arc<RoutingStore>> {
+        self.routing.as_ref()
+    }
+
+    /// Reads every logged-in provider's quota on the monitor's schedule, until shutdown.
+    async fn poll_quota(self: Arc<Self>) {
+        let mut pruned_ms = now_ms();
+        loop {
+            let wait = self.monitor.next_poll(now_ms());
+            tokio::select! {
+                () = self.quit.cancelled() => return,
+                () = tokio::time::sleep(wait) => {}
+            }
+            for kind in ProviderKind::ALL {
+                let ready = {
+                    let state = self.state();
+                    !state.refreshing.contains(&kind)
+                        && state
+                            .overviews
+                            .get(&kind)
+                            .and_then(|overview| overview.status.as_ref())
+                            .is_some_and(|status| status.logged_in)
+                };
+                if !ready {
+                    continue;
+                }
+                match self.provider(kind).quota().await {
+                    Ok(quota) => self.note_read(quota).await,
+                    Err(err) => {
+                        tracing::debug!(provider = %kind, error = %err, "quota read failed")
+                    }
+                }
+            }
+            let now = now_ms();
+            if now - pruned_ms > 24 * 60 * 60 * 1000 {
+                pruned_ms = now;
+                if let Some(store) = &self.routing
+                    && let Err(err) = store.prune(now).await
+                {
+                    tracing::warn!(error = %err, "could not prune the routing history");
+                }
+            }
+        }
+    }
+
+    /// Takes in a fresh quota read and records the provider's overview.
+    async fn note_read(&self, quota: brigadier_providers::QuotaSnapshot) {
+        let overview = {
+            let mut state = self.state();
+            let Some(overview) = state.overviews.get_mut(&quota.provider) else {
+                return;
+            };
+            overview.quota = Some(self.monitor.note(&quota, now_ms()));
+            overview.clone()
+        };
+        self.record_overview(overview).await;
     }
 
     /// The cleanup ledger shared by every CLI session and conversation.
@@ -336,6 +425,7 @@ impl Runtime {
     /// events to be stored. Call before the store shuts down.
     pub async fn shutdown(&self) {
         self.admitting.store(false, Ordering::Release);
+        self.quit.cancel();
         let sessions: Vec<(RawSessionId, Arc<dyn ProviderSession>)> = self
             .state()
             .live
@@ -445,7 +535,7 @@ impl Runtime {
             Err(err) => errors.push(format!("models: {err}")),
         }
         match quota {
-            Ok(quota) => overview.quota = Some(quota),
+            Ok(quota) => overview.quota = Some(self.monitor.note(&quota, now_ms())),
             Err(err) => errors.push(format!("quota: {err}")),
         }
         overview.error = (!errors.is_empty()).then(|| errors.join("; "));
@@ -1036,7 +1126,7 @@ impl Runtime {
             let Some(overview) = state.overviews.get_mut(&kind) else {
                 return;
             };
-            overview.quota = Some(quota);
+            overview.quota = Some(self.monitor.note(&quota, now));
             let overview = overview.clone();
             let last = state.quota_recorded_ms.entry(kind).or_default();
             if now - *last < QUOTA_RECORD_INTERVAL_MS {
@@ -1057,7 +1147,7 @@ impl Runtime {
             let Some(overview) = state.overviews.get_mut(&kind) else {
                 return;
             };
-            overview.quota = Some(quota);
+            overview.quota = Some(self.monitor.note(&quota, now));
             let overview = overview.clone();
             let last = state.quota_recorded_ms.entry(kind).or_default();
             if now - *last < QUOTA_RECORD_INTERVAL_MS {

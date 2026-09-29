@@ -40,11 +40,13 @@ use tokio_util::sync::CancellationToken;
 use super::SessionManager;
 use super::prompts;
 use super::rebirth::{self, BriefingPlan, RebirthPrep};
+use super::usage::TokenOwner;
 use crate::knowledge::RebirthTrigger;
 use crate::model::{
     ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Mention, Message,
     MessageRole, ModelChoice, Notice, Setup, streams,
 };
+use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
 use crate::sessions::push_block;
 use crate::tools::Role;
@@ -113,6 +115,8 @@ pub(crate) struct Cli {
     /// Commands the user allowed again for the rest of this CLI session ("Don't ask again for
     /// this command"), with their escalation flag. In memory only: they end with the session.
     pub granted: std::sync::Mutex<HashSet<(String, bool)>>,
+    /// What each of its turns used, from the CLI's running totals.
+    pub meter: TokenMeter,
 }
 
 #[derive(Default)]
@@ -1414,6 +1418,7 @@ impl SessionManager {
             // An orchestrator is reborn, never compacted.
             auto_compact: conv.kind == ConversationKind::Chat,
         };
+        let mut resumed = resume.is_some();
         let started = match self
             .runtime
             .start_hosted(&owner, choice.provider, spec.clone())
@@ -1423,6 +1428,7 @@ impl SessionManager {
             Err(err) if resume.is_some() => {
                 tracing::info!(conversation = %conv.id, error = %err, "resume failed; starting over from the transcript");
                 spec.origin = Origin::New;
+                resumed = false;
                 conv.state.lock().await.reseed = true;
                 match self
                     .runtime
@@ -1462,6 +1468,7 @@ impl SessionManager {
         let Started { session, events } = started;
         let cli = Arc::new(Cli {
             provider: choice.provider,
+            meter: TokenMeter::new(resumed && choice.provider == ProviderKind::Codex),
             model: choice,
             chosen: setup_choice(&conversation),
             session,
@@ -2138,6 +2145,15 @@ impl SessionManager {
             }
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
+            }
+            ProviderEvent::Usage { total } => {
+                self.note_tokens(
+                    &cli.meter,
+                    cli.provider,
+                    cli.model.model.as_deref(),
+                    TokenOwner::Conversation(&conv.id),
+                    total,
+                );
             }
             ProviderEvent::ContextSize {
                 used_tokens,

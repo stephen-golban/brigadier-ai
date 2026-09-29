@@ -25,12 +25,14 @@ use brigadier_providers::{
 use tokio::sync::watch;
 
 use super::brains::{LEDGER_MAX, brain_error, cut, one_line};
+use super::usage::TokenOwner;
 use super::{SessionManager, blocking, prompts};
 use crate::knowledge::{BriefingSection, RebirthRecord, RebirthTrigger};
 use crate::model::{
     ConversationId, DomainEvent, Environment, Message, MessageRole, ModelChoice, Setup, streams,
 };
 use crate::now_ms;
+use crate::routing::TokenMeter;
 use crate::work::{ApprovalSubject, CardState, OrchestratorEntry, PlanState, TaskState};
 
 /// About four bytes per token.
@@ -264,6 +266,8 @@ impl SessionManager {
                 return None;
             }
         };
+        // A forked Codex thread may carry its parent's totals: its first report is a baseline.
+        let meter = TokenMeter::new(provider == ProviderKind::Codex);
         let written = async {
             session.send(TurnInput::text(HANDOFF_PROMPT)).await.ok()?;
             let mut parts: Vec<String> = Vec::new();
@@ -277,6 +281,13 @@ impl SessionManager {
                     ProviderEvent::RateLimits { quota } => {
                         self.runtime.note_quota_snapshot(quota).await;
                     }
+                    ProviderEvent::Usage { total } => self.note_tokens(
+                        &meter,
+                        provider,
+                        choice.model.as_deref(),
+                        TokenOwner::Conversation(id),
+                        &total,
+                    ),
                     ProviderEvent::ApprovalRequested { request } => {
                         let _ = session
                             .answer(

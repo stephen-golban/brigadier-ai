@@ -1560,10 +1560,18 @@ impl Scanner<'_> {
                 scratch_bytes: scratch,
             });
         }
-        let database = ["brigadier.db", "brigadier.db-wal", "brigadier.db-shm"]
-            .iter()
-            .map(|name| size(self.data(name)))
-            .sum();
+        // The event store and routing's history (quota samples, outcomes, research).
+        let database = [
+            "brigadier.db",
+            "brigadier.db-wal",
+            "brigadier.db-shm",
+            "routing.sqlite",
+            "routing.sqlite-wal",
+            "routing.sqlite-shm",
+        ]
+        .iter()
+        .map(|name| size(self.data(name)))
+        .sum();
         let blobs = size(self.data("blobs"));
         let project_blob_total: u64 = projects.iter().map(|p| p.blobs_bytes).sum();
         let personal = [

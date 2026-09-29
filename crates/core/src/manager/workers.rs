@@ -38,10 +38,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::conversation::{Cli, Envelope, safe_file_name};
 use super::outputs::outputs_dir;
+use super::usage::TokenOwner;
 use super::{SessionManager, blocking, git_error, instructions, prompts, secrets};
 use crate::model::{
     ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
 };
+use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
@@ -470,6 +472,9 @@ impl SessionManager {
     ) -> Result<()> {
         let conversation_id = task.conversation_id.clone();
         let owner = format!("task:{}", task.id);
+        // A resumed Codex thread's token totals include the turns counted before.
+        let continues = task.route.choice.provider == ProviderKind::Codex
+            && matches!(origin, Origin::Resume { .. });
         let recorded = task
             .workspace
             .clone()
@@ -612,6 +617,7 @@ impl SessionManager {
             };
         let cli = Arc::new(Cli {
             provider,
+            meter: TokenMeter::new(continues),
             model: task.route.choice.clone(),
             chosen: None,
             session,
@@ -1166,6 +1172,15 @@ impl SessionManager {
             }
             ProviderEvent::RateLimits { quota } => {
                 self.runtime.note_quota_snapshot(quota.clone()).await;
+            }
+            ProviderEvent::Usage { total } => {
+                self.note_tokens(
+                    &cli.meter,
+                    cli.provider,
+                    cli.model.model.as_deref(),
+                    TokenOwner::Task(&live.conversation_id, &live.id),
+                    total,
+                );
             }
             ProviderEvent::TurnStarted { .. } => {
                 live.state.lock().await.last_message = None;

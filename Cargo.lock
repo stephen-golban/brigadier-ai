@@ -402,6 +402,8 @@ dependencies = [
  "brigadier-router",
  "brigadier-sandbox",
  "brigadier-store",
+ "rusqlite",
+ "rusqlite_migration",
  "schemars 1.2.2",
  "serde",
  "serde_json",

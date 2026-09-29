@@ -10,6 +10,7 @@ pub mod ledger;
 pub mod manager;
 pub mod model;
 mod projection;
+pub mod routing;
 pub mod runtime;
 mod sessions;
 pub mod storage;

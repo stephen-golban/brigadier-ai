@@ -41,6 +41,7 @@ mod side_chat;
 mod tools;
 mod undo;
 mod uninstall;
+mod usage;
 mod workers;
 
 use std::collections::HashMap;
@@ -412,17 +413,19 @@ impl SessionManager {
         }
     }
 
+    /// Logged in and not refusing work: no limit, or one whose reset has passed (the quota
+    /// monitor's view).
     fn provider_usable(&self, kind: ProviderKind) -> bool {
         self.runtime.overview(kind).is_some_and(|overview| {
             overview
                 .status
                 .as_ref()
                 .is_some_and(|status| status.logged_in)
-                && overview
-                    .quota
-                    .as_ref()
-                    .is_none_or(|quota| quota.limit.is_none())
-        })
+        }) && self
+            .runtime
+            .monitor()
+            .current(kind, crate::now_ms())
+            .is_none_or(|quota| quota.limit.is_none())
     }
 }
 

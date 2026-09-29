@@ -35,9 +35,11 @@ use tokio_util::sync::CancellationToken;
 use super::brains::{
     ProjectBrain, blake_key, brain_error, code_refs, code_search, file_refs, one_line, project_map,
 };
+use super::usage::TokenOwner;
 use super::{SessionManager, blocking, git_error, secrets};
 use crate::knowledge::{BrainJob, BrainJobKind, BrainJobState, MemoryChange};
 use crate::model::{ConversationId, DomainEvent, ProjectId, streams};
+use crate::routing::TokenMeter;
 use crate::tools::{ChatCall, JobCall, NodeInput, Role, SaveMemory, ToolReply};
 use crate::{Error, Result, now_ms};
 
@@ -570,6 +572,7 @@ impl SessionManager {
                 session,
                 mut events,
             } = self.runtime.start_hosted(&owner, provider, spec).await?;
+            let meter = TokenMeter::default();
             let turn = async {
                 session
                     .send(TurnInput::text(prompt))
@@ -580,6 +583,13 @@ impl SessionManager {
                         ProviderEvent::RateLimits { quota } => {
                             self.runtime.note_quota_snapshot(quota).await;
                         }
+                        ProviderEvent::Usage { total } => self.note_tokens(
+                            &meter,
+                            provider,
+                            job.model.as_deref(),
+                            TokenOwner::Project(&job.project_id),
+                            &total,
+                        ),
                         ProviderEvent::ApprovalRequested { request } => {
                             // It stays inside its sandbox; nobody is asked on its behalf.
                             let decision = match policy::route(&request, &access, ApprovalMode::Delegated) {
