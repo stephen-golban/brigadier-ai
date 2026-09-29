@@ -327,11 +327,13 @@ pub fn decide(query: &Query) -> Decision {
     // A pin, then a `prefer` rule, else the top score. Rules beat pins.
     let mut chosen = ranked[0];
     let mut why: Option<String> = None;
+    let mut pinned_pick = false;
     let mut rule_text: Option<String> = None;
     if let Some(pin) = &query.pin {
         if let Some(index) = pinned(query, pin, &candidates, &mut notes) {
             chosen = index;
             why = Some("as requested".to_owned());
+            pinned_pick = true;
         } else if pin.model.is_none()
             && let Some(provider) = pin.provider
         {
@@ -343,6 +345,7 @@ pub fn decide(query: &Query) -> Decision {
                 Some(index) => {
                     chosen = index;
                     why = Some(format!("{} as requested", name(provider)));
+                    pinned_pick = true;
                 }
                 None => notes.push(format!(
                     "{} was asked for, but {}",
@@ -365,6 +368,7 @@ pub fn decide(query: &Query) -> Decision {
             ));
         }
         chosen = index;
+        pinned_pick = false;
         rule_text = candidates[index].preferred.clone();
         why = rule_text.as_ref().map(|rule| format!("your rule: {rule}"));
     } else if !only.is_empty() {
@@ -425,7 +429,7 @@ pub fn decide(query: &Query) -> Decision {
     let explanation = Explanation {
         score: Some(round(pick.score)),
         factors: pick.factors.clone(),
-        alternatives: alternatives(&candidates, &ranked, chosen, rank),
+        alternatives: alternatives(&candidates, &ranked, chosen, pinned_pick, rank),
         rule: rule_text,
         trial: pick.trial,
         balancing,
@@ -452,8 +456,9 @@ pub fn decide(query: &Query) -> Decision {
         reason.push_str("; ");
         reason.push_str(&note);
     }
+    // Balancing always names the window it avoids (the explanation says so too).
     if let Some(context) = context
-        && reason.len() + context.len() + 3 <= REASON_BUDGET
+        && (balancing || reason.len() + context.len() + 3 <= REASON_BUDGET)
     {
         reason.push_str("; ");
         reason.push_str(&context);
@@ -541,12 +546,12 @@ fn assess<'q>(
     let vendor = name(model.provider);
     let purpose = table::row(query.category).purpose;
 
-    candidate.trial = query.trial_slot
-        && allows_trials(query.category)
-        && matches!(model.status, ModelStatus::Unknown | ModelStatus::Researched)
+    // A new model (unknown or researched) runs only as a trial until it has enough outcomes.
+    let on_trial = matches!(model.status, ModelStatus::Unknown | ModelStatus::Researched)
         && model
             .trial
-            .is_some_and(|trial| trial.outcomes < trial.needed);
+            .is_some_and(|trial| trial.outcomes < crate::merge::TRIAL_OUTCOMES);
+    candidate.trial = on_trial && query.trial_slot && allows_trials(query.category);
 
     let block = if let Some(exclusion) = query.exclude.iter().find(|ex| {
         ex.provider == model.provider
@@ -563,14 +568,21 @@ fn assess<'q>(
         rule.effect == OverrideEffect::Never && targets(&rule.target, &model, query.registry)
     }) {
         Some(Block::Rule(format!("your rule: {}", rule_text(rule))))
-    } else if !only.is_empty()
-        && !only
-            .iter()
-            .any(|rule| targets(&rule.target, &model, query.registry))
+    } else if let Some(rule) = only
+        .iter()
+        .find(|rule| !targets(&rule.target, &model, query.registry))
     {
-        Some(Block::Rule(format!("your rule: {}", join_rules(only))))
+        // Every applicable `only` rule must allow it.
+        Some(Block::Rule(format!("your rule: {}", rule_text(rule))))
     } else if let Some(why) = unmet_need(&model, query.needs) {
         Some(Block::Needs(why))
+    } else if on_trial && !candidate.trial {
+        let runs = model.trial.map_or(0, |trial| trial.outcomes);
+        Some(Block::Floor(format!(
+            "a new model on trial: it runs only on scouting, research and checks given a trial \
+             slot ({runs} of {} runs so far)",
+            crate::merge::TRIAL_OUTCOMES
+        )))
     } else if model.tier < query.floor && !candidate.trial {
         Some(Block::Floor(if model.tier == QualityTier::Unrated {
             "not rated yet (new models get trial runs on scouting, research and checks)".to_owned()
@@ -886,8 +898,18 @@ fn find_named(
     let pool: Vec<usize> = (0..candidates.len())
         .filter(|i| provider.is_none_or(|p| candidates[*i].model.provider == p))
         .collect();
+    // At each step, an eligible match before one that can't run (an older `sol` that can,
+    // before the newest one at its limit).
     let first = |test: &dyn Fn(&MergedModel) -> bool| {
-        pool.iter().copied().find(|i| test(&candidates[*i].model))
+        let all: Vec<usize> = pool
+            .iter()
+            .copied()
+            .filter(|i| test(&candidates[*i].model))
+            .collect();
+        all.iter()
+            .copied()
+            .find(|i| candidates[*i].eligible())
+            .or_else(|| all.first().copied())
     };
     first(&|m| m.id.eq_ignore_ascii_case(wanted))
         .or_else(|| first(&|m| is_model(m, query.registry, wanted)))
@@ -1104,6 +1126,7 @@ fn alternatives(
     candidates: &[Candidate],
     ranked: &[usize],
     chosen: usize,
+    pinned: bool,
     rank: impl Fn(&Candidate) -> usize,
 ) -> Vec<Alternative> {
     let pick = &candidates[chosen];
@@ -1151,6 +1174,7 @@ fn alternatives(
             None if pick.preferred.is_some() && c.preferred.is_none() => {
                 "your rule prefers another model".to_owned()
             }
+            None if pinned => "not the model asked for".to_owned(),
             None if (c.score - pick.score).abs() <= TIE => {
                 "tied, and ties go the other way here".to_owned()
             }

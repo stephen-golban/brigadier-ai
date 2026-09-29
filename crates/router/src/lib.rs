@@ -26,7 +26,7 @@
 //!   that limits it at 97% used, or its own scoped bucket used up. A limit is a hard exclusion,
 //!   never a large penalty;
 //! - it isn't excluded by the query (it or its provider just failed on the task);
-//! - no applicable `never` rule names it, and it is inside an applicable `only` rule's target;
+//! - no applicable `never` rule names it, and every applicable `only` rule allows it;
 //! - it meets the task's needs (image input, image generation, context window);
 //! - its tier is at or above the task's quality floor ([`default_floor`]);
 //! - for reviews, its vendor differs from the author's when another vendor can review; else a
@@ -49,8 +49,9 @@
 //! An unknown or researched model with fewer than 3 outcomes may run scouting, research and
 //! verification — never implementation, reviews, merges or orchestration — when the query holds
 //! a trial slot (the caller gives at most 1 in 5 low-risk tasks one) and it meets the task's
-//! needs. Its tier doesn't pass the floor; the trial path stands in for that check, with a +4
-//! bonus.
+//! needs. Until then this is the only way it runs, whatever its tier; the trial path stands in
+//! for the floor check, with a +4 bonus. After its trial, a researched model is scored like any
+//! other; an unknown one waits for research to place it (it stays unrated, below every floor).
 //!
 //! # Overrides
 //!

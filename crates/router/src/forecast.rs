@@ -20,7 +20,7 @@
 use brigadier_providers::{LimitHit, LimitKind, QuotaSnapshot, QuotaWindow};
 
 use crate::quota::{Forecast, Heat, ProviderQuota, QuotaSample, WindowState};
-use crate::registry::{MergedModel, Registry};
+use crate::registry::{MergedModel, ModelStatus, Registry};
 use crate::table;
 
 /// Windows up to this long use the short look-back.
@@ -145,7 +145,10 @@ pub fn window_applies(window: &QuotaWindow, model: &MergedModel, registry: &Regi
         .registry_key
         .as_deref()
         .and_then(|key| registry.entry(key));
-    entry.is_some_and(|entry| {
+    // The entry's ids name this model only when it is the entry's own (curated); an inherited
+    // newer version is not the model a window for the entry's id limits.
+    let own_entry = entry.filter(|_| model.status == ModelStatus::Curated);
+    own_entry.is_some_and(|entry| {
         entry
             .matches
             .ids
