@@ -270,8 +270,24 @@ fn sample(tracked: &mut Tracked, provider: ProviderKind, now_ms: i64) -> Vec<Sto
     let Some(quota) = &tracked.quota else {
         return Vec::new();
     };
+    // Development builds: an injected limit's used-up window is not real use, so it stays out
+    // of the history the estimates and the balancing read.
+    #[cfg(debug_assertions)]
+    let injected = tracked
+        .injected
+        .as_ref()
+        .filter(|limit| limit.resets_at_ms.is_none_or(|at| at > now_ms))
+        .and_then(|limit| limit.window.as_deref());
+    #[cfg(not(debug_assertions))]
+    let injected: Option<&str> = None;
     let mut stored = Vec::new();
     for window in &quota.windows {
+        // A window past its reset has no known use until a report says so.
+        if injected == Some(window.id.as_str())
+            || window.resets_at_ms.is_some_and(|at| at <= now_ms)
+        {
+            continue;
+        }
         let history = tracked.history.entry(window.id.clone()).or_default();
         let due = history.back().is_none_or(|last| {
             (last.used_percent - window.used_percent).abs() >= SAMPLE_EPSILON
