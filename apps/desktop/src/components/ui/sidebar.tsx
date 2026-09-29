@@ -151,7 +151,8 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         className={cn(
-          "w-sidebar fixed inset-y-0 z-10 flex h-full transition-[left,right,width] duration-200 ease-linear",
+          // Stops above the status bar, which spans the whole window.
+          "w-sidebar bottom-status-bar fixed top-0 z-10 flex transition-[left,right,width] duration-200 ease-linear",
           side === "left"
             ? "group-data-[collapsible=offcanvas]:-start-sidebar start-0 group-data-[side=left]:border-e"
             : "group-data-[collapsible=offcanvas]:-end-sidebar end-0 group-data-[side=right]:border-s",

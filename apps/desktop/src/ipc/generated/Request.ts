@@ -76,7 +76,7 @@ before: number | null, limit: number, } | { "method": "readBlobText", hash: stri
 /**
  * Also stream daemon metrics once a second.
  */
-metrics: boolean, } | { "method": "setMetricsStreaming", enabled: boolean, } | { "method": "eventsSince", afterSeq: number, limit: number, } | { "method": "getDiagnostics" } | { "method": "probeBurst", count: number, intervalMs: number, } | { "method": "getProviders" } | { "method": "refreshProviders", provider: ProviderKind | null, } | { "method": "startRawSession", provider: ProviderKind, 
+metrics: boolean, } | { "method": "setMetricsStreaming", enabled: boolean, } | { "method": "eventsSince", afterSeq: number, limit: number, } | { "method": "getDiagnostics" } | { "method": "probeBurst", count: number, intervalMs: number, } | { "method": "getKeepAwake" } | { "method": "setUpLidClosed" } | { "method": "getProviders" } | { "method": "refreshProviders", provider: ProviderKind | null, } | { "method": "startRawSession", provider: ProviderKind, 
 /**
  * Absolute path of the working directory.
  */

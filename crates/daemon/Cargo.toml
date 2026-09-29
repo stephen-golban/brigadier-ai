@@ -45,5 +45,9 @@ whisper-rs = { version = "0.16.0", features = ["metal"] }
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Keeping the computer awake (SetThreadExecutionState).
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
+
 [lints]
 workspace = true

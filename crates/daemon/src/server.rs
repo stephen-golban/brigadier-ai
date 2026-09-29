@@ -23,6 +23,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::awake::Awake;
 use crate::dictation::Dictation;
 use crate::metrics::Metrics;
 use crate::supervisor::Supervisor;
@@ -62,6 +63,8 @@ pub struct Daemon {
     pub terminals: Terminals,
     /// The composer's dictation: its speech model and running dictations.
     pub dictation: Arc<Dictation>,
+    /// Keeps the computer awake per the settings.
+    pub awake: Arc<Awake>,
     next_connection: AtomicU64,
 }
 
@@ -79,6 +82,7 @@ impl Daemon {
         quit: mpsc::Sender<()>,
         drained: watch::Receiver<bool>,
         dictation: Arc<Dictation>,
+        awake: Arc<Awake>,
     ) -> Self {
         Self {
             info,
@@ -94,6 +98,7 @@ impl Daemon {
             connections: TaskTracker::new(),
             terminals: Terminals::new(),
             dictation,
+            awake,
             next_connection: AtomicU64::new(1),
         }
     }
@@ -1100,8 +1105,16 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::ReadBlobText { hash } => Response::ReadBlobText {
             text: core.read_blob_text(hash).await?,
         },
-        Request::UpdateSettings { settings } => Response::UpdateSettings {
-            settings: core.update_settings(settings).await?,
+        Request::UpdateSettings { settings } => {
+            let settings = core.update_settings(settings).await?;
+            daemon.awake.apply().await;
+            Response::UpdateSettings { settings }
+        }
+        Request::GetKeepAwake => Response::GetKeepAwake {
+            status: daemon.awake.apply().await,
+        },
+        Request::SetUpLidClosed => Response::SetUpLidClosed {
+            status: daemon.awake.set_up_lid_closed().await,
         },
         Request::EventsSince { after_seq, limit } => {
             let events = daemon

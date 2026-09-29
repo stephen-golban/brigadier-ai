@@ -33,6 +33,7 @@ const twMerge = extendTailwindMerge({
         "sidebar",
         "sidebar-icon",
         "titlebar",
+        "status-bar",
         "traffic-lights",
         "inspector",
         "setup",

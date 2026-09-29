@@ -6,6 +6,7 @@ import { FolderDropZone } from "@/app/FolderDropZone";
 import { ArchivedView } from "@/app/ArchivedView";
 import { ConversationView } from "@/app/ConversationView";
 import { OnboardingDialog } from "@/app/onboarding/OnboardingDialog";
+import { StatusBar } from "@/app/StatusBar";
 import { runSmoke } from "@/app/smoke";
 import { TopBar } from "@/app/TopBar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -93,31 +94,34 @@ export function App() {
   }, []);
 
   return (
-    <SidebarProvider>
-      <AppSidebar />
-      <SidebarInset className="h-full flex-row overflow-hidden">
-        <div className="relative flex h-full min-w-0 flex-1 flex-col">
-          {selection.type === "archived" ? (
-            <>
-              <TopBar />
-              <div className="min-h-0 flex-1">
-                <ArchivedView />
-              </div>
-            </>
-          ) : (
-            <ConversationView key={viewKey(selection)} selection={selection} />
+    <div className="flex h-full flex-col">
+      <SidebarProvider className="h-auto min-h-0 flex-1">
+        <AppSidebar />
+        <SidebarInset className="h-full flex-row overflow-hidden">
+          <div className="relative flex h-full min-w-0 flex-1 flex-col">
+            {selection.type === "archived" ? (
+              <>
+                <TopBar />
+                <div className="min-h-0 flex-1">
+                  <ArchivedView />
+                </div>
+              </>
+            ) : (
+              <ConversationView key={viewKey(selection)} selection={selection} />
+            )}
+            <Toaster className="top-titlebar pt-2" />
+          </div>
+          {inspectorOpen && (
+            <Suspense fallback={null}>
+              <Inspector />
+            </Suspense>
           )}
-          <Toaster className="top-titlebar pt-2" />
-        </div>
-        {inspectorOpen && (
-          <Suspense fallback={null}>
-            <Inspector />
-          </Suspense>
-        )}
-      </SidebarInset>
-      <OnboardingDialog />
-      <AddProjectDialog />
-      <FolderDropZone />
-    </SidebarProvider>
+        </SidebarInset>
+        <OnboardingDialog />
+        <AddProjectDialog />
+        <FolderDropZone />
+      </SidebarProvider>
+      <StatusBar />
+    </div>
   );
 }

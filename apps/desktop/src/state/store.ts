@@ -198,6 +198,8 @@ export const useApp = create<AppState>()(() => ({
     showFullAccessNotice: true,
     enrichBrain: true,
     onboarded: false,
+    keepAwake: "agents",
+    keepAwakeLidClosed: false,
   },
   threads: {},
   pending: [],

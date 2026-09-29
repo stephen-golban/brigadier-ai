@@ -19,6 +19,7 @@
 //! - started through a command-gate link (`git`, `gh`, `npm`, …): the outward-command gate
 //!   ([`gate`]).
 
+mod awake;
 mod bridge;
 mod dictation;
 mod gate;
@@ -257,6 +258,12 @@ async fn run(
     let sessions = SessionManager::start(core.clone(), providers.clone(), spawner, manager_config)
         .await
         .context("starting the session manager")?;
+    let awake = awake::Awake::new(
+        core.clone(),
+        sessions.clone(),
+        platform.paths().data_dir.clone(),
+    );
+    awake.recover().await;
     let metrics = Metrics::start(
         supervisor.clone(),
         store.clone(),
@@ -288,12 +295,14 @@ async fn run(
         Arc::new(dictation::Dictation::new(
             platform.paths().data_dir.join("models"),
         )),
+        awake.clone(),
     ));
     supervisor.spawn_critical(
         "ipc accept loop",
         server::accept_loop(daemon.clone(), listener, token),
     );
     supervisor.spawn_critical("wal checkpointer", checkpoint_loop(store.clone()));
+    supervisor.spawn(awake.clone().run(stopping.clone()));
     tracing::info!("brigadierd ready");
 
     let reason = tokio::select! {
@@ -302,6 +311,7 @@ async fn run(
         state = store.writer_stopped() => {
             tracing::error!(state = ?state, "store writer stopped; exiting");
             stopping.cancel();
+            awake.shutdown().await;
             daemon.terminals.close_all();
             daemon.sessions.shutdown().await;
             providers.shutdown().await;
@@ -310,6 +320,7 @@ async fn run(
         Some(reason) = fatal.recv() => {
             tracing::error!(reason = %reason, "critical task failed; exiting");
             stopping.cancel();
+            awake.shutdown().await;
             daemon.terminals.close_all();
             daemon.sessions.shutdown().await;
             providers.shutdown().await;
@@ -320,6 +331,8 @@ async fn run(
 
     // 1. Stop accepting connections; critical tasks may now end without being fatal.
     stopping.cancel();
+    // Sleep works normally again, even when the lid is closed.
+    awake.shutdown().await;
     // 2. Stop admitting provider work, end every CLI session (bounded, whole process groups)
     //    and store their last events. Sessions, Chats and workers first: they are hosted by
     //    the provider runtime. The user's terminals end too.

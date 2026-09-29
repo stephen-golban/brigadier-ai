@@ -446,6 +446,19 @@ pub enum Density {
     Normal,
 }
 
+/// When Brigadier keeps the computer from sleeping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum KeepAwake {
+    /// Normal system sleep.
+    Off,
+    /// While a turn or a worker is running.
+    #[default]
+    Agents,
+    /// Always, while Brigadier runs.
+    Always,
+}
+
 /// User settings persisted by the core.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
@@ -468,6 +481,11 @@ pub struct Settings {
     pub enrich_brain: bool,
     /// The first-run setup (agents, then projects) was finished or skipped.
     pub onboarded: bool,
+    /// When the computer is kept from sleeping.
+    pub keep_awake: KeepAwake,
+    /// While kept awake, closing the lid doesn't sleep the computer either (macOS: sleep is
+    /// disabled system-wide, then restored).
+    pub keep_awake_lid_closed: bool,
 }
 
 impl Default for Settings {
@@ -482,6 +500,8 @@ impl Default for Settings {
             show_full_access_notice: true,
             enrich_brain: true,
             onboarded: false,
+            keep_awake: KeepAwake::default(),
+            keep_awake_lid_closed: false,
         }
     }
 }

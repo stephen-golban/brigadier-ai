@@ -541,6 +541,12 @@ pub enum Request {
         count: u32,
         interval_ms: u32,
     },
+    /// Whether the computer is being kept awake now, and whether it can be with the lid
+    /// closed. Applies the current settings first.
+    GetKeepAwake,
+    /// Lets Brigadier disable sleep with the lid closed without asking again: asks for an
+    /// administrator password once (macOS). Answers the status after.
+    SetUpLidClosed,
     /// Providers (login, models, quota), raw sessions and replayable fixtures.
     GetProviders,
     /// Checks every provider (or only `provider`) again in the background; results arrive as
@@ -837,6 +843,12 @@ pub enum Response {
     ProbeBurst {
         burst: ProbeBurst,
     },
+    GetKeepAwake {
+        status: KeepAwakeStatus,
+    },
+    SetUpLidClosed {
+        status: KeepAwakeStatus,
+    },
     GetProviders {
         view: ProvidersView,
     },
@@ -996,6 +1008,31 @@ pub enum ServerFrame {
     },
     /// The daemon is shutting down; the connection closes next.
     Closing,
+}
+
+/// Whether the computer is kept awake, as `getKeepAwake` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepAwakeStatus {
+    /// Sleep is being prevented now.
+    pub active: bool,
+    pub lid_closed: LidClosed,
+    /// Why keeping awake (or the lid-closed part of it) isn't working, when it isn't.
+    pub error: Option<String>,
+}
+
+/// Staying awake with the lid closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum LidClosed {
+    /// This platform can't (Windows: the lid follows the power settings).
+    Unsupported,
+    /// Needs an administrator password once (`setUpLidClosed`).
+    NeedsSetup,
+    /// Can be turned on without asking.
+    Ready,
+    /// Closing the lid doesn't sleep the computer now.
+    Active,
 }
 
 /// A session's terminal, as `openTerminal` returns it.

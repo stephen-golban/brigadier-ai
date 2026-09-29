@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import type { Density, ModelChoice, PermissionLevel, Settings } from "@/ipc/generated";
+import type { Density, KeepAwake, ModelChoice, PermissionLevel, Settings } from "@/ipc/generated";
 import {
   ALWAYS_ASK_NOTE,
   builtInDefault,
@@ -28,6 +28,13 @@ import {
   useModelGroups,
 } from "@/lib/setup";
 import { setDensity, updateSettings } from "@/state/actions";
+import {
+  KEEP_AWAKE_OPTIONS,
+  lidClosedHint,
+  setKeepAwake,
+  setKeepAwakeLidClosed,
+  useKeepAwake,
+} from "@/state/keepAwake";
 import { reopenOnboarding } from "@/state/onboarding";
 import { useApp } from "@/state/store";
 
@@ -165,6 +172,8 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         />
       </Field>
 
+      <KeepAwakeSettings onError={setError} />
+
       <SwitchRow
         label="Show context window usage"
         hint="A ring by the model picker in the composer shows how full the model's context is."
@@ -261,5 +270,41 @@ function DefaultModel({
         <span className="text-muted-foreground text-xs">Automatic</span>
       )}
     </div>
+  );
+}
+
+/** Keeping the computer awake, applied at once (like the status bar's menu). */
+function KeepAwakeSettings({ onError }: { onError: (error: string | null) => void }) {
+  const keepAwake = useApp((s) => s.settings.keepAwake);
+  const lidClosed = useApp((s) => s.settings.keepAwakeLidClosed);
+  const status = useKeepAwake((s) => s.status);
+  const settingUp = useKeepAwake((s) => s.settingUp);
+  const run = (action: () => Promise<void>) => {
+    onError(null);
+    action().catch((cause: unknown) => onError(errorText(cause)));
+  };
+  return (
+    <>
+      <Field label="Keep the computer awake">
+        <RadioChoice<KeepAwake>
+          label="Keep the computer awake"
+          value={keepAwake}
+          onChange={(value) => run(() => setKeepAwake(value))}
+          options={KEEP_AWAKE_OPTIONS.map((option) => ({
+            value: option.value,
+            label: option.label,
+            hint: `${option.hint}.`,
+          }))}
+        />
+      </Field>
+      {status?.lidClosed !== "unsupported" && (
+        <SwitchRow
+          label="Keep going with the lid closed"
+          hint={lidClosedHint(status, settingUp)}
+          checked={lidClosed}
+          onCheckedChange={(on) => run(() => setKeepAwakeLidClosed(on))}
+        />
+      )}
+    </>
   );
 }

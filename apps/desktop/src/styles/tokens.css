@@ -33,6 +33,7 @@
  *               message-contain               skip rendering off-screen messages
  *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
+ *               h-status-bar                  the status bar along the bottom of the window
  *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
@@ -136,6 +137,7 @@
   --spacing-sidebar-icon: 3rem;
   /* Window chrome: top bars, room for the macOS traffic lights, the Inspector panel. */
   --spacing-titlebar: 3rem;
+  --spacing-status-bar: 1.625rem;
   --spacing-traffic-lights: 4.75rem;
   --spacing-inspector: 28rem;
   --spacing-inspector-wide: 42rem;
@@ -367,6 +369,7 @@
   --spacing-rail-tuck: 0.1875rem;
   --spacing-sidebar: 14rem;
   --spacing-sidebar-icon: 2.5rem;
+  --spacing-status-bar: 1.375rem;
   --spacing-titlebar: 2.5rem;
   --spacing-inspector: 24rem;
   --spacing-inspector-wide: 36rem;
