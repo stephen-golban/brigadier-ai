@@ -483,10 +483,19 @@ async fn ask_daemons(daemons: Vec<OtherDaemon>) -> Vec<(CleanItem, DaemonAction)
                     .to_owned(),
                 true,
             ),
-            Err(err) => (
-                format!("It couldn't be asked whether it is in use ({err}), so it is left alone."),
-                false,
-            ),
+            Err(err) => {
+                tracing::info!(
+                    data_dir = %data_dir.display(),
+                    error = %err,
+                    "another daemon couldn't be asked whether it is in use"
+                );
+                (
+                    "It didn't answer whether it is in use (it may belong to another copy of \
+                     Brigadier), so it is left alone."
+                        .to_owned(),
+                    false,
+                )
+            }
         };
         items.push((
             plain_item(

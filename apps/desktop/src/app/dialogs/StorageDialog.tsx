@@ -111,7 +111,7 @@ function StorageFlow({ onScanAgain }: { onScanAgain: () => void }) {
       <div className="grid gap-4">
         <DialogHeader>
           <DialogTitle>Storage</DialogTitle>
-          <DialogDescription>Looking at what Brigadier keeps on this Mac…</DialogDescription>
+          <DialogDescription>Looking at what Brigadier keeps on this computer…</DialogDescription>
         </DialogHeader>
         {!error && <Spinner className="size-icon-sm animate-spin" />}
         <ErrorLine error={error} />
@@ -250,6 +250,7 @@ function Usage({ report }: { report: StorageReport }) {
               <th className={`${cell} font-normal`}>Brain + index</th>
               <th className={`${cell} font-normal`}>Conversations</th>
               <th className={`${cell} font-normal`}>Scratch</th>
+              <th className={`${cell} font-normal`}>Total</th>
             </tr>
           </thead>
           <tbody>
@@ -265,11 +266,19 @@ function Usage({ report }: { report: StorageReport }) {
                 <td className={cell}>{formatBytes(project.brainBytes)}</td>
                 <td className={cell}>{formatBytes(project.blobsBytes)}</td>
                 <td className={cell}>{formatBytes(project.scratchBytes)}</td>
+                <td className={cell}>
+                  {formatBytes(
+                    project.worktreesBytes +
+                      project.brainBytes +
+                      project.blobsBytes +
+                      project.scratchBytes,
+                  )}
+                </td>
               </tr>
             ))}
             {report.shared.map((shared) => (
               <tr key={shared.part} className="border-border border-b last:border-b-0">
-                <td className="text-muted-foreground py-1" colSpan={4}>
+                <td className="text-muted-foreground py-1" colSpan={5}>
                   {SHARED[shared.part]}
                 </td>
                 <td className={cell}>{formatBytes(shared.bytes)}</td>
@@ -336,17 +345,38 @@ function ItemRow({
   );
 }
 
+function countItems(n: number): string {
+  return `${n} ${n === 1 ? "item" : "items"}`;
+}
+
 function Done({ cleaned, onScanAgain }: { cleaned: CleanReport; onScanAgain: () => void }) {
+  const failed = cleaned.failures.length;
+  const picked = cleaned.removed + failed;
+  // An item that failed may still have given some space back (only part of it went).
+  const title =
+    failed === 0
+      ? `Cleaned ${countItems(cleaned.removed)}`
+      : cleaned.removed > 0
+        ? `Cleaned ${cleaned.removed} of ${countItems(picked)}`
+        : cleaned.reclaimedBytes + cleaned.trashedBytes > 0
+          ? `Cleaned part of ${picked === 1 ? "the item" : `the ${picked} items`}`
+          : picked === 1
+            ? "The item couldn't be cleaned"
+            : "None of the items could be cleaned";
   return (
     <div className="grid gap-4">
       <DialogHeader>
-        <DialogTitle>
-          Cleaned {cleaned.removed} {cleaned.removed === 1 ? "item" : "items"}
-        </DialogTitle>
+        <DialogTitle>{title}</DialogTitle>
         <DialogDescription>
-          {formatBytes(cleaned.reclaimedBytes)} freed now.
-          {cleaned.trashedBytes > 0 &&
-            ` ${formatBytes(cleaned.trashedBytes)} moved to the Trash: empty it to get that space back.`}
+          {cleaned.removed === 0 && cleaned.reclaimedBytes + cleaned.trashedBytes === 0 ? (
+            "Nothing was removed."
+          ) : (
+            <>
+              {formatBytes(cleaned.reclaimedBytes)} freed now.
+              {cleaned.trashedBytes > 0 &&
+                ` ${formatBytes(cleaned.trashedBytes)} moved to the Trash: empty it to get that space back.`}
+            </>
+          )}
         </DialogDescription>
       </DialogHeader>
       {cleaned.failures.length > 0 && (
