@@ -6,7 +6,10 @@
 //! objects as they change. `position` fields are the stream sequence of the event that created
 //! the object, so messages and cards interleave in one timeline.
 
-use brigadier_providers::{ApprovalRequest, Decider, ProviderEvent, ProviderKind};
+use brigadier_providers::{
+    ApprovalRequest, Decider, ErrorKind, LimitHit, ProviderEvent, ProviderKind,
+};
+use brigadier_router::{Area, Explanation, QualityTier};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -85,8 +88,53 @@ pub struct WorkerAccess {
 #[serde(rename_all = "camelCase")]
 pub struct Route {
     pub choice: ModelChoice,
-    /// Shown on the worker card ("why this model").
+    /// Shown on the worker card ("why this model"): one short sentence.
     pub reason: String,
+    /// The breakdown behind `reason`, for the card's details.
+    #[serde(default)]
+    pub explanation: Option<Explanation>,
+}
+
+/// How one model's run of a task ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AttemptEnd {
+    /// Its provider refused more work (a usage window ran out, a spend control, credits).
+    Limit { limit: LimitHit },
+    /// It failed in a way another model may not (overloaded, a server or network error, its
+    /// CLI exiting, the context window).
+    Error { kind: ErrorKind, message: String },
+}
+
+/// One model's run of a task. A task that was handed off mid-way has several; the last one is
+/// the model at work now (`Task::route`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Attempt {
+    pub route: Route,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    /// Why it ended, when it was cut short; absent while it runs and when it finished the
+    /// task.
+    pub end: Option<AttemptEnd>,
+}
+
+/// A task waiting for quota: no model it may use is available (all at their limits, or the
+/// ones a user rule allows). It resumes on its own when one resets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaWait {
+    /// What it waits for ("Claude's 5-hour window resets at 21:10").
+    pub reason: String,
+    /// The earliest reset that could let it continue, when known.
+    pub resets_at_ms: Option<i64>,
+    /// The user rule that keeps it from other models, if one does (its text).
+    pub rule: Option<String>,
+    pub since_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -99,7 +147,8 @@ pub enum TaskState {
     Running,
     /// The worker asked the orchestrator a question and waits for the answer.
     Blocked,
-    /// The user interrupted the worker; it continues on resume.
+    /// The user interrupted the worker, or it waits for quota (`quotaWait`); it continues on
+    /// resume, or when the quota it waits for resets.
     Paused,
     /// The worker submitted its report; the orchestrator decides what happens next.
     Reported,
@@ -163,6 +212,9 @@ pub struct Report {
     pub open_questions: Vec<String>,
     /// For review tasks: the verdict.
     pub verdict: Option<ReviewVerdict>,
+    /// For verify tasks: whether the project's checks passed.
+    #[serde(default)]
+    pub checks: Option<ChecksResult>,
     pub artifacts: Vec<ArtifactRef>,
     pub submitted_at_ms: i64,
 }
@@ -172,6 +224,18 @@ pub struct Report {
 pub enum ReviewVerdict {
     Approve,
     RequestChanges,
+}
+
+/// What a verify task found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChecksResult {
+    /// Every check it ran passed.
+    Passed,
+    /// At least one check failed.
+    Failed,
+    /// It could not run the checks.
+    NotRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -280,8 +344,21 @@ pub struct Task {
     /// The task spec the worker got.
     pub spec: String,
     pub access: WorkerAccess,
+    /// The model at work now and why.
     pub route: Route,
+    /// Every model that ran it, oldest first (more than one after a hand-off).
+    #[serde(default)]
+    pub attempts: Vec<Attempt>,
+    /// The least capable model it may run on, fallbacks included.
+    #[serde(default)]
+    pub floor: QualityTier,
+    /// The parts of the codebase it touches.
+    #[serde(default)]
+    pub areas: Vec<Area>,
     pub state: TaskState,
+    /// Set while it is paused waiting for quota.
+    #[serde(default)]
+    pub quota_wait: Option<QuotaWait>,
     /// The task this one reviews or merges.
     pub subject: Option<TaskId>,
     /// The plan this one reviews.

@@ -264,7 +264,7 @@ impl Parser {
                 if let Some(update) =
                     decode::<p::AccountRateLimitsUpdatedNotification>(method, params, out)
                 {
-                    let quota = quota_snapshot(&update.rate_limits);
+                    let quota = quota_snapshot(&update.rate_limits, QuotaSource::Event);
                     self.quota = Some(quota.clone());
                     out.push(Output::Event(ProviderEvent::RateLimits { quota }));
                 }
@@ -668,12 +668,13 @@ impl Parser {
         LimitHit {
             window: window.map(|window| window.id.clone()),
             resets_at_ms: window.and_then(|window| window.resets_at_ms),
+            kind: LimitKind::UsageWindow,
         }
     }
 }
 
 /// Normalizes a Codex rate-limit snapshot.
-pub fn quota_snapshot(limits: &p::RateLimitSnapshot) -> QuotaSnapshot {
+pub fn quota_snapshot(limits: &p::RateLimitSnapshot, source: QuotaSource) -> QuotaSnapshot {
     let windows: Vec<QuotaWindow> = [
         ("primary", &limits.primary),
         ("secondary", &limits.secondary),
@@ -687,6 +688,8 @@ pub fn quota_snapshot(limits: &p::RateLimitSnapshot) -> QuotaSnapshot {
             used_percent: f64::from(window.used_percent),
             resets_at_ms: window.resets_at.map(|seconds| seconds * 1_000),
             window_minutes: window.window_duration_mins,
+            bucket: None,
+            model: None,
         })
     })
     .collect();
@@ -698,6 +701,7 @@ pub fn quota_snapshot(limits: &p::RateLimitSnapshot) -> QuotaSnapshot {
         LimitHit {
             window: full.map(|window| window.id.clone()),
             resets_at_ms: full.and_then(|window| window.resets_at_ms),
+            kind: LimitKind::UsageWindow,
         }
     });
     QuotaSnapshot {
@@ -705,6 +709,7 @@ pub fn quota_snapshot(limits: &p::RateLimitSnapshot) -> QuotaSnapshot {
         windows,
         limit,
         observed_at_ms: now_ms(),
+        source,
     }
 }
 

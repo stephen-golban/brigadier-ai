@@ -2,6 +2,7 @@
 import type { Density } from "./Density";
 import type { KeepAwake } from "./KeepAwake";
 import type { ModelChoice } from "./ModelChoice";
+import type { OverrideRule } from "./OverrideRule";
 import type { PermissionLevel } from "./PermissionLevel";
 
 /**
@@ -49,4 +50,9 @@ keepAwake: KeepAwake,
  * While kept awake, closing the lid doesn't sleep the computer either (macOS: sleep is
  * disabled system-wide, then restored).
  */
-keepAwakeLidClosed: boolean, };
+keepAwakeLidClosed: boolean, 
+/**
+ * The user's routing rules, global and per project. They always win over the router's
+ * scores and quota balancing.
+ */
+routingOverrides: Array<OverrideRule>, };

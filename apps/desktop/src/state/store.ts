@@ -200,6 +200,7 @@ export const useApp = create<AppState>()(() => ({
     onboarded: false,
     keepAwake: "agents",
     keepAwakeLidClosed: false,
+    routingOverrides: [],
   },
   threads: {},
   pending: [],

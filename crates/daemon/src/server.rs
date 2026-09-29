@@ -1190,6 +1190,19 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             daemon.runtime.refresh_providers(provider);
             Response::RefreshProviders
         }
+        // The quota monitor, registry and router behind these land with the rest of Phase 5
+        // (see the S0 contract commit); until then they answer that they aren't ready.
+        Request::GetUsage { .. } | Request::PreviewRoutes { .. } | Request::CheckRegistry => {
+            return Err(IpcError::from(brigadier_core::Error::Invalid(
+                "routing and usage aren't connected in this build yet".into(),
+            )));
+        }
+        #[cfg(debug_assertions)]
+        Request::DebugInjectLimit { .. } => {
+            return Err(IpcError::from(brigadier_core::Error::Invalid(
+                "fault injection isn't connected in this build yet".into(),
+            )));
+        }
         Request::StartRawSession {
             provider,
             cwd,
@@ -1249,6 +1262,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::ReplayFixture { fixture_id } => Response::ReplayFixture {
             session: Box::new(daemon.runtime.replay(&fixture_id).await?),
         },
+        #[cfg(debug_assertions)]
         Request::SimulateUsageLimit { provider } => Response::SimulateUsageLimit {
             session: Box::new(daemon.runtime.simulate_usage_limit(provider).await?),
         },

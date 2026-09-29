@@ -3,6 +3,7 @@ import type { ConversationId } from "./ConversationId";
 import type { ConversationKind } from "./ConversationKind";
 import type { ForkOrigin } from "./ForkOrigin";
 import type { Lifecycle } from "./Lifecycle";
+import type { ModelFallback } from "./ModelFallback";
 import type { ProjectId } from "./ProjectId";
 import type { Setup } from "./Setup";
 
@@ -34,4 +35,10 @@ forkedFrom: ForkOrigin | null,
  * Set for a side chat: the conversation it sits beside, whose latest messages go along
  * with each of its turns. Side chats are temporary and left out of the sidebar.
  */
-sideOf: ConversationId | null, };
+sideOf: ConversationId | null, 
+/**
+ * Set while the conversation's model (a session's orchestrator, a Chat's model) is
+ * replaced because it hit a limit. Temporary: the saved choice in `setup`, the project's
+ * remembered one and the global default are never changed by it.
+ */
+fallback: ModelFallback | null, };

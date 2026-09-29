@@ -32,6 +32,7 @@ use brigadier_providers::{
     Access, ApprovalDecision, ApprovalRequest, Artifact, Decider, InputFile, Origin, ProviderEvent,
     ProviderKind, SessionSpec, Started, ToolSet, TurnInput, TurnStatus,
 };
+use brigadier_router::QualityTier;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -373,8 +374,13 @@ impl SessionManager {
                     fast: None,
                 },
                 reason,
+                explanation: None,
             },
+            attempts: Vec::new(),
+            floor: QualityTier::default(),
+            areas: Vec::new(),
             state: TaskState::Queued,
+            quota_wait: None,
             subject: subject.as_ref().map(|task| task.id.clone()),
             plan: None,
             attachments,
@@ -1540,6 +1546,7 @@ impl SessionManager {
             verification: self.redact_all(&live, &input.verification).await,
             open_questions: self.redact_all(&live, &input.open_questions).await,
             verdict: input.verdict,
+            checks: None,
             artifacts,
             submitted_at_ms: now_ms(),
         };

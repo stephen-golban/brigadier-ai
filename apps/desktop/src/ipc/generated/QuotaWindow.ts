@@ -5,10 +5,20 @@
  */
 export type QuotaWindow = { 
 /**
- * Stable identifier (`five_hour`, `seven_day`, `primary`, `secondary`, …).
+ * Stable identifier, unique in its snapshot (`five_hour`, `seven_day`, `primary`,
+ * `secondary`, …; prefixed with the bucket for a Codex bucket other than its main one).
  */
 id: string, label: string, 
 /**
  * Share of the window used, 0–100.
  */
-usedPercent: number, resetsAtMs: number | null, windowMinutes: number | null, };
+usedPercent: number, resetsAtMs: number | null, windowMinutes: number | null, 
+/**
+ * The metered bucket it belongs to, when the provider has several (Codex's `limitId`).
+ */
+bucket: string | null, 
+/**
+ * The one model this window limits (Claude's per-model weekly limits, a Codex bucket's
+ * model); absent for a window every model of the provider draws on.
+ */
+model: string | null, };

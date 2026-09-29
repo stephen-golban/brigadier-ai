@@ -41,14 +41,32 @@
 //!   class (Opus ↔ `*-astra`, Sonnet ↔ `*-sol`, Haiku ↔ `*-luna`), keeping the effort where the
 //!   model accepts it.
 
+mod explain;
+mod outcome;
+mod overrides;
+mod quota;
+mod registry;
 mod table;
 
 use brigadier_providers::{ModelInfo, ProviderKind};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use table::{Entry, Pick, Tier};
 
-/// What a piece of work is, for routing. Mirrors the core's task kinds plus plain Chats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub use explain::{Alternative, Explanation, Factor};
+pub use outcome::{Learned, Outcome, OutcomeResult};
+pub use overrides::{OverrideEffect, OverrideRule, OverrideTarget};
+pub use quota::{Forecast, Heat, ProviderQuota, QuotaSample, WindowState};
+pub use registry::{
+    Capability, MergedModel, Modalities, Modality, ModelMatch, ModelStatus, QualityTier, Registry,
+    RegistryInfo, RegistryModel, RegistrySource, ResearchNote, TrialState,
+};
+
+/// What a piece of work is, for routing. Mirrors the core's task kinds plus plain Chats and
+/// the orchestrator itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub enum TaskCategory {
     /// Looks around the repository and answers a question.
     Scout,
@@ -64,10 +82,12 @@ pub enum TaskCategory {
     Verify,
     /// A plain conversation with the model (no orchestrator, no workers).
     Chat,
+    /// A session's orchestrator: plans, delegates and reviews, never does the work itself.
+    Orchestrate,
 }
 
 impl TaskCategory {
-    pub const ALL: [TaskCategory; 7] = [
+    pub const ALL: [TaskCategory; 8] = [
         TaskCategory::Scout,
         TaskCategory::Research,
         TaskCategory::Implement,
@@ -75,6 +95,35 @@ impl TaskCategory {
         TaskCategory::Merge,
         TaskCategory::Verify,
         TaskCategory::Chat,
+        TaskCategory::Orchestrate,
+    ];
+}
+
+/// The part of a codebase a task touches, for user rules ("never use X for frontend") and
+/// per-area strengths. Named by the orchestrator (`delegate_task`), else derived from the
+/// paths its spec names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum Area {
+    /// UI code, styles and markup.
+    Frontend,
+    /// Services, libraries, application logic.
+    Backend,
+    /// Build, CI, containers, deployment.
+    Infra,
+    /// Documentation.
+    Docs,
+    /// Tests.
+    Tests,
+}
+
+impl Area {
+    pub const ALL: [Area; 5] = [
+        Area::Frontend,
+        Area::Backend,
+        Area::Infra,
+        Area::Docs,
+        Area::Tests,
     ];
 }
 

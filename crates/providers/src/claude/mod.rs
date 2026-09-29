@@ -515,6 +515,8 @@ impl Provider for Claude {
                         .and_then(Value::as_str)
                         .and_then(crate::time::parse_rfc3339_ms),
                     window_minutes: parse::window_minutes(id),
+                    bucket: None,
+                    model: None,
                 })
                 .collect();
             windows.sort_by_key(|window| window.window_minutes.unwrap_or(i64::MAX));
@@ -524,12 +526,14 @@ impl Provider for Claude {
                 .map(|window| LimitHit {
                     window: Some(window.id.clone()),
                     resets_at_ms: window.resets_at_ms,
+                    kind: LimitKind::UsageWindow,
                 });
             Ok(QuotaSnapshot {
                 provider: ProviderKind::Claude,
                 windows,
                 limit,
                 observed_at_ms: now_ms(),
+                source: QuotaSource::Read,
             })
         })
     }

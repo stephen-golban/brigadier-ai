@@ -162,13 +162,33 @@ pub struct ModelCatalog {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindow {
-    /// Stable identifier (`five_hour`, `seven_day`, `primary`, `secondary`, …).
+    /// Stable identifier, unique in its snapshot (`five_hour`, `seven_day`, `primary`,
+    /// `secondary`, …; prefixed with the bucket for a Codex bucket other than its main one).
     pub id: String,
     pub label: String,
     /// Share of the window used, 0–100.
     pub used_percent: f64,
     pub resets_at_ms: Option<i64>,
     pub window_minutes: Option<i64>,
+    /// The metered bucket it belongs to, when the provider has several (Codex's `limitId`).
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// The one model this window limits (Claude's per-model weekly limits, a Codex bucket's
+    /// model); absent for a window every model of the provider draws on.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Where a quota snapshot came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaSource {
+    /// Asked for (`get_usage`, `account/rateLimits/read`): the backend's full, current view.
+    #[default]
+    Read,
+    /// Reported by a running session as it worked (`rate_limit_event`,
+    /// `account/rateLimits/updated`): may be partial.
+    Event,
 }
 
 /// Remaining quota as last reported by a provider.
@@ -180,6 +200,22 @@ pub struct QuotaSnapshot {
     /// Set while the provider refuses work because a limit was reached.
     pub limit: Option<LimitHit>,
     pub observed_at_ms: i64,
+    #[serde(default)]
+    pub source: QuotaSource,
+}
+
+/// Why a provider refuses work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum LimitKind {
+    /// A usage window is used up; work resumes when it resets.
+    #[default]
+    UsageWindow,
+    /// A spend control stopped it (Codex's `spendControlReached`, or ordinary usage not
+    /// allowed): only a fresh read showing it clear lifts it.
+    SpendControl,
+    /// Out of credits.
+    Credits,
 }
 
 /// A reached limit and when it lifts.
@@ -189,6 +225,8 @@ pub struct LimitHit {
     /// The window that ran out, when known (`five_hour`, `seven_day`, `primary`, …).
     pub window: Option<String>,
     pub resets_at_ms: Option<i64>,
+    #[serde(default)]
+    pub kind: LimitKind,
 }
 
 /// What went wrong, classified so the router can react (fallback, wait, ask the user).

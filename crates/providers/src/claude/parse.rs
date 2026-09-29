@@ -724,6 +724,8 @@ impl Parser {
                         .and_then(Value::as_i64)
                         .map(|s| s * 1000),
                     window_minutes: window_minutes(id),
+                    bucket: None,
+                    model: None,
                 })
                 .collect();
         } else if let (Some(id), Some(used)) =
@@ -738,6 +740,8 @@ impl Parser {
                     used_percent: used,
                     resets_at_ms,
                     window_minutes: window_minutes(id),
+                    bucket: None,
+                    model: None,
                 }),
             }
         }
@@ -746,6 +750,7 @@ impl Parser {
         let hit = LimitHit {
             window: window.clone(),
             resets_at_ms,
+            kind: LimitKind::UsageWindow,
         };
         self.limit = LimitState {
             rejected,
@@ -758,6 +763,7 @@ impl Parser {
                 windows: self.quota.clone(),
                 limit: rejected.then_some(hit),
                 observed_at_ms: now_ms(),
+                source: QuotaSource::Event,
             },
         }));
     }
@@ -842,6 +848,7 @@ impl Parser {
                 Some(LimitHit {
                     window: self.limit.window.clone(),
                     resets_at_ms: self.limit.resets_at_ms,
+                    kind: LimitKind::UsageWindow,
                 }),
             ),
             "rate_limit" => (ErrorKind::RateLimit, None),

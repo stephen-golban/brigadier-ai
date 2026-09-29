@@ -108,6 +108,7 @@ pub(crate) fn row(category: TaskCategory) -> &'static Row {
         TaskCategory::Merge => &MERGE,
         TaskCategory::Verify => &VERIFY,
         TaskCategory::Chat => &CHAT,
+        TaskCategory::Orchestrate => &ORCHESTRATE,
     }
 }
 
@@ -177,6 +178,14 @@ const CHAT: Row = Row {
     }],
     purpose: "chat",
     why: "the CLI's default model",
+};
+
+const ORCHESTRATE: Row = Row {
+    order: CLAUDE_FIRST,
+    claude: &[tier(Tier::Strong, "medium")],
+    codex: &[tier(Tier::Strong, "medium"), tier(Tier::Balanced, "medium")],
+    purpose: "orchestration",
+    why: "the orchestrator plans and reviews, so it gets the vendor's strongest model",
 };
 
 // ----- matching the live catalog ----------------------------------------------------------

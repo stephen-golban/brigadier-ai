@@ -28,7 +28,7 @@ use brigadier_providers::policy::{self, ApprovalMode, Route};
 use brigadier_providers::record::{self, Recording};
 use brigadier_providers::{
     Access, ApprovalDecision, Decider, ModelCatalog, Origin, Provider, ProviderEvent, ProviderKind,
-    ProviderSession, SessionSpec, Started, ToolSet, fixtures, simulate,
+    ProviderSession, SessionSpec, Started, ToolSet, fixtures,
 };
 use brigadier_sandbox::Platform;
 use brigadier_store::{NewEvent, Retention, StreamPage};
@@ -261,6 +261,7 @@ impl Runtime {
                         .find(|catalog| catalog.provider == kind)
                         .cloned(),
                     quota: None,
+                    usage: None,
                     error: None,
                     checked_at_ms: None,
                 },
@@ -414,7 +415,10 @@ impl Runtime {
             models: previous
                 .as_ref()
                 .and_then(|overview| overview.models.clone()),
-            quota: previous.and_then(|overview| overview.quota),
+            quota: previous
+                .as_ref()
+                .and_then(|overview| overview.quota.clone()),
+            usage: previous.and_then(|overview| overview.usage),
             status: Some(status.clone()),
             error: None,
             checked_at_ms: Some(now_ms()),
@@ -707,13 +711,15 @@ impl Runtime {
     }
 
     /// Feeds a simulated usage-limit turn, in the CLI's real format, through a fresh parser
-    /// in an isolated session, to show how it is detected and classified.
+    /// in an isolated session, to show how it is detected and classified. Development builds
+    /// only.
+    #[cfg(debug_assertions)]
     pub async fn simulate_usage_limit(
         self: &Arc<Self>,
         provider: ProviderKind,
     ) -> Result<RawSession> {
         self.admit()?;
-        let lines = simulate::usage_limit(provider)
+        let lines = brigadier_providers::simulate::usage_limit(provider)
             .into_iter()
             .map(|line| (0, record::Direction::Out, line))
             .collect();

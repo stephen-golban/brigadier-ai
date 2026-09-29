@@ -9,7 +9,9 @@ publish.workspace = true
 
 [dependencies]
 brigadier-providers.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+ts-rs.workspace = true
 
 [lints]
 workspace = true

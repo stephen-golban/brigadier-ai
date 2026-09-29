@@ -19,9 +19,11 @@ use brigadier_core::{
     GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
     ProjectCandidate, ProjectId, ProjectPatch, ProvidersView, PullRequest, QueuedMessage, Rating,
     RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
-    ReviewScope, Settings, Setup, SetupRequest, TaskId, WorkerDiff, WorkerPage,
+    ReviewScope, RoutePreview, Settings, Setup, SetupRequest, TaskId, UsageView, WorkerDiff,
+    WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
+use brigadier_router::{Area, RegistryInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
@@ -30,6 +32,21 @@ use crate::metrics::{DaemonMetrics, Diagnostics};
 
 /// Bumped on any incompatible change to these types.
 pub const PROTOCOL_VERSION: u32 = 4;
+
+/// What a development build's injected limit applies to.
+#[cfg(debug_assertions)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FaultTarget {
+    /// A task's worker.
+    Task { task_id: TaskId },
+    /// A session's orchestrator or a Chat's model.
+    Conversation { conversation_id: ConversationId },
+}
 
 /// Who is connecting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -565,6 +582,36 @@ pub enum Request {
         #[serde(default)]
         provider: Option<ProviderKind>,
     },
+    /// The Usage page: quota windows with their estimates and history, Brigadier's own use,
+    /// routing activity, the merged model list and what outcomes taught routing (in
+    /// `projectId`, or in every project).
+    GetUsage {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
+    /// What routing would choose for each task category right now, with its explanation, for
+    /// a task in `projectId` touching `areas`. Starts nothing.
+    PreviewRoutes {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        #[serde(default)]
+        areas: Vec<Area>,
+    },
+    /// Asks the repository for a newer model registry now; answers the registry in use after.
+    CheckRegistry,
+    /// Development builds only: makes a provider refuse work as if a usage window ran out, for
+    /// one task or conversation, after its next `afterToolCalls` tool calls (0: at once). The
+    /// session's turn fails with a usage-limit error and the provider counts as limited until
+    /// `resetInMinutes` from now; everything after that is the real fallback path.
+    #[cfg(debug_assertions)]
+    DebugInjectLimit {
+        target: FaultTarget,
+        provider: ProviderKind,
+        /// The window that runs out (`five_hour`, `seven_day`, `primary`, …).
+        window: String,
+        reset_in_minutes: u32,
+        after_tool_calls: u32,
+    },
     /// Starts a raw CLI session in the background; its state arrives as `rawSessionUpdated`.
     StartRawSession {
         provider: ProviderKind,
@@ -619,7 +666,9 @@ pub enum Request {
     ReplayFixture {
         fixture_id: String,
     },
-    /// Feeds a simulated usage-limit turn through a fresh parser in an isolated raw session.
+    /// Development builds only: feeds a simulated usage-limit turn through a fresh parser in an
+    /// isolated raw session.
+    #[cfg(debug_assertions)]
     SimulateUsageLimit {
         provider: ProviderKind,
     },
@@ -889,6 +938,17 @@ pub enum Response {
         view: ProvidersView,
     },
     RefreshProviders,
+    GetUsage {
+        usage: Box<UsageView>,
+    },
+    PreviewRoutes {
+        routes: Vec<RoutePreview>,
+    },
+    CheckRegistry {
+        registry: RegistryInfo,
+    },
+    #[cfg(debug_assertions)]
+    DebugInjectLimit,
     StartRawSession {
         session: Box<RawSession>,
     },
@@ -911,6 +971,7 @@ pub enum Response {
     ReplayFixture {
         session: Box<RawSession>,
     },
+    #[cfg(debug_assertions)]
     SimulateUsageLimit {
         session: Box<RawSession>,
     },

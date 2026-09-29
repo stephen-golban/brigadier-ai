@@ -518,6 +518,7 @@ dependencies = [
  "brigadier-core",
  "brigadier-index",
  "brigadier-providers",
+ "brigadier-router",
  "brigadier-sandbox",
  "getrandom 0.4.3",
  "interprocess",
@@ -580,7 +581,9 @@ name = "brigadier-router"
 version = "0.1.0"
 dependencies = [
  "brigadier-providers",
+ "serde",
  "thiserror 2.0.21",
+ "ts-rs",
 ]
 
 [[package]]

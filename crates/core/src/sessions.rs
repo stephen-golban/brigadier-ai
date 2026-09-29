@@ -288,6 +288,7 @@ impl Core {
             lifecycle: Lifecycle::Active,
             forked_from: origin.forked_from,
             side_of: origin.side_of,
+            fallback: None,
         };
         events.insert(
             0,

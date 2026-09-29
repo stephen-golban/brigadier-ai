@@ -12,6 +12,7 @@ brigadier-brain.workspace = true
 brigadier-core.workspace = true
 brigadier-index.workspace = true
 brigadier-providers.workspace = true
+brigadier-router.workspace = true
 brigadier-sandbox.workspace = true
 getrandom = "0.4.3"
 interprocess = { version = "2.4.4", features = ["tokio"] }

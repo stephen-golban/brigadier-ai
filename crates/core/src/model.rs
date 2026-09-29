@@ -5,6 +5,10 @@ use std::collections::HashMap;
 use brigadier_providers::{
     Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
 };
+use brigadier_router::{
+    Area, Explanation, Learned, MergedModel, OverrideRule, ProviderQuota, QuotaSample,
+    RegistryInfo, TaskCategory,
+};
 
 use crate::knowledge::{BrainJob, MemoryChange, RebirthThresholds};
 use crate::work::{
@@ -358,6 +362,26 @@ pub struct Conversation {
     /// with each of its turns. Side chats are temporary and left out of the sidebar.
     #[serde(default)]
     pub side_of: Option<ConversationId>,
+    /// Set while the conversation's model (a session's orchestrator, a Chat's model) is
+    /// replaced because it hit a limit. Temporary: the saved choice in `setup`, the project's
+    /// remembered one and the global default are never changed by it.
+    #[serde(default)]
+    pub fallback: Option<ModelFallback>,
+}
+
+/// A conversation's model standing in for the chosen one while that one is at a limit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelFallback {
+    /// The model standing in.
+    pub choice: ModelChoice,
+    /// The chosen model it replaces.
+    pub replaces: ModelChoice,
+    /// Why (a short sentence, as on worker cards).
+    pub reason: String,
+    pub since_ms: i64,
+    /// When the chosen model's limit resets and it takes over again, when known.
+    pub until_ms: Option<i64>,
 }
 
 /// Something a user message @-mentions.
@@ -486,6 +510,9 @@ pub struct Settings {
     /// While kept awake, closing the lid doesn't sleep the computer either (macOS: sleep is
     /// disabled system-wide, then restored).
     pub keep_awake_lid_closed: bool,
+    /// The user's routing rules, global and per project. They always win over the router's
+    /// scores and quota balancing.
+    pub routing_overrides: Vec<OverrideRule>,
 }
 
 impl Default for Settings {
@@ -502,6 +529,7 @@ impl Default for Settings {
             onboarded: false,
             keep_awake: KeepAwake::default(),
             keep_awake_lid_closed: false,
+            routing_overrides: Vec::new(),
         }
     }
 }
@@ -793,9 +821,148 @@ pub struct ProviderOverview {
     /// Live model list, or the cached one until the first refresh.
     pub models: Option<ModelCatalog>,
     pub quota: Option<QuotaSnapshot>,
+    /// The quota monitor's view: every window with its rolling estimate and heat.
+    #[serde(default)]
+    pub usage: Option<ProviderQuota>,
     /// Why the last refresh could not complete.
     pub error: Option<String>,
     pub checked_at_ms: Option<i64>,
+}
+
+/// Brigadier's own use of a provider in one of its usage windows (since the window began).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowTokens {
+    /// The window (`QuotaWindow::id`).
+    pub window_id: String,
+    /// Tokens by model, most first.
+    pub by_model: Vec<TokenCount>,
+    /// Tokens by conversation, most first (the top few).
+    pub by_conversation: Vec<ConversationTokens>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenCount {
+    pub model: String,
+    /// Input, cached input and output together.
+    pub tokens: i64,
+    pub output_tokens: i64,
+    pub turns: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTokens {
+    pub conversation_id: ConversationId,
+    pub project_id: Option<ProjectId>,
+    pub title: String,
+    pub tokens: i64,
+}
+
+/// A window's samples over its current span, for the Usage page's chart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowHistory {
+    pub window_id: String,
+    /// Oldest first.
+    pub samples: Vec<QuotaSample>,
+}
+
+/// One provider on the Usage page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsage {
+    pub provider: ProviderKind,
+    /// Absent until the first read.
+    pub quota: Option<ProviderQuota>,
+    pub history: Vec<WindowHistory>,
+    pub tokens: Vec<WindowTokens>,
+    /// What balancing does about it now ("New scouting and research go to Codex while
+    /// Claude's weekly window runs hot").
+    pub balancing: Option<String>,
+}
+
+/// Something routing did that the user may want to know about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RoutingActivity {
+    /// A task moved to another model mid-way.
+    Handoff {
+        conversation_id: ConversationId,
+        task_id: crate::work::TaskId,
+        title: String,
+        from: ModelChoice,
+        to: ModelChoice,
+        /// Why ("Claude's 5-hour window ran out").
+        cause: String,
+        at_ms: i64,
+    },
+    /// A task waits for quota.
+    Waiting {
+        conversation_id: ConversationId,
+        task_id: crate::work::TaskId,
+        title: String,
+        reason: String,
+        resets_at_ms: Option<i64>,
+        since_ms: i64,
+    },
+    /// A conversation's model stands in for the chosen one.
+    Fallback {
+        conversation_id: ConversationId,
+        title: String,
+        fallback: ModelFallback,
+    },
+}
+
+/// Everything the Usage page shows, in one read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageView {
+    pub providers: Vec<ProviderUsage>,
+    /// Newest first; hand-offs from the last 7 days, and everything waiting now.
+    pub activity: Vec<RoutingActivity>,
+    /// Every model the CLIs offer, merged with the registry, research and trials.
+    pub models: Vec<MergedModel>,
+    /// What outcomes taught routing in `project_id` (every project when absent).
+    pub learned: Vec<Learned>,
+    pub project_id: Option<ProjectId>,
+    pub registry: RegistryInfo,
+    pub at_ms: i64,
+}
+
+/// What routing would choose for one category right now (the Inspector's routing preview).
+/// Nothing is started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutePreview {
+    pub category: TaskCategory,
+    pub areas: Vec<Area>,
+    pub outcome: RoutePreviewOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RoutePreviewOutcome {
+    Chosen {
+        choice: ModelChoice,
+        reason: String,
+        explanation: Option<Explanation>,
+    },
+    /// Nothing it may use is available: a task would wait.
+    Wait {
+        reason: String,
+        resets_at_ms: Option<i64>,
+        rule: Option<String>,
+    },
 }
 
 /// A replayable recording.
