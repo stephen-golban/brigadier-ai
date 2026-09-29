@@ -42,6 +42,8 @@
 //!   model accepts it.
 
 mod explain;
+pub mod load;
+pub mod merge;
 mod outcome;
 mod overrides;
 mod quota;
@@ -55,6 +57,8 @@ use ts_rs::TS;
 use table::{Entry, Pick, Tier};
 
 pub use explain::{Alternative, Explanation, Factor};
+pub use load::{Parsed, RegistryError};
+pub use merge::{OutcomeCount, TRIAL_OUTCOMES, merge, outcome_counts};
 pub use outcome::{Learned, Outcome, OutcomeResult};
 pub use overrides::{OverrideEffect, OverrideRule, OverrideTarget};
 pub use quota::{Forecast, Heat, ProviderQuota, QuotaSample, WindowState};

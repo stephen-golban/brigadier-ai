@@ -191,12 +191,12 @@ const ORCHESTRATE: Row = Row {
 // ----- matching the live catalog ----------------------------------------------------------
 
 /// The words of a model id: `gpt-5.6-sol` → `gpt`, `5.6`, `sol`; `opus[1m]` → `opus`, `1m`.
-fn words(id: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn words(id: &str) -> impl Iterator<Item = &str> {
     id.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
         .filter(|word| !word.is_empty())
 }
 
-fn has_word(id: &str, word: &str) -> bool {
+pub(crate) fn has_word(id: &str, word: &str) -> bool {
     words(id).any(|candidate| candidate.eq_ignore_ascii_case(word))
 }
 
@@ -319,7 +319,7 @@ pub(crate) fn find_named<'m>(models: &'m [ModelInfo], name: &str) -> Option<&'m 
 pub(crate) const MAX_EFFORT: &str = "high";
 
 /// Effort levels by strength; `None` for a level Brigadier doesn't know.
-fn rank(effort: &str) -> Option<u8> {
+pub(crate) fn rank(effort: &str) -> Option<u8> {
     Some(match effort.to_ascii_lowercase().as_str() {
         "none" => 0,
         "minimal" => 1,
@@ -341,6 +341,14 @@ pub(crate) fn fit_effort(
     model: Option<&ModelInfo>,
     wanted: Option<&str>,
 ) -> (Option<String>, bool) {
+    fit_effort_in(model.map(|model| model.efforts.as_slice()), wanted)
+}
+
+/// [`fit_effort`] against a model's accepted levels (`None`: no catalog to check against).
+pub(crate) fn fit_effort_in(
+    efforts: Option<&[String]>,
+    wanted: Option<&str>,
+) -> (Option<String>, bool) {
     let Some(wanted) = wanted else {
         return (None, false);
     };
@@ -349,7 +357,7 @@ pub(crate) fn fit_effort(
     };
     let cap = rank(MAX_EFFORT).unwrap_or(u8::MAX);
     let target = wanted_rank.min(cap);
-    let Some(model) = model else {
+    let Some(efforts) = efforts else {
         // No catalog: pass a standard level through, capped.
         let effort = if wanted_rank > cap {
             MAX_EFFORT.to_owned()
@@ -358,12 +366,11 @@ pub(crate) fn fit_effort(
         };
         return (Some(effort), wanted_rank > cap);
     };
-    if model.efforts.is_empty() {
+    if efforts.is_empty() {
         return (None, false);
     }
     let accepted = || {
-        model
-            .efforts
+        efforts
             .iter()
             .filter_map(|effort| rank(effort).map(|rank| (rank, effort)))
             .filter(|(rank, _)| *rank <= cap)

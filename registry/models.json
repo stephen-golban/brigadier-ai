@@ -1,0 +1,985 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "updated": "2026-09-29",
+  "models": [
+    {
+      "key": "claude-opus-5-5",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "opus",
+          "claude-opus-5-5"
+        ],
+        "family": "opus"
+      },
+      "tier": "frontier",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2026-06",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 6,
+        "research": 7.5,
+        "implement": 9,
+        "review": 9,
+        "merge": 9,
+        "verify": 6,
+        "chat": 8.5,
+        "orchestrate": 9
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-09-22",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+        "https://www.anthropic.com/claude-opus-5-5"
+      ]
+    },
+    {
+      "key": "claude-sonnet-5-5",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "sonnet",
+          "claude-sonnet-5-5"
+        ],
+        "family": "sonnet"
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2026-06",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 8,
+        "research": 8,
+        "implement": 8.5,
+        "review": 8,
+        "merge": 8,
+        "verify": 8,
+        "chat": 8,
+        "orchestrate": 7.5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-09-28",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+        "https://www.anthropic.com/claude-sonnet-5-5"
+      ]
+    },
+    {
+      "key": "claude-haiku-4-5",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "haiku",
+          "claude-haiku-4-5-20251001",
+          "claude-haiku-4-5"
+        ],
+        "family": "haiku"
+      },
+      "tier": "light",
+      "efforts": [],
+      "contextWindow": 200000,
+      "knowledgeCutoff": "2025-02",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 7,
+        "research": 6,
+        "implement": 4,
+        "review": 4,
+        "merge": 4,
+        "verify": 7,
+        "chat": 6,
+        "orchestrate": 3
+      },
+      "defaultEffort": {},
+      "released": "2025-10-15",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/haiku-4-5/overview",
+        "https://www.anthropic.com/news/claude-haiku-4-5"
+      ]
+    },
+    {
+      "key": "claude-opus-5",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "claude-opus-5"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2026-05",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 5.5,
+        "research": 7,
+        "implement": 8,
+        "review": 8,
+        "merge": 8,
+        "verify": 5.5,
+        "chat": 7.5,
+        "orchestrate": 8
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-07-24",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/opus-5/overview",
+        "https://www.anthropic.com/news/claude-opus-5",
+        "https://www.anthropic.com/claude-opus-5-5",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "claude-sonnet-5",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "claude-sonnet-5"
+        ]
+      },
+      "tier": "standard",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2026-01",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 6.5,
+        "research": 6.5,
+        "implement": 6,
+        "review": 6,
+        "merge": 6,
+        "verify": 6.5,
+        "chat": 6.5,
+        "orchestrate": 5.5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-06-30",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/sonnet-5/overview",
+        "https://www.anthropic.com/news/claude-sonnet-5",
+        "https://www.anthropic.com/claude-sonnet-5-5",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "claude-opus-4-8",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "claude-opus-4-8"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2026-01",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 5,
+        "research": 6.5,
+        "implement": 7,
+        "review": 7,
+        "merge": 7,
+        "verify": 5,
+        "chat": 7,
+        "orchestrate": 7
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-05-28",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/opus-4-8/overview",
+        "https://www.anthropic.com/news/claude-opus-4-8",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "claude-opus-4-7",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "claude-opus-4-7"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2026-01",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 5,
+        "research": 6.5,
+        "implement": 6.5,
+        "review": 6.5,
+        "merge": 6.5,
+        "verify": 5,
+        "chat": 6.5,
+        "orchestrate": 6.5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-04-16",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/opus-4-7/overview",
+        "https://www.anthropic.com/news/claude-opus-4-7"
+      ]
+    },
+    {
+      "key": "claude-opus-4-6",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "claude-opus-4-6"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2025-05",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 5,
+        "research": 6,
+        "implement": 6,
+        "review": 6,
+        "merge": 6,
+        "verify": 5,
+        "chat": 6,
+        "orchestrate": 6
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-02-05",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/opus-4-6/overview",
+        "https://www.anthropic.com/news/claude-opus-4-6"
+      ]
+    },
+    {
+      "key": "claude-sonnet-4-6",
+      "vendor": "anthropic",
+      "cli": "claude",
+      "match": {
+        "ids": [
+          "claude-sonnet-4-6"
+        ]
+      },
+      "tier": "standard",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1000000,
+      "knowledgeCutoff": "2025-08",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ],
+        "tools": [
+          "webSearch"
+        ]
+      },
+      "strengths": {
+        "scout": 6,
+        "research": 6,
+        "implement": 5.5,
+        "review": 5.5,
+        "merge": 5.5,
+        "verify": 6,
+        "chat": 6,
+        "orchestrate": 5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-02-17",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://code.claude.com/docs/en/tools-reference",
+        "https://platform.claude.com/docs/en/models/sonnet-4-6/overview",
+        "https://www.anthropic.com/news/claude-sonnet-4-6"
+      ]
+    },
+    {
+      "key": "codex-astra-6",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-6-astra"
+        ],
+        "family": "astra"
+      },
+      "tier": "frontier",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2026-04",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 6,
+        "research": 7.5,
+        "implement": 8.5,
+        "review": 9,
+        "merge": 8.5,
+        "verify": 6,
+        "chat": 8.5,
+        "orchestrate": 9
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-09-03",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-6-astra",
+        "https://www.anthropic.com/claude-opus-5-5",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "codex-sol-6-1",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-6.1-sol"
+        ],
+        "family": "sol"
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 7.5,
+        "research": 7.5,
+        "implement": 9,
+        "review": 8.5,
+        "merge": 9,
+        "verify": 7.5,
+        "chat": 8,
+        "orchestrate": 8
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-09-29",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol"
+      ]
+    },
+    {
+      "key": "codex-sol-6",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-6-sol"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2026-04",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 7.5,
+        "research": 7.5,
+        "implement": 9,
+        "review": 8.5,
+        "merge": 9,
+        "verify": 7.5,
+        "chat": 8,
+        "orchestrate": 8
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-09-22",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-6-sol",
+        "https://www.anthropic.com/claude-sonnet-5-5"
+      ]
+    },
+    {
+      "key": "codex-luna-6",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-6-luna"
+        ],
+        "family": "luna"
+      },
+      "tier": "standard",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2026-05",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 8,
+        "research": 8,
+        "implement": 6,
+        "review": 6,
+        "merge": 6,
+        "verify": 8,
+        "chat": 7,
+        "orchestrate": 5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "medium",
+        "orchestrate": "medium"
+      },
+      "released": "2026-09-22",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-6-luna"
+      ]
+    },
+    {
+      "key": "codex-sol-5-6",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-5.6-sol"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2026-02",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 7,
+        "research": 7,
+        "implement": 8,
+        "review": 7.5,
+        "merge": 8,
+        "verify": 7,
+        "chat": 7,
+        "orchestrate": 7
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-07-09",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+        "https://www.anthropic.com/claude-opus-5-5",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "codex-terra-5-6",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-5.6-terra"
+        ],
+        "family": "terra"
+      },
+      "tier": "standard",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2026-02",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 7,
+        "research": 7,
+        "implement": 6.5,
+        "review": 6,
+        "merge": 6,
+        "verify": 7,
+        "chat": 6.5,
+        "orchestrate": 5.5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-07-09",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "codex-luna-5-6",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-5.6-luna"
+        ]
+      },
+      "tier": "light",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2026-02",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 7,
+        "research": 6.5,
+        "implement": 5,
+        "review": 5,
+        "merge": 5,
+        "verify": 7,
+        "chat": 6,
+        "orchestrate": 4
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "medium",
+        "orchestrate": "medium"
+      },
+      "released": "2026-07-09",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+        "https://www.tbench.ai/leaderboard"
+      ]
+    },
+    {
+      "key": "codex-gpt-5-5",
+      "vendor": "openai",
+      "cli": "codex",
+      "match": {
+        "ids": [
+          "gpt-5.5"
+        ]
+      },
+      "tier": "strong",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "contextWindow": 1050000,
+      "knowledgeCutoff": "2025-12",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text",
+          "image"
+        ],
+        "tools": [
+          "webSearch",
+          "imageGeneration"
+        ]
+      },
+      "strengths": {
+        "scout": 6.5,
+        "research": 6.5,
+        "implement": 7,
+        "review": 7,
+        "merge": 7,
+        "verify": 6.5,
+        "chat": 6.5,
+        "orchestrate": 6.5
+      },
+      "defaultEffort": {
+        "scout": "low",
+        "research": "medium",
+        "implement": "medium",
+        "review": "high",
+        "merge": "high",
+        "verify": "low",
+        "orchestrate": "medium"
+      },
+      "released": "2026-04-24",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/image-generation",
+        "https://developers.openai.com/api/docs/changelog",
+        "https://developers.openai.com/api/docs/models/gpt-5.5"
+      ]
+    }
+  ]
+}
