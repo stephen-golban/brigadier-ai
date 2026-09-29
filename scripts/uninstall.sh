@@ -138,18 +138,42 @@ trash() {
 }
 
 matching_daemons() {
-  local pid cmd first
-  while read -r pid cmd; do
+  local pid exe args
+  while read -r pid exe; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    first=${cmd%% *}
-    case "$first" in */brigadierd|brigadierd) ;; *) continue ;; esac
-    case " $cmd " in *" --data-dir $DATA "*) printf '%s\n' "$pid" ;; esac
-  done < <(ps -axo pid=,command=)
+    case "$exe" in */brigadierd|brigadierd) ;; *) continue ;; esac
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    case " $args " in *" --data-dir $DATA "*) printf '%s\n' "$pid" ;; esac
+  done < <(ps -axo pid=,comm=)
 }
+
+# The app first: while it runs it starts its daemon again. An application is identified from
+# its containing bundle, never by its process name alone.
+APP_RUNNING=0
+# `comm` is the executable's whole path, spaces included (a renamed "Brigadier 2.app").
+while read -r pid exe; do
+  [[ "$pid" =~ ^[0-9]+$ ]] || continue
+  case "$exe" in
+  */Contents/MacOS/brigadierd) ;; # its daemon is asked next, and only this data directory's
+  *.app/Contents/MacOS/*)
+    bundle=${exe%/Contents/MacOS/*}
+    if [[ "$(bundle_id "$bundle")" = "$ID" ]]; then
+      if (( DRY )); then say "DRY RUN: quit app PID $pid ($bundle)"
+      else
+        kill -TERM "$pid" 2>/dev/null || uncertain "could not quit app PID $pid"
+        for ((i=0; i<100; i++)); do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then APP_RUNNING=1; uncertain "app PID $pid is still running"; fi
+      fi
+    fi ;;
+  esac
+done < <(ps -axo pid=,comm=)
 
 DAEMON=$(matching_daemons)
 if (( DRY )); then
-  [[ -z "$DAEMON" ]] || say "DRY RUN: request orderly daemon shutdown for $DATA (PID $DAEMON)"
+  [[ -z "$DAEMON" ]] || say "DRY RUN: request orderly daemon shutdown for $DATA (PID $(echo $DAEMON))"
 else
   daemon_bin=
   if [[ -n "$APP" && -x "$APP/Contents/MacOS/brigadierd" ]]; then daemon_bin="$APP/Contents/MacOS/brigadierd"
@@ -179,27 +203,6 @@ else
     exit 1
   fi
 fi
-
-# An application is identified from its containing bundle, never by its process name alone.
-APP_RUNNING=0
-while read -r pid cmd; do
-  [[ "$pid" =~ ^[0-9]+$ ]] || continue
-  exe=${cmd%% *}
-  case "$exe" in *.app/Contents/MacOS/*)
-    bundle=${exe%/Contents/MacOS/*}
-    if [[ "$(bundle_id "$bundle")" = "$ID" ]]; then
-      if (( DRY )); then say "DRY RUN: quit app PID $pid ($bundle)"
-      else
-        kill -TERM "$pid" 2>/dev/null || uncertain "could not quit app PID $pid"
-        for ((i=0; i<100; i++)); do
-          kill -0 "$pid" 2>/dev/null || break
-          sleep 0.1
-        done
-        if kill -0 "$pid" 2>/dev/null; then APP_RUNNING=1; uncertain "app PID $pid is still running"; fi
-      fi
-    fi ;;
-  esac
-done < <(ps -axo pid=,command=)
 
 # Only literal paths from cleanup.recorded qualify. Historical removed/completed
 # entries are omitted; a later re-record of the same artifact qualifies again.

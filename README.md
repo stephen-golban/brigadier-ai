@@ -88,9 +88,10 @@ directory gets its own daemon.
 
 ## Uninstall
 
-Use **Uninstall Brigadier…** in the app's Storage dialog when the app is still
-installed. If the app has already been deleted, run the standalone script from
-this repository:
+Use **Uninstall Brigadier…** when the app is still installed: it is in the
+menu bar (Brigadier ▸ Uninstall Brigadier…) and at the bottom of Settings →
+Storage → Manage storage…. If the app has already been deleted, run the
+standalone script from this repository:
 
 ```sh
 scripts/uninstall.sh --dry-run --app-id ai.brigadier.app
@@ -105,8 +106,8 @@ The default identifier must be named explicitly. For one development instance,
 pass `--dev --app-id ai.brigadier.<name> --data-dir PATH` (and `--app PATH` if
 there is a bundle). `--dev` never sweeps other identifiers or data directories.
 
-The script asks that instance's daemon to quit, removes recorded clean git
-worktrees and merged Brigadier branches, and moves its data and exact per-app
+The script quits that app if it still runs, asks that instance's daemon to
+quit, removes recorded clean git worktrees and merged Brigadier branches, and moves its data and exact per-app
 folders to the Trash. Dirty worktrees and unmerged branches stay; the summary
 prints a command for each one to resolve manually. It removes only
 ledger-recorded Claude session files and Codex rollouts, and reports Codex
