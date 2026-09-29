@@ -2548,9 +2548,9 @@ impl SessionManager {
         self.kick(conv);
     }
 
-    /// Between turns: once the chosen model's provider is usable again (its window reset), or
-    /// the user chose another model, the stand-in steps back and the next turn starts over on
-    /// the chosen model from the transcript.
+    /// Between turns: once the chosen model can run again (its provider usable and its own
+    /// windows reset), or the user chose another model, the stand-in steps back and the next
+    /// turn starts over on the chosen model from the transcript.
     async fn end_stand_in(&self, conv: &Arc<ConvLive>) {
         let Ok(conversation) = self.core.conversation(&conv.id) else {
             return;
@@ -2560,7 +2560,7 @@ impl SessionManager {
         };
         let chosen = setup_choice(&conversation);
         let changed = chosen.is_some() && chosen.as_ref() != Some(&fallback.replaces);
-        if !changed && !self.provider_usable(fallback.replaces.provider) {
+        if !changed && !self.choice_available(&fallback.replaces).await {
             return;
         }
         let cli = {

@@ -133,7 +133,7 @@ pub fn learned_for<'l>(
 }
 
 /// Whether `name` (an id or the concrete model an alias resolves to) is this model.
-pub(crate) fn is_model(model: &MergedModel, registry: &Registry, name: &str) -> bool {
+pub fn is_model(model: &MergedModel, registry: &Registry, name: &str) -> bool {
     model.id.eq_ignore_ascii_case(name)
         || model
             .resolved

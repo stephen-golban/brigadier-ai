@@ -154,14 +154,26 @@ impl SessionManager {
     }
 
     /// Routes a task whose model stopped (or that waits for quota) and starts the chosen
-    /// model on it, or makes it wait. Boxed: the worker it starts can come back here, and a
-    /// recursive future must name its `Send` bound.
+    /// model on it, or makes it wait. One at a time per task: a caller that finds a model
+    /// already at work (another caller started it) leaves it be. Boxed: the worker it starts
+    /// can come back here, and a recursive future must name its `Send` bound.
     pub(crate) fn continue_task<'a>(
         &'a self,
         live: &'a Arc<TaskLive>,
         task: Task,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
+            let _rerouting = live.reroute.lock().await;
+            let Ok(task) = self.task_by_id(&task.conversation_id, &task.id).await else {
+                return;
+            };
+            let running = task
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.ended_at_ms.is_none());
+            if task.state.is_final() || running {
+                return;
+            }
             let route = match self.reroute(&task).await {
                 Ok(route) => route,
                 Err(waiting) => {

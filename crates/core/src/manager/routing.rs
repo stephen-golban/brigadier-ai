@@ -113,6 +113,30 @@ impl SessionManager {
         }
     }
 
+    /// Whether the model `choice` names can run now: its provider usable, and no window that
+    /// limits that model used up (a model's own weekly window included). A model routing
+    /// doesn't list is judged by its provider.
+    pub(crate) async fn choice_available(&self, choice: &ModelChoice) -> bool {
+        if !self.provider_usable(choice.provider) {
+            return false;
+        }
+        let Some(id) = choice.model.as_deref() else {
+            return true;
+        };
+        let now = crate::now_ms();
+        let inputs = self.routing_inputs(None, now).await;
+        inputs
+            .models
+            .iter()
+            .find(|model| {
+                model.provider == choice.provider
+                    && brigadier_router::is_model(model, &inputs.registry, id)
+            })
+            .is_none_or(|model| {
+                brigadier_router::available(model, &inputs.providers, &inputs.registry, now)
+            })
+    }
+
     /// Asks the router.
     pub(crate) async fn decide(&self, ask: &Ask<'_>) -> Decision {
         let now = crate::now_ms();

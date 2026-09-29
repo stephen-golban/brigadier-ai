@@ -605,7 +605,7 @@ fn assess<'q>(
             )
         }))
     } else {
-        availability(query, &model)
+        availability(query.providers, query.registry, query.now_ms, &model)
     };
     candidate.block = block;
 
@@ -736,21 +736,34 @@ fn unmet_need(model: &MergedModel, needs: Needs) -> Option<String> {
     None
 }
 
+/// Whether `model` can run now as far as login and quota go: its provider is logged in, no
+/// limit of the provider is in force, and no window that limits it is used up (its own
+/// weekly window included). The check [`decide`] makes before scoring.
+pub fn available(
+    model: &MergedModel,
+    providers: &[ProviderState],
+    registry: &Registry,
+    now_ms: i64,
+) -> bool {
+    availability(providers, registry, now_ms, model).is_none()
+}
+
 /// Login and confirmed limits: a limit is a hard exclusion, never a penalty.
-fn availability(query: &Query, model: &MergedModel) -> Option<Block> {
+fn availability(
+    providers: &[ProviderState],
+    registry: &Registry,
+    now_ms: i64,
+    model: &MergedModel,
+) -> Option<Block> {
     let vendor = name(model.provider);
-    let Some(state) = query
-        .providers
-        .iter()
-        .find(|s| s.provider == model.provider)
-    else {
+    let Some(state) = providers.iter().find(|s| s.provider == model.provider) else {
         return Some(Block::Unavailable(format!("{vendor} is not set up")));
     };
     if !state.logged_in {
         return Some(Block::Unavailable(format!("{vendor} is not logged in")));
     }
     let quota = state.quota.as_ref()?;
-    if let Some(limit) = active_limit(quota.limit.as_ref(), query.now_ms) {
+    if let Some(limit) = active_limit(quota.limit.as_ref(), now_ms) {
         let resets = limit.resets_at_ms.or_else(|| {
             let id = limit.window.as_deref()?;
             let window = quota.windows.iter().find(|w| w.window.id == id)?;
@@ -772,7 +785,7 @@ fn availability(query: &Query, model: &MergedModel) -> Option<Block> {
                 format!(
                     "{} is used up{}",
                     window_name(vendor, label.as_deref()),
-                    resets_text(resets, query.now_ms)
+                    resets_text(resets, now_ms)
                 )
             }
         };
@@ -789,8 +802,8 @@ fn availability(query: &Query, model: &MergedModel) -> Option<Block> {
     let spent: Vec<_> = quota
         .windows
         .iter()
-        .filter(|w| window_applies(&w.window, model, query.registry))
-        .filter(|w| !has_reset(w.window.resets_at_ms, query.now_ms))
+        .filter(|w| window_applies(&w.window, model, registry))
+        .filter(|w| !has_reset(w.window.resets_at_ms, now_ms))
         .filter(|w| w.heat == crate::Heat::Limited || w.window.used_percent >= LIMITED_USED)
         .collect();
     let latest = spent.iter().max_by_key(|w| w.window.resets_at_ms)?;
@@ -816,7 +829,7 @@ fn availability(query: &Query, model: &MergedModel) -> Option<Block> {
         why: format!(
             "{} is used up{scoped}{}",
             window_name(vendor, Some(&latest.window.label)),
-            resets_text(resets, query.now_ms)
+            resets_text(resets, now_ms)
         ),
         resets_at_ms: resets,
     })

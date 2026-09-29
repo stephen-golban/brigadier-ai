@@ -111,14 +111,14 @@ use ts_rs::TS;
 
 pub use areas::infer_areas;
 pub use decide::{
-    Decision, Exclusion, Needs, ProviderState, Query, Routed, Waiting, allows_trials, decide,
-    default_floor, rule_text, targets,
+    Decision, Exclusion, Needs, ProviderState, Query, Routed, Waiting, allows_trials, available,
+    decide, default_floor, rule_text, targets,
 };
 pub use explain::{Alternative, Explanation, Factor};
 pub use forecast::{
     active_limit, heat, provider_quota, quota_penalty, window_applies, window_state,
 };
-pub use learn::{learn, learned_for};
+pub use learn::{is_model, learn, learned_for};
 pub use load::{MAX_REGISTRY_BYTES, Parsed, RegistryError};
 pub use merge::{OutcomeCount, TRIAL_OUTCOMES, merge, outcome_counts};
 pub use outcome::{Learned, Outcome, OutcomeResult};

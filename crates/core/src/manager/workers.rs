@@ -119,6 +119,9 @@ pub(crate) struct TaskLive {
     /// Held while the worker's report is recorded and while it is stopped, so a stop and a
     /// report never both take effect.
     settle: tokio::sync::Mutex<()>,
+    /// Held while the task is routed again and its next model started, so a quota timer and
+    /// a Resume (or two hand-offs) never start two models on it.
+    pub(crate) reroute: tokio::sync::Mutex<()>,
 }
 
 impl TaskLive {
@@ -161,6 +164,7 @@ impl TaskLive {
             conversation_id,
             state: tokio::sync::Mutex::new(TaskLiveState::default()),
             settle: tokio::sync::Mutex::new(()),
+            reroute: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -1350,7 +1354,9 @@ impl SessionManager {
         if let Some(end) = cutoff {
             // Its model is cut off (a limit, or an error another model may not have): another
             // takes the task over. Before the interrupted-turn return, since an injected limit
-            // ends the turn that way.
+            // ends the turn that way. The CLI exiting now is part of this hand-off, not a
+            // reason for another.
+            live.state.lock().await.stopping = true;
             let manager = self.arc();
             let live = live.clone();
             self.spawn(async move { manager.hand_off(&live, end).await });
@@ -1829,6 +1835,15 @@ impl SessionManager {
         }
         if task.state.is_final() {
             return Err(Error::Invalid(format!("task-{} has ended", task.number)));
+        }
+        // Its model was cut off at a limit: the message waits for the model that takes the task
+        // over (its hand-off carries every message), rather than reviving the one cut off.
+        if let Some(wait) = &task.quota_wait {
+            return Ok(format!(
+                "task-{} is waiting for quota ({}); the model that takes it over gets this \
+                 message with its hand-off.",
+                task.number, wait.reason
+            ));
         }
         let Some(cli) = state.cli.clone() else {
             drop(state);
