@@ -36,6 +36,11 @@ export const TASK_STATE_LABELS: Record<TaskState, string> = {
   failed: "Failed",
 };
 
+/** A task's state in words; a task paused for quota waits for it rather than for the user. */
+export function taskStateLabel(task: Task): string {
+  return task.state === "paused" && task.quotaWait ? "Waiting for quota" : TASK_STATE_LABELS[task.state];
+}
+
 /** The colour a worker's glyph takes for how it ended: interrupted or failed. */
 export function glyphTone(state: Task["state"] | WorkerStepKind): string | undefined {
   if (state === "stopped") return "text-warning";
@@ -101,6 +106,10 @@ export const WorkerChip = memo(function WorkerChip({
   const name = useWorkerName(taskId);
   const number = useBoard((s) => s.board?.tasks[taskId]?.number);
   const state = useBoard((s) => s.board?.tasks[taskId]?.state);
+  const stateLabel = useBoard((s) => {
+    const task = s.board?.tasks[taskId];
+    return task ? taskStateLabel(task) : undefined;
+  });
   const [open, setOpen] = useState(false);
   if (name === null || number === undefined || state === undefined) {
     return <span className="shrink-0">a worker</span>;
@@ -138,7 +147,7 @@ export const WorkerChip = memo(function WorkerChip({
       <TooltipContent side="top" className="flex-col gap-0.5">
         <span className="wrap-break-word">{name}</span>
         <span className="text-muted-foreground text-xs">
-          task-{number} · {TASK_STATE_LABELS[state]}
+          task-{number} · {stateLabel}
         </span>
       </TooltipContent>
     </Tooltip>

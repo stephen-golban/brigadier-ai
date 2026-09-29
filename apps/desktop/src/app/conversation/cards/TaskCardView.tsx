@@ -4,9 +4,9 @@ import { memo, type ReactNode, useState } from "react";
 import { ArtifactDialog } from "@/app/conversation/ArtifactDialog";
 import { DiffStatView, Lines, Section, short } from "@/app/conversation/cards/common";
 import { useAction } from "@/app/conversation/useAction";
-import { TASK_STATE_LABELS, WorkerChip, WorkerMention } from "@/app/conversation/WorkerChip";
+import { HandoffLine, QuotaWaitLine, RouteSections } from "@/app/conversation/cards/RouteDetails";
+import { taskStateLabel, WorkerChip, WorkerMention } from "@/app/conversation/WorkerChip";
 import { WorkerTranscript } from "@/app/conversation/WorkerTranscript";
-import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
 import { mono } from "@/components/assistant-ui/elements/surfaces";
 import { TaskCard } from "@/components/assistant-ui/elements/task-card";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -109,7 +109,12 @@ export const TaskCardView = memo(function TaskCardView({ taskId }: { taskId: str
             working ? "shimmer" : statusTone(task.state),
           )}
         >
-          {working && activity ? activity : STATUS[task.state]}
+          {working && activity
+            ? activity
+            : // Waiting for quota isn't a pause the user made.
+              task.quotaWait
+              ? "is waiting for quota"
+              : STATUS[task.state]}
         </span>
       }
       actions={actions || undefined}
@@ -118,8 +123,9 @@ export const TaskCardView = memo(function TaskCardView({ taskId }: { taskId: str
       onOpenChange={setOpen}
     >
       <p className="text-muted-foreground text-xs">
-        task-{task.number} · {task.kind} · {TASK_STATE_LABELS[task.state]}
+        task-{task.number} · {task.kind} · {taskStateLabel(task)}
       </p>
+      <HandoffLine task={task} groups={groups} />
       <TaskDetails task={task} model={model} />
     </TaskCard>
   );
@@ -138,7 +144,7 @@ export function TaskActions({ task }: { task: Task }) {
           {action.error}
         </span>
       )}
-      {task.state === "paused" ? (
+      {task.state === "paused" && task.quotaWait ? null : task.state === "paused" ? (
         <TooltipIconButton
           tooltip="Resume"
           side="top"
@@ -179,6 +185,13 @@ export function TaskActions({ task }: { task: Task }) {
 
 /** What needs the user, under the row whether it is open or not: why it waits, why it failed. */
 function taskResult(task: Task): ReactNode {
+  if (task.quotaWait) {
+    return (
+      <span className="text-muted-foreground">
+        <QuotaWaitLine wait={task.quotaWait} />
+      </span>
+    );
+  }
   if (task.blockedReason) {
     return <span className="text-warning">{task.blockedReason}</span>;
   }
@@ -360,6 +373,7 @@ export function TaskDetails({
 }) {
   const [artifact, setArtifact] = useState<ArtifactRef | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const groups = useModelGroups();
   // The worker this one reviews or works on, and the one that reviews it, while the board has them.
   const subject = useBoard((s) =>
     task.subject && s.board?.tasks[task.subject] ? task.subject : null,
@@ -371,14 +385,7 @@ export function TaskDetails({
 
   return (
     <>
-      <Section title="Model">
-        {!inThread && (
-          <p className="text-sm">
-            {PROVIDER_LABELS[task.route.choice.provider]} · {model}
-          </p>
-        )}
-        <p className="text-muted-foreground text-xs">Why this model: {task.route.reason}</p>
-      </Section>
+      <RouteSections task={task} model={model} groups={groups} inThread={inThread} />
 
       {(workspace || subject !== null) && (
         <Section title="Workspace">

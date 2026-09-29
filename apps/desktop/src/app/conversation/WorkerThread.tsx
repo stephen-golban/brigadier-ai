@@ -23,9 +23,10 @@ import {
 } from "react";
 
 import { isFinal, isWorking } from "@/app/conversation/blocks";
+import { QuotaWaitLine } from "@/app/conversation/cards/RouteDetails";
 import { TaskDetails } from "@/app/conversation/cards/TaskCardView";
 import { useAction } from "@/app/conversation/useAction";
-import { TASK_STATE_LABELS } from "@/app/conversation/WorkerChip";
+import { taskStateLabel } from "@/app/conversation/WorkerChip";
 import { RateItem, RateMenu } from "@/components/assistant-ui/rate-menu";
 import { MarkdownBlock } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -248,7 +249,7 @@ function header(task: Task, elapsed: number): string {
     case "stopped":
       return `Stopped after ${time}`;
     case "paused":
-      return `Paused after ${time}`;
+      return task.quotaWait ? `Waiting for quota after ${time}` : `Paused after ${time}`;
     default:
       return `Worked for ${time}`;
   }
@@ -389,11 +390,17 @@ export function WorkerThread({ task, model }: { task: Task; model: string }) {
           ))}
         {now && <div className="shimmer truncate text-sm motion-reduce:animate-none">{now}</div>}
         {!working && !task.report && !isFinal(task) && (
-          <p className="text-muted-foreground text-sm">{TASK_STATE_LABELS[task.state]}</p>
+          <p className="text-muted-foreground text-sm">{taskStateLabel(task)}</p>
         )}
         <Answer task={task} />
         {task.error && <p className="text-destructive text-sm">{task.error}</p>}
-        {task.blockedReason && <p className="text-warning text-sm">{task.blockedReason}</p>}
+        {task.quotaWait ? (
+          <p className="text-muted-foreground text-sm">
+            <QuotaWaitLine wait={task.quotaWait} />
+          </p>
+        ) : (
+          task.blockedReason && <p className="text-warning text-sm">{task.blockedReason}</p>
+        )}
         <div className="flex flex-col gap-3 pt-2">
           <TaskDetails task={task} model={model} inThread />
         </div>

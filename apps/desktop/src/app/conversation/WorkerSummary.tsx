@@ -30,8 +30,9 @@ export function stateLine(task: Task): string {
     case "running":
     case "reviewing":
       return "is working";
-    case "blocked":
     case "paused":
+      return task.quotaWait ? "is waiting for quota" : "is awaiting instruction";
+    case "blocked":
     case "awaitingApproval":
     case "readyToLand":
       return "is awaiting instruction";

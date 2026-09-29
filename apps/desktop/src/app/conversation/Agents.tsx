@@ -11,11 +11,12 @@ import { memo, useContext, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { isFinal, isWorking } from "@/app/conversation/blocks";
+import { HandoffLine, RouteReason } from "@/app/conversation/cards/RouteDetails";
 import { isStoppable } from "@/app/conversation/cards/TaskCardView";
 import {
   AgentsPanelContext,
   glyphTone,
-  TASK_STATE_LABELS,
+  taskStateLabel,
   useWorkerName,
   WorkerChip,
   WorkerGlyph,
@@ -157,7 +158,7 @@ function statusLine(task: Task, summary: WorkerSummary | undefined): string | nu
     case "blocked":
       return "Asked the orchestrator";
     case "paused":
-      return "Paused";
+      return task.quotaWait ? `Waiting for quota: ${task.quotaWait.reason}` : "Paused";
     case "reported":
       return "Reported";
     case "reviewing":
@@ -198,7 +199,7 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
       <button
         type="button"
         data-task={`task-${task.number}`}
-        title={`task-${task.number} · ${TASK_STATE_LABELS[task.state]}`}
+        title={`task-${task.number} · ${taskStateLabel(task)}`}
         onClick={() => setPanel(task.id)}
         className="hover:bg-foreground/5 rounded-control flex w-full items-start gap-3 px-2 py-2 text-start transition-colors"
       >
@@ -305,7 +306,7 @@ function WorkerMenu({ task }: { task: Task }) {
         </TooltipIconButton>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {task.state === "paused" && (
+        {task.state === "paused" && !task.quotaWait && (
           <DropdownMenuItem onSelect={() => run("resume", () => resumeTask(task.id))}>
             <Play />
             Resume
@@ -439,6 +440,12 @@ function WorkerDetail({ task }: { task: Task }) {
         <span className="text-muted-foreground shrink-0 text-xs">{model}</span>
         <WorkerMenu task={task} />
       </header>
+      {(task.route.reason || task.attempts.length > 1) && (
+        <div className="border-border flex shrink-0 flex-col gap-0.5 border-b px-4 py-1.5">
+          <RouteReason task={task} />
+          <HandoffLine task={task} groups={groups} />
+        </div>
+      )}
       <WorkerThread key={task.id} task={task} model={model} />
     </>
   );
