@@ -37,10 +37,10 @@ use brigadier_store::StreamPage;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::SessionManager;
 use super::prompts;
 use super::rebirth::{self, BriefingPlan, RebirthPrep};
 use super::usage::TokenOwner;
+use super::{EventSource, SessionManager};
 use crate::knowledge::RebirthTrigger;
 use crate::model::{
     ConversationId, ConversationKind, ConversationStatus, DomainEvent, Lifecycle, Mention, Message,
@@ -212,6 +212,12 @@ pub(crate) struct ConvLive {
 }
 
 impl ConvLive {
+    /// The conversation's CLI session, while one runs.
+    #[cfg(debug_assertions)]
+    pub(crate) async fn cli(&self) -> Option<Arc<Cli>> {
+        self.state.lock().await.cli.clone()
+    }
+
     pub fn new(id: ConversationId, kind: ConversationKind) -> Self {
         Self {
             id,
@@ -1799,30 +1805,35 @@ impl SessionManager {
                     Some(event) => {
                         deadline = None;
                         self.store_deltas(&conv.id, quiet.pass(std::mem::take(&mut deltas))).await;
-                        let exited = matches!(event, ProviderEvent::Exited { .. });
-                        match narration(&event) {
-                            // The held reply only announced the work this call does: the user
-                            // never sees it (the orchestrator log keeps it).
-                            Some(true) => {
-                                if let Some(reply) = held.take() {
-                                    self.hide_narration(&conv, &cli, &reply).await;
-                                    self.log_provider(&conv.id, cli.provider, reply).await;
+                        let mut exited = false;
+                        for event in
+                            self.session_events(EventSource::Conversation(&conv.id), &cli, event)
+                        {
+                            exited |= matches!(event, ProviderEvent::Exited { .. });
+                            match narration(&event) {
+                                // The held reply only announced the work this call does: the user
+                                // never sees it (the orchestrator log keeps it).
+                                Some(true) => {
+                                    if let Some(reply) = held.take() {
+                                        self.hide_narration(&conv, &cli, &reply).await;
+                                        self.log_provider(&conv.id, cli.provider, reply).await;
+                                    }
                                 }
+                                Some(false) => {
+                                    if let Some(reply) = held.take() {
+                                        self.on_conversation_event(&conv, &cli, reply).await;
+                                    }
+                                }
+                                None => {}
                             }
-                            Some(false) => {
-                                if let Some(reply) = held.take() {
+                            if quiet.holds_whole(&event) {
+                                if let Some(reply) = held.replace(event) {
                                     self.on_conversation_event(&conv, &cli, reply).await;
                                 }
+                            } else {
+                                quiet.forget(&event);
+                                self.on_conversation_event(&conv, &cli, event).await;
                             }
-                            None => {}
-                        }
-                        if quiet.holds_whole(&event) {
-                            if let Some(reply) = held.replace(event) {
-                                self.on_conversation_event(&conv, &cli, reply).await;
-                            }
-                        } else {
-                            quiet.forget(&event);
-                            self.on_conversation_event(&conv, &cli, event).await;
                         }
                         if exited {
                             break;

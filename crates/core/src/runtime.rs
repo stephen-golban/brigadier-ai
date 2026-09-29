@@ -229,6 +229,29 @@ impl Runtime {
         }
     }
 
+    /// Development builds: holds `provider` at `limit` until its reset (see
+    /// [`QuotaMonitor::inject`]) and records the provider's overview.
+    #[cfg(debug_assertions)]
+    pub fn debug_limit(
+        self: &Arc<Self>,
+        provider: ProviderKind,
+        limit: brigadier_providers::LimitHit,
+    ) {
+        self.monitor.inject(provider, limit);
+        let runtime = self.clone();
+        self.spawn(async move {
+            let overview = {
+                let mut state = runtime.state();
+                let Some(overview) = state.overviews.get_mut(&provider) else {
+                    return;
+                };
+                overview.quota = runtime.monitor.current(provider, now_ms());
+                overview.clone()
+            };
+            runtime.record_overview(overview).await;
+        });
+    }
+
     /// Takes in a fresh quota read and records the provider's overview.
     async fn note_read(&self, quota: brigadier_providers::QuotaSnapshot) {
         let overview = {

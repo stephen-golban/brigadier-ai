@@ -21,6 +21,8 @@ mod branches;
 mod cards;
 mod conversation;
 pub mod disk;
+#[cfg(debug_assertions)]
+pub mod fault;
 mod files;
 mod fork;
 mod gate;
@@ -50,7 +52,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use brigadier_git::Git;
-use brigadier_providers::{BoxFuture, ProviderKind};
+use brigadier_providers::{BoxFuture, ProviderEvent, ProviderKind};
 use tokio_util::task::TaskTracker;
 
 use crate::model::{
@@ -99,6 +101,9 @@ pub struct SessionManager {
     admitting: AtomicBool,
     background: TaskTracker,
     brains: brains::Brains,
+    /// Development builds: usage limits armed to exercise fallback.
+    #[cfg(debug_assertions)]
+    faults: fault::Faults,
 }
 
 impl SessionManager {
@@ -148,6 +153,8 @@ impl SessionManager {
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),
             brains,
+            #[cfg(debug_assertions)]
+            faults: fault::Faults::default(),
         });
         manager.install_worktree_remover();
         manager.recover().await;
@@ -413,6 +420,29 @@ impl SessionManager {
         }
     }
 
+    /// A CLI session's event as its handlers get it: in development builds, with what an
+    /// armed fault ([`fault`]) adds around it.
+    fn session_events(
+        &self,
+        source: EventSource<'_>,
+        cli: &Arc<conversation::Cli>,
+        event: ProviderEvent,
+    ) -> Vec<ProviderEvent> {
+        #[cfg(debug_assertions)]
+        {
+            let key = match source {
+                EventSource::Task(id) => fault::FaultKey::Task(id.clone()),
+                EventSource::Conversation(id) => fault::FaultKey::Conversation(id.clone()),
+            };
+            self.fault_events(key, cli, event)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (source, cli);
+            vec![event]
+        }
+    }
+
     /// Logged in and not refusing work: no limit, or one whose reset has passed (the quota
     /// monitor's view).
     fn provider_usable(&self, kind: ProviderKind) -> bool {
@@ -427,6 +457,14 @@ impl SessionManager {
             .current(kind, crate::now_ms())
             .is_none_or(|quota| quota.limit.is_none())
     }
+}
+
+/// Whose CLI session an event comes from (development builds route faults by it).
+#[derive(Clone, Copy)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+enum EventSource<'a> {
+    Task(&'a TaskId),
+    Conversation(&'a ConversationId),
 }
 
 impl ToolHost for SessionManager {

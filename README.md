@@ -252,6 +252,15 @@ the whole paste as a file. Files you attach keep going to workers (or, in a Chat
 cheapest model at low effort, keeping the routing reason and saying so. It works in development
 builds only; a release build ignores it.
 
+Development builds can also force a usage limit, to exercise fallback without spending real
+quota: the Inspector's fault control does it for a running task or conversation, and
+`BRIGADIER_FAULT=claude-limit[:tool-calls=N][:window=ID][:reset=MINUTES]` (or `codex-limit`)
+does it for the first worker the daemon starts on that provider. After the session's next N
+finished tool calls (3 by default) the quota monitor holds the provider at that limit until the
+reset (60 minutes by default), the session's transcript notes the injection, its running turn is
+interrupted, and when that turn ends the session reports the limit as a CLI at its limit would.
+Neither exists in a release build.
+
 ### Permission levels
 
 A session's permission level is picked in the composer; a project remembers the last one used.

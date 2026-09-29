@@ -1198,10 +1198,25 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             )));
         }
         #[cfg(debug_assertions)]
-        Request::DebugInjectLimit { .. } => {
-            return Err(IpcError::from(brigadier_core::Error::Invalid(
-                "fault injection isn't connected in this build yet".into(),
-            )));
+        Request::DebugInjectLimit {
+            target,
+            provider,
+            window,
+            reset_in_minutes,
+            after_tool_calls,
+        } => {
+            use brigadier_core::manager::fault::FaultKey;
+            use brigadier_ipc::protocol::FaultTarget;
+            let key = match target {
+                FaultTarget::Task { task_id } => FaultKey::Task(task_id),
+                FaultTarget::Conversation { conversation_id } => {
+                    FaultKey::Conversation(conversation_id)
+                }
+            };
+            sessions
+                .debug_inject_limit(key, provider, window, reset_in_minutes, after_tool_calls)
+                .await?;
+            Response::DebugInjectLimit
         }
         Request::StartRawSession {
             provider,

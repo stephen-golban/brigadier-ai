@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 use super::conversation::{Cli, Envelope, safe_file_name};
 use super::outputs::outputs_dir;
 use super::usage::TokenOwner;
-use super::{SessionManager, blocking, git_error, instructions, prompts, secrets};
+use super::{EventSource, SessionManager, blocking, git_error, instructions, prompts, secrets};
 use crate::model::{
     ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
 };
@@ -113,6 +113,12 @@ pub(crate) struct TaskLive {
 }
 
 impl TaskLive {
+    /// The worker's CLI session, while one runs.
+    #[cfg(debug_assertions)]
+    pub(crate) async fn cli(&self) -> Option<Arc<Cli>> {
+        self.state.lock().await.cli.clone()
+    }
+
     fn new(id: TaskId, conversation_id: ConversationId) -> Self {
         Self {
             id,
@@ -637,6 +643,8 @@ impl SessionManager {
             state.nudged = false;
             state.stopping = false;
         }
+        #[cfg(debug_assertions)]
+        self.arm_env_fault(&task.id, provider).await;
         let manager = self.arc();
         let pumped = (live.clone(), cli.clone());
         self.spawn(async move { manager.pump_worker(pumped.0, pumped.1, events).await });
@@ -1126,8 +1134,11 @@ impl SessionManager {
                     Some(event) => {
                         deadline = None;
                         self.record_worker_events(&live.id, std::mem::take(&mut deltas)).await;
-                        let exited = matches!(event, ProviderEvent::Exited { .. });
-                        self.on_worker_event(&live, &cli, event).await;
+                        let mut exited = false;
+                        for event in self.session_events(EventSource::Task(&live.id), &cli, event) {
+                            exited |= matches!(event, ProviderEvent::Exited { .. });
+                            self.on_worker_event(&live, &cli, event).await;
+                        }
                         if exited {
                             break;
                         }
