@@ -11,6 +11,16 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * MB)).toFixed(1)} GB`;
 }
 
+const compactNumber = new Intl.NumberFormat(undefined, {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+/** A token count, compactly ("12.4K", "1.2M"). */
+export function formatTokens(tokens: number): string {
+  return compactNumber.format(tokens);
+}
+
 export function formatMs(ms: number): string {
   if (ms >= 10_000) return `${(ms / 1000).toFixed(1)} s`;
   if (ms >= 100) return `${Math.round(ms)} ms`;
@@ -62,6 +72,17 @@ export function formatAgo(epochMs: number, nowMs: number): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
+/** "now", "42m", "2h 5m", "3d 4h": the time left until `ms`. */
+export function formatCountdown(ms: number, nowMs: number): string {
+  const minutes = Math.ceil((ms - nowMs) / 60_000);
+  if (minutes <= 0) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
 }
 
 const DAY_MS = 86_400_000;

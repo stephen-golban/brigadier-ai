@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import {
   type DerivedLog,
@@ -7,26 +7,10 @@ import {
   KIND_LABELS,
   sumOf,
 } from "@/app/inspector/orchestratorLog";
+import { useSize } from "@/hooks/use-size";
 import type { RebirthThresholds } from "@/ipc/generated";
 import { tokenPx } from "@/lib/tokens";
 import { useApp } from "@/state/store";
-
-type Size = { width: number; height: number };
-
-function useSize() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState<Size>({ width: 0, height: 0 });
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return undefined;
-    const observer = new ResizeObserver(() =>
-      setSize({ width: element.clientWidth, height: element.clientHeight }),
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  return { ref, size };
-}
 
 /** A round upper bound for the y axis: 1, 2 or 5 times a power of ten. */
 function niceMax(value: number): number {

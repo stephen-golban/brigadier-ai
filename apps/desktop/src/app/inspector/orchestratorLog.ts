@@ -217,11 +217,4 @@ export function sumOf(totals: GroupTotals): number {
   return totals.instructions + totals.messages + totals.reports + totals.other;
 }
 
-const compact = new Intl.NumberFormat(undefined, {
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
-
-export function formatTokens(tokens: number): string {
-  return compact.format(tokens);
-}
+export { formatTokens } from "@/lib/format";
