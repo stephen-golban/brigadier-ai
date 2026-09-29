@@ -1018,7 +1018,7 @@ fn waiting(
         (Some((why, _)), Some(rule)) => {
             format!("your rule ({rule}) allows only models at a limit: {why}")
         }
-        (Some((why, _)), None) => format!("Waiting for quota: {why}"),
+        (Some((why, _)), None) => why.to_owned(),
         (None, Some(rule)) => {
             format!("your rule ({rule}) allows no model that can take this {purpose} work")
         }
