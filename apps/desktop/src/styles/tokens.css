@@ -37,7 +37,8 @@
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
- *               max-w-setup                   the first-run setup dialog
+ *               max-w-setup, h-setup          the first-run setup sheet (near full window, capped)
+ *               setup-card                    a setup card's minimum width in its auto-filled grid
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
  *               rounded-dialog, rounded-thread (message bubbles), rounded-composer (the composer
  *               card), rounded-rail (the rail's top corners), rounded-menu (menus), rounded-tooltip,
@@ -45,6 +46,7 @@
  *               rounded-document, plus rounded-{xs,sm,md,lg,xl,2xl}
  *   Type        text-{2xs,xs,sm,base,lg,xl,2xl} (UI roles, each with its line height), text-hero,
  *               text-code (code blocks), text-code-inline (inline code, em-relative)
+ *   Tracking    tracking-hero, tracking-section, tracking-eyebrow (small uppercase labels)
  *   Fonts       font-sans, font-display, font-mono (system stacks, no downloads)
  *   Shadows     shadow-hairline (the composer card's inner edge), shadow-menu, shadow-tooltip,
  *               shadow-summary (the pinned summary)
@@ -138,6 +140,8 @@
   --spacing-inspector: 28rem;
   --spacing-inspector-wide: 42rem;
   --spacing-agents: 26rem;
+  --spacing-setup: min(60rem, calc(100dvh - 2rem));
+  --spacing-setup-card: 13rem;
   --spacing-user-message: 22.5rem;
   /* Placeholder height for off-screen messages skipped by content-visibility. */
   --message-intrinsic-size: 12rem;
@@ -147,7 +151,7 @@
   --container-sm: 24rem;
   --container-md: 28rem;
   --container-lg: 32rem;
-  --container-setup: 42rem;
+  --container-setup: min(68rem, calc(100vw - 2rem));
   --container-thread: 46rem;
   /* The pinned summary's card. */
   --container-summary: 18.75rem;
@@ -204,6 +208,7 @@
   --tracking-hero: -0.015em;
   --tracking-section: -0.01em;
   --tracking-tooltip: -0.01em;
+  --tracking-eyebrow: 0.16em;
 }
 
 @theme inline {

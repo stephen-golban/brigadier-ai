@@ -35,6 +35,8 @@ const twMerge = extendTailwindMerge({
         "titlebar",
         "traffic-lights",
         "inspector",
+        "setup",
+        "setup-card",
       ],
       container: ["thread", "setup", "summary"],
       radius: [
@@ -51,7 +53,7 @@ const twMerge = extendTailwindMerge({
       ],
       shadow: ["hairline", "menu", "tooltip", "summary"],
       text: ["code", "code-inline"],
-      tracking: ["hero", "section"],
+      tracking: ["hero", "section", "eyebrow"],
       font: ["display"],
     },
   },

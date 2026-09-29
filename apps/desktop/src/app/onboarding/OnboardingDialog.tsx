@@ -1,12 +1,10 @@
 import {
-  ArrowRight,
+  ArrowLeft,
   Check,
-  CheckCircleFilled,
   ExclamationMarkCircle,
   FolderPlus,
   Reload,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { Checkbox as CheckboxPrimitive } from "radix-ui";
 import {
   lazy,
   type ReactNode,
@@ -24,7 +22,21 @@ import { BrigadierGlyph } from "@/components/glyphs/brand-glyph";
 import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
 import { Spinner } from "@/components/glyphs/spinner";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Kbd } from "@/components/ui/kbd";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { pickFolder } from "@/ipc/client";
 import type { ProjectCandidate, ProviderKind, ProviderOverview } from "@/ipc/generated";
 import { formatAgo, shortPath } from "@/lib/format";
@@ -59,12 +71,20 @@ const SUGGESTED_WITHIN_MS = 30 * 86_400_000;
 /** How often an agent is checked again while its install or sign-in terminal is open. */
 const RECHECK_MS = 3000;
 
+/** Cards fill as many columns as fit, each at least a setup card wide. */
+const CARD_GRID =
+  "grid grid-cols-[repeat(auto-fill,minmax(var(--spacing-setup-card),1fr))] gap-2.5";
+
 type Step = "agents" | "projects";
+
+function skip(): void {
+  void finishOnboarding().catch((error: unknown) => console.error(error));
+}
 
 /**
  * The first-run setup: the coding agents Brigadier works through, then the projects to start
- * with, found in those agents' own session history. Shown until finished or skipped once;
- * Settings can open it again.
+ * with, found in those agents' own session history. A sheet over the window, shown until
+ * finished or skipped once; Settings can open it again. Escape asks before skipping.
  */
 export function OnboardingDialog() {
   const catalogLoaded = useApp((s) => s.catalogLoaded);
@@ -72,19 +92,41 @@ export function OnboardingDialog() {
   const smoke = useApp((s) => s.info?.smoke ?? false);
   const reopened = useOnboarding((s) => s.reopened);
   const open = catalogLoaded && !smoke && (!onboarded || reopened);
+  const [confirmSkip, setConfirmSkip] = useState(false);
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) void finishOnboarding().catch((error: unknown) => console.error(error));
-      }}
-    >
+    <Dialog open={open}>
       <DialogContent
         showCloseButton={false}
-        className="max-w-setup max-h-full grid-cols-1 gap-0 overflow-hidden p-0"
+        className="max-w-setup h-setup bg-card flex flex-col gap-0 overflow-hidden p-0"
         onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => {
+          event.preventDefault();
+          setConfirmSkip(true);
+        }}
       >
         {open && <Onboarding />}
+        <Dialog open={confirmSkip} onOpenChange={setConfirmSkip}>
+          <DialogContent showCloseButton={false} className="max-w-xs">
+            <DialogHeader>
+              <DialogTitle>Skip setup?</DialogTitle>
+              <DialogDescription>You can run it again from Settings.</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setConfirmSkip(false);
+                  skip();
+                }}
+              >
+                Skip
+              </Button>
+              <Button autoFocus onClick={() => setConfirmSkip(false)}>
+                Keep going
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );
@@ -98,18 +140,16 @@ function Onboarding() {
     if (next === "projects") setReached("projects");
   };
   return (
-    <div className="flex max-h-full min-h-0 min-w-0 flex-col">
-      <header className="flex flex-col gap-4 border-b px-6 pt-6 pb-4">
-        <div className="flex items-center gap-2">
-          <BrigadierGlyph className="text-foreground size-icon-lg" />
-          <span className="font-display text-base font-semibold">Brigadier</span>
-        </div>
-        <Stepper step={step} reached={reached} onStep={go} />
-      </header>
+    <div className="flex h-full min-h-0 min-w-0 flex-col px-8 pt-9 pb-8">
+      <div className="flex items-center gap-2.5">
+        <BrigadierGlyph className="text-foreground size-icon-lg" />
+        <span className="font-display text-base font-semibold">Brigadier</span>
+      </div>
+      <Progress step={step} reached={reached} onStep={go} />
       {step === "agents" ? (
         <AgentsStep onContinue={() => go("projects")} />
       ) : (
-        <ProjectsStep />
+        <ProjectsStep onBack={() => go("agents")} />
       )}
     </div>
   );
@@ -120,7 +160,8 @@ const STEPS: readonly { step: Step; label: string }[] = [
   { step: "projects", label: "Projects" },
 ];
 
-function Stepper({
+/** One bar per step, the current one longest; steps already reached can be revisited. */
+function Progress({
   step,
   reached,
   onStep,
@@ -132,64 +173,163 @@ function Stepper({
   const current = STEPS.findIndex((entry) => entry.step === step);
   const furthest = STEPS.findIndex((entry) => entry.step === reached);
   return (
-    <nav aria-label="Setup steps" className="bg-muted/40 rounded-capsule grid grid-cols-2 gap-1 p-1">
-      {STEPS.map((entry, index) => {
-        const active = index === current;
-        const done = index < current;
-        return (
-          <button
-            key={entry.step}
-            type="button"
-            aria-current={active ? "step" : undefined}
-            disabled={index > furthest}
-            onClick={() => onStep(entry.step)}
-            className={cn(
-              "rounded-capsule h-control-md flex items-center gap-2 px-3 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring/50",
-              active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-              "disabled:hover:text-muted-foreground disabled:cursor-default",
-            )}
-          >
-            <span
-              className={cn(
-                "flex size-icon-lg shrink-0 items-center justify-center rounded-full text-xs",
-                done ? "bg-primary text-primary-foreground" : "border",
-                active && "border-foreground/40",
-              )}
-            >
-              {done ? <Check className="size-icon-xs" /> : index + 1}
-            </span>
-            {entry.label}
-          </button>
-        );
-      })}
-    </nav>
+    <TooltipProvider>
+      <nav aria-label="Setup steps" className="mt-10 flex items-center gap-2">
+        {STEPS.map((entry, index) => {
+          const active = index === current;
+          const done = index < current;
+          return (
+            <Tooltip key={entry.step}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Step ${index + 1}: ${entry.label}`}
+                  aria-current={active ? "step" : undefined}
+                  disabled={index > furthest}
+                  onClick={() => onStep(entry.step)}
+                  className={cn(
+                    "rounded-capsule relative h-1 transition-all outline-none before:absolute before:-inset-x-1 before:-inset-y-2 focus-visible:ring-1 focus-visible:ring-ring/50",
+                    active
+                      ? "bg-foreground w-10"
+                      : done
+                        ? "bg-muted-foreground/70 hover:bg-foreground/80 w-6"
+                        : "bg-muted-foreground/25 enabled:hover:bg-muted-foreground/45 w-6",
+                  )}
+                />
+              </TooltipTrigger>
+              <TooltipContent side="top">{entry.label}</TooltipContent>
+            </Tooltip>
+          );
+        })}
+        <span className="text-muted-foreground ms-3 text-xs font-medium">
+          {current + 1} of {STEPS.length}
+        </span>
+      </nav>
+    </TooltipProvider>
   );
 }
 
+/**
+ * A step: its heading, a body filling the sheet, and the footer. The primary action also
+ * runs on ⌘⏎ (Ctrl ⏎ elsewhere).
+ */
 function StepBody({
+  eyebrow,
   title,
   description,
   children,
-  footer,
+  start,
+  onBack,
+  primary,
 }: {
+  eyebrow?: string;
   title: string;
   description: string;
   children: ReactNode;
-  footer: ReactNode;
+  start: ReactNode;
+  onBack?: () => void;
+  primary: { label: string; onClick: () => void; disabled?: boolean; busy?: boolean };
 }) {
+  const mac = useApp((s) => s.info?.platform === "macos");
+  const { onClick, disabled = false, busy = false } = primary;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || event.repeat || !(mac ? event.metaKey : event.ctrlKey)) return;
+      event.preventDefault();
+      if (!disabled && !busy) onClick();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mac, onClick, disabled, busy]);
+
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pt-6 pb-2">
-        <div className="flex flex-col gap-1.5">
-          <DialogTitle className="text-xl leading-tight font-semibold">{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </div>
-        {children}
+      <div className="mt-8 shrink-0">
+        {eyebrow && (
+          <p className="text-muted-foreground tracking-eyebrow mb-2 text-xs font-medium uppercase">
+            {eyebrow}
+          </p>
+        )}
+        <DialogTitle className="tracking-hero text-hero leading-tight font-semibold">
+          {title}
+        </DialogTitle>
+        <DialogDescription className="mt-3 text-base">{description}</DialogDescription>
       </div>
-      <footer className="flex flex-wrap items-center justify-end gap-2 px-6 pt-4 pb-6">
-        {footer}
+      <div className="mt-10 flex min-h-0 flex-1 flex-col">{children}</div>
+      <footer className="mt-6 flex shrink-0 items-center gap-2 border-t pt-5">
+        {start}
+        <div className="ms-auto flex items-center gap-2">
+          {onBack && (
+            <Button variant="outline" disabled={busy} onClick={onBack}>
+              <ArrowLeft />
+              Back
+            </Button>
+          )}
+          <Button autoFocus disabled={disabled || busy} onClick={onClick}>
+            {busy && <Spinner className="animate-spin" />}
+            {primary.label}
+            <Kbd className="bg-primary-foreground/10 border-primary-foreground/20 text-primary-foreground/70 ms-1">
+              {mac ? "⌘⏎" : "Ctrl ⏎"}
+            </Kbd>
+          </Button>
+        </div>
       </footer>
     </>
+  );
+}
+
+function SkipButton({ label, disabled }: { label: string; disabled?: boolean }) {
+  return (
+    <Button
+      variant="ghost"
+      className="text-muted-foreground hover:text-foreground"
+      disabled={disabled}
+      onClick={skip}
+    >
+      {label}
+    </Button>
+  );
+}
+
+/** A small uppercase heading over a group of cards, with how many it holds. */
+function SectionLabel({
+  label,
+  count,
+  dot = false,
+}: {
+  label: string;
+  count: number | undefined;
+  dot?: boolean;
+}) {
+  return (
+    <div className="text-muted-foreground tracking-eyebrow flex shrink-0 items-center gap-2 text-2xs font-medium uppercase">
+      {dot && <span aria-hidden="true" className="bg-success size-1.5 shrink-0 rounded-full" />}
+      <span>{label}</span>
+      {count !== undefined && (
+        <>
+          <span aria-hidden="true" className="text-muted-foreground/60">
+            ·
+          </span>
+          <span className="tabular-nums">{count}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The corner check on a card that is set up or chosen. */
+function CardCheck({ className, label }: { className: string; label: string }) {
+  return (
+    <span
+      className={cn(
+        "absolute end-2 top-2 grid size-5 place-items-center rounded-full shadow-hairline",
+        className,
+      )}
+    >
+      <Check className="size-icon-xs" />
+      <span className="sr-only">{label}</span>
+    </span>
   );
 }
 
@@ -240,107 +380,145 @@ function AgentsStep({ onContinue }: { onContinue: () => void }) {
     if (connected) void checkAgents();
   }, [connected]);
 
-  const overviews = PROVIDERS.map((provider) => ({
-    provider,
-    overview: providers?.find((entry) => entry.provider === provider),
-  }));
-  const states = overviews.map(({ overview }) => agentState(overview));
-  const anyReady = states.includes("ready");
+  const agents = PROVIDERS.map((provider) => {
+    const overview = providers?.find((entry) => entry.provider === provider);
+    return { provider, overview, state: agentState(overview) };
+  });
+  const anyReady = agents.some((agent) => agent.state === "ready");
+  const allChecked = agents.every((agent) => agent.state !== "checking");
   // Its terminal closes by itself once the agent's state moves on (installed, signed in).
-  const settingUp = setup && states[PROVIDERS.indexOf(setup.provider)] === setup.from ? setup : null;
-  const allChecked = !states.includes("checking");
+  const settingUp =
+    setup && agents.find((agent) => agent.provider === setup.provider)?.state === setup.from
+      ? setup
+      : null;
+
+  const installed = agents.filter((agent) => agent.state !== "install");
+  const missing = agents.filter((agent) => agent.state === "install");
+  const groups = allChecked
+    ? [
+        { label: "Detected on your system", dot: true, agents: installed },
+        { label: "Not installed", dot: false, agents: missing },
+      ]
+    : [{ label: "Checking your system", dot: false, agents }];
 
   return (
     <StepBody
-      title="Your agents"
+      eyebrow="Welcome to Brigadier"
+      title="Connect your agents"
       description="Brigadier gets its work done through the coding agents on this computer, with your own subscriptions."
-      footer={
-        <>
-          {!anyReady && allChecked && (
-            <Button variant="ghost" disabled={recheck.busy} onClick={() => recheck.run(checkAgents)}>
+      start={<SkipButton label="Skip setup" />}
+      primary={{ label: "Continue", onClick: onContinue }}
+    >
+      <div className="flex min-h-0 flex-1 flex-col gap-5">
+        <div className="-m-1 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-1">
+          {groups
+            .filter((group) => group.agents.length > 0)
+            .map((group) => (
+              <section key={group.label} className="flex flex-col gap-3">
+                <SectionLabel
+                  label={group.label}
+                  dot={group.dot}
+                  count={allChecked ? group.agents.length : undefined}
+                />
+                <ul className={CARD_GRID}>
+                  {group.agents.map(({ provider, overview, state }) => (
+                    <AgentCard
+                      key={provider}
+                      provider={provider}
+                      path={overview?.status?.path ?? null}
+                      state={state}
+                      detail={agentDetail(overview)}
+                      settingUp={settingUp?.provider === provider}
+                      onSetUp={(install) =>
+                        setSetup({ provider, install, from: install ? "install" : "signIn" })
+                      }
+                    />
+                  ))}
+                </ul>
+              </section>
+            ))}
+          {settingUp && (
+            <SetupTerminal
+              key={`${settingUp.provider}:${settingUp.install}`}
+              provider={settingUp.provider}
+              install={settingUp.install}
+              onClose={() => {
+                setSetup(null);
+                void checkAgents();
+              }}
+            />
+          )}
+        </div>
+        {!anyReady && allChecked && !settingUp && (
+          <div className="bg-muted/25 rounded-surface flex shrink-0 items-center gap-3 border px-4 py-3">
+            <ExclamationMarkCircle className="text-warning size-icon-md shrink-0" />
+            <p className="min-w-0 flex-1 text-sm">
+              Sessions need at least one agent that is signed in. You can also set this up later.
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={recheck.busy}
+              onClick={() => recheck.run(checkAgents)}
+            >
               <Reload />
               Check again
             </Button>
-          )}
-          <Button autoFocus onClick={onContinue}>
-            Continue
-            <ArrowRight />
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        <ul className="bg-muted/30 rounded-surface divide-y border">
-          {overviews.map(({ provider, overview }, index) => (
-            <AgentRow
-              key={provider}
-              provider={provider}
-              state={states[index] ?? "checking"}
-              detail={agentDetail(overview)}
-              settingUp={settingUp?.provider === provider}
-              onSetUp={(install) =>
-                setSetup({ provider, install, from: install ? "install" : "signIn" })
-              }
-            />
-          ))}
-        </ul>
-        {settingUp && (
-          <SetupTerminal
-            key={`${settingUp.provider}:${settingUp.install}`}
-            provider={settingUp.provider}
-            install={settingUp.install}
-            onClose={() => {
-              setSetup(null);
-              void checkAgents();
-            }}
-          />
-        )}
-        {!anyReady && allChecked && !settingUp && (
-          <p className="text-muted-foreground text-xs">
-            Sessions need at least one agent that is signed in. You can also set this up later.
-          </p>
+          </div>
         )}
       </div>
     </StepBody>
   );
 }
 
-function AgentRow({
+function AgentCard({
   provider,
+  path,
   state,
   detail,
   settingUp,
   onSetUp,
 }: {
   provider: ProviderKind;
+  path: string | null;
   state: AgentState;
   detail: string;
   settingUp: boolean;
   onSetUp: (install: boolean) => void;
 }) {
+  const ready = state === "ready";
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
-      <ProviderGlyph provider={provider} className="size-icon-lg shrink-0" />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{PROVIDER_LABELS[provider]}</p>
-        <p className="text-muted-foreground truncate text-xs">{detail}</p>
+    <li
+      className={cn(
+        "rounded-surface relative flex min-w-0 items-start gap-2.5 border p-3.5 transition-colors",
+        ready ? "border-success/40 bg-success/5" : "bg-muted/30",
+      )}
+    >
+      {ready && <CardCheck className="bg-success text-success-foreground" label="Ready" />}
+      <span className="bg-muted grid size-7 shrink-0 place-items-center rounded-md">
+        <ProviderGlyph provider={provider} className="size-icon-md" />
+      </span>
+      <div className={cn("min-w-0 flex-1", ready && "pe-6")}>
+        <p className="truncate text-sm font-medium">{PROVIDER_LABELS[provider]}</p>
+        <p className="text-muted-foreground mt-0.5 truncate font-mono text-2xs">
+          {path ? shortPath(path) : provider}
+        </p>
+        <p className="text-muted-foreground mt-2 truncate text-xs">{detail}</p>
       </div>
-      {state === "ready" ? (
-        <span className="text-success inline-flex items-center gap-1.5 text-xs font-medium">
-          <CheckCircleFilled className="size-icon-sm" />
-          Ready
-        </span>
-      ) : state === "checking" ? (
-        <Spinner className="text-muted-foreground size-icon-sm animate-spin" />
+      {state === "checking" ? (
+        <Spinner className="text-muted-foreground size-icon-sm shrink-0 animate-spin" />
       ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={settingUp}
-          onClick={() => onSetUp(state === "install")}
-        >
-          {state === "install" ? "Install" : "Sign in"}
-        </Button>
+        !ready && (
+          <Button
+            size="xs"
+            variant="outline"
+            className="shrink-0"
+            disabled={settingUp}
+            onClick={() => onSetUp(state === "install")}
+          >
+            {state === "install" ? "Install" : "Sign in"}
+          </Button>
+        )
       )}
     </li>
   );
@@ -483,7 +661,7 @@ function suggested(candidate: ProjectCandidate, nowMs: number): boolean {
   );
 }
 
-function ProjectsStep() {
+function ProjectsStep({ onBack }: { onBack: () => void }) {
   const [candidates, setCandidates] = useState<ProjectCandidate[] | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -586,147 +764,142 @@ function ProjectsStep() {
     <StepBody
       title="Choose your projects"
       description="These are the repositories you have worked in with Claude Code and Codex. Add the ones you want to use with Brigadier."
-      footer={
-        <>
-          <Button
-            variant="ghost"
-            className="me-auto"
-            disabled={busy}
-            onClick={() => void addFolder()}
-          >
-            <FolderPlus />
-            Add a folder…
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy}
-            onClick={() =>
-              void finishOnboarding().catch((cause: unknown) => setError(errorText(cause)))
-            }
-          >
-            Skip
-          </Button>
-          <Button autoFocus disabled={busy || count === 0} onClick={() => void add()}>
-            {busy ? "Adding…" : `Add ${count} ${count === 1 ? "project" : "projects"}`}
-          </Button>
-        </>
-      }
+      start={<SkipButton label="Skip for now" disabled={busy} />}
+      onBack={onBack}
+      primary={{
+        label: busy ? "Adding…" : `Add ${count} ${count === 1 ? "project" : "projects"}`,
+        onClick: () => void add(),
+        disabled: count === 0,
+        busy,
+      }}
     >
-      {candidates === null ? (
-        <div className="text-muted-foreground flex flex-col items-center gap-3 py-10 text-sm">
-          <Spinner className="size-icon-md animate-spin" />
-          Looking for projects in your Claude Code and Codex history…
-        </div>
-      ) : candidates.length === 0 ? (
-        <p className="text-muted-foreground bg-muted/30 rounded-surface border px-4 py-6 text-center text-sm">
-          No repositories found in your Claude Code or Codex history. Add a folder to start
-          with one.
-        </p>
-      ) : (
-        <div className="flex min-h-0 flex-col gap-2">
-          <div className="text-muted-foreground flex items-center gap-1 text-xs">
-            <span role="status" className="flex-1">
-              {count} of {addable.length} selected
-            </span>
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={count === addable.length}
-              onClick={() => setSelected(new Set(addable.map((c) => c.path)))}
-            >
-              Select all
-            </Button>
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={count === 0}
-              onClick={() => setSelected(new Set())}
-            >
-              Select none
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          <SectionLabel
+            label="Found in your history"
+            dot={addable.length > 0}
+            count={candidates === null ? undefined : addable.length}
+          />
+          <div className="text-muted-foreground ms-auto flex items-center gap-1 text-xs">
+            {addable.length > 0 && (
+              <>
+                <span role="status" className="me-1">
+                  {count} selected
+                </span>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={busy || count === addable.length}
+                  onClick={() => setSelected(new Set(addable.map((c) => c.path)))}
+                >
+                  Select all
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={busy || count === 0}
+                  onClick={() => setSelected(new Set())}
+                >
+                  Select none
+                </Button>
+              </>
+            )}
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => void addFolder()}>
+              <FolderPlus />
+              Add a folder…
             </Button>
           </div>
-          <ul className="bg-muted/30 rounded-surface max-h-80 divide-y overflow-y-auto border">
+        </div>
+        {candidates === null ? (
+          <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 text-sm">
+            <Spinner className="size-icon-md animate-spin" />
+            Looking for projects in your Claude Code and Codex history…
+          </div>
+        ) : candidates.length === 0 ? (
+          <p className="text-muted-foreground bg-muted/25 rounded-surface border px-4 py-6 text-center text-sm">
+            No repositories found in your Claude Code or Codex history. Add a folder to start
+            with one.
+          </p>
+        ) : (
+          <ul className={cn(CARD_GRID, "-m-1 min-h-0 flex-1 content-start overflow-y-auto p-1")}>
             {candidates.map((candidate) => (
-              <ProjectRow
+              <ProjectCard
                 key={candidate.path}
                 candidate={candidate}
                 nowMs={nowMs}
-                checked={candidate.projectId !== null || selected.has(candidate.path)}
-                disabled={busy || candidate.projectId !== null}
-                onCheckedChange={(on) => toggle(candidate.path, on)}
+                selected={selected.has(candidate.path)}
+                disabled={busy}
+                onToggle={() => toggle(candidate.path, !selected.has(candidate.path))}
               />
             ))}
           </ul>
-        </div>
-      )}
-      {error && (
-        <p role="alert" className="text-destructive text-xs whitespace-pre-wrap">
-          {error}
-        </p>
-      )}
+        )}
+        {error && (
+          <p role="alert" className="text-destructive shrink-0 text-xs whitespace-pre-wrap">
+            {error}
+          </p>
+        )}
+      </div>
     </StepBody>
   );
 }
 
-function ProjectRow({
+function ProjectCard({
   candidate,
   nowMs,
-  checked,
+  selected,
   disabled,
-  onCheckedChange,
+  onToggle,
 }: {
   candidate: ProjectCandidate;
   nowMs: number;
-  checked: boolean;
+  selected: boolean;
   disabled: boolean;
-  onCheckedChange: (checked: boolean) => void;
+  onToggle: () => void;
 }) {
-  const id = `project-${candidate.path}`;
   const added = candidate.projectId !== null;
+  const on = added || selected;
   const activity =
     candidate.sessions > 0
       ? `${candidate.sessions} ${candidate.sessions === 1 ? "session" : "sessions"} · ${formatAgo(candidate.lastActiveMs, nowMs)}`
       : null;
   return (
-    <li>
-      <label
-        htmlFor={id}
+    <li className="min-w-0">
+      <button
+        type="button"
+        aria-pressed={on}
+        disabled={disabled || added}
+        onClick={onToggle}
         className={cn(
-          "flex items-center gap-3 px-4 py-2.5",
-          disabled ? "cursor-default" : "hover:bg-accent/40 cursor-pointer",
+          "rounded-surface focus-visible:ring-ring/50 relative flex w-full min-w-0 flex-col gap-2 border p-3.5 text-start transition-colors outline-none focus-visible:ring-1",
+          on
+            ? "border-primary/50 bg-primary/5 ring-primary/20 ring-2"
+            : "bg-muted/30 hover:bg-muted/60",
+          added ? "cursor-default opacity-60" : "disabled:cursor-default",
         )}
       >
-        <CheckboxPrimitive.Root
-          id={id}
-          checked={checked}
-          disabled={disabled}
-          onCheckedChange={(state) => onCheckedChange(state === true)}
-          className="border-input data-[state=checked]:bg-primary data-[state=checked]:border-primary data-[state=checked]:text-primary-foreground focus-visible:ring-ring/50 flex size-icon-md shrink-0 items-center justify-center rounded-xs border outline-none focus-visible:ring-1 disabled:opacity-60"
-        >
-          <CheckboxPrimitive.Indicator>
-            <Check className="size-icon-xs" />
-          </CheckboxPrimitive.Indicator>
-        </CheckboxPrimitive.Root>
-        <div className="min-w-0 flex-1">
+        {on && (
+          <CardCheck
+            className="bg-primary text-primary-foreground"
+            label={added ? "Added" : "Selected"}
+          />
+        )}
+        <div className="min-w-0 pe-6">
           <p className="truncate text-sm font-medium">{candidate.name}</p>
-          <p className="text-muted-foreground truncate font-mono text-xs">
+          <p className="text-muted-foreground mt-0.5 truncate font-mono text-2xs">
             {shortPath(candidate.path)}
           </p>
         </div>
-        {candidate.providers.length > 0 && (
-          <span className="flex shrink-0 items-center gap-1.5">
-            {candidate.providers.map((provider) => (
-              <span key={provider} title={PROVIDER_LABELS[provider]} className="flex">
-                <ProviderGlyph provider={provider} className="size-icon-sm" />
-                <span className="sr-only">{PROVIDER_LABELS[provider]}</span>
-              </span>
-            ))}
-          </span>
-        )}
-        <span className="text-muted-foreground w-40 shrink-0 text-end text-xs whitespace-nowrap">
-          {added ? "Added" : activity}
-        </span>
-      </label>
+        <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
+          {candidate.providers.map((provider) => (
+            <span key={provider} title={PROVIDER_LABELS[provider]} className="flex shrink-0">
+              <ProviderGlyph provider={provider} className="size-icon-sm" />
+              <span className="sr-only">{PROVIDER_LABELS[provider]}</span>
+            </span>
+          ))}
+          <span className="truncate">{added ? "Already added" : activity}</span>
+        </div>
+      </button>
     </li>
   );
 }
