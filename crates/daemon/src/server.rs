@@ -1190,12 +1190,17 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             daemon.runtime.refresh_providers(provider);
             Response::RefreshProviders
         }
-        // The quota monitor, registry and router behind these land with the rest of Phase 5
-        // (see the S0 contract commit); until then they answer that they aren't ready.
-        Request::GetUsage { .. } | Request::PreviewRoutes { .. } | Request::CheckRegistry => {
-            return Err(IpcError::from(brigadier_core::Error::Invalid(
-                "routing and usage aren't connected in this build yet".into(),
-            )));
+        Request::GetUsage { project_id } => Response::GetUsage {
+            usage: Box::new(daemon.sessions.usage_view(project_id).await?),
+        },
+        Request::PreviewRoutes { project_id, areas } => Response::PreviewRoutes {
+            routes: daemon.sessions.preview_routes(project_id, areas).await,
+        },
+        Request::CheckRegistry => {
+            crate::registry::check(daemon).await;
+            Response::CheckRegistry {
+                registry: daemon.runtime.registry().info(),
+            }
         }
         #[cfg(debug_assertions)]
         Request::DebugInjectLimit {

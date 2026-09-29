@@ -28,6 +28,7 @@ mod idle;
 mod logging;
 mod metrics;
 mod quit;
+mod registry;
 mod server;
 mod storage;
 mod supervisor;
@@ -322,6 +323,7 @@ async fn run(
     supervisor.spawn(awake.clone().run(stopping.clone()));
     supervisor.spawn(idle::exit_when_idle(daemon.clone(), stopping.clone()));
     supervisor.spawn(storage::housekeeping(daemon.clone(), stopping.clone()));
+    supervisor.spawn(registry::keep_current(daemon.clone(), stopping.clone()));
     tracing::info!("brigadierd ready");
 
     let reason = tokio::select! {
