@@ -7,18 +7,19 @@ import {
   AgentsPanelContext,
   glyphTone,
   useWorkerName,
-  WorkerChip,
   WorkerGlyph,
 } from "@/app/conversation/WorkerChip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DiffStat, Task } from "@/ipc/generated";
+import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { refreshWorkerDiffs } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
 /**
  * The session's workers summed up: rows of glyph, name, state and +N −N in the pinned summary's
- * Workers section, and of chip, state and +N −N on the composer's background-workers strip.
+ * Workers section and on the composer's background-workers strip.
  */
 
 /** What a worker is at, in plain words ("is working", "is awaiting instruction"). */
@@ -47,12 +48,16 @@ export function stateLine(task: Task): string {
   }
 }
 
-/** "+12 −3", once there is a change. */
-export const Changes: FC<{ insertions: number; deletions: number }> = ({ insertions, deletions }) =>
+/** "+12 −3", once there is a change; `monochrome` for a total, in the text's colour. */
+export const Changes: FC<{ insertions: number; deletions: number; monochrome?: boolean }> = ({
+  insertions,
+  deletions,
+  monochrome = false,
+}) =>
   insertions + deletions > 0 ? (
     <span className="shrink-0 font-mono text-xs tabular-nums">
-      <span className="text-success">+{insertions}</span>{" "}
-      <span className="text-destructive">−{deletions}</span>
+      <span className={cn(!monochrome && "text-success")}>+{insertions}</span>{" "}
+      <span className={cn(!monochrome && "text-destructive")}>−{deletions}</span>
     </span>
   ) : null;
 
@@ -168,10 +173,11 @@ export const WorkerSummaryRow = memo(function WorkerSummaryRow({
 });
 
 /**
- * One worker on the composer's background-workers strip: its chip, which opens it, then its
- * state and +N −N.
+ * One worker on the composer's background-workers strip: its glyph, name and state in words
+ * ("is working" live while it works) as one quiet button that opens it, its kind and model on
+ * hover, then its +N −N.
  */
-export const WorkerChipRow = memo(function WorkerChipRow({
+export const WorkerStripRow = memo(function WorkerStripRow({
   taskId,
   className,
 }: {
@@ -179,17 +185,53 @@ export const WorkerChipRow = memo(function WorkerChipRow({
   className?: string;
 }) {
   const task = useBoard((s) => s.board?.tasks[taskId]);
+  const name = useWorkerName(taskId);
+  const { setPanel } = useContext(AgentsPanelContext);
+  const groups = useModelGroups();
   if (!task) return null;
+  const choice = task.route.choice;
   return (
     <div
-      data-slot="worker-chip-row"
+      data-slot="worker-strip-row"
       data-state={task.state}
-      className={cn("flex h-control-sm min-w-0 items-center gap-2 text-sm", className)}
+      className={cn("flex min-h-control-sm min-w-0 items-center gap-2 text-sm", className)}
     >
-      <span className="flex min-w-0 flex-1">
-        <WorkerChip taskId={task.id} />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => setPanel(task.id)}
+            className="hover:bg-foreground/5 rounded-control focus-visible:ring-ring/50 -mx-1 flex h-control-xs min-w-0 items-center gap-1.5 px-1 text-start outline-none transition-colors focus-visible:ring-1"
+          >
+            <WorkerGlyph taskId={task.id} tone={glyphTone(task.state)} className="size-icon-sm" />
+            <span className="text-foreground min-w-0 truncate">{name}</span>
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap",
+                isWorking(task)
+                  ? "shimmer"
+                  : task.state === "failed"
+                    ? "text-destructive"
+                    : "text-muted-foreground",
+              )}
+            >
+              {stateLine(task)}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="flex-col gap-0.5">
+          <span>
+            task-{task.number} · {task.kind}
+          </span>
+          <span className="text-muted-foreground text-xs">
+            Uses {modelName(groups, choice)}
+            {choice.effort && ` · ${choice.effort}`}
+          </span>
+        </TooltipContent>
+      </Tooltip>
+      <span className="ms-auto">
+        <WorkerChanges task={task} />
       </span>
-      <RowState task={task} />
     </div>
   );
 });

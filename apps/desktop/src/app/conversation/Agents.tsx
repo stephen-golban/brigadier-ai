@@ -116,7 +116,7 @@ export const WorkerStepRow = memo(function WorkerStepRow({
     <div
       data-slot="worker-step"
       data-kind={kind}
-      className="text-foreground flex min-h-row-sm min-w-0 items-center gap-1.5 text-sm"
+      className="text-muted-foreground flex min-h-row-sm min-w-0 items-center gap-1.5 text-sm"
     >
       {ids.length === 1 ? (
         <WorkerMention taskId={first} tone={tone} />
@@ -130,7 +130,7 @@ export const WorkerStepRow = memo(function WorkerStepRow({
             <button
               type="button"
               onClick={() => setPanel(null)}
-              className="hover:text-muted-foreground transition-colors"
+              className="hover:text-foreground transition-colors"
             >
               {others} other {others === 1 ? "worker" : "workers"}
             </button>{" "}

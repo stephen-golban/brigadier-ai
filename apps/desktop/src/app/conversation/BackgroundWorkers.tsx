@@ -1,20 +1,22 @@
-import { ChevronRight } from "@openai/apps-sdk-ui/components/Icon";
-import type { FC } from "react";
+import { Agent, ChevronRight, Stop } from "@openai/apps-sdk-ui/components/Icon";
+import { type FC, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { isFinal } from "@/app/conversation/blocks";
 import { useAction } from "@/app/conversation/useAction";
-import { Changes, WorkerChipRow, workerStat } from "@/app/conversation/WorkerSummary";
+import { Changes, WorkerStripRow, workerStat } from "@/app/conversation/WorkerSummary";
+import { ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
-import { ComposerRailItem } from "@/components/assistant-ui/elements/composer-rail";
 
 /**
- * The "N background agents" strip on the composer: while any worker of the session is still
- * at work, the workers of those requests as chips (one opens its worker), what each is doing
- * and its +N −N, with the total and Stop all.
+ * The "N background workers" strip on the composer: while any worker of the session is still
+ * at work, a line with how many, their total +N −N, Stop all and a chevron; opened, the
+ * workers of those requests, one per row (glyph, name and what it is at, which opens it), and
+ * the hint to tag them.
  */
 export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversationId }) => {
   const tasks = useBoard(
@@ -24,6 +26,7 @@ export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversation
   );
   const diffs = useBoard((s) => s.board?.diffs);
   const action = useAction();
+  const [open, setOpen] = useState(false);
   const alive = tasks.filter((task) => !isFinal(task));
   if (alive.length === 0) return null;
   const requests = new Set(alive.map((task) => task.requestId));
@@ -33,44 +36,61 @@ export const BackgroundWorkers: FC<{ conversationId: string }> = ({ conversation
   const stats = listed.flatMap((task) => workerStat(task, diffs) ?? []);
   const insertions = stats.reduce((sum, stat) => sum + stat.insertions, 0);
   const deletions = stats.reduce((sum, stat) => sum + stat.deletions, 0);
+  const summary = `${alive.length} background ${alive.length === 1 ? "worker" : "workers"}`;
 
   return (
     <ComposerRailItem label="Background workers">
-      <Collapsible data-slot="background-workers" className="px-3 py-1.5 text-sm">
-        <div className="flex min-h-control-sm items-center gap-2">
-          <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground flex min-w-0 flex-1 items-center gap-1 text-start">
-            <ChevronRight
-              aria-hidden
-              className="size-icon-xs shrink-0 transition-[rotate] group-data-[state=open]:rotate-90"
-            />
-            <span className="truncate">
-              {alive.length} background {alive.length === 1 ? "worker" : "workers"}
-              <span className="text-muted-foreground/70"> (@ to tag workers)</span>
+      <Collapsible
+        open={open}
+        onOpenChange={setOpen}
+        data-slot="background-workers"
+        className="px-2.5 py-0.5 text-sm"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <CollapsibleTrigger className="text-muted-foreground flex min-h-control-sm min-w-0 flex-1 items-center gap-2 text-start">
+            <Agent aria-hidden className="text-muted-foreground/70 size-icon-xs shrink-0" />
+            <span className="min-w-0 flex-1 truncate">
+              {summary}
+              {open && <span className="text-muted-foreground/70"> (@ to tag workers)</span>}
             </span>
           </CollapsibleTrigger>
-          <Changes insertions={insertions} deletions={deletions} />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                disabled={action.busy}
-                onClick={() => action.run(() => Promise.all(alive.map((task) => stopTask(task.id))))}
-                className="text-muted-foreground hover:text-foreground shrink-0 transition-colors disabled:opacity-50"
-              >
-                Stop all
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top">Stop all workers in this session</TooltipContent>
-          </Tooltip>
+          <div className="flex shrink-0 items-center gap-1">
+            <Changes insertions={insertions} deletions={deletions} monochrome />
+            <TooltipIconButton
+              tooltip="Stop all workers in this session"
+              side="top"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-foreground"
+              disabled={action.busy}
+              onClick={() => action.run(() => Promise.all(alive.map((task) => stopTask(task.id))))}
+            >
+              <Stop className="size-icon-xs" />
+            </TooltipIconButton>
+            <TooltipIconButton
+              tooltip={open ? "Hide background workers" : "Show background workers"}
+              side="top"
+              size="icon-sm"
+              aria-expanded={open}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setOpen(!open)}
+            >
+              <ChevronRight
+                className={cn(
+                  "size-icon-xs transition-transform duration-300 motion-reduce:transition-none",
+                  open && "rotate-90",
+                )}
+              />
+            </TooltipIconButton>
+          </div>
         </div>
         {action.error && (
           <p role="alert" className="text-destructive text-xs">
             {action.error}
           </p>
         )}
-        <CollapsibleContent className="flex flex-col">
+        <CollapsibleContent className="data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up flex flex-col overflow-hidden pb-1">
           {listed.map((task) => (
-            <WorkerChipRow key={task.id} taskId={task.id} className="px-1" />
+            <WorkerStripRow key={task.id} taskId={task.id} className="ps-5" />
           ))}
         </CollapsibleContent>
       </Collapsible>

@@ -4,11 +4,12 @@ import { memo, type ReactNode, useState } from "react";
 import { ArtifactDialog } from "@/app/conversation/ArtifactDialog";
 import { DiffStatView, Lines, Section, short } from "@/app/conversation/cards/common";
 import { useAction } from "@/app/conversation/useAction";
-import { TASK_STATE_LABELS, WorkerChip } from "@/app/conversation/WorkerChip";
+import { TASK_STATE_LABELS, WorkerChip, WorkerMention } from "@/app/conversation/WorkerChip";
 import { WorkerTranscript } from "@/app/conversation/WorkerTranscript";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
 import { mono } from "@/components/assistant-ui/elements/surfaces";
-import { TaskCard, type TaskCardState } from "@/components/assistant-ui/elements/task-card";
+import { TaskCard } from "@/components/assistant-ui/elements/task-card";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,26 +25,39 @@ import { cn } from "@/lib/utils";
 import { pauseTask, restoreKeptWork, resumeTask, stopTask } from "@/state/actions";
 import { useBoard } from "@/state/board";
 
-const CARD_STATES: Record<TaskState, TaskCardState> = {
-  queued: "waiting",
-  starting: "working",
-  running: "working",
-  blocked: "waiting",
-  paused: "paused",
-  reported: "working",
-  reviewing: "working",
-  awaitingApproval: "waiting",
-  readyToLand: "waiting",
-  landed: "done",
-  done: "done",
-  rejected: "cancelled",
-  stopped: "cancelled",
+/** What a worker is at, after its name in its row ("[Add tests] failed"). */
+const STATUS: Record<TaskState, string> = {
+  queued: "is queued",
+  starting: "is starting",
+  running: "is working",
+  blocked: "is blocked",
+  paused: "is paused",
+  reported: "reported",
+  reviewing: "is in review",
+  awaitingApproval: "is waiting for your approval",
+  readyToLand: "is ready to land",
+  landed: "landed",
+  done: "finished",
+  rejected: "was turned down",
+  stopped: "was interrupted",
   failed: "failed",
 };
 
-/** How a task's state shows on its card and chip. */
-export function taskCardState(state: TaskState): TaskCardState {
-  return CARD_STATES[state];
+/**
+ * The colour of a status: red for a failure, amber for a wait on the user, else grey that
+ * brightens while its row is hovered.
+ */
+function statusTone(state: TaskState): string {
+  switch (state) {
+    case "failed":
+      return "text-destructive";
+    case "blocked":
+    case "awaitingApproval":
+    case "readyToLand":
+      return "text-warning";
+    default:
+      return "text-muted-foreground group-hover/task-header:text-foreground transition-colors";
+  }
 }
 
 /** States in which a worker (or its task) can still be stopped. */
@@ -64,18 +78,15 @@ export function isStoppable(task: Task): boolean {
   return ACTIVE.has(task.state);
 }
 
-/** One worker, read from the open board by id so only its own updates rerender it. */
-export const TaskCardView = memo(function TaskCardView({
-  taskId,
-  standalone = false,
-}: {
-  taskId: string;
-  /** On its own in the workers panel, which names the worker: always open, no toggle. */
-  standalone?: boolean;
-}) {
+/**
+ * One worker's row in the thread, read from the open board by id so only its own updates
+ * rerender it: its chip and what it is at, what needs the user under it, and its details
+ * (number, kind, model, report, workspace) when opened.
+ */
+export const TaskCardView = memo(function TaskCardView({ taskId }: { taskId: string }) {
   const task = useBoard((s) => s.board?.tasks[taskId]);
   const activity = useBoard((s) => s.board?.activity[taskId]);
-  const [open, setOpen] = useState(standalone);
+  const [open, setOpen] = useState(false);
   const groups = useModelGroups();
   if (!task) return null;
 
@@ -87,31 +98,34 @@ export const TaskCardView = memo(function TaskCardView({
   return (
     <TaskCard
       data-task={`task-${task.number}`}
+      data-state={task.state}
       label={task.title}
-      state={CARD_STATES[task.state]}
-      stateLabel={TASK_STATE_LABELS[task.state]}
-      badges={
-        <>
-          <Badge variant="outline">{task.kind}</Badge>
-          <Badge variant={task.state === "failed" ? "destructive" : "secondary"}>
-            {TASK_STATE_LABELS[task.state]}
-          </Badge>
-        </>
+      name={<WorkerMention taskId={task.id} />}
+      status={
+        <span
+          className={cn(
+            "min-w-0 truncate",
+            // While it works, what it does right now, live.
+            working ? "shimmer" : statusTone(task.state),
+          )}
+        >
+          {working && activity ? activity : STATUS[task.state]}
+        </span>
       }
-      meta={`task-${task.number} · ${model}`}
-      activity={working ? activity : undefined}
       actions={actions || undefined}
       result={taskResult(task)}
       open={open}
       onOpenChange={setOpen}
-      standalone={standalone}
     >
+      <p className="text-muted-foreground text-xs">
+        task-{task.number} · {task.kind} · {TASK_STATE_LABELS[task.state]}
+      </p>
       <TaskDetails task={task} model={model} />
     </TaskCard>
   );
 });
 
-/** Pause or resume a worker, or stop it, while it is active. */
+/** Pause or resume a worker, or stop it, while it is active: quiet icon buttons at its row's end. */
 export function TaskActions({ task }: { task: Task }) {
   const action = useAction();
   if (!ACTIVE.has(task.state)) return null;
@@ -119,67 +133,56 @@ export function TaskActions({ task }: { task: Task }) {
   const codex = task.route.choice.provider === "codex";
   return (
     <>
+      {action.error && (
+        <span role="alert" className="text-destructive max-w-xs truncate text-xs" title={action.error}>
+          {action.error}
+        </span>
+      )}
       {task.state === "paused" ? (
-        <Button
-          size="xs"
-          variant="outline"
+        <TooltipIconButton
+          tooltip="Resume"
+          side="top"
+          size="icon-xs"
+          className="text-muted-foreground hover:text-foreground"
           disabled={action.busy}
           onClick={() => action.run(() => resumeTask(task.id))}
         >
           <Play />
-          Resume
-        </Button>
+        </TooltipIconButton>
       ) : (
         working && (
-          <Button
-            size="xs"
-            variant="outline"
+          <TooltipIconButton
+            tooltip={codex ? "Pause (Codex lets its current command finish first)" : "Pause"}
+            side="top"
+            size="icon-xs"
+            className="text-muted-foreground hover:text-foreground"
             disabled={action.busy}
             onClick={() => action.run(() => pauseTask(task.id))}
           >
             <Pause />
-            Pause
-          </Button>
+          </TooltipIconButton>
         )
       )}
-      <Button
-        size="xs"
-        variant="outline"
+      <TooltipIconButton
+        tooltip="Stop"
+        side="top"
+        size="icon-xs"
+        className="text-muted-foreground hover:text-foreground"
         disabled={action.busy}
         onClick={() => action.run(() => stopTask(task.id))}
       >
         <Stop />
-        Stop
-      </Button>
-      {working && codex && (
-        <span className="text-muted-foreground text-xs">
-          Pausing Codex lets its current command finish first.
-        </span>
-      )}
-      {action.error && (
-        <span role="alert" className="text-destructive text-xs">
-          {action.error}
-        </span>
-      )}
+      </TooltipIconButton>
     </>
   );
 }
 
-/** The one-line outcome under the card: why it waits, what it reported, where it landed. */
+/** What needs the user, under the row whether it is open or not: why it waits, why it failed. */
 function taskResult(task: Task): ReactNode {
   if (task.blockedReason) {
     return <span className="text-warning">{task.blockedReason}</span>;
   }
   if (task.error) return <span className="text-destructive">{task.error}</span>;
-  if (task.landed) {
-    return (
-      <span>
-        Landed as <span className="font-mono">{short(task.landed)}</span>
-        {task.workspace?.target && ` on ${task.workspace.target}`}
-      </span>
-    );
-  }
-  if (task.report) return <span className="line-clamp-2">{task.report.summary}</span>;
   return undefined;
 }
 
