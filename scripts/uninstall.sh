@@ -288,7 +288,7 @@ branches=$(
 HANDLED_BRANCHES=()
 while IFS=$'\037' read -r repo branch target tip worktree; do
   [[ "$branch" = brigadier/* ]] || continue
-  [[ "$branch" =~ ^brigadier/[A-Za-z0-9._/-]+$ && "$branch" != *..* ]] || { uncertain "unsafe branch name: $branch"; continue; }
+  git check-ref-format "refs/heads/$branch" 2>/dev/null || { uncertain "unsafe branch name: $branch"; continue; }
   # A task whose session record is gone: its worktree's ledger record names the repository.
   if [[ -z "$repo" && -n "$worktree" ]]; then
     for item in "${WORKTREES[@]}"; do
@@ -307,7 +307,7 @@ while IFS=$'\037' read -r repo branch target tip worktree; do
   manual="git -C '$repo' branch -D '$branch'"
   if [[ -n "$tip" && "$current" != "$tip" ]]; then
     kept "branch $branch changed since Brigadier recorded it; delete manually if wanted: $manual"
-  elif [[ ! "$target" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
+  elif [[ -z "$target" || "$target" = -* ]] || ! git check-ref-format "refs/heads/$target" 2>/dev/null; then
     uncertain "branch $branch has no recorded target; kept. Delete manually if wanted: $manual"
   elif ! target_tip=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$target^{commit}" 2>/dev/null); then
     uncertain "branch $branch: its target $target is gone; kept. Delete manually if wanted: $manual"
