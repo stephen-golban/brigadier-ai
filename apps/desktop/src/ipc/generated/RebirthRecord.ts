@@ -14,7 +14,22 @@ generation: number, trigger: RebirthTrigger, provider: ProviderKind, model: stri
 /**
  * The outgoing CLI's context when the handoff started.
  */
-atTokens: number, windowTokens: number | null, prepareStartedAtMs: number, swappedAtMs: number, 
+atTokens: number, windowTokens: number | null, prepareStartedAtMs: number, 
+/**
+ * When the handoff note was ready; `None` without a note being prepared, and in records
+ * made before this was kept.
+ */
+handoffReadyAtMs: number | null, 
+/**
+ * When the swap began: the next turn was due and the old CLI was retired. The time from
+ * the note being ready until then is spent waiting for that turn, not working. `None` in
+ * records made before this was kept.
+ */
+swapStartedAtMs: number | null, 
+/**
+ * When the briefing was ready for the new CLI.
+ */
+swappedAtMs: number, 
 /**
  * The outgoing orchestrator's handoff note (blob hash); `None` if it could not write one.
  */

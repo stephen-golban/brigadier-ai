@@ -111,6 +111,16 @@ pub struct RebirthRecord {
     pub at_tokens: i64,
     pub window_tokens: Option<i64>,
     pub prepare_started_at_ms: i64,
+    /// When the handoff note was ready; `None` without a note being prepared, and in records
+    /// made before this was kept.
+    #[serde(default)]
+    pub handoff_ready_at_ms: Option<i64>,
+    /// When the swap began: the next turn was due and the old CLI was retired. The time from
+    /// the note being ready until then is spent waiting for that turn, not working. `None` in
+    /// records made before this was kept.
+    #[serde(default)]
+    pub swap_started_at_ms: Option<i64>,
+    /// When the briefing was ready for the new CLI.
     pub swapped_at_ms: i64,
     /// The outgoing orchestrator's handoff note (blob hash); `None` if it could not write one.
     pub handoff_blob: Option<String>,

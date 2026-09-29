@@ -1139,6 +1139,7 @@ impl SessionManager {
             // A session that cannot resume its CLI starts from a Recovery briefing.
             let briefing = briefing.or_else(|| {
                 (reseed && session).then(|| BriefingPlan {
+                    swap_started_at_ms: now_ms(),
                     trigger: RebirthTrigger::Recovery,
                     prep: None,
                     at_tokens: state.context.map_or(0, |(used, _)| used),
@@ -2340,6 +2341,7 @@ impl SessionManager {
             state.closing = true;
             (prep, state.cli.take())
         };
+        let swap_started_at_ms = now_ms();
         if !prep.ready() {
             prep.note(rebirth::HANDOFF_WAIT).await;
         }
@@ -2358,6 +2360,7 @@ impl SessionManager {
             at_tokens: prep.at_tokens,
             window: prep.window,
             prep: Some(prep),
+            swap_started_at_ms,
         });
     }
 

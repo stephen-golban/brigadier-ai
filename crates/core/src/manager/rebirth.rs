@@ -14,7 +14,7 @@
 //! the same way, from a Recovery briefing without a note.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use brigadier_brain::{BrainQuery, Node, NodeFilter, NodeKind, Origin as NodeOrigin};
@@ -106,6 +106,8 @@ pub(crate) struct RebirthPrep {
     pub old_native_id: Option<String>,
     /// The context passed the swap threshold.
     pub due: AtomicBool,
+    /// When the fork finished (0 until then).
+    ready_at_ms: AtomicI64,
     note: watch::Receiver<Option<Option<String>>>,
 }
 
@@ -113,6 +115,11 @@ impl RebirthPrep {
     /// The fork finished (with a note or without one).
     pub fn ready(&self) -> bool {
         self.note.borrow().is_some()
+    }
+
+    /// When the fork finished, once it has.
+    pub fn ready_at_ms(&self) -> Option<i64> {
+        Some(self.ready_at_ms.load(Ordering::Acquire)).filter(|at| *at > 0)
     }
 
     /// The note, waiting at most `limit` for it.
@@ -129,6 +136,8 @@ pub(crate) struct BriefingPlan {
     pub prep: Option<Arc<RebirthPrep>>,
     pub at_tokens: i64,
     pub window: Option<i64>,
+    /// When the swap began: the old CLI was retired from here on.
+    pub swap_started_at_ms: i64,
 }
 
 /// A briefing section while it is put together.
@@ -182,9 +191,10 @@ impl SessionManager {
             window,
             old_native_id: native_id.clone(),
             due: AtomicBool::new(false),
+            ready_at_ms: AtomicI64::new(0),
             note,
         });
-        let (manager, id) = (self.arc(), id.clone());
+        let (manager, id, ready) = (self.arc(), id.clone(), prep.clone());
         self.spawn(async move {
             let written = match native_id {
                 Some(native_id) => manager.write_handoff(&id, provider, choice, native_id).await,
@@ -197,6 +207,7 @@ impl SessionManager {
                 let generation = manager.rebirths(&id).await + 1;
                 manager.keep_handoff_decisions(&id, note, generation).await;
             }
+            ready.ready_at_ms.store(now_ms(), Ordering::Release);
             let _ = done.send(Some(written));
         });
         prep
@@ -459,7 +470,9 @@ impl SessionManager {
             prepare_started_at_ms: plan
                 .prep
                 .as_ref()
-                .map_or_else(now_ms, |prep| prep.started_at_ms),
+                .map_or(plan.swap_started_at_ms, |prep| prep.started_at_ms),
+            handoff_ready_at_ms: plan.prep.as_ref().and_then(|prep| prep.ready_at_ms()),
+            swap_started_at_ms: Some(plan.swap_started_at_ms),
             swapped_at_ms: now_ms(),
             handoff_blob,
             briefing_blob,

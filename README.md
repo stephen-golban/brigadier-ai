@@ -313,7 +313,8 @@ nothing outside the project.
   is forked to write a handoff note; between two turns a fresh CLI takes over from a briefing of
   15–25k tokens (the note, every decision of the session, the live board, a Brain digest and
   the latest messages verbatim), and `search_transcript` reaches the rest. You see one
-  conversation; the Inspector's Orchestrator tab has the rebirth log.
+  conversation; the Inspector's Orchestrator tab has the rebirth log, which times each rebirth's
+  work (the handoff note and the swap) apart from the wait for the next turn.
 - **Personal Brain.** Preferences that hold in every project, from the orchestrator or from a
   Chat (`save_memory`, shown as Memory chips), are given to new orchestrators and Chats.
   Settings lists them. A project's conventions can be exported to a marked section of its

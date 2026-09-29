@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { request } from "@/ipc/client";
 import type { RebirthRecord } from "@/ipc/generated";
-import { formatClock, formatMs } from "@/lib/format";
+import { formatClock, formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 function errorText(error: unknown): string {
@@ -60,9 +60,61 @@ const TRIGGERS: Record<RebirthRecord["trigger"], string> = {
   recovery: "recovery",
 };
 
+/** A wait shorter than this is not worth a mention. */
+const WAIT_SHOWN_MS = 1000;
+
+/**
+ * Where a rebirth's time went: writing the handoff note, then the swap (the old CLI retired,
+ * the briefing built for the new one), and between them the wait for the orchestrator's next
+ * turn, which is idle time, not work. A record made before the swap's start was kept has only
+ * the whole span.
+ */
+type RebirthTimes =
+  | { kind: "split"; note: number | null; swap: number; waited: number }
+  | { kind: "span"; span: number };
+
+function rebirthTimes(record: RebirthRecord): RebirthTimes {
+  const swapStarted = record.swapStartedAtMs;
+  if (swapStarted === null) {
+    return { kind: "span", span: record.swappedAtMs - record.prepareStartedAtMs };
+  }
+  const ready = record.handoffReadyAtMs;
+  if (ready === null) {
+    return { kind: "split", note: null, swap: record.swappedAtMs - swapStarted, waited: 0 };
+  }
+  // A swap that could not wait any longer began before the note was ready and waited for it.
+  return {
+    kind: "split",
+    note: ready - record.prepareStartedAtMs,
+    swap: record.swappedAtMs - Math.max(swapStarted, ready),
+    waited: Math.max(0, swapStarted - ready),
+  };
+}
+
+/** Rebirth steps take seconds; tenths are enough. */
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function tookText(times: RebirthTimes): string {
+  if (times.kind === "span") return `prepared to swapped in ${seconds(times.span)}`;
+  const work = (times.note ?? 0) + times.swap;
+  const waited =
+    times.waited >= WAIT_SHOWN_MS ? ` · waited ${formatDuration(times.waited)} for the next turn` : "";
+  return `took ${seconds(work)}${waited}`;
+}
+
 function RebirthDetail({ record }: { record: RebirthRecord }) {
+  const times = rebirthTimes(record);
   return (
     <div className="flex flex-col gap-2 px-3 pb-3">
+      {times.kind === "split" && (
+        <p className="text-muted-foreground tabular-nums">
+          {times.note !== null && `handoff note ${seconds(times.note)} · `}
+          swap {seconds(times.swap)}
+          {times.waited >= WAIT_SHOWN_MS && " · the wait for the next turn is not counted"}
+        </p>
+      )}
       <p className="text-muted-foreground">
         {record.provider}
         {record.model && ` · ${record.model}`}
@@ -106,7 +158,6 @@ function RebirthDetail({ record }: { record: RebirthRecord }) {
 function RebirthRowView({ row }: { row: RebirthRow }) {
   const [open, setOpen] = useState(false);
   const { record } = row;
-  const took = record.swappedAtMs - record.prepareStartedAtMs;
   return (
     <li className="border-b last:border-b-0">
       <button
@@ -130,7 +181,7 @@ function RebirthRowView({ row }: { row: RebirthRow }) {
         <span className="text-muted-foreground ps-5 tabular-nums">
           at {formatTokens(record.atTokens)} tokens · briefing {formatTokens(record.briefingTokens)} ·{" "}
           {record.decisions} decisions ({record.decisionsInFull} in full) · {record.recentMessages} recent
-          messages · took {formatMs(took)}
+          messages · {tookText(rebirthTimes(record))}
         </span>
       </button>
       {open && <RebirthDetail record={record} />}
