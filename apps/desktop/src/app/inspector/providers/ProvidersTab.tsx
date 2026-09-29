@@ -187,14 +187,17 @@ function ProviderCard({ overview }: { overview: ProviderOverview }) {
             ? "Not checked yet"
             : `Checked ${formatDateTime(overview.checkedAtMs)}`}
         </span>
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={simulate.busy}
-          onClick={() => void simulate.run(() => simulateUsageLimit(overview.provider))}
-        >
-          Simulate usage limit
-        </Button>
+        {/* Development builds only: the daemon answers it in debug builds alone. */}
+        {import.meta.env.DEV && (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={simulate.busy}
+            onClick={() => void simulate.run(() => simulateUsageLimit(overview.provider))}
+          >
+            Simulate usage limit
+          </Button>
+        )}
       </div>
       <ActionError error={simulate.error} />
     </div>
@@ -389,7 +392,7 @@ function SessionList() {
     <Section title="Raw sessions">
       {sessions.length === 0 ? (
         <p className="text-muted-foreground text-xs">
-          None yet. Start one above, replay a fixture or simulate a usage limit.
+          None yet. Start one above{import.meta.env.DEV ? ", replay a fixture or simulate a usage limit" : " or replay a fixture"}.
         </p>
       ) : (
         <ul className="flex flex-col">

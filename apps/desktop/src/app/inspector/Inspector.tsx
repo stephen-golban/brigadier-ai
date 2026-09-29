@@ -7,6 +7,7 @@ import { OrchestratorTab } from "@/app/inspector/OrchestratorTab";
 import { PerformanceTab } from "@/app/inspector/PerformanceTab";
 import { ProcessesTab } from "@/app/inspector/ProcessesTab";
 import { ProvidersTab } from "@/app/inspector/providers/ProvidersTab";
+import { RoutingTab } from "@/app/inspector/RoutingTab";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -20,14 +21,15 @@ function isTab(value: string): value is InspectorTab {
     value === "brain" ||
     value === "processes" ||
     value === "performance" ||
-    value === "providers"
+    value === "providers" ||
+    value === "routing"
   );
 }
 
 /**
  * Developer view: live event stream, the open session's orchestrator context, the Project
  * Brains, processes,
- * metrics against the §4 budgets, and raw provider sessions.
+ * metrics against the §4 budgets, raw provider sessions, and a routing preview.
  */
 export function Inspector() {
   const tab = useApp((s) => s.inspector.tab);
@@ -43,7 +45,9 @@ export function Inspector() {
       aria-label="Inspector"
       className={cn(
         "bg-sidebar flex h-full shrink-0 flex-col border-s",
-        tab === "providers" || tab === "brain" ? "w-inspector-wide" : "w-inspector",
+        tab === "providers" || tab === "brain" || tab === "routing"
+          ? "w-inspector-wide"
+          : "w-inspector",
       )}
     >
       <Tabs
@@ -65,6 +69,7 @@ export function Inspector() {
             <TabsTrigger value="processes">Processes</TabsTrigger>
             <TabsTrigger value="performance">Performance</TabsTrigger>
             <TabsTrigger value="providers">Providers</TabsTrigger>
+            <TabsTrigger value="routing">Routing</TabsTrigger>
           </TabsList>
           <Button
             variant="ghost"
@@ -92,6 +97,9 @@ export function Inspector() {
         </TabsContent>
         <TabsContent value="providers" className="flex min-h-0 flex-col">
           <ProvidersTab />
+        </TabsContent>
+        <TabsContent value="routing" className="flex min-h-0 flex-col">
+          <RoutingTab />
         </TabsContent>
       </Tabs>
     </aside>
