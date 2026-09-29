@@ -198,8 +198,8 @@ function RemoveForm({
           <ul className="grid max-h-40 gap-1 overflow-y-auto text-sm">
             {preview.worktrees.map((worktree) => (
               <li key={worktree.path} className="flex items-center gap-2">
-                <span className="truncate" title={worktree.path}>
-                  {worktree.path}
+                <span className="min-w-0 flex-1 truncate" title={worktree.path}>
+                  {worktree.path.split("/").pop()}
                 </span>
                 {worktree.hasChanges && <Badge variant="warning">Has changes</Badge>}
                 <span className="text-muted-foreground ms-auto shrink-0 text-xs tabular-nums">
