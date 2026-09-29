@@ -74,6 +74,11 @@ pub struct Query<'a> {
     pub needs: Needs,
     /// A provider, model or effort asked for by the orchestrator or the user.
     pub pin: Option<Pin>,
+    /// The pin binds (a hand-off or a resume): only the pinned vendor may take the task (the
+    /// named model's vendor when the pin names only a model), and with none of its models
+    /// available the task waits. Otherwise a pin that can't be met gives way to routing, and
+    /// the reason says so.
+    pub hold_pin: bool,
     /// For reviews: the model that wrote the change.
     pub avoid: Option<Author>,
     /// Providers or models that just failed on this task.
@@ -185,6 +190,8 @@ enum Block {
     },
     /// The review's author vendor, while another vendor can review.
     Author(String),
+    /// Another vendor than the one a binding pin asked for.
+    Pinned(String),
 }
 
 impl Block {
@@ -196,6 +203,7 @@ impl Block {
             | Block::Floor(why)
             | Block::Unavailable(why)
             | Block::Author(why)
+            | Block::Pinned(why)
             | Block::Limit { why, .. } => why,
         }
     }
@@ -249,8 +257,9 @@ pub fn decide(query: &Query) -> Decision {
         .filter(|rule| rule.effect == OverrideEffect::Only)
         .collect();
     let mut candidates = candidates(query);
+    let held = held_vendor(query, &candidates);
     for candidate in &mut candidates {
-        assess(candidate, query, &rules, &only);
+        assess(candidate, query, &rules, &only, held);
     }
 
     // Reviews: another vendor when one can take it, else a different model of the same one.
@@ -301,7 +310,7 @@ pub fn decide(query: &Query) -> Decision {
     }
 
     if !candidates.iter().any(Candidate::eligible) {
-        return Decision::Wait(waiting(query, &candidates, &only));
+        return Decision::Wait(waiting(query, &candidates, &only, held));
     }
 
     // Order: score, then the table's vendor order, then each CLI's own order.
@@ -334,8 +343,8 @@ pub fn decide(query: &Query) -> Decision {
             chosen = index;
             why = Some("as requested".to_owned());
             pinned_pick = true;
-        } else if pin.model.is_none()
-            && let Some(provider) = pin.provider
+        } else if (pin.model.is_none() || held.is_some())
+            && let Some(provider) = pin.provider.or(held)
         {
             match ranked
                 .iter()
@@ -541,6 +550,7 @@ fn assess<'q>(
     query: &'q Query,
     rules: &[&OverrideRule],
     only: &[&OverrideRule],
+    held: Option<ProviderKind>,
 ) {
     let model = candidate.model.clone();
     let vendor = name(model.provider);
@@ -576,6 +586,8 @@ fn assess<'q>(
         Some(Block::Rule(format!("your rule: {}", rule_text(rule))))
     } else if let Some(why) = unmet_need(&model, query.needs) {
         Some(Block::Needs(why))
+    } else if let Some(held) = held.filter(|held| *held != model.provider) {
+        Some(Block::Pinned(format!("{} was asked for", name(held))))
     } else if on_trial && !candidate.trial {
         let runs = model.trial.map_or(0, |trial| trial.outcomes);
         Some(Block::Floor(format!(
@@ -886,6 +898,19 @@ fn pinned(
     }
 }
 
+/// The vendor a binding pin keeps the task with: the pinned provider, else the vendor of the
+/// model it names.
+fn held_vendor(query: &Query, candidates: &[Candidate]) -> Option<ProviderKind> {
+    if !query.hold_pin {
+        return None;
+    }
+    let pin = query.pin.as_ref()?;
+    pin.provider.or_else(|| {
+        let wanted = pin.model.as_deref()?.trim();
+        find_named(query, candidates, None, wanted).map(|index| candidates[index].model.provider)
+    })
+}
+
 /// A model asked for by name: its id, a concrete id its entry claims, an id prefix, or a
 /// family word.
 fn find_named(
@@ -934,7 +959,7 @@ fn provider_block(candidates: &[Candidate], provider: ProviderKind) -> String {
         .filter_map(|c| c.block.as_ref())
         .max_by_key(|block| match block {
             Block::Limit { .. } | Block::Unavailable(_) => 3,
-            Block::Author(_) | Block::Excluded(_) | Block::Rule(_) => 2,
+            Block::Author(_) | Block::Excluded(_) | Block::Rule(_) | Block::Pinned(_) => 2,
             Block::Floor(_) | Block::Needs(_) => 1,
         })
         .map_or_else(
@@ -969,7 +994,12 @@ fn effort(query: &Query, pick: &Candidate, notes: &mut Vec<String>) -> Option<St
 
 // ----- waiting -------------------------------------------------------------------------------
 
-fn waiting(query: &Query, candidates: &[Candidate], only: &[&OverrideRule]) -> Waiting {
+fn waiting(
+    query: &Query,
+    candidates: &[Candidate],
+    only: &[&OverrideRule],
+    held: Option<ProviderKind>,
+) -> Waiting {
     let rule = (!only.is_empty()).then(|| join_rules(only));
     let purpose = table::row(query.category).purpose;
     // Models kept out only by a limit: the task runs when the first of them resets.
@@ -993,7 +1023,13 @@ fn waiting(query: &Query, candidates: &[Candidate], only: &[&OverrideRule]) -> W
             format!("your rule ({rule}) allows no model that can take this {purpose} work")
         }
         (None, None) => {
-            if !query.providers.iter().any(|s| s.logged_in) {
+            if let Some(held) = held {
+                format!(
+                    "{} was asked for, but {}",
+                    name(held),
+                    provider_block(candidates, held)
+                )
+            } else if !query.providers.iter().any(|s| s.logged_in) {
                 "no provider is logged in".to_owned()
             } else {
                 format!(

@@ -372,6 +372,7 @@ impl SessionManager {
         attachments: Vec<AttachmentRef>,
         areas: Option<Vec<brigadier_router::Area>>,
         floor: Option<QualityTier>,
+        needs: Vec<brigadier_router::Capability>,
     ) -> Result<Task> {
         self.admit()?;
         let conversation = self.core.conversation(conversation_id)?;
@@ -386,8 +387,9 @@ impl SessionManager {
                 category,
                 areas: &areas,
                 floor,
-                needs: needs_of(&attachments),
-                pin,
+                needs: needs_of(&attachments, &needs),
+                pin: pin.clone(),
+                hold_pin: false,
                 avoid,
                 exclude: &[],
                 project_id: conversation.project_id.as_ref(),
@@ -428,6 +430,8 @@ impl SessionManager {
             route,
             floor,
             areas,
+            pin,
+            needs,
             state: TaskState::Queued,
             quota_wait: None,
             subject: subject.as_ref().map(|task| task.id.clone()),
@@ -2331,13 +2335,17 @@ impl SessionManager {
     }
 }
 
-/// What a task's attachments need from its model.
-fn needs_of(attachments: &[AttachmentRef]) -> brigadier_router::Needs {
+/// What a task needs from its model: its attachments, and the capabilities it asked for.
+pub(crate) fn needs_of(
+    attachments: &[AttachmentRef],
+    capabilities: &[brigadier_router::Capability],
+) -> brigadier_router::Needs {
     brigadier_router::Needs {
         image_input: attachments
             .iter()
             .any(|attachment| attachment.mime.starts_with("image/")),
-        ..brigadier_router::Needs::default()
+        image_generation: capabilities.contains(&brigadier_router::Capability::ImageGeneration),
+        context_tokens: None,
     }
 }
 

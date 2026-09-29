@@ -70,7 +70,9 @@
 //!
 //! With nothing eligible, [`decide`] returns [`Decision::Wait`] with the earliest reset among
 //! the models kept out only by a limit (none when no reset would help). Fallback is the same
-//! call with the failed provider or model excluded and the same floor, areas and rules.
+//! call with the failed provider or model excluded and the same floor, areas, needs and rules.
+//! There the pin binds ([`Query::hold_pin`]): a task the orchestrator pinned to a vendor (or to
+//! a model, and so its vendor) stays with that vendor and waits rather than leave it.
 //!
 //! # Tie order
 //!
@@ -198,8 +200,10 @@ impl std::fmt::Display for TaskCategory {
 }
 
 /// A provider, model or effort asked for by the orchestrator (`delegate_task`) or the user.
-/// Every part is optional; what is left out is routed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Every part is optional; what is left out is routed. Kept on the task, so a hand-off or a
+/// resume keeps it ([`Query::hold_pin`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct Pin {
     pub provider: Option<ProviderKind>,
     /// A model id from the provider's list, an alias (`opus`) or a family name (`sol`). A model

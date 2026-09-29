@@ -88,6 +88,11 @@ impl SessionManager {
                         )));
                     }
                 };
+                let needs = if args.image_generation {
+                    vec![brigadier_router::Capability::ImageGeneration]
+                } else {
+                    Vec::new()
+                };
                 let attachments = self.find_attachments(id, &args.attachments).await?;
                 let avoid = subject
                     .as_ref()
@@ -108,6 +113,7 @@ impl SessionManager {
                         attachments,
                         areas,
                         floor,
+                        needs,
                     )
                     .await?;
                 if let Some(step) = args.step {

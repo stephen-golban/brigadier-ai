@@ -149,6 +149,7 @@ export type { OverrideEffect } from "./OverrideEffect";
 export type { OverrideRule } from "./OverrideRule";
 export type { OverrideTarget } from "./OverrideTarget";
 export type { PermissionLevel } from "./PermissionLevel";
+export type { Pin } from "./Pin";
 export type { Plan } from "./Plan";
 export type { PlanApprover } from "./PlanApprover";
 export type { PlanState } from "./PlanState";

@@ -25,6 +25,8 @@ pub(crate) struct Ask<'a> {
     pub floor: QualityTier,
     pub needs: Needs,
     pub pin: Option<Pin>,
+    /// The pin binds: a hand-off or a resume stays with the pinned vendor, or waits.
+    pub hold_pin: bool,
     pub avoid: Option<Author>,
     pub exclude: &'a [Exclusion],
     pub project_id: Option<&'a ProjectId>,
@@ -125,6 +127,7 @@ impl SessionManager {
             floor: ask.floor,
             needs: ask.needs,
             pin: ask.pin.clone(),
+            hold_pin: ask.hold_pin,
             avoid: ask.avoid.clone(),
             exclude: ask.exclude,
             overrides: &overrides,

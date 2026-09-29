@@ -216,8 +216,9 @@ impl SessionManager {
         })
     }
 
-    /// Who may take `task` over now: the router's choice with the same floor, areas and rules
-    /// the task started with, less the models that stopped on an error (a limit leaves its
+    /// Who may take `task` over now: the router's choice with the same floor, areas, needs and
+    /// rules the task started with, and its pin binding (a task pinned to a vendor stays with
+    /// it, or waits), less the models that stopped on an error (a limit leaves its
     /// provider or bucket unavailable by itself). A context window too small asks for a bigger
     /// one.
     async fn reroute(&self, task: &Task) -> std::result::Result<Route, Waiting> {
@@ -245,13 +246,7 @@ impl SessionManager {
                 model: attempt.route.choice.model.clone(),
             })
             .collect();
-        let mut needs = brigadier_router::Needs {
-            image_input: task
-                .attachments
-                .iter()
-                .any(|attachment| attachment.mime.starts_with("image/")),
-            ..brigadier_router::Needs::default()
-        };
+        let mut needs = super::workers::needs_of(&task.attachments, &task.needs);
         if let Some(attempt) = task.attempts.last()
             && matches!(
                 attempt.end,
@@ -284,7 +279,8 @@ impl SessionManager {
                 areas: &task.areas,
                 floor: task.floor,
                 needs,
-                pin: None,
+                pin: task.pin.clone(),
+                hold_pin: true,
                 avoid,
                 exclude: &exclude,
                 project_id: project.as_ref(),

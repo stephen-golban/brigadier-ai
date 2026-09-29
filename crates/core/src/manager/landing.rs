@@ -328,6 +328,7 @@ impl SessionManager {
                 // It reviews the change where the change is.
                 Some(task.areas.clone()),
                 None,
+                Vec::new(),
             )
             .await?;
         let cross_vendor = review.route.choice.provider != task.route.choice.provider;
@@ -1096,6 +1097,7 @@ impl SessionManager {
             Vec::new(),
             None,
             None,
+            Vec::new(),
         )
         .await
     }

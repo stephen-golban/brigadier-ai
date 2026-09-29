@@ -4,9 +4,11 @@ import type { ArtifactRef } from "./ArtifactRef";
 import type { AttachmentRef } from "./AttachmentRef";
 import type { Attempt } from "./Attempt";
 import type { Candidate } from "./Candidate";
+import type { Capability } from "./Capability";
 import type { CardId } from "./CardId";
 import type { ConversationId } from "./ConversationId";
 import type { KeptWork } from "./KeptWork";
+import type { Pin } from "./Pin";
 import type { QualityTier } from "./QualityTier";
 import type { QuotaWait } from "./QuotaWait";
 import type { Report } from "./Report";
@@ -45,7 +47,16 @@ floor: QualityTier,
 /**
  * The parts of the codebase it touches.
  */
-areas: Array<Area>, state: TaskState, 
+areas: Array<Area>, 
+/**
+ * The provider, model or effort the orchestrator asked for. A hand-off or a resume keeps
+ * the task with that vendor, or it waits.
+ */
+pin: Pin | null, 
+/**
+ * What its model must be able to do, fallbacks included (image generation).
+ */
+needs: Array<Capability>, state: TaskState, 
 /**
  * Set while it is paused waiting for quota.
  */

@@ -126,6 +126,10 @@ pub struct DelegateTask {
     /// leave it out otherwise.
     #[serde(default)]
     pub quality: Option<String>,
+    /// True when the task must generate images: only some models can, and Brigadier keeps
+    /// it on one that can, hand-offs included.
+    #[serde(default)]
+    pub image_generation: bool,
     /// For a task that carries out a step of the approved plan: that step's number (1 is the
     /// first step). The user follows the plan's progress by it.
     #[serde(default)]

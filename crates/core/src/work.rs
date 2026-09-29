@@ -9,7 +9,7 @@
 use brigadier_providers::{
     ApprovalRequest, Decider, ErrorKind, LimitHit, ProviderEvent, ProviderKind,
 };
-use brigadier_router::{Area, Explanation, QualityTier};
+use brigadier_router::{Area, Capability, Explanation, Pin, QualityTier};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -355,6 +355,13 @@ pub struct Task {
     /// The parts of the codebase it touches.
     #[serde(default)]
     pub areas: Vec<Area>,
+    /// The provider, model or effort the orchestrator asked for. A hand-off or a resume keeps
+    /// the task with that vendor, or it waits.
+    #[serde(default)]
+    pub pin: Option<Pin>,
+    /// What its model must be able to do, fallbacks included (image generation).
+    #[serde(default)]
+    pub needs: Vec<Capability>,
     pub state: TaskState,
     /// Set while it is paused waiting for quota.
     #[serde(default)]

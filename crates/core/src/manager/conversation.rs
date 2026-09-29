@@ -2470,6 +2470,7 @@ impl SessionManager {
                 floor: brigadier_router::default_floor(category),
                 needs: brigadier_router::Needs::default(),
                 pin: None,
+                hold_pin: false,
                 avoid: None,
                 exclude: &exclude,
                 project_id: project.as_ref(),
