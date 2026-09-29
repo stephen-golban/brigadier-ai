@@ -2195,6 +2195,8 @@ impl SessionManager {
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.state = state;
                 t.blocked_reason = None;
+                // A task that ends while waiting for quota waits no more.
+                t.quota_wait = None;
                 // Its last model's part is over.
                 fallback::end_attempt(t, None);
                 if kept.is_some() {
