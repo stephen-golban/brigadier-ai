@@ -245,9 +245,17 @@ export function RouteSections({
         </p>
         {route.explanation && <ExplanationView explanation={route.explanation} groups={groups} />}
       </Section>
-      {(task.attempts.length > 1 || task.attempts.some((attempt) => attempt.end !== null)) && (
+      {(task.attempts.length > 1 ||
+        task.attempts.some((attempt) => attempt.end !== null) ||
+        task.reworkRounds > 0) && (
         <Section title="Models that ran it">
           <AttemptsView attempts={task.attempts} groups={groups} />
+          {task.reworkRounds > 0 && (
+            <p className="text-muted-foreground text-xs">
+              Sent back to rework{" "}
+              {task.reworkRounds === 1 ? "once" : `${task.reworkRounds} times`} after reporting
+            </p>
+          )}
         </Section>
       )}
     </>
