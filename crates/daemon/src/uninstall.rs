@@ -25,6 +25,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use brigadier_core::manager::disk::counted;
 use brigadier_core::storage::{
     AppRemoval, BranchChoice, UninstallApp, UninstallItem, UninstallPlan, UninstallReport,
     UninstallStep,
@@ -136,14 +137,16 @@ impl Uninstall {
             items.insert(
                 0,
                 UninstallItem {
-                    label: if dirty == 0 {
-                        format!("{} worktrees, removed through git", worktrees.len())
-                    } else {
-                        format!(
-                            "{} worktrees, removed through git ({dirty} with uncommitted changes, \
-                             kept first as WIP commits on their branches)",
-                            worktrees.len()
-                        )
+                    label: {
+                        let count = counted(worktrees.len(), "worktree", "worktrees");
+                        if dirty == 0 {
+                            format!("{count}, removed through git")
+                        } else {
+                            format!(
+                                "{count}, removed through git ({dirty} with uncommitted changes, \
+                                 kept first as WIP commits on their branches)"
+                            )
+                        }
                     },
                     path: None,
                     bytes: worktrees.iter().map(|w| w.bytes).sum(),
@@ -154,8 +157,12 @@ impl Uninstall {
         if cli_files > 0 {
             items.push(UninstallItem {
                 label: format!(
-                    "{cli_files} Claude and Codex session files, threads and trust entries \
-                     Brigadier recorded"
+                    "{} Brigadier recorded",
+                    counted(
+                        cli_files,
+                        "Claude or Codex session file, thread or trust entry",
+                        "Claude and Codex session files, threads and trust entries",
+                    )
                 ),
                 path: None,
                 bytes: 0,

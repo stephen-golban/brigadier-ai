@@ -148,7 +148,7 @@ function Plan({
         <h3 id="uninstall-items" className="text-muted-foreground text-xs">
           What goes
         </h3>
-        <ul className="grid max-h-60 gap-1 overflow-y-auto text-sm">
+        <ul className="grid gap-1 text-sm">
           {plan.items.map((item) => (
             <li key={item.label} className="flex items-start gap-2">
               <span className="min-w-0 flex-1 break-all">{item.label}</span>
@@ -290,7 +290,7 @@ function Done({ report }: { report: UninstallReport }) {
           <h3 id="uninstall-after" className="text-muted-foreground text-xs">
             After Brigadier quits
           </h3>
-          <ul className="text-muted-foreground grid max-h-40 gap-1 overflow-y-auto text-xs">
+          <ul className="text-muted-foreground grid gap-1 text-xs">
             {report.afterQuit.map((path) => (
               <li key={path} className="break-all">
                 {path}
