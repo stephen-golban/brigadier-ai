@@ -624,7 +624,7 @@ impl Provider for Claude {
                         ledger
                             .record(Artifact::ProcessesIn { dir: path.clone() })
                             .await?;
-                        files::create_temp_dir(&dir)?;
+                        files::create_temp_dir(&dir, self.platform.paths())?;
                         path
                     }
                     None => tmp.clone(),

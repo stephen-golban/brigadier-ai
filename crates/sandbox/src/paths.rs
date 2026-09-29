@@ -21,6 +21,10 @@ pub struct AppPaths {
     pub token_path: PathBuf,
     /// Where the daemon listens.
     pub ipc_endpoint: IpcEndpoint,
+    /// Short id of this data directory (a hash of its path): tells apart what different data
+    /// directories' daemons create in shared places (the socket fallback folder, session temp
+    /// folders).
+    pub instance: String,
 }
 
 /// The local IPC endpoint. There is never a TCP listener.
@@ -32,16 +36,24 @@ pub enum IpcEndpoint {
     NamedPipe(String),
 }
 
+/// The file that marks a folder Brigadier created in a shared place (a session's temp folder
+/// under `/tmp`) as this data directory's: it holds [`AppPaths::owner_marker`]. Cleanup outside
+/// the data directory only ever takes folders that carry its own marker or are recorded in its
+/// cleanup ledger.
+pub const OWNER_MARKER: &str = ".brigadier-owner";
+
 /// `sun_path` is 104 bytes on macOS and 108 on Linux, including the terminating NUL.
 #[cfg(unix)]
 const MAX_SOCKET_PATH: usize = 100;
 
 impl AppPaths {
-    pub(crate) fn resolve(data_dir: PathBuf) -> Result<Self> {
+    /// The locations for the data directory `data_dir` (made absolute; not created).
+    pub fn resolve(data_dir: PathBuf) -> Result<Self> {
         let data_dir = absolute(data_dir)?;
         let run_dir = data_dir.join("run");
         // Different data directories (dev, smoke check, release) get separate daemons.
-        let instance = &blake3::hash(data_dir.as_os_str().as_encoded_bytes()).to_hex()[..12];
+        let instance =
+            blake3::hash(data_dir.as_os_str().as_encoded_bytes()).to_hex()[..12].to_owned();
 
         #[cfg(unix)]
         let ipc_endpoint = {
@@ -70,7 +82,13 @@ impl AppPaths {
             run_dir,
             ipc_endpoint,
             data_dir,
+            instance,
         })
+    }
+
+    /// What [`OWNER_MARKER`] holds for this data directory: its instance id and path.
+    pub fn owner_marker(&self) -> String {
+        format!("{}\n{}\n", self.instance, self.data_dir.display())
     }
 
     /// The directory that holds the Unix socket, if it is not the run directory.

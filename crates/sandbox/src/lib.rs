@@ -25,7 +25,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use paths::{AppPaths, IpcEndpoint};
+pub use paths::{AppPaths, IpcEndpoint, OWNER_MARKER};
 pub use process::{DetachedChild, InstanceLock, SpawnSpec};
 
 /// Errors raised by the platform layer.

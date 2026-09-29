@@ -163,24 +163,35 @@ pub(super) fn temp_dir_path() -> Option<PathBuf> {
     }
 }
 
-/// Creates the folder from [`temp_dir_path`], which must not exist yet.
-pub(super) fn create_temp_dir(dir: &Path) -> Result<()> {
+/// Creates the folder from [`temp_dir_path`], which must not exist yet, marked as `paths`'
+/// data directory's ([`brigadier_sandbox::OWNER_MARKER`]), so that cleanup can tell it apart
+/// from other Brigadier instances' folders.
+pub(super) fn create_temp_dir(dir: &Path, paths: &brigadier_sandbox::AppPaths) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
+        use std::io::Write as _;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let failed = |err: io::Error| {
+            Error::Io(io::Error::new(
+                err.kind(),
+                format!("{}: {err}", dir.display()),
+            ))
+        };
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(dir)
-            .map_err(|err| {
-                Error::Io(io::Error::new(
-                    err.kind(),
-                    format!("{}: {err}", dir.display()),
-                ))
-            })
+            .map_err(failed)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(dir.join(brigadier_sandbox::OWNER_MARKER))
+            .and_then(|mut file| file.write_all(paths.owner_marker().as_bytes()))
+            .map_err(failed)
     }
     #[cfg(not(unix))]
     {
-        let _ = dir;
+        let _ = (dir, paths);
         Ok(())
     }
 }
