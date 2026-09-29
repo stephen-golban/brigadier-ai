@@ -113,10 +113,16 @@
   }
 }
 
-/* Lets the browser skip layout and paint for messages scrolled out of view. */
+/* Lets the browser skip layout and paint for messages scrolled out of view. The newest two (the
+   last message and its answer) always render: a skipped one would mount at the placeholder
+   height and then shrink, or keep its old height while its answer streams in out of view, and
+   either way the thread would lose the bottom it follows. */
 @utility message-contain {
   content-visibility: auto;
   contain-intrinsic-size: auto var(--message-intrinsic-size);
+  &:nth-last-child(-n + 2) {
+    content-visibility: visible;
+  }
 }
 
 @layer base {

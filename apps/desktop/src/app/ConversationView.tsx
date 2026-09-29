@@ -97,6 +97,7 @@ import {
   emptyThread,
   type PendingMessage,
   type Selection,
+  storedIdOf,
   useApp,
 } from "@/state/store";
 
@@ -661,12 +662,12 @@ export function ConversationView({
       const text = textOf(message);
       if (!conversationId || !message.sourceId || !text) return;
       setError(null);
-      await editMessage(conversationId, message.sourceId, text).catch(fail);
+      await editMessage(conversationId, storedIdOf(message.sourceId), text).catch(fail);
     },
     onReload: async (parentId) => {
       if (!conversationId || !parentId) return;
       setError(null);
-      await regenerate(conversationId, parentId).catch(fail);
+      await regenerate(conversationId, storedIdOf(parentId)).catch(fail);
     },
     isLoading: thread.loading && thread.items.length === 0,
     isRunning: running,

@@ -16,7 +16,7 @@ import type {
   WorkerStepKind,
 } from "@/ipc/generated";
 import type { Board } from "@/state/board";
-import type { PendingMessage } from "@/state/store";
+import { type PendingMessage, shownIdOf } from "@/state/store";
 
 /**
  * One user request as the thread shows it: the user's message, then one assistant block with
@@ -582,11 +582,13 @@ export function buildThread(
   const nodes: { node: ThreadNode; order: number }[] = [];
   const nodeOf = new Map<string, { id: string; order: number }>();
   // A block keeps its id whichever branch is shown: a request's first answer is
-  // `request:R`, a later one (answered again) is named after its first reply.
+  // `request:R`, a later one (answered again) is named after its first reply. A message sent
+  // from here keeps the id it had while pending, and so does its block (see `shownIdOf`).
   const blockId = (block: Block, first: string | undefined): string => {
     const oldest = children.get(block.key)?.find((child) => child.role === "assistant")?.id;
-    if (first === undefined) return oldest === undefined ? `request:${block.key}` : `request:${block.key}:next`;
-    return oldest === undefined || first === oldest ? `request:${block.key}` : `request:${block.key}:${first}`;
+    const key = shownIdOf(block.key);
+    if (first === undefined) return oldest === undefined ? `request:${key}` : `request:${key}:next`;
+    return oldest === undefined || first === oldest ? `request:${key}` : `request:${key}:${first}`;
   };
   const place = (
     blocks: readonly Block[],
@@ -595,7 +597,11 @@ export function buildThread(
     for (const block of blocks) {
       if (block.user) {
         const message = block.user.kind === "message" ? block.user.message : null;
-        const id = message?.id ?? (block.user.kind === "pending" ? block.user.pending.localId : block.key);
+        const id = message
+          ? shownIdOf(message.id)
+          : block.user.kind === "pending"
+            ? block.user.pending.localId
+            : block.key;
         const order = under(parent, message?.seq ?? Number.POSITIVE_INFINITY);
         nodes.push({ node: { id, parentId: parent?.id ?? null, kind: "user", block, head: message?.id ?? null }, order });
         if (message) nodeOf.set(message.id, { id, order });

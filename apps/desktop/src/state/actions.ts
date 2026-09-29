@@ -37,6 +37,7 @@ import {
   type WorkerTranscript,
 } from "@/state/board";
 import {
+  confirmSent,
   emptyDraft,
   emptyThread,
   mergeMessages,
@@ -384,6 +385,7 @@ export async function send(
       queueIndex: slot,
     });
     if (outcome.type === "sent") {
+      if (localId) confirmSent(conversationId, outcome.message, localId);
       updateThread(conversationId, (thread) => ({
         ...thread,
         items: mergeMessages(thread.items, [outcome.message]),
