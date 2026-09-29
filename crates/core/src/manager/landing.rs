@@ -3,7 +3,8 @@
 //!
 //! 1. **Build the candidate on the current target tip** (`prepare_candidate`): the worker's
 //!    whole work since its base, replayed in its worktree. Conflicts go back to the
-//!    orchestrator (send the worker back, or delegate a `merge` task).
+//!    orchestrator, which delegates a `merge` task: Brigadier merges the target into the work
+//!    with conflict markers in place, and the merge worker only edits files.
 //! 2. **Litter guard**: only the worker's reported files and tracked changes are staged; logs,
 //!    scratch notes, debug scripts and stray files are left out and listed. Unreported tracked
 //!    changes are kept and flagged to the reviewer.
@@ -24,13 +25,14 @@
 use std::path::{Path, PathBuf};
 
 use brigadier_git::{
-    CommitOutcome, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid, PrepareOutcome,
-    RebaseOutcome, litter,
+    ChangeKind, CommitOutcome, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid,
+    PrepareOutcome, RebaseOutcome, litter,
 };
 use brigadier_providers::{ApprovalDecision, ProviderKind};
 
 use super::cards::CardAnswer;
 use super::conversation::Envelope;
+use super::workers::Workspace;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{ConversationId, Environment, PermissionLevel, Setup};
 use crate::work::{
@@ -194,11 +196,10 @@ impl SessionManager {
                 self.landing_problem(
                     task,
                     &format!(
-                        "Its changes conflict with the current `{target}` ({}) in: {}. Send task-{} back with message_worker to merge `{target}` into its worktree and resolve the conflicts, or delegate a merge task with subject task-{}.",
+                        "Its changes conflict with the current `{target}` ({}) in: {}. {}",
                         short(&onto),
                         paths.join(", "),
-                        task.number,
-                        task.number
+                        conflict_step(task, &target)
                     ),
                     TaskState::Reported,
                 )
@@ -389,25 +390,80 @@ impl SessionManager {
         text
     }
 
-    /// What a merge worker reads: which task's work to reconcile with which branch tip.
-    pub(crate) async fn merge_brief(&self, subject: &Task) -> String {
-        let target = subject
-            .workspace
+    /// What a merge worker reads: the task whose work it finishes merging and the conflicts
+    /// Brigadier left in its worktree.
+    pub(crate) async fn merge_brief(&self, subject: &Task, workspace: &Workspace) -> String {
+        let target = workspace.target.clone().unwrap_or_default();
+        let merge = match (
+            workspace.worktree.clone(),
+            subject.workspace.as_ref().and_then(|w| w.base.clone()),
+        ) {
+            (Some(path), Some(base)) => {
+                let git = self.git.clone();
+                blocking(move || {
+                    let repo = git.open(&path).map_err(git_error)?;
+                    let head = repo.resolve("HEAD").map_err(git_error)?;
+                    repo.merge_at(&head, &Oid(base)).map_err(git_error)
+                })
+                .await
+                .ok()
+                .flatten()
+            }
+            _ => None,
+        };
+        let number = subject.number;
+        let conflicts = match &merge {
+            Some(merge) if merge.clean => {
+                "It merged without conflicts: check that both sides still fit together.".to_owned()
+            }
+            Some(merge) => {
+                let sides = format!(
+                    "`git show {}:<path>` shows `{target}`'s side and `git show {}:<path>` task-{number}'s (reading is fine)",
+                    merge.onto.0, merge.work.0
+                );
+                if merge.conflicts.is_empty() {
+                    format!(
+                        "Git reported a conflict it could not pin to one file (for example a folder renamed on one side). Compare both sides: {sides}. Resolve it by editing the files, keeping both sides' intent."
+                    )
+                } else {
+                    format!(
+                        "Conflicts in: {}. Text conflicts are marked in the file: the first side (after `<<<<<<<`) is `{target}`'s, the second (before `>>>>>>>`) is task-{number}'s. Binary files, a file deleted on one side, a mode change or a file against a folder carry no markers: {sides}. Resolve each by editing the files, keeping both sides' intent, and leave no marker behind.",
+                        merge.conflicts.join(", ")
+                    )
+                }
+            }
+            None => "Resolve every conflict it left by editing the files, keeping both sides' intent, and leave no marker behind.".to_owned(),
+        };
+        let reported = subject
+            .report
             .as_ref()
-            .and_then(|w| w.target.clone())
+            .filter(|r| !r.changes.is_empty())
+            .map(|r| {
+                format!(
+                    " task-{number} reported changing: {}. List those and every file you edit in the report's `changes`.",
+                    r.changes.join(", ")
+                )
+            })
             .unwrap_or_default();
         format!(
-            "\n\nThis worktree holds task-{}'s work (\"{}\") as a commit. Merge the current `{target}` into it (`git merge {target}`), resolve every conflict keeping both sides' intent, make sure it builds, and report the files you touched. Brigadier squashes the result into one commit.\n\nThe original task:\n{}",
-            subject.number, subject.title, subject.spec
+            "\n\nBrigadier has merged the current `{target}` into task-{number}'s work (\"{}\") in this worktree. {conflicts} Make sure it builds and its tests pass. Run no git command that changes anything (no merge, commit, rebase, checkout or reset): Brigadier builds the commit from the files.{reported}\n\nThe original task:\n{}",
+            subject.title, subject.spec
         )
     }
 
-    /// A merge task starts from the conflicting task's work, kept as a WIP commit.
+    /// A merge task starts from the conflicting task's work (kept as a WIP commit) with the
+    /// target's current tip already merged in by Brigadier, outside any sandbox: conflict
+    /// markers are left in the files and that tip becomes the task's base, so only the
+    /// resolution lands. The worker never needs to write the repository's git directory.
+    /// Files the landing's litter guard would leave out stay out of the merge too.
     pub(crate) async fn merge_start(&self, subject: &Task) -> Result<(Oid, Oid)> {
         let workspace = subject
             .workspace
             .clone()
             .ok_or_else(|| Error::Invalid(format!("task-{} has no workspace", subject.number)))?;
+        if workspace.on_snapshot {
+            return Err(Error::Invalid(snapshot_conflict(subject.number)));
+        }
         let base = Oid(workspace
             .base
             .ok_or_else(|| Error::Invalid("no base".into()))?);
@@ -420,15 +476,38 @@ impl SessionManager {
                 )));
             }
         };
+        let target = workspace.target.ok_or_else(|| {
+            Error::Invalid(format!("task-{} has no target branch", subject.number))
+        })?;
+        let reported: Vec<String> = subject
+            .report
+            .as_ref()
+            .map(|r| r.changes.iter().map(|p| normalize(p)).collect())
+            .unwrap_or_default();
         let git = self.git.clone();
-        let message = format!("WIP: task-{} before merging", subject.number);
-        let head = blocking(move || {
+        let wip = format!("WIP: task-{} before merging", subject.number);
+        let merged = format!("WIP: task-{} with `{target}` merged in", subject.number);
+        let start = blocking(move || {
             let worktree = git.open_worktree(&path).map_err(git_error)?;
-            worktree.commit_wip(&message).map_err(git_error)?;
-            worktree.head().map_err(git_error)
+            let leave_out: Vec<String> =
+                litter::classify(&worktree.changes(&base).map_err(git_error)?, &reported)
+                    .into_iter()
+                    .filter(|(_, verdict)| matches!(verdict, litter::Verdict::Exclude { .. }))
+                    .flat_map(|(change, _)| match change.kind {
+                        ChangeKind::Renamed { from } => vec![change.path, from],
+                        _ => vec![change.path],
+                    })
+                    .collect();
+            worktree.commit_wip(&wip).map_err(git_error)?;
+            let work = worktree.head().map_err(git_error)?;
+            // The subject's own checkout, so the commit uses the identity its WIP commit did.
+            git.open(&path)
+                .map_err(git_error)?
+                .merge_for_resolution(&base, &work, &leave_out, &target, &merged)
+                .map_err(git_error)
         })
         .await?;
-        Ok((base, head))
+        Ok((start.onto, start.commit))
     }
 
     /// Whether a review task's report belongs to a landing or a plan review.
@@ -712,10 +791,9 @@ impl SessionManager {
                             self.landing_problem(
                                 &task,
                                 &format!(
-                                    "`{target}` moved and now conflicts with it in: {}. Send task-{} back with message_worker to merge `{target}` and resolve them, or delegate a merge task with subject task-{}.",
+                                    "`{target}` moved and now conflicts with it in: {}. {}",
                                     paths.join(", "),
-                                    task.number,
-                                    task.number
+                                    conflict_step(&task, &target)
                                 ),
                                 TaskState::Reported,
                             )
@@ -1126,6 +1204,24 @@ fn is_reported(path: &str, reported: &[String]) -> bool {
     reported.iter().any(|r| {
         path == r || path.starts_with(&format!("{r}/")) || r.ends_with(&format!("/{path}"))
     })
+}
+
+/// What the orchestrator does about a task whose work conflicts with the target.
+fn conflict_step(task: &Task, target: &str) -> String {
+    if task.workspace.as_ref().is_some_and(|w| w.on_snapshot) {
+        return snapshot_conflict(task.number);
+    }
+    format!(
+        "Delegate a merge task with subject task-{}: Brigadier merges `{target}` into its work and the merge worker resolves the conflicts.",
+        task.number
+    )
+}
+
+/// Why a task that started from the user's uncommitted changes gets no merge task.
+fn snapshot_conflict(number: u32) -> String {
+    format!(
+        "task-{number} started from a snapshot of the user's uncommitted changes, which a merge would carry into the commit. Delegate a new implement task for the same change on the current target instead."
+    )
 }
 
 fn short(oid: &Oid) -> String {

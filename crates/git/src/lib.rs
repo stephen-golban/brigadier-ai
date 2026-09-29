@@ -248,6 +248,22 @@ pub enum MergeOutcome {
     },
 }
 
+/// A branch merged into a task's work for a merge worker to finish ([`Repo::merge_for_resolution`]).
+#[derive(Debug, Clone)]
+pub struct MergeStart {
+    /// The two-parent commit holding the merged tree, conflict markers left in place.
+    pub commit: Oid,
+    /// Its first parent: the task's work, without the files left out.
+    pub work: Oid,
+    /// Its second parent: the branch tip merged in.
+    pub onto: Oid,
+    /// The merge had no conflict at all.
+    pub clean: bool,
+    /// Conflicted paths. Text conflicts carry markers; binary, mode, modify/delete and
+    /// file/directory conflicts don't. Empty for a conflict git can't pin to a path.
+    pub conflicts: Vec<String>,
+}
+
 /// A final content change relative to a base commit.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChangeKind {

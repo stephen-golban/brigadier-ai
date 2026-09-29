@@ -1,7 +1,7 @@
 use crate::{
     Branch, Change, ChangeKind, CheckoutTrees, CollidingPath, CommitInfo, DiffStat, Environment,
-    Error, Git, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid, PatchOutcome, RemoteState,
-    RepoState, Result, RevertOutcome, Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
+    Error, Git, LandBlock, LandOutcome, LandRequest, MergeOutcome, MergeStart, Oid, PatchOutcome,
+    RemoteState, RepoState, Result, RevertOutcome, Snapshot, Worktree, WorktreeInfo, WorktreeSpec,
     command::{TempIndex, check, failure, valid_oid, valid_path},
     parse,
 };
@@ -1164,6 +1164,15 @@ impl Repo {
     }
 
     pub(crate) fn merge_tree(&self, left: &Oid, right: &Oid) -> Result<TreeMerge> {
+        Ok(match self.marked_merge(left, right)? {
+            (tree, None) => TreeMerge::Ready(tree),
+            (_, Some(paths)) => TreeMerge::Conflicts(paths),
+        })
+    }
+
+    /// Merges two commits without touching any checkout: the merged tree, with conflict markers
+    /// left in conflicted files, and the conflicted paths (`None` when the merge is clean).
+    fn marked_merge(&self, left: &Oid, right: &Oid) -> Result<(Oid, Option<Vec<String>>)> {
         valid_oid(left)?;
         valid_oid(right)?;
         let args = [
@@ -1185,17 +1194,134 @@ impl Repo {
                 .ok_or_else(|| Error::Parse("merge-tree omitted tree".into()))?,
         )?;
         if out.status.success() {
-            Ok(TreeMerge::Ready(tree))
+            Ok((tree, None))
         } else {
             let paths = fields
                 .take_while(|s| !s.is_empty())
                 .map(|s| parse::text(s).map(str::to_owned))
                 .collect::<Result<BTreeSet<_>>>()?;
-            Ok(TreeMerge::Conflicts(paths.into_iter().collect()))
+            Ok((tree, Some(paths.into_iter().collect())))
         }
     }
 
+    /// Brings `branch` into a task's work for a merge worker to finish, without touching any
+    /// checkout or ref. The work's changes since `base`, with `leave_out` kept as it was at
+    /// `base`, are replayed onto
+    /// the branch tip as landing would, conflict markers left in the files (the branch's side
+    /// first, the work's second). The result is committed with parents the work (a commit on
+    /// `work` with `leave_out` reverted) and the branch tip; a worktree started there lets the worker
+    /// resolve the conflicts by editing files alone, without git.
+    pub fn merge_for_resolution(
+        &self,
+        base: &Oid,
+        work: &Oid,
+        leave_out: &[String],
+        branch: &str,
+        message: &str,
+    ) -> Result<MergeStart> {
+        valid_oid(base)?;
+        valid_oid(work)?;
+        let onto = self
+            .branch_tip(branch)?
+            .ok_or_else(|| Error::Invalid(format!("branch {branch} does not exist")))?;
+        let work = if leave_out.is_empty() {
+            work.clone()
+        } else {
+            let tree = self.tree_reverting(work, base, leave_out)?;
+            self.commit_tree(&tree, &[work], "Work to merge, stray files left out", false)?
+        };
+        let (tree, conflicts) = self.marked_replay(base, &onto, &work)?;
+        let commit = self.commit_tree(&tree, &[&work, &onto], message, false)?;
+        Ok(MergeStart {
+            commit,
+            work,
+            onto,
+            clean: conflicts.is_none(),
+            conflicts: conflicts.unwrap_or_default(),
+        })
+    }
+
+    /// The merge [`Repo::merge_for_resolution`] made as `commit` from work based on `base`,
+    /// read back from the commit's two parents; `None` when it has not exactly two.
+    pub fn merge_at(&self, commit: &Oid, base: &Oid) -> Result<Option<MergeStart>> {
+        valid_oid(commit)?;
+        valid_oid(base)?;
+        let line = self.cmd(&["rev-list", "--parents", "-n", "1", &commit.0], true)?;
+        let ids: Vec<Oid> = parse::line(&line)?
+            .split_whitespace()
+            .map(|id| Oid(id.to_owned()))
+            .collect();
+        let [_, work, onto] = ids.as_slice() else {
+            return Ok(None);
+        };
+        let (_, conflicts) = self.marked_replay(base, onto, work)?;
+        Ok(Some(MergeStart {
+            commit: commit.clone(),
+            work: work.clone(),
+            onto: onto.clone(),
+            clean: conflicts.is_none(),
+            conflicts: conflicts.unwrap_or_default(),
+        }))
+    }
+
+    /// `commit`'s tree with `paths` as they were at `base`: restored where `base` had a file
+    /// there, removed otherwise.
+    fn tree_reverting(&self, commit: &Oid, base: &Oid, paths: &[String]) -> Result<Oid> {
+        for path in paths {
+            valid_path(path)?;
+        }
+        let mut ls = vec!["ls-tree", "-z", "--full-tree", &base.0, "--"];
+        ls.extend(paths.iter().map(String::as_str));
+        // Only what sat at exactly these paths: a folder that a path now replaces keeps its
+        // files' own changes (each has its own verdict), so its tree entry is not restored.
+        let at_base: Vec<u8> = self
+            .cmd(&ls, true)?
+            .split(|&c| c == 0)
+            .filter(|record| {
+                let header = record.split(|&c| c == b'\t').next().unwrap_or_default();
+                !record.is_empty() && header.split(|&c| c == b' ').nth(1) != Some(b"tree")
+            })
+            .flat_map(|record| record.iter().copied().chain([0]))
+            .collect();
+        let index = TempIndex::new()?;
+        self.index_cmd(&index, &["read-tree", &commit.0])?;
+        let mut remove = vec!["update-index", "--force-remove", "--"];
+        remove.extend(paths.iter().map(String::as_str));
+        self.index_cmd(&index, &remove)?;
+        if !at_base.is_empty() {
+            // ls-tree's "<mode> <type> <oid>\t<path>" records are what --index-info reads.
+            self.git.checked(
+                Some(&self.root),
+                &[
+                    "-c",
+                    "core.splitIndex=false",
+                    "update-index",
+                    "-z",
+                    "--index-info",
+                ],
+                false,
+                &index.env(),
+                Some(&at_base),
+            )?;
+        }
+        parse::oid(&self.index_cmd(&index, &["write-tree"])?)
+    }
+
     pub(crate) fn replay_tree(&self, base: &Oid, onto: &Oid, tree: &Oid) -> Result<TreeMerge> {
+        Ok(match self.marked_replay(base, onto, tree)? {
+            (tree, None) => TreeMerge::Ready(tree),
+            (_, Some(paths)) => TreeMerge::Conflicts(paths),
+        })
+    }
+
+    /// [`Repo::replay_tree`] keeping the merged tree when it conflicts, markers in place:
+    /// `onto`'s side first, `tree`'s second.
+    fn marked_replay(
+        &self,
+        base: &Oid,
+        onto: &Oid,
+        tree: &Oid,
+    ) -> Result<(Oid, Option<Vec<String>>)> {
         // Explicit merge-base was added after 2.38. Give two synthetic commits the exact
         // common parent instead, so snapshot-only content is excluded from the worker delta.
         let onto_tree = parse::oid(&self.cmd(
@@ -1208,7 +1334,7 @@ impl Repo {
             true,
         )?)?;
         let right = self.commit_tree(&source_tree, &[base], "Brigadier replay source", true)?;
-        self.merge_tree(&left, &right)
+        self.marked_merge(&left, &right)
     }
 
     /// Prepare a fast-forward or a two-parent session merge without touching any checkout/ref.

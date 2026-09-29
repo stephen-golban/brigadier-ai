@@ -607,7 +607,7 @@ impl SessionManager {
         };
         let extra = match (&task.kind, subject) {
             (TaskKind::Review, Some(subject)) => self.review_brief(subject).await,
-            (TaskKind::Merge, Some(subject)) => self.merge_brief(subject).await,
+            (TaskKind::Merge, Some(subject)) => self.merge_brief(subject, &workspace).await,
             _ => String::new(),
         };
         let prompt = prompts::worker(task, &repo_note, &native, &extra);
