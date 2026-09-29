@@ -81,6 +81,11 @@ impl SessionManager {
                 match task.state {
                     // Its worktree is intact; the worker resumes when sent back to work.
                     TaskState::Reported | TaskState::ReadyToLand if task.kind.writes() => continue,
+                    // No CLI ran; it waits for quota as before.
+                    TaskState::Paused if task.quota_wait.is_some() => {
+                        self.keep_waiting(&task).await;
+                        continue;
+                    }
                     // A read task that reported is done.
                     TaskState::Reported => {
                         self.dispose_task(&task, TaskState::Done).await;

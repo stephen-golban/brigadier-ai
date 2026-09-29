@@ -22,6 +22,7 @@
 //! The worker streams its events to `task:<id>` (never to the orchestrator), may block on
 //! `ask_orchestrator`, and ends with `submit_report`.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +40,9 @@ use tokio_util::sync::CancellationToken;
 use super::conversation::{Cli, Envelope, safe_file_name};
 use super::outputs::outputs_dir;
 use super::usage::TokenOwner;
-use super::{EventSource, SessionManager, blocking, git_error, instructions, prompts, secrets};
+use super::{
+    EventSource, SessionManager, blocking, fallback, git_error, instructions, prompts, secrets,
+};
 use crate::model::{
     ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
 };
@@ -47,8 +50,9 @@ use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
-    ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, InjectionKind, QuestionKind,
-    RepoAccess, Report, Route, Task, TaskId, TaskKind, TaskState, TaskWorkspace, WorkerAccess,
+    ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, InjectionKind,
+    QuestionKind, RepoAccess, Report, Route, Task, TaskId, TaskKind, TaskState, TaskWorkspace,
+    WorkerAccess,
 };
 use crate::{Error, Result, now_ms};
 
@@ -100,6 +104,12 @@ struct TaskLiveState {
     /// Where the worker's CLI runs (a command without its own cwd runs here).
     cwd: Option<PathBuf>,
     redactor: Option<Arc<brigadier_providers::redact::Redactor>>,
+    /// Why the running model must stop and hand the task on, once its turn is over (a usage
+    /// limit, or an error another model may not have).
+    cutoff: Option<AttemptEnd>,
+    /// Transient provider errors (overloaded, server, network) in a row: the first is retried
+    /// on the same model, the second hands the task on.
+    transient: u32,
 }
 
 /// A task's live worker.
@@ -113,6 +123,33 @@ pub(crate) struct TaskLive {
 }
 
 impl TaskLive {
+    /// Records why the running model must hand the task on when its turn ends.
+    pub(crate) async fn set_cutoff(&self, end: AttemptEnd) {
+        self.state.lock().await.cutoff = Some(end);
+    }
+
+    /// Takes the pending hand-off, if any.
+    pub(crate) async fn take_cutoff(&self) -> Option<AttemptEnd> {
+        self.state.lock().await.cutoff.take()
+    }
+
+    /// Counts a transient provider error; answers how many came in a row.
+    pub(crate) async fn transient_error(&self) -> u32 {
+        let mut state = self.state.lock().await;
+        state.transient += 1;
+        state.transient
+    }
+
+    /// Transient provider errors in a row so far.
+    pub(crate) async fn transient(&self) -> u32 {
+        self.state.lock().await.transient
+    }
+
+    /// A turn went through: transient errors are no longer in a row.
+    pub(crate) async fn clear_transient(&self) {
+        self.state.lock().await.transient = 0;
+    }
+
     /// The worker's CLI session, while one runs.
     #[cfg(debug_assertions)]
     pub(crate) async fn cli(&self) -> Option<Arc<Cli>> {
@@ -171,7 +208,7 @@ impl TaskLive {
 }
 
 impl SessionManager {
-    fn task_live(&self, task: &Task) -> Arc<TaskLive> {
+    pub(crate) fn task_live(&self, task: &Task) -> Arc<TaskLive> {
         self.tasks_lock()
             .entry(task.id.clone())
             .or_insert_with(|| {
@@ -200,7 +237,7 @@ impl SessionManager {
     }
 
     /// How many workers each provider runs now, so parallel work spreads across vendors.
-    fn running_workers(&self) -> Vec<(ProviderKind, u32)> {
+    pub(crate) fn running_workers(&self) -> Vec<(ProviderKind, u32)> {
         let mut claude = 0;
         let mut codex = 0;
         for live in self.tasks_lock().values() {
@@ -365,6 +402,16 @@ impl SessionManager {
             None => self.request_for(conversation_id, None).await,
         };
         let now = now_ms();
+        let route = Route {
+            choice: ModelChoice {
+                provider: choice.provider,
+                model: choice.model.clone(),
+                effort: choice.effort.clone(),
+                fast: None,
+            },
+            reason,
+            explanation: None,
+        };
         let task = Task {
             id: TaskId::generate(),
             conversation_id: conversation_id.clone(),
@@ -374,17 +421,13 @@ impl SessionManager {
             kind,
             spec,
             access: access_for(kind, *permission),
-            route: Route {
-                choice: ModelChoice {
-                    provider: choice.provider,
-                    model: choice.model.clone(),
-                    effort: choice.effort.clone(),
-                    fast: None,
-                },
-                reason,
-                explanation: None,
-            },
-            attempts: Vec::new(),
+            attempts: vec![Attempt {
+                route: route.clone(),
+                started_at_ms: now,
+                ended_at_ms: None,
+                end: None,
+            }],
+            route,
             floor: QualityTier::default(),
             areas: Vec::new(),
             state: TaskState::Queued,
@@ -468,7 +511,7 @@ impl SessionManager {
 
     /// Starts (or resumes) the worker's CLI session in the task's prepared workspace and sends
     /// it `first`.
-    async fn launch_worker(
+    pub(crate) async fn launch_worker(
         &self,
         live: &Arc<TaskLive>,
         task: &Task,
@@ -506,8 +549,9 @@ impl SessionManager {
             .as_ref()
             .map(|p| p.prefs.secret_files.clone())
             .unwrap_or_default();
+        // A successor taking the task over finds the worktree's secrets already in place.
         let mut secret_values = match (&workspace.worktree, &origin) {
-            (Some(worktree), Origin::New) => {
+            (Some(worktree), Origin::New) if task.attempts.len() <= 1 => {
                 secrets::copy_secrets(self, &owner, &workspace.repo, worktree, &secret_files)
                     .await?
             }
@@ -1077,7 +1121,7 @@ impl SessionManager {
     }
 
     /// The user's attachments the task was given, written into its scratch folder.
-    async fn worker_files(&self, task: &Task, scratch: &Path) -> Vec<InputFile> {
+    pub(crate) async fn worker_files(&self, task: &Task, scratch: &Path) -> Vec<InputFile> {
         let mut files = Vec::new();
         for attachment in &task.attachments {
             let Ok(hash) = attachment.id.parse::<brigadier_store::BlobHash>() else {
@@ -1168,8 +1212,14 @@ impl SessionManager {
             && !task.state.is_final()
             && task.report.is_none()
         {
-            self.worker_failed(&task, "The worker's CLI exited before it reported.")
-                .await;
+            // Another model takes over (up to a few times for errors, then the task fails).
+            let end = live.take_cutoff().await.unwrap_or(AttemptEnd::Error {
+                kind: brigadier_providers::ErrorKind::Process,
+                message: "The worker's CLI exited before it reported.".into(),
+            });
+            let manager = self.arc();
+            let live = live.clone();
+            self.spawn(async move { manager.hand_off(&live, end).await });
         }
     }
 
@@ -1221,7 +1271,29 @@ impl SessionManager {
             _ => None,
         };
         let error = match &event {
-            ProviderEvent::Error { error } if !error.will_retry => Some(error.message.clone()),
+            ProviderEvent::Error { error } if !error.will_retry => {
+                match fallback::verdict(error) {
+                    // Another model takes over when the turn ends; this is not the task's
+                    // error.
+                    fallback::ErrorVerdict::HandOff(end) => {
+                        live.set_cutoff(end).await;
+                        None
+                    }
+                    fallback::ErrorVerdict::Transient => {
+                        if live.transient_error().await >= 2 {
+                            live.set_cutoff(AttemptEnd::Error {
+                                kind: error.kind,
+                                message: error.message.clone(),
+                            })
+                            .await;
+                            None
+                        } else {
+                            Some(error.message.clone())
+                        }
+                    }
+                    fallback::ErrorVerdict::Keep => Some(error.message.clone()),
+                }
+            }
             _ => None,
         };
         self.record_worker_event(&live.id, event).await;
@@ -1259,6 +1331,7 @@ impl SessionManager {
         if task.state == TaskState::Paused || task.state.is_final() {
             return;
         }
+        let cutoff = live.take_cutoff().await;
         if task.report.is_some() && task.state != TaskState::Running {
             // Reported; the worker waits (write tasks can be sent back to fix things).
             if !task.kind.writes() {
@@ -1268,8 +1341,36 @@ impl SessionManager {
             }
             return;
         }
+        if let Some(end) = cutoff {
+            // Its model is cut off (a limit, or an error another model may not have): another
+            // takes the task over. Before the interrupted-turn return, since an injected limit
+            // ends the turn that way.
+            let manager = self.arc();
+            let live = live.clone();
+            self.spawn(async move { manager.hand_off(&live, end).await });
+            return;
+        }
         if status == TurnStatus::Interrupted {
             return;
+        }
+        if status == TurnStatus::Completed {
+            live.clear_transient().await;
+        } else if task.error.is_some() && live.transient().await == 1 {
+            // A transient provider error: the same model tries once more.
+            let cleared = self
+                .update_task(&task.conversation_id, &task.id, |task| task.error = None)
+                .await;
+            live.state.lock().await.busy = true;
+            let sent = cli
+                .session
+                .send(TurnInput {
+                    text: "Continue the task.".into(),
+                    files: Vec::new(),
+                })
+                .await;
+            if cleared.is_ok() && sent.is_ok() {
+                return;
+            }
         }
         if nudge {
             let text = match self.keep_last_message(live, task.number).await {
@@ -1946,6 +2047,20 @@ impl SessionManager {
         let live = self
             .existing_task_live(&task_id)
             .ok_or_else(|| Error::Invalid("the worker has ended".into()))?;
+        let task = self.task_by_id(&conversation_id, &task_id).await?;
+        if task.quota_wait.is_some() {
+            // Waiting for quota: no CLI runs; route it again now.
+            self.continue_task(&live, task).await;
+            return Ok(());
+        }
+        if let Some(end) = live.take_cutoff().await {
+            // Paused by hand after its model was cut off.
+            self.set_task_state(&conversation_id, &task_id, TaskState::Running)
+                .await?;
+            let manager = self.arc();
+            self.spawn(async move { manager.hand_off(&live, end).await });
+            return Ok(());
+        }
         let cli = {
             let mut state = live.state.lock().await;
             state.busy = true;
@@ -2212,7 +2327,7 @@ impl SessionManager {
 /// picks the vendor, use its cheapest model at low effort. The routing reason is kept and says
 /// so.
 #[cfg(debug_assertions)]
-fn cheap_for_development(
+pub(crate) fn cheap_for_development(
     mut choice: brigadier_router::Choice,
     available: &[brigadier_router::Availability],
 ) -> brigadier_router::Choice {
@@ -2238,7 +2353,7 @@ fn cheap_for_development(
 
 /// Release builds route as the router says.
 #[cfg(not(debug_assertions))]
-fn cheap_for_development(
+pub(crate) fn cheap_for_development(
     choice: brigadier_router::Choice,
     _available: &[brigadier_router::Availability],
 ) -> brigadier_router::Choice {
@@ -2246,7 +2361,7 @@ fn cheap_for_development(
 }
 
 /// The router's category for a task kind.
-fn category(kind: TaskKind) -> brigadier_router::TaskCategory {
+pub(crate) fn category(kind: TaskKind) -> brigadier_router::TaskCategory {
     use brigadier_router::TaskCategory;
     match kind {
         TaskKind::Scout => TaskCategory::Scout,
@@ -2310,8 +2425,25 @@ fn worker_step(task: &Task, was: Option<TaskState>, reported: bool) -> Option<Do
 
 pub(crate) fn route_label(task: &Task) -> String {
     let choice = &task.route.choice;
-    match &choice.model {
+    let mut label = match &choice.model {
         Some(model) => format!("{} {model}", choice.provider.label()),
         None => choice.provider.label().to_owned(),
+    };
+    // Hand-offs wake no one; the report or failure says who ran the task before.
+    let before: Vec<String> = task
+        .attempts
+        .iter()
+        .filter_map(|attempt| {
+            let end = attempt.end.as_ref()?;
+            Some(format!(
+                "{} ({})",
+                fallback::model_label(&attempt.route.choice),
+                fallback::end_reason(end)
+            ))
+        })
+        .collect();
+    if !before.is_empty() {
+        let _ = write!(label, ", took over from {}", before.join(", then "));
     }
+    label
 }

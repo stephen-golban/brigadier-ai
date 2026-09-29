@@ -16,7 +16,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use brigadier_providers::{LimitKind, ProviderKind, QuotaSnapshot, QuotaSource};
+use brigadier_providers::{LimitHit, LimitKind, ProviderKind, QuotaSnapshot, QuotaSource};
 use brigadier_router::QuotaSample;
 
 use super::store::{HISTORY_MS, RoutingStore, StoredSample};
@@ -42,7 +42,7 @@ struct Tracked {
     last_event_ms: i64,
     /// Development builds: a limit injected to exercise fallback, held until its reset.
     #[cfg(debug_assertions)]
-    injected: Option<brigadier_providers::LimitHit>,
+    injected: Option<LimitHit>,
 }
 
 pub struct QuotaMonitor {
@@ -161,10 +161,37 @@ impl QuotaMonitor {
         wait.max(MIN_POLL)
     }
 
+    /// Takes in a limit a session's error reported (a CLI can say it is at its limit without
+    /// a rate-limit notification): the provider counts as limited until the limit's reset, or,
+    /// when the error didn't say, until a read shows it clear.
+    pub fn note_limit(
+        &self,
+        provider: ProviderKind,
+        limit: LimitHit,
+        now_ms: i64,
+    ) -> QuotaSnapshot {
+        let incoming = {
+            let state = self.state();
+            let windows = state
+                .get(&provider)
+                .and_then(|tracked| tracked.quota.as_ref())
+                .map(|quota| quota.windows.clone())
+                .unwrap_or_default();
+            QuotaSnapshot {
+                provider,
+                windows,
+                limit: Some(limit),
+                observed_at_ms: now_ms,
+                source: QuotaSource::Event,
+            }
+        };
+        self.note(&incoming, now_ms)
+    }
+
     /// Development builds: makes `provider` refuse work as `limit` says until its reset, so
     /// no read can clear it early.
     #[cfg(debug_assertions)]
-    pub fn inject(&self, provider: ProviderKind, limit: brigadier_providers::LimitHit) {
+    pub fn inject(&self, provider: ProviderKind, limit: LimitHit) {
         self.state().entry(provider).or_default().injected = Some(limit);
     }
 }

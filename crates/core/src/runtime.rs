@@ -252,6 +252,20 @@ impl Runtime {
         });
     }
 
+    /// Takes in a limit a session's error reported (see [`QuotaMonitor::note_limit`]) and
+    /// records the provider's overview.
+    pub async fn note_limit(&self, provider: ProviderKind, limit: brigadier_providers::LimitHit) {
+        let overview = {
+            let mut state = self.state();
+            let Some(overview) = state.overviews.get_mut(&provider) else {
+                return;
+            };
+            overview.quota = Some(self.monitor.note_limit(provider, limit, now_ms()));
+            overview.clone()
+        };
+        self.record_overview(overview).await;
+    }
+
     /// Takes in a fresh quota read and records the provider's overview.
     async fn note_read(&self, quota: brigadier_providers::QuotaSnapshot) {
         let overview = {

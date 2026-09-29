@@ -21,6 +21,7 @@ mod branches;
 mod cards;
 mod conversation;
 pub mod disk;
+mod fallback;
 #[cfg(debug_assertions)]
 pub mod fault;
 mod files;
