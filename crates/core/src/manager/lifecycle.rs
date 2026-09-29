@@ -21,8 +21,7 @@ use std::time::Duration;
 use super::conversation::Envelope;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{
-    Conversation, ConversationId, ConversationKind, Environment, Lifecycle, ProjectId, Setup,
-    streams,
+    Conversation, ConversationId, ConversationKind, Environment, Lifecycle, Setup, streams,
 };
 use crate::work::{InjectionKind, TaskState};
 use crate::{Error, Result, now_ms};
@@ -179,7 +178,7 @@ impl SessionManager {
         false
     }
 
-    async fn has_running_workers(&self, id: &ConversationId) -> bool {
+    pub(super) async fn has_running_workers(&self, id: &ConversationId) -> bool {
         self.core.tasks(id).await.is_ok_and(|tasks| {
             tasks.iter().any(|task| {
                 matches!(
@@ -407,11 +406,25 @@ impl SessionManager {
     /// Deletes a conversation for good. Branches Brigadier created for it (task branches, a
     /// `brigadier/` session branch) go only if asked; the user's own branches never do. What
     /// the Brain learned in it stays unless `forget_brain` (its transcript index always goes).
+    /// Unmerged branches it keeps are recorded, so Storage can offer them later.
     pub async fn delete(
         &self,
         id: ConversationId,
         delete_branches: bool,
         forget_brain: bool,
+    ) -> Result<()> {
+        self.delete_conversation(id, delete_branches, forget_brain, true)
+            .await
+    }
+
+    /// [`Self::delete`]; `record_kept` records the branches it leaves (a project removal
+    /// records them itself, once the user's choices are through).
+    pub(super) async fn delete_conversation(
+        &self,
+        id: ConversationId,
+        delete_branches: bool,
+        forget_brain: bool,
+        record_kept: bool,
     ) -> Result<()> {
         let conversation = self.core.conversation(&id)?;
         self.delete_side_chats(&id).await;
@@ -445,6 +458,13 @@ impl SessionManager {
             })
             .await?;
         }
+        if !delete_branches && record_kept {
+            self.record_left_branches(super::project_removal::branch_records(
+                &conversation,
+                &tasks,
+            ))
+            .await;
+        }
         let mut purge = vec![
             streams::conversation(&id),
             streams::orchestrator(&id),
@@ -463,42 +483,6 @@ impl SessionManager {
             }
             Err(err) => tracing::warn!(conversation = %id, error = %err, "could not collect blobs"),
         }
-        Ok(())
-    }
-
-    /// Removes a project from Brigadier: each of its conversations is deleted as
-    /// [`Self::delete`] does (workers stopped, worktrees, CLI files and processes removed;
-    /// Brigadier's own unmerged branches only with `delete_branches`), then its Brain and code
-    /// index are deleted. The repository's files and the user's own branches are never touched.
-    pub async fn remove_project(&self, id: ProjectId, delete_branches: bool) -> Result<()> {
-        self.core.project(&id)?;
-        let conversations: Vec<ConversationId> = self
-            .core
-            .catalog()
-            .conversations
-            .into_iter()
-            .filter(|c| c.project_id.as_ref() == Some(&id))
-            .map(|c| c.id)
-            .collect();
-        for conversation in conversations {
-            // A side chat went with its parent.
-            if self.core.conversation(&conversation).is_err() {
-                continue;
-            }
-            self.delete(conversation, delete_branches, false).await?;
-        }
-        self.close_project_brain(&id).await;
-        self.record_project_brain(&id).await?;
-        self.core.forget_project(id.clone()).await?;
-        tracing::info!(project = %id, "project removed");
-        // Its task worktrees lived here; the ledger removed them with their conversations.
-        let worktrees = self.owned_dir("worktrees", &id.0);
-        let _ = blocking(move || {
-            let _ = std::fs::remove_dir(&worktrees);
-            Ok(())
-        })
-        .await;
-        self.delete_project_brain(&id).await;
         Ok(())
     }
 }

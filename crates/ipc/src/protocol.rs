@@ -8,7 +8,9 @@
 //! `method` tag, so TypeScript can pair them with `Extract<Response, { method: M }>`.
 
 use brigadier_brain::{BrainAnswer, BrainGraph, BrainQuery, Node, NodeFilter};
-use brigadier_core::storage::{CleanReport, StorageReport};
+use brigadier_core::storage::{
+    BranchChoice, CleanReport, ProjectRemoval, RemoveProjectReport, StorageReport,
+};
 use brigadier_core::{
     AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
     ConventionsExport, Conversation, ConversationActivity, ConversationId, ConversationKind,
@@ -26,7 +28,7 @@ use ts_rs::TS;
 use crate::metrics::{DaemonMetrics, Diagnostics};
 
 /// Bumped on any incompatible change to these types.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Who is connecting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -480,13 +482,19 @@ pub enum Request {
     Restore {
         id: ConversationId,
     },
+    /// What removing a project takes with it.
+    PreviewRemoveProject {
+        id: ProjectId,
+    },
     /// Removes a project from Brigadier: its conversations are deleted (as `Delete` does,
-    /// without forgetting the Personal Brain), then its Brain and code index. Its repository's
-    /// files and the user's own branches are never touched.
+    /// without forgetting the Personal Brain), then the picked branches, then its Brain and
+    /// code index go to the Trash. Its repository's files and the user's own branches are
+    /// never touched. Refused while one of its conversations works.
     RemoveProject {
         id: ProjectId,
-        /// Also delete its sessions' unmerged Brigadier branches (otherwise they are kept).
-        delete_branches: bool,
+        /// Brigadier branches to delete, at the tips the preview showed.
+        delete_branches: Vec<BranchChoice>,
+        keep_brain: bool,
     },
     /// Permanently removes a conversation and its transcript.
     Delete {
@@ -817,7 +825,12 @@ pub enum Response {
     Restore {
         conversation: Box<Conversation>,
     },
-    RemoveProject,
+    PreviewRemoveProject {
+        removal: Box<ProjectRemoval>,
+    },
+    RemoveProject {
+        report: RemoveProjectReport,
+    },
     Delete,
     RenameConversation {
         conversation: Box<Conversation>,

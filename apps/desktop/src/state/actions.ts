@@ -3,6 +3,7 @@ import type {
   Access,
   ApprovalDecision,
   AttachmentRef,
+  BranchChoice,
   Conversation,
   ConversationStatus,
   Density,
@@ -13,10 +14,12 @@ import type {
   QueuedMessage,
   Project,
   ProjectPatch,
+  ProjectRemoval,
   ProviderKind,
   Rating,
   RawApprovals,
   RawSession,
+  RemoveProjectReport,
   RepoInfo,
   RestoreOutcome,
   Settings,
@@ -768,15 +771,24 @@ export async function deleteConversation(
   });
 }
 
+/** What removing a project takes with it. */
+export async function previewRemoveProject(id: string): Promise<ProjectRemoval> {
+  return (await request({ method: "previewRemoveProject", id })).removal;
+}
+
 /**
- * Removes a project from Brigadier: its conversations are deleted and its Brain and code
- * index go; its repository is untouched.
+ * Removes a project from Brigadier: its conversations are deleted, the picked branches go,
+ * and its Brain and code index go to the Trash unless kept; its repository is untouched.
  */
-export async function removeProject(id: string, deleteBranches: boolean): Promise<void> {
+export async function removeProject(
+  id: string,
+  deleteBranches: BranchChoice[],
+  keepBrain: boolean,
+): Promise<RemoveProjectReport> {
   const gone = Object.values(useApp.getState().conversations)
     .filter((conversation) => conversation.projectId === id)
     .map((conversation) => conversation.id);
-  await request({ method: "removeProject", id, deleteBranches });
+  const { report } = await request({ method: "removeProject", id, deleteBranches, keepBrain });
   for (const conversation of gone) forgetDraft(conversation);
   const { selection } = useApp.getState();
   if (
@@ -795,6 +807,7 @@ export async function removeProject(id: string, deleteBranches: boolean): Promis
     }
     return { projects, conversations, threads };
   });
+  return report;
 }
 
 // ----- orchestrator log (Inspector) ------------------------------------------------------

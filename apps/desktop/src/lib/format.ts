@@ -7,7 +7,8 @@ export function formatMb(bytes: number): string {
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < MB) return `${(bytes / 1024).toFixed(1)} KB`;
-  return formatMb(bytes);
+  if (bytes < 1024 * MB) return formatMb(bytes);
+  return `${(bytes / (1024 * MB)).toFixed(1)} GB`;
 }
 
 export function formatMs(ms: number): string {

@@ -4,6 +4,7 @@ import type { ApprovalDecision } from "./ApprovalDecision";
 import type { AttachmentRef } from "./AttachmentRef";
 import type { BrainJobKind } from "./BrainJobKind";
 import type { BrainQuery } from "./BrainQuery";
+import type { BranchChoice } from "./BranchChoice";
 import type { CardId } from "./CardId";
 import type { ConversationId } from "./ConversationId";
 import type { ConversationKind } from "./ConversationKind";
@@ -56,11 +57,11 @@ before: number | null, limit: number, } | { "method": "listOrchestratorLog", con
 /**
  * Absolute path.
  */
-path: string, } | { "method": "openArtifact", id: string, fileName: string, } | { "method": "hibernate", id: ConversationId, } | { "method": "archive", id: ConversationId, } | { "method": "restore", id: ConversationId, } | { "method": "removeProject", id: ProjectId, 
+path: string, } | { "method": "openArtifact", id: string, fileName: string, } | { "method": "hibernate", id: ConversationId, } | { "method": "archive", id: ConversationId, } | { "method": "restore", id: ConversationId, } | { "method": "previewRemoveProject", id: ProjectId, } | { "method": "removeProject", id: ProjectId, 
 /**
- * Also delete its sessions' unmerged Brigadier branches (otherwise they are kept).
+ * Brigadier branches to delete, at the tips the preview showed.
  */
-deleteBranches: boolean, } | { "method": "delete", id: ConversationId, 
+deleteBranches: Array<BranchChoice>, keepBrain: boolean, } | { "method": "delete", id: ConversationId, 
 /**
  * Also delete its unmerged branches (otherwise they are kept).
  */

@@ -30,6 +30,7 @@ mod landing;
 mod lifecycle;
 mod outputs;
 mod past_projects;
+mod project_removal;
 mod prompts;
 mod pull_request;
 mod rebirth;

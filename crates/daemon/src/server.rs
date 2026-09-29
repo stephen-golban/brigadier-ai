@@ -410,7 +410,10 @@ impl Session {
                 return Ok(Flow::Continue);
             }
             // Long: answered beside the connection's other requests.
-            request @ (Request::ScanStorage | Request::CleanStorage { .. }) => {
+            request @ (Request::ScanStorage
+            | Request::CleanStorage { .. }
+            | Request::PreviewRemoveProject { .. }
+            | Request::RemoveProject { .. }) => {
                 let daemon = self.daemon.clone();
                 let late = self.late_tx.clone();
                 self.daemon.supervisor.spawn(async move {
@@ -1085,17 +1088,28 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::Restore { id } => Response::Restore {
             conversation: Box::new(sessions.restore(id).await?),
         },
+        Request::PreviewRemoveProject { id } => Response::PreviewRemoveProject {
+            removal: Box::new(sessions.preview_remove_project(id).await?),
+        },
         Request::RemoveProject {
             id,
             delete_branches,
+            keep_brain,
         } => {
+            // Refused while one of its conversations works: before its terminals close.
+            if let Some(why) = sessions.preview_remove_project(id.clone()).await?.blocked {
+                return Err(invalid(why));
+            }
             for conversation in core.catalog().conversations {
                 if conversation.project_id.as_ref() == Some(&id) {
                     daemon.terminals.close_conversation(&conversation.id.0);
                 }
             }
-            sessions.remove_project(id, delete_branches).await?;
-            Response::RemoveProject
+            Response::RemoveProject {
+                report: sessions
+                    .remove_project(id, delete_branches, keep_brain)
+                    .await?,
+            }
         }
         Request::Delete {
             id,

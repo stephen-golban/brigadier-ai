@@ -308,6 +308,20 @@ impl CleanupLedger {
             .collect()
     }
 
+    /// Records Brigadier branches left in `repo` (unmerged work the user kept), so Storage can
+    /// offer them later while they still point where they did.
+    pub async fn record_kept_branches(
+        &self,
+        repo: String,
+        branches: Vec<crate::model::KeptBranch>,
+    ) -> Result<()> {
+        if branches.is_empty() {
+            return Ok(());
+        }
+        self.append(DomainEvent::BranchesKept { repo, branches })
+            .await
+    }
+
     /// Owners marked for disposal.
     pub fn disposing(&self) -> Vec<String> {
         self.state().disposing.iter().cloned().collect()

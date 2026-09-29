@@ -240,7 +240,7 @@ impl SessionManager {
     }
 
     /// Every kept-branch record, oldest first.
-    async fn kept_branches(&self) -> Result<Vec<(String, KeptBranch)>> {
+    pub(super) async fn kept_branches(&self) -> Result<Vec<(String, KeptBranch)>> {
         let mut kept = Vec::new();
         let mut after = 0;
         loop {
@@ -557,13 +557,14 @@ pub(super) fn delete_branch_checked(
     repo.delete_branch_at(&branch.name, &tip).map_err(git_error)
 }
 
-/// How a Brigadier branch stands: `None` when it isn't there, moved on from `recorded`, or is
-/// checked out somewhere.
+/// How a Brigadier branch stands: `None` when it isn't there or moved on from `recorded`.
+/// Worktrees in `leaving` are about to go, so a branch checked out only there is free.
 pub(super) fn branch_standing(
     repo: &brigadier_git::Repo,
     name: &str,
     target: &str,
     recorded: Option<&str>,
+    leaving: &[PathBuf],
 ) -> Option<crate::storage::RemovalBranch> {
     if !name.starts_with("brigadier/") {
         return None;
@@ -572,11 +573,9 @@ pub(super) fn branch_standing(
     if recorded.is_some_and(|recorded| recorded != tip.0) {
         return None;
     }
-    let checked_out = repo
-        .worktrees()
-        .ok()?
-        .iter()
-        .any(|worktree| worktree.branch.as_deref() == Some(name));
+    let checked_out = repo.worktrees().ok()?.iter().any(|worktree| {
+        worktree.branch.as_deref() == Some(name) && !same_path_in(&worktree.path, leaving)
+    });
     let target_tip = repo.branch_tip(target).ok().flatten();
     let (merged, ahead) = match &target_tip {
         Some(target_tip) => (
@@ -600,7 +599,16 @@ pub(super) fn branch_standing(
     })
 }
 
-fn shell_quote(text: &str) -> String {
+/// Whether `path` is one of `paths`, also through a symbolic link above it (`/tmp` and
+/// `/private/tmp` are the same place).
+pub(super) fn same_path_in(path: &Path, paths: &[PathBuf]) -> bool {
+    let real = path.canonicalize().ok();
+    paths
+        .iter()
+        .any(|other| other == path || (real.is_some() && other.canonicalize().ok() == real))
+}
+
+pub(super) fn shell_quote(text: &str) -> String {
     if text
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
@@ -1001,7 +1009,8 @@ impl Scanner<'_> {
             let Ok(repo) = self.git.open(&repo_path) else {
                 continue;
             };
-            let Some(standing) = branch_standing(&repo, &name, &target, recorded.as_deref()) else {
+            let Some(standing) = branch_standing(&repo, &name, &target, recorded.as_deref(), &[])
+            else {
                 continue;
             };
             if standing.checked_out {

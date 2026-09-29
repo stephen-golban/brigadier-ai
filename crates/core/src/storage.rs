@@ -195,6 +195,17 @@ pub struct BranchChoice {
     pub tip: String,
 }
 
+/// What `removeProject` did.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveProjectReport {
+    /// Branches left in place, as they stand now (Storage offers them later).
+    pub kept_branches: Vec<RemovalBranch>,
+    /// What its Brain took, now in the Trash (0 when it was kept or there was none).
+    pub brain_trashed_bytes: u64,
+    pub failures: Vec<String>,
+}
+
 /// The running app, as it asks for an uninstall.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

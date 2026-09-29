@@ -29,7 +29,7 @@ use brigadier_brain::{
 use brigadier_index::{
     CodeHit, CodeIndex, CodeQuery, FileChange, IndexConfig, ScanHelper, SearchKind,
 };
-use brigadier_providers::Artifact;
+use brigadier_sandbox::removal;
 use brigadier_store::StreamPage;
 
 use super::brain_jobs::BrainJobs;
@@ -326,24 +326,28 @@ impl SessionManager {
         }
     }
 
-    /// Records a project's Brain and index files (`brains/<project>/`) in the cleanup ledger,
-    /// before the project is forgotten, so they can't be left behind without a record.
-    pub(crate) async fn record_project_brain(&self, id: &ProjectId) -> Result<()> {
-        let path = self.brains.root.join(&id.0).display().to_string();
-        self.runtime
-            .ledger()
-            .record(&project_owner(id), Artifact::ScratchDir { path })
-            .await
+    /// A project's Brain and index files.
+    pub(crate) fn project_brain_dir(&self, id: &ProjectId) -> PathBuf {
+        self.brains.root.join(&id.0)
     }
 
-    /// A removed project's Brain and index files, once the project is gone so nothing opens
-    /// them again. What can't be deleted now (a file still open) is deleted at the next launch.
-    /// The repository is not touched.
-    pub(crate) async fn delete_project_brain(&self, id: &ProjectId) {
-        let leftovers = self.runtime.ledger().dispose(&project_owner(id)).await;
-        if !leftovers.is_clean() {
-            tracing::warn!(project = %id, failures = ?leftovers.failures, "a removed project's Brain is deleted at the next launch");
-        }
+    /// Moves a removed project's Brain and index files (`brains/<project>/`) to the Trash, once
+    /// the project is gone so nothing opens them again: rebuilding them costs time, so they
+    /// can be put back. What they took, or why they stay (Storage offers them later).
+    pub(crate) async fn trash_project_brain(&self, id: &ProjectId) -> Result<u64> {
+        let (root, dir) = (self.brains.root.clone(), self.project_brain_dir(id));
+        let owner = self.runtime.platform().paths().instance.clone();
+        blocking(move || {
+            if !dir.exists() {
+                return Ok(0);
+            }
+            let bytes = removal::allocated_size(&dir);
+            removal::bind(&root, &dir)
+                .and_then(|bound| removal::trash(&bound, &owner))
+                .map_err(|err| Error::Invalid(err.to_string()))?;
+            Ok(bytes)
+        })
+        .await
     }
 
     /// The project's Brain and index, opened (and its indexing started) on first use.
@@ -1957,10 +1961,6 @@ fn report_body(task: &Task, report: &Report) -> String {
 }
 
 /// The cleanup-ledger owner of a project's Brain files.
-fn project_owner(id: &ProjectId) -> String {
-    format!("project:{}", id.0)
-}
-
 /// A part of a report's findings files, as a Brain node's title and body.
 struct FindingsPart {
     title: String,
