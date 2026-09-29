@@ -12,6 +12,8 @@ blake3.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Moving what Brigadier removes for the user (a Brain, the data directory, the app) to the Trash.
+trash = "5.2.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.189"

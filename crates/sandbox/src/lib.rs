@@ -9,6 +9,8 @@
 
 mod paths;
 mod process;
+pub mod removal;
+mod trashcan;
 
 #[cfg(target_os = "linux")]
 mod linux;
