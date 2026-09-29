@@ -15,7 +15,11 @@ export type MergedModel = { provider: ProviderKind,
 /**
  * The id passed to the CLI.
  */
-id: string, displayName: string, status: ModelStatus, 
+id: string, 
+/**
+ * The concrete model an alias resolves to, when the CLI says.
+ */
+resolved: string | null, displayName: string, status: ModelStatus, 
 /**
  * The registry entry it is (or inherits), if any.
  */

@@ -201,6 +201,8 @@ pub struct MergedModel {
     pub provider: ProviderKind,
     /// The id passed to the CLI.
     pub id: String,
+    /// The concrete model an alias resolves to, when the CLI says.
+    pub resolved: Option<String>,
     pub display_name: String,
     pub status: ModelStatus,
     /// The registry entry it is (or inherits), if any.

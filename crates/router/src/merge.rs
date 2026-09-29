@@ -102,6 +102,7 @@ fn merge_one(
     let mut model = MergedModel {
         provider,
         id: info.id.clone(),
+        resolved: info.resolved.clone(),
         display_name: info.display_name.clone(),
         status: ModelStatus::Unknown,
         registry_key: None,
@@ -338,6 +339,7 @@ pub(crate) fn from_entry(entry: &RegistryModel, provider: ProviderKind) -> Optio
     let id = entry.matches.ids.first()?.clone();
     let mut model = MergedModel {
         provider,
+        resolved: None,
         display_name: id.clone(),
         id,
         status: ModelStatus::Curated,

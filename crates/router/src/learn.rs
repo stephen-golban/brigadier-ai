@@ -136,6 +136,10 @@ pub fn learned_for<'l>(
 pub(crate) fn is_model(model: &MergedModel, registry: &Registry, name: &str) -> bool {
     model.id.eq_ignore_ascii_case(name)
         || model
+            .resolved
+            .as_deref()
+            .is_some_and(|resolved| resolved.eq_ignore_ascii_case(name))
+        || model
             .registry_key
             .as_deref()
             .filter(|_| model.status == crate::ModelStatus::Curated)

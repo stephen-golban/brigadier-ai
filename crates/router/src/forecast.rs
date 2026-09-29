@@ -138,7 +138,13 @@ pub fn window_applies(window: &QuotaWindow, model: &MergedModel, registry: &Regi
     let Some(scope) = window.model.as_deref().map(str::trim) else {
         return true;
     };
-    if scope.is_empty() || scope.eq_ignore_ascii_case(&model.id) {
+    if scope.is_empty()
+        || scope.eq_ignore_ascii_case(&model.id)
+        || model
+            .resolved
+            .as_deref()
+            .is_some_and(|resolved| resolved.eq_ignore_ascii_case(scope))
+    {
         return true;
     }
     let entry = model
