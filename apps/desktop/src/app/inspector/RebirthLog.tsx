@@ -110,7 +110,10 @@ function RebirthDetail({ record }: { record: RebirthRecord }) {
     <div className="flex flex-col gap-2 px-3 pb-3">
       {times.kind === "split" && (
         <p className="text-muted-foreground tabular-nums">
-          {times.note !== null && `handoff note ${seconds(times.note)} · `}
+          {times.note !== null &&
+            (record.handoffBlob
+              ? `handoff note ${seconds(times.note)} · `
+              : `no handoff note (tried for ${seconds(times.note)}) · `)}
           swap {seconds(times.swap)}
           {times.waited >= WAIT_SHOWN_MS && " · the wait for the next turn is not counted"}
         </p>
