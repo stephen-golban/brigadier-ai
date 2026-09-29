@@ -24,6 +24,7 @@ import type {
   SetupRequest,
 } from "@/ipc/generated";
 import { applyDensity } from "@/lib/density";
+import { savePinnedSummary } from "@/lib/pinnedSummary";
 import {
   boardFromView,
   boardOf,
@@ -894,6 +895,7 @@ export async function setDensity(density: Density): Promise<void> {
 }
 
 export function setPinnedSummary(shown: boolean): void {
+  savePinnedSummary(shown);
   useApp.setState({ pinnedSummary: shown });
 }
 

@@ -19,6 +19,7 @@ import type {
   Settings,
 } from "@/ipc/generated";
 import { applyDensity, cachedDensity } from "@/lib/density";
+import { cachedPinnedSummary } from "@/lib/pinnedSummary";
 
 /** What the main area shows. Drafts become real conversations on their first message. */
 export type Selection =
@@ -167,7 +168,8 @@ export type AppState = {
   expandedProjects: Record<string, boolean>;
   windowVisible: boolean;
   coldStartMs: number | null;
-  /** The summary card pinned at the top right of a session's thread is shown. */
+  /** The summary card pinned at the top end of a session's thread is shown: one pin for every
+      conversation, kept across launches. */
   pinnedSummary: boolean;
   inspector: {
     open: boolean;
@@ -204,7 +206,7 @@ export const useApp = create<AppState>()(() => ({
   expandedProjects: {},
   windowVisible: true,
   coldStartMs: null,
-  pinnedSummary: true,
+  pinnedSummary: cachedPinnedSummary(),
   inspector: {
     open: false,
     tab: "events",
