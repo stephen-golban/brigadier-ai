@@ -12,8 +12,10 @@ import {
   type AttachmentSource,
   FileTile,
   ImageTile,
-  isPastedText,
+  isPastedFile,
   kindOf,
+  PasteShortened,
+  pasteTooLong,
   readAttachmentText,
   TileRemove,
   useAttachmentText,
@@ -41,10 +43,11 @@ const ComposerAttachment: FC = () => {
     return "ready";
   });
   const source: AttachmentSource = { file, ref: file ? undefined : reader?.composerRef(id) };
+  const pasted = file ? isPastedFile(file) : source.ref?.pasted === true;
   const remove = (
     <AttachmentPrimitive.Remove asChild>
       <TileRemove
-        label={isPastedText(name, mime) ? "Remove pasted text" : `Remove ${name}`}
+        label={pasted ? "Remove pasted text" : `Remove ${name}`}
         onHover={mime.startsWith("image/")}
       />
     </AttachmentPrimitive.Remove>
@@ -75,7 +78,7 @@ const ComposerAttachment: FC = () => {
         {remove}
       </ImageTile>
     );
-  } else if (isPastedText(name, mime)) {
+  } else if (pasted) {
     tile = <PastedText source={source} busy={state === "uploading"} remove={remove} />;
   } else {
     tile = (
@@ -102,7 +105,8 @@ const ComposerAttachment: FC = () => {
 
 /**
  * The "Pasted text" card: the paste's first line and "Show in text field ›", which
- * puts the text back into the composer and drops the attachment.
+ * puts the text back into the composer and drops the attachment. A paste too long to go to
+ * the model whole says so.
  */
 const PastedText: FC<{ source: AttachmentSource; busy: boolean; remove: ReactNode }> = ({
   source,
@@ -113,6 +117,7 @@ const PastedText: FC<{ source: AttachmentSource; busy: boolean; remove: ReactNod
   const reader = useContext(AttachmentReaderContext);
   const text = useAttachmentText(source);
   const firstLine = text?.split("\n").find((line) => line.trim() !== "")?.trim();
+  const tooLong = pasteTooLong(source.file?.size ?? source.ref?.bytes ?? 0);
   const show = async () => {
     const pasted = await readAttachmentText(source, reader);
     const composer = aui.composer();
@@ -126,15 +131,19 @@ const PastedText: FC<{ source: AttachmentSource; busy: boolean; remove: ReactNod
       mime="text/plain"
       title={firstLine ?? "Pasted text"}
       detail={
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void show()}
-          className="hover:text-foreground focus-visible:ring-ring inline-flex items-center gap-0.5 underline underline-offset-2 outline-none focus-visible:ring-2"
-        >
-          Show in text field
-          <ChevronRight aria-hidden className="size-icon-xs" />
-        </button>
+        tooLong ? (
+          <PasteShortened />
+        ) : (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void show()}
+            className="hover:text-foreground focus-visible:ring-ring inline-flex items-center gap-0.5 underline underline-offset-2 outline-none focus-visible:ring-2"
+          >
+            Show in text field
+            <ChevronRight aria-hidden className="size-icon-xs" />
+          </button>
+        )
       }
     >
       {remove}

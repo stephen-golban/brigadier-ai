@@ -22,7 +22,7 @@ import { mentionOf } from "@/app/conversation/Mentions";
 import { usePullQueued } from "@/app/conversation/QueueCard";
 import {
   PASTE_AS_ATTACHMENT_CHARS,
-  PASTED_TEXT_NAME,
+  pastedTextFile,
 } from "@/components/assistant-ui/elements/attachment-tile";
 import {
   ChipComposerInput,
@@ -179,8 +179,7 @@ function ComposerKeys() {
           const text = event.clipboardData.getData("text/plain");
           if (files.length === 0 && text.length < PASTE_AS_ATTACHMENT_CHARS) return false;
           event.preventDefault();
-          const attach =
-            files.length > 0 ? files : [new File([text], PASTED_TEXT_NAME, { type: "text/plain" })];
+          const attach = files.length > 0 ? files : [pastedTextFile(text)];
           const composer = aui.composer();
           for (const file of attach) void composer.addAttachment(file);
           return true;

@@ -7,4 +7,9 @@ export type AttachmentRef = {
 /**
  * Content hash in the blob store.
  */
-id: string, name: string, mime: string, bytes: number, };
+id: string, name: string, mime: string, bytes: number, 
+/**
+ * Text the user pasted into the composer, not a file they attached: it is part of what
+ * they wrote, so it goes to the model as their message.
+ */
+pasted: boolean, };

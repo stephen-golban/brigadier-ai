@@ -729,7 +729,12 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::ResumeQueue { conversation_id } => Response::ResumeQueue {
             queue: sessions.resume_queue(conversation_id).await?,
         },
-        Request::AddAttachment { name, mime, data } => {
+        Request::AddAttachment {
+            name,
+            mime,
+            data,
+            pasted,
+        } => {
             if data.len() > MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 {
                 return Err(IpcError {
                     code: ErrorCode::Invalid,
@@ -741,7 +746,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 message: format!("the attachment is not valid base64: {err}"),
             })?;
             Response::AddAttachment {
-                attachment: core.add_attachment(name, mime, bytes).await?,
+                attachment: core.add_attachment(name, mime, bytes, pasted).await?,
             }
         }
         Request::PinDraftAttachments { scope, attachments } => {

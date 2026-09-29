@@ -6,6 +6,7 @@ import type {
   PendingAttachment,
 } from "@assistant-ui/react";
 
+import { isPastedFile } from "@/components/assistant-ui/elements/attachment-tile";
 import type { AttachmentRef } from "@/ipc/generated";
 import { formatBytes } from "@/lib/format";
 import { addAttachment } from "@/state/actions";
@@ -48,7 +49,7 @@ export class BlobAttachmentAdapter implements AttachmentAdapter {
     }
     yield { ...base, status: { type: "running", reason: "uploading", progress: 0 } };
     try {
-      this.refs.set(base.id, await addAttachment(file));
+      this.refs.set(base.id, await addAttachment(file, isPastedFile(file)));
       yield { ...base, status: { type: "requires-action", reason: "composer-send" } };
     } catch (error) {
       yield {

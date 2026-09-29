@@ -415,14 +415,18 @@ export async function updateSetup(id: string, setup: Setup): Promise<void> {
   storeConversation(conversation);
 }
 
-/** Stores a file in the daemon's blob store, for attaching to a message. */
-export async function addAttachment(file: File): Promise<AttachmentRef> {
+/**
+ * Stores a file in the daemon's blob store, for attaching to a message. `pasted`: the file is
+ * text the user pasted, which goes to the model as part of their message.
+ */
+export async function addAttachment(file: File, pasted = false): Promise<AttachmentRef> {
   const data = await fileToBase64(file);
   const { attachment } = await request({
     method: "addAttachment",
     name: file.name,
     mime: file.type || "application/octet-stream",
     data,
+    pasted,
   });
   return attachment;
 }

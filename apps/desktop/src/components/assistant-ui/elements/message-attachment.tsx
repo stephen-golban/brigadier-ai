@@ -3,8 +3,9 @@ import type { ComponentProps } from "react";
 import {
   FileTile,
   ImageTile,
-  isPastedText,
   kindOf,
+  PasteShortened,
+  pasteTooLong,
 } from "@/components/assistant-ui/elements/attachment-tile";
 import type { AttachmentRef } from "@/ipc/generated";
 import { formatBytes } from "@/lib/format";
@@ -35,8 +36,14 @@ export function MessageAttachments({
             <FileTile
               name={attachment.name}
               mime={attachment.mime}
-              title={isPastedText(attachment.name, attachment.mime) ? "Pasted text" : undefined}
-              detail={`${kindOf(attachment.name, attachment.mime)} · ${formatBytes(attachment.bytes)}`}
+              title={attachment.pasted ? "Pasted text" : undefined}
+              detail={
+                attachment.pasted && pasteTooLong(attachment.bytes) ? (
+                  <PasteShortened />
+                ) : (
+                  `${kindOf(attachment.name, attachment.mime)} · ${formatBytes(attachment.bytes)}`
+                )
+              }
             />
           )}
         </li>

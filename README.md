@@ -211,6 +211,13 @@ files, commits and your own branches) is never touched; adding the folder again 
 A Chat is a plain conversation with one model and no tools but web search. Text attachments up
 to 200 kB go into the message itself (a Chat cannot read files); other attachments are noted.
 
+A long paste (5,000 characters or more) shows as a "Pasted text" card in the composer and the
+thread, but it is part of what you wrote: in a session or a Chat it goes to the model inside your
+message, as if typed. Up to 200 kB goes whole; a longer paste goes as its first 150 kB and last
+50 kB with a note of what was left out, and its card says so. In a session the orchestrator can
+still give a worker the whole paste as a file. Files you attach keep going to workers (or, in a
+Chat, inline) as files.
+
 `BRIGADIER_ROUTE_CHEAP=1` in the daemon's environment makes every worker use its vendor's
 cheapest model at low effort. It is for development and verification runs only.
 

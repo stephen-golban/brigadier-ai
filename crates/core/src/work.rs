@@ -22,6 +22,10 @@ pub struct AttachmentRef {
     pub name: String,
     pub mime: String,
     pub bytes: u64,
+    /// Text the user pasted into the composer, not a file they attached: it is part of what
+    /// they wrote, so it goes to the model as their message.
+    #[serde(default)]
+    pub pasted: bool,
 }
 
 // ----- tasks and workers ------------------------------------------------------------------

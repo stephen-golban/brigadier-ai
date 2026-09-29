@@ -646,12 +646,14 @@ impl Core {
         Ok(branch_of(&messages, leaf))
     }
 
-    /// Stores an attachment in the blob store.
+    /// Stores an attachment in the blob store. `pasted` marks text pasted into the composer,
+    /// which must be UTF-8 plain text.
     pub async fn add_attachment(
         &self,
         name: String,
         mime: String,
         bytes: Vec<u8>,
+        pasted: bool,
     ) -> Result<AttachmentRef> {
         if bytes.is_empty() {
             return Err(Error::Invalid("the attachment is empty".into()));
@@ -668,6 +670,11 @@ impl Core {
         } else {
             mime.trim().to_owned()
         };
+        if pasted && (!mime.starts_with("text/plain") || std::str::from_utf8(&bytes).is_err()) {
+            return Err(Error::Invalid(
+                "pasted text must be UTF-8 plain text".into(),
+            ));
+        }
         let size = bytes.len() as u64;
         let hash = self.store.blobs().put(bytes).await?;
         Ok(AttachmentRef {
@@ -675,7 +682,36 @@ impl Core {
             name,
             mime,
             bytes: size,
+            pasted,
         })
+    }
+
+    /// The text the user pasted into a message, one entry per pasted attachment, in order. A
+    /// paste that cannot be read is left out.
+    pub(crate) async fn pasted_texts(&self, attachments: &[AttachmentRef]) -> Vec<String> {
+        let mut texts = Vec::new();
+        for attachment in attachments.iter().filter(|attachment| attachment.pasted) {
+            if let Ok(text) = self.read_blob_text(attachment.id.clone()).await {
+                texts.push(text);
+            }
+        }
+        texts
+    }
+
+    /// A user message's words for a transcript or a note: its text, then the start of each
+    /// text they pasted.
+    pub(crate) async fn brief_words(&self, text: &str, attachments: &[AttachmentRef]) -> String {
+        let mut words = text.to_owned();
+        for pasted in self.pasted_texts(attachments).await {
+            let start = prefix(&pasted, PREVIEW_BYTES);
+            let cut = if start.len() < pasted.len() {
+                "…"
+            } else {
+                ""
+            };
+            push_block(&mut words, &format!("{start}{cut}"));
+        }
+        words
     }
 
     /// Keeps a composer draft's attachments stored until it is sent or discarded (see
@@ -1720,6 +1756,16 @@ pub(crate) fn branch_of(messages: &[Message], leaf: &str) -> Vec<Message> {
     }
     path.reverse();
     path
+}
+
+/// Adds `block` to `text` as a paragraph of its own.
+pub(crate) fn push_block(text: &mut String, block: &str) {
+    if text.trim().is_empty() {
+        block.clone_into(text);
+    } else {
+        text.push_str("\n\n");
+        text.push_str(block);
+    }
 }
 
 /// The longest prefix of `text` that fits in `bytes` without splitting a character.

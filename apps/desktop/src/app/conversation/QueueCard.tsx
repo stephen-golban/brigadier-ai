@@ -79,7 +79,10 @@ export function usePullQueued(): ((index: number) => Promise<void>) | null {
 function attachmentLabel(attachments: readonly AttachmentRef[]): string | null {
   if (attachments.length === 0) return null;
   const images = attachments.every((attachment) => attachment.mime.startsWith("image/"));
-  if (attachments.length === 1) return images ? "Image attachment" : (attachments[0]?.name ?? "1 file");
+  const [only] = attachments;
+  if (attachments.length === 1 && only) {
+    return images ? "Image attachment" : only.pasted ? "Pasted text" : only.name;
+  }
   return `${attachments.length} ${images ? "images" : "files"}`;
 }
 

@@ -350,11 +350,13 @@ pub enum Request {
         conversation_id: ConversationId,
         head: String,
     },
-    /// Stores a file for a message. `data` is base64; at most 10 MB decoded.
+    /// Stores a file for a message. `data` is base64; at most 10 MB decoded. `pasted`: text
+    /// pasted into the composer rather than a file (UTF-8 plain text).
     AddAttachment {
         name: String,
         mime: String,
         data: String,
+        pasted: bool,
     },
     /// A stored attachment's bytes, for previews: base64.
     ReadAttachment {

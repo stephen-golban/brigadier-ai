@@ -880,13 +880,7 @@ impl SessionManager {
                     MessageRole::Assistant => "assistant",
                     MessageRole::System => "brigadier",
                 };
-                let full = match message.blob.as_deref().map(str::parse) {
-                    Some(Ok(hash)) => self.core.store().blobs().get(hash).await.ok().flatten(),
-                    _ => None,
-                };
-                let text = full
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .unwrap_or(message.text);
+                let text = self.full_words(&message).await;
                 Some((role, message.request_id, text))
             }
             DomainEvent::TaskUpdated { task } => {

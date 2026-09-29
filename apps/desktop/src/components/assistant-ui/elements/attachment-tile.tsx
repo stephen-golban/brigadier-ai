@@ -38,10 +38,41 @@ export type AttachmentSource = { file?: File | undefined; ref?: AttachmentRef | 
 
 /** A paste this long becomes a "Pasted text" attachment instead of text. */
 export const PASTE_AS_ATTACHMENT_CHARS = 5000;
-export const PASTED_TEXT_NAME = "Pasted text.txt";
+/**
+ * Pasted text up to this size goes to the model whole, as part of the message; longer text
+ * goes as its start and end (INLINE_TEXT_MAX_BYTES in the core).
+ */
+export const PASTE_INLINE_BYTES = 200_000;
+const PASTED_TEXT_NAME = "Pasted text.txt";
 
-export function isPastedText(name: string, mime: string): boolean {
-  return name === PASTED_TEXT_NAME && mime.startsWith("text/plain");
+/** The files the composer made from long pastes, as opposed to files the user attached. */
+const pastedFiles = new WeakSet<File>();
+
+/** A long paste as a file to attach; it is sent as text the user pasted. */
+export function pastedTextFile(text: string): File {
+  const file = new File([text], PASTED_TEXT_NAME, { type: "text/plain" });
+  pastedFiles.add(file);
+  return file;
+}
+
+export function isPastedFile(file: File): boolean {
+  return pastedFiles.has(file);
+}
+
+/** Whether pasted text is too long to go to the model whole. */
+export function pasteTooLong(bytes: number): boolean {
+  return bytes > PASTE_INLINE_BYTES;
+}
+
+/** What a pasted text's card says when it is too long to go to the model whole. */
+export function PasteShortened() {
+  return (
+    <span
+      title={`Over ${PASTE_INLINE_BYTES / 1000} kB, so the model gets its start and end. In a session, workers can get all of it.`}
+    >
+      Start and end are sent
+    </span>
+  );
 }
 
 /** "PDF", "Text", "PNG image": what a file card says under its name. */

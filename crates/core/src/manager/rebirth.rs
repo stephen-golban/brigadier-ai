@@ -864,7 +864,7 @@ impl SessionManager {
             if message.role == MessageRole::User && !current.is_empty() {
                 close(&mut current, &mut exchanges);
             }
-            let full = self.full_text(message).await;
+            let full = self.full_words(message).await;
             let max = if message.role == MessageRole::User {
                 USER_MESSAGE_BYTES
             } else {

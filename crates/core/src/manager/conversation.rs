@@ -46,6 +46,7 @@ use crate::model::{
     MessageRole, ModelChoice, Notice, Setup, streams,
 };
 use crate::runtime::{is_delta, merge_delta};
+use crate::sessions::push_block;
 use crate::tools::Role;
 use crate::work::{
     AttachmentRef, Compaction, CompactionState, ContextInjection, InjectionKind, OrchestratorEntry,
@@ -67,8 +68,12 @@ const RESEED_BYTES: usize = 48_000;
 const MENTIONED_CHAT_MESSAGES: usize = 30;
 /// Bytes of an @-mentioned conversation that go along as context.
 const MENTIONED_CHAT_BYTES: usize = 24_000;
-/// A Chat's text attachments up to this size go into the message itself.
-const CHAT_INLINE_MAX_BYTES: usize = 200_000;
+/// A Chat's text attachments, and text the user pasted anywhere, up to this size go into the
+/// message itself (PASTE_INLINE_BYTES in the app).
+const INLINE_TEXT_MAX_BYTES: usize = 200_000;
+/// Of longer pasted text, the start and the end that go into the message.
+const PASTE_HEAD_BYTES: usize = 150_000;
+const PASTE_TAIL_BYTES: usize = 50_000;
 const ENDED_UNEXPECTEDLY: &str = "The CLI session ended unexpectedly.";
 /// Sent with every turn while the session is in plan mode.
 const PLAN_MODE_NOTE: &str = "[plan mode] The user turned plan mode on: work out a plan and change nothing. Scouts and research may look around; then call propose_plan and wait for the user's decision. Implement and merge tasks, accept_task and finish_session are refused until the user approves a plan.";
@@ -611,7 +616,14 @@ impl SessionManager {
             }
             Err(_) => String::new(),
         };
-        let text = prompts::follow_up(&item.id, &preview, &item.text, &item.attachments);
+        let words = self.core.brief_words(&item.text, &item.attachments).await;
+        let files: Vec<AttachmentRef> = item
+            .attachments
+            .iter()
+            .filter(|attachment| !attachment.pasted)
+            .cloned()
+            .collect();
+        let text = prompts::follow_up(&item.id, &preview, &words, &files);
         let mut state = conv.state.lock().await;
         let steered = match (&state.cli, state.busy) {
             (Some(cli), true) => cli
@@ -1528,8 +1540,9 @@ impl SessionManager {
 
     /// The turn's input: user messages verbatim, then Brigadier's notes (the envelopes)
     /// and, in plan mode, a reminder of it.
-    /// Images go along as images. Other attachments are named so the orchestrator can hand
-    /// them to workers; a Chat cannot open files, so it gets text files inline.
+    /// Text the user pasted is part of their message. Images go along as images. Other
+    /// attachments are named so the orchestrator can hand them to workers; a Chat cannot open
+    /// files, so it gets text files inline.
     async fn turn_input(
         &self,
         conv: &Arc<ConvLive>,
@@ -1541,6 +1554,12 @@ impl SessionManager {
         for message in users {
             let mut text = self.full_text(message).await;
             for attachment in &message.attachments {
+                if attachment.pasted
+                    && let Ok(pasted) = self.core.read_blob_text(attachment.id.clone()).await
+                {
+                    push_block(&mut text, &pasted_inline(&pasted, attachment, conv.kind));
+                    continue;
+                }
                 if conv.kind == ConversationKind::Chat && !is_image(&attachment.mime) {
                     text.push_str(&self.inline_attachment(attachment).await);
                     continue;
@@ -1648,7 +1667,11 @@ impl SessionManager {
                 MessageRole::Assistant => "Assistant",
                 MessageRole::System => continue,
             };
-            let line = format!("{who}: {}", message.text);
+            let words = self
+                .core
+                .brief_words(&message.text, &message.attachments)
+                .await;
+            let line = format!("{who}: {words}");
             bytes += line.len();
             if bytes > MENTIONED_CHAT_BYTES {
                 break;
@@ -1670,6 +1693,15 @@ impl SessionManager {
         }
     }
 
+    /// Everything the user wrote in a message: what they typed, then what they pasted.
+    pub(super) async fn full_words(&self, message: &Message) -> String {
+        let mut words = self.full_text(message).await;
+        for pasted in self.core.pasted_texts(&message.attachments).await {
+            push_block(&mut words, &pasted);
+        }
+        words
+    }
+
     /// A Chat's non-image attachment as text in the message: the file itself when it is text
     /// of a sensible size, otherwise a note saying it could not be read.
     async fn inline_attachment(&self, attachment: &AttachmentRef) -> String {
@@ -1678,14 +1710,14 @@ impl SessionManager {
             Err(_) => None,
         };
         match bytes.map(String::from_utf8) {
-            Some(Ok(content)) if content.len() <= CHAT_INLINE_MAX_BYTES => format!(
+            Some(Ok(content)) if content.len() <= INLINE_TEXT_MAX_BYTES => format!(
                 "\n\n[attached file \"{}\" ({})]\n{content}\n[end of \"{}\"]",
                 attachment.name, attachment.mime, attachment.name
             ),
             Some(Ok(_)) => format!(
                 "\n\n[attached file \"{}\" is larger than {} kB, too large to include here]",
                 attachment.name,
-                CHAT_INLINE_MAX_BYTES / 1_000
+                INLINE_TEXT_MAX_BYTES / 1_000
             ),
             _ => format!(
                 "\n\n[attached file \"{}\" ({}) is not text and cannot be read in a Chat]",
@@ -2517,7 +2549,11 @@ impl SessionManager {
                 MessageRole::Assistant => "You",
                 MessageRole::System => "Brigadier",
             };
-            let line = format!("{who}: {}", message.text);
+            let words = self
+                .core
+                .brief_words(&message.text, &message.attachments)
+                .await;
+            let line = format!("{who}: {words}");
             bytes += line.len();
             if bytes > RESEED_BYTES {
                 break;
@@ -2603,11 +2639,9 @@ impl SessionManager {
         if conv.kind != ConversationKind::Session {
             return;
         }
-        // A long message keeps only its first part inline: count all of what was sent.
-        let bytes = match &message.blob {
-            Some(_) => self.full_text(message).await.len(),
-            None => message.text.len(),
-        };
+        // Count all of what was sent: a long message keeps only its first part inline, and
+        // pasted text is an attachment.
+        let bytes = self.full_words(message).await.len();
         self.log_injection(
             &conv.id,
             InjectionKind::UserMessage,
@@ -2939,6 +2973,40 @@ fn take_one_request(
         .partition(|(_, of)| *of == request);
     *inbox = kept;
     taken
+}
+
+/// Text the user pasted, as it goes into their message: whole up to
+/// [`INLINE_TEXT_MAX_BYTES`], else its start and end around a note of what is left out. In a
+/// session the note (or one after the whole text) names the attachment, so the orchestrator
+/// can give a worker all of it.
+fn pasted_inline(text: &str, attachment: &AttachmentRef, kind: ConversationKind) -> String {
+    let session = kind == ConversationKind::Session;
+    if text.len() <= INLINE_TEXT_MAX_BYTES {
+        if !session {
+            return text.to_owned();
+        }
+        return format!(
+            "{text}\n[the pasted text above is also attachment {}: pass its id to delegate_task \
+             to give a worker the exact text]",
+            attachment.id
+        );
+    }
+    let head = &text[..text.floor_char_boundary(PASTE_HEAD_BYTES)];
+    let tail = &text[text.ceil_char_boundary(text.len() - PASTE_TAIL_BYTES)..];
+    let left_out = text.len() - head.len() - tail.len();
+    let whole = if session {
+        format!(
+            "; all of it is attachment {}: pass its id to delegate_task so a worker can read it",
+            attachment.id
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "{head}\n[… {left_out} bytes of the pasted text are left out here, since it is longer \
+         than {} kB{whole}]\n{tail}",
+        INLINE_TEXT_MAX_BYTES / 1_000
+    )
 }
 
 fn is_image(mime: &str) -> bool {
