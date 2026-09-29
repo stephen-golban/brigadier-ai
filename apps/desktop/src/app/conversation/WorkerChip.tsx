@@ -1,4 +1,4 @@
-import { createContext, memo, useContext } from "react";
+import { createContext, memo, useContext, useState } from "react";
 
 import { IdGlyph } from "@/components/glyphs/worker-glyphs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -101,17 +101,25 @@ export const WorkerChip = memo(function WorkerChip({
   const name = useWorkerName(taskId);
   const number = useBoard((s) => s.board?.tasks[taskId]?.number);
   const state = useBoard((s) => s.board?.tasks[taskId]?.state);
+  const [open, setOpen] = useState(false);
   if (name === null || number === undefined || state === undefined) {
     return <span className="shrink-0">a worker</span>;
   }
   return (
-    <Tooltip>
+    <Tooltip open={open} onOpenChange={setOpen}>
       <TooltipTrigger asChild>
         <button
           type="button"
           data-slot="worker-chip"
           data-task={`task-${number}`}
           onClick={() => setPanel(taskId)}
+          onKeyDown={(event) => {
+            // Escape closes the open hover only, not what holds the chip (a card it denies).
+            if (event.key === "Escape" && open) {
+              event.stopPropagation();
+              setOpen(false);
+            }
+          }}
           className={cn(
             "bg-muted/60 border-border text-foreground hover:bg-muted rounded-capsule inline-flex h-control-xs max-w-2xs min-w-0 shrink items-center gap-1.5 border ps-2 pe-2.5 align-middle text-sm transition-colors",
             className,
