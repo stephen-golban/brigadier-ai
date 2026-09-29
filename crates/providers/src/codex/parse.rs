@@ -659,18 +659,32 @@ impl Parser {
         }
     }
 
-    /// The window that ran out, from the latest rate limits: the fullest one.
+    /// The window that ran out, from the latest rate limits: the fullest provider-wide one,
+    /// unless only a model's own bucket is used up (then that bucket's window, so the limit
+    /// stays with that model).
     fn limit_hit(&self) -> LimitHit {
         if let Some(limit) = self.quota.as_ref().and_then(|quota| quota.limit.clone()) {
             return limit;
         }
-        let window = self.quota.as_ref().and_then(|quota| {
-            quota
-                .windows
-                .iter()
-                .filter(|window| window.model.is_none())
-                .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
-        });
+        let fullest = |scoped: bool| {
+            self.quota.as_ref().and_then(|quota| {
+                quota
+                    .windows
+                    .iter()
+                    .filter(|window| window.model.is_some() == scoped)
+                    .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+            })
+        };
+        let main = fullest(false);
+        let window = match fullest(true) {
+            Some(scoped)
+                if scoped.used_percent >= 100.0
+                    && main.is_none_or(|main| main.used_percent < 100.0) =>
+            {
+                Some(scoped)
+            }
+            _ => main,
+        };
         LimitHit {
             window: window.map(|window| window.id.clone()),
             resets_at_ms: window.and_then(|window| window.resets_at_ms),
@@ -686,20 +700,21 @@ pub(crate) const MAIN_BUCKET: &str = "codex";
 /// windows as `primary` and `secondary`, the others' prefixed with their bucket and tied to the
 /// model they meter. A spend control (or ordinary usage not being allowed) stops the provider.
 pub fn quota_read(read: &p::GetAccountRateLimitsResponse) -> QuotaSnapshot {
-    let mut buckets: Vec<&p::RateLimitSnapshot> = match &read.rate_limits_by_limit_id {
-        Some(by_id) if !by_id.is_empty() => by_id.values().collect(),
-        _ => vec![&read.rate_limits],
+    // Each bucket under its map key (its own `limitId` may be left out).
+    let mut buckets: Vec<(&str, &p::RateLimitSnapshot)> = match &read.rate_limits_by_limit_id {
+        Some(by_id) if !by_id.is_empty() => by_id
+            .iter()
+            .map(|(id, bucket)| (id.as_str(), bucket))
+            .collect(),
+        _ => vec![(bucket_id(&read.rate_limits), &read.rate_limits)],
     };
     // The main bucket first, then the others by id, so the order is stable.
-    buckets.sort_by_key(|bucket| {
-        let id = bucket_id(bucket);
-        (id != MAIN_BUCKET, id.to_owned())
-    });
+    buckets.sort_by_key(|(id, _)| (*id != MAIN_BUCKET, id.to_owned()));
     let mut quota = QuotaSnapshot {
         provider: ProviderKind::Codex,
         windows: buckets
             .iter()
-            .flat_map(|bucket| bucket_windows(bucket))
+            .flat_map(|(id, bucket)| bucket_windows(id, bucket))
             .collect(),
         limit: None,
         observed_at_ms: now_ms(),
@@ -707,14 +722,13 @@ pub fn quota_read(read: &p::GetAccountRateLimitsResponse) -> QuotaSnapshot {
     };
     let main = buckets
         .iter()
-        .find(|bucket| bucket_id(bucket) == MAIN_BUCKET)
-        .copied()
-        .unwrap_or(&read.rate_limits);
+        .find(|(id, _)| *id == MAIN_BUCKET)
+        .map_or(&read.rate_limits, |(_, bucket)| *bucket);
     quota.limit = bucket_limit(main, &quota.windows);
     let stopped = read.ordinary_usage_allowed == Some(false)
         || buckets
             .iter()
-            .any(|bucket| bucket.spend_control_reached == Some(true));
+            .any(|(_, bucket)| bucket.spend_control_reached == Some(true));
     if stopped {
         quota.limit = Some(LimitHit {
             window: None,
@@ -728,7 +742,7 @@ pub fn quota_read(read: &p::GetAccountRateLimitsResponse) -> QuotaSnapshot {
 /// Normalizes an `account/rateLimits/updated` notification: one bucket, possibly partial, to be
 /// merged into what is known ([`QuotaSnapshot::merge`]).
 pub fn quota_event(update: &p::RateLimitSnapshot) -> QuotaSnapshot {
-    let windows = bucket_windows(update);
+    let windows = bucket_windows(bucket_id(update), update);
     let main = bucket_id(update) == MAIN_BUCKET;
     let mut limit = if main {
         bucket_limit(update, &windows)
@@ -757,8 +771,7 @@ fn bucket_id(bucket: &p::RateLimitSnapshot) -> &str {
 
 /// A bucket's windows. A bucket other than the main one that reports it was reached has its
 /// fullest window marked used up, since only that model is refused.
-fn bucket_windows(bucket: &p::RateLimitSnapshot) -> Vec<QuotaWindow> {
-    let id = bucket_id(bucket);
+fn bucket_windows(id: &str, bucket: &p::RateLimitSnapshot) -> Vec<QuotaWindow> {
     let main = id == MAIN_BUCKET;
     let name = bucket
         .limit_name
@@ -788,10 +801,17 @@ fn bucket_windows(bucket: &p::RateLimitSnapshot) -> Vec<QuotaWindow> {
             resets_at_ms: window.resets_at.map(|seconds| seconds * 1_000),
             window_minutes: window.window_duration_mins,
             bucket: Some(id.to_owned()),
+            // Another bucket meters one model; one that doesn't say which is scoped to its
+            // own id (it limits no model), never read as provider-wide.
             model: if main {
                 None
             } else {
-                bucket.normal_model_slug.clone()
+                Some(
+                    bucket
+                        .normal_model_slug
+                        .clone()
+                        .unwrap_or_else(|| id.to_owned()),
+                )
             },
         })
     })

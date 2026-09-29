@@ -209,8 +209,9 @@ pub struct QuotaSnapshot {
 impl QuotaSnapshot {
     /// Takes in what a running session reported (`Event`) or a fresh read (`Read`):
     /// - a read replaces everything, its limit included;
-    /// - an event updates the windows it names (for a Codex bucket: all of that bucket's
-    ///   windows) and keeps the others; it sets a limit, and lifts a usage-window limit only
+    /// - an event updates the windows it names and keeps the others (Codex's rolling updates
+    ///   are sparse: a window left out is unknown, not gone); it sets a limit, and lifts a
+    ///   usage-window limit only
     ///   when it names the window that was hit; a spend control or credits stop is lifted
     ///   only by a read.
     pub fn merge(&mut self, incoming: &QuotaSnapshot) {
@@ -218,18 +219,8 @@ impl QuotaSnapshot {
             *self = incoming.clone();
             return;
         }
-        let buckets: Vec<&str> = incoming
-            .windows
-            .iter()
-            .filter_map(|window| window.bucket.as_deref())
-            .collect();
-        self.windows.retain(|known| {
-            !incoming.windows.iter().any(|window| window.id == known.id)
-                && known
-                    .bucket
-                    .as_deref()
-                    .is_none_or(|bucket| !buckets.contains(&bucket))
-        });
+        self.windows
+            .retain(|known| !incoming.windows.iter().any(|window| window.id == known.id));
         self.windows.extend(incoming.windows.iter().cloned());
         self.windows.sort_by_key(|window| {
             (

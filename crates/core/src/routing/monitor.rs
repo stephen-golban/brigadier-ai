@@ -162,27 +162,53 @@ impl QuotaMonitor {
     }
 
     /// Takes in a limit a session's error reported (a CLI can say it is at its limit without
-    /// a rate-limit notification): the provider counts as limited until the limit's reset, or,
-    /// when the error didn't say, until a read shows it clear.
+    /// a rate-limit notification): the provider counts as limited until the limit's reset (the
+    /// named window's, when the error gave none), or, when neither is known, until a read shows
+    /// it clear. A model's own window running out refuses that model only: the window reads as
+    /// used up and the provider stays usable for its other models.
     pub fn note_limit(
         &self,
         provider: ProviderKind,
-        limit: LimitHit,
+        mut limit: LimitHit,
         now_ms: i64,
     ) -> QuotaSnapshot {
         let incoming = {
             let state = self.state();
-            let windows = state
+            let mut windows = state
                 .get(&provider)
                 .and_then(|tracked| tracked.quota.as_ref())
                 .map(|quota| quota.windows.clone())
                 .unwrap_or_default();
-            QuotaSnapshot {
-                provider,
-                windows,
-                limit: Some(limit),
-                observed_at_ms: now_ms,
-                source: QuotaSource::Event,
+            let named = limit
+                .window
+                .as_deref()
+                .and_then(|id| windows.iter().position(|window| window.id == id));
+            if let Some(index) = named
+                && limit.resets_at_ms.is_none()
+            {
+                limit.resets_at_ms = windows[index].resets_at_ms;
+            }
+            match named.filter(|index| windows[*index].model.is_some()) {
+                Some(index) => {
+                    // Only the scoped window, so the event lifts no other limit.
+                    let mut window = windows.swap_remove(index);
+                    window.used_percent = window.used_percent.max(100.0);
+                    window.resets_at_ms = window.resets_at_ms.or(limit.resets_at_ms);
+                    QuotaSnapshot {
+                        provider,
+                        windows: vec![window],
+                        limit: None,
+                        observed_at_ms: now_ms,
+                        source: QuotaSource::Event,
+                    }
+                }
+                None => QuotaSnapshot {
+                    provider,
+                    windows,
+                    limit: Some(limit),
+                    observed_at_ms: now_ms,
+                    source: QuotaSource::Event,
+                },
             }
         };
         self.note(&incoming, now_ms)
@@ -199,6 +225,18 @@ impl QuotaMonitor {
 /// The known quota with the time applied.
 fn current(tracked: &Tracked, now_ms: i64) -> Option<QuotaSnapshot> {
     let mut quota = tracked.quota.clone()?;
+    // A usage-window limit that gave no reset lifts at its window's.
+    if let Some(limit) = &mut quota.limit
+        && limit.kind == LimitKind::UsageWindow
+        && limit.resets_at_ms.is_none()
+        && let Some(id) = limit.window.as_deref()
+    {
+        limit.resets_at_ms = quota
+            .windows
+            .iter()
+            .find(|window| window.id == id)
+            .and_then(|window| window.resets_at_ms);
+    }
     for window in &mut quota.windows {
         if window.resets_at_ms.is_some_and(|at| at <= now_ms) {
             window.used_percent = 0.0;

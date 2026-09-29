@@ -754,8 +754,10 @@ impl Parser {
             }
         }
         let provider_wide = rejected && scoped.is_none();
+        // A scoped rejection is still a usage limit for this session's error (naming its
+        // window, so the hand-off keeps the limit to that model).
         self.limit = LimitState {
-            rejected: provider_wide,
+            rejected,
             window: window.clone(),
             resets_at_ms,
         };
@@ -1073,9 +1075,13 @@ fn listed_window(limit: &Value) -> Option<QuotaWindow> {
         "weekly_scoped" => {
             let model = scope?.get("model").filter(|model| !model.is_null())?;
             let name = str_of(model, "display_name").or_else(|| str_of(model, "id"))?;
+            // The family word: "Fable" in "Fable", "Claude Fable 5.1" or "claude-fable-5-1".
             let family: String = name
                 .split(|c: char| !c.is_ascii_alphanumeric())
-                .find(|word| word.chars().any(|c| c.is_ascii_alphabetic()))?
+                .find(|word| {
+                    word.chars().any(|c| c.is_ascii_alphabetic())
+                        && !word.eq_ignore_ascii_case("claude")
+                })?
                 .to_ascii_lowercase();
             Some(quota_window(
                 &format!("seven_day_{family}"),
