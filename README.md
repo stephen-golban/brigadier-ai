@@ -249,7 +249,8 @@ what was left out, and its card says so. In a session the orchestrator can still
 the whole paste as a file. Files you attach keep going to workers (or, in a Chat, inline) as files.
 
 `BRIGADIER_ROUTE_CHEAP=1` in the daemon's environment makes every worker use its vendor's
-cheapest model at low effort. It is for development and verification runs only.
+cheapest model at low effort, keeping the routing reason and saying so. It works in development
+builds only; a release build ignores it.
 
 ### Permission levels
 

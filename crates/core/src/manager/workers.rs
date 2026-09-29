@@ -2197,8 +2197,10 @@ impl SessionManager {
     }
 }
 
-/// `BRIGADIER_ROUTE_CHEAP=1` (development and verification runs only): after routing picks
-/// the vendor, use its cheapest model at low effort.
+/// `BRIGADIER_ROUTE_CHEAP=1`, in development builds only (verification runs): after routing
+/// picks the vendor, use its cheapest model at low effort. The routing reason is kept and says
+/// so.
+#[cfg(debug_assertions)]
 fn cheap_for_development(
     mut choice: brigadier_router::Choice,
     available: &[brigadier_router::Availability],
@@ -2219,7 +2221,16 @@ fn cheap_for_development(
         .unwrap_or_else(|| family.to_owned());
     choice.model = Some(model);
     choice.effort = (choice.provider == ProviderKind::Codex).then(|| "low".to_owned());
-    choice.reason = format!("{} (cheapest model: BRIGADIER_ROUTE_CHEAP)", choice.reason);
+    choice.reason = format!("{} (dev: cheapest model substituted)", choice.reason);
+    choice
+}
+
+/// Release builds route as the router says.
+#[cfg(not(debug_assertions))]
+fn cheap_for_development(
+    choice: brigadier_router::Choice,
+    _available: &[brigadier_router::Availability],
+) -> brigadier_router::Choice {
     choice
 }
 
