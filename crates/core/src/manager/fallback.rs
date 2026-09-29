@@ -218,7 +218,24 @@ impl SessionManager {
 
     /// Who may take `task` over now: the router's choice among the usable providers.
     async fn reroute(&self, task: &Task) -> std::result::Result<Route, Waiting> {
-        let available = self.availability();
+        let mut available = self.availability();
+        // A provider whose model just stopped on an error is left out while another is usable.
+        let failed = task
+            .attempts
+            .last()
+            .filter(|attempt| matches!(attempt.end, Some(AttemptEnd::Error { .. })))
+            .map(|attempt| attempt.route.choice.provider);
+        if let Some(failed) = failed
+            && available
+                .iter()
+                .any(|other| other.provider != failed && other.usable)
+        {
+            for other in &mut available {
+                if other.provider == failed {
+                    other.usable = false;
+                }
+            }
+        }
         let running = self.running_workers();
         let avoid = match &task.subject {
             Some(id) if task.kind == crate::work::TaskKind::Review => self

@@ -2,7 +2,8 @@
 //! quota. Nothing here is compiled into a release build.
 //!
 //! A limit is armed for one task's worker or one conversation's model. After the session's
-//! next `after_tool_calls` finished tool calls (0: its next event of any kind), it fires:
+//! next `after_tool_calls` finished tool calls, commands and file edits (0: its next event of
+//! any kind), it fires:
 //! 1. the quota monitor holds the provider at a limit until the chosen reset, so no read can
 //!    lift it early;
 //! 2. the session's transcript gets a notice saying a limit was injected;
@@ -190,9 +191,16 @@ impl SessionManager {
         );
         let mut before = Vec::new();
         if !fault.fired {
+            // Shell commands and file edits come as their own events, not as tool calls.
             if matches!(
                 &event,
                 ProviderEvent::ToolCall {
+                    status: ItemStatus::Completed | ItemStatus::Failed,
+                    ..
+                } | ProviderEvent::Command {
+                    status: ItemStatus::Completed | ItemStatus::Failed,
+                    ..
+                } | ProviderEvent::FileChanges {
                     status: ItemStatus::Completed | ItemStatus::Failed,
                     ..
                 }

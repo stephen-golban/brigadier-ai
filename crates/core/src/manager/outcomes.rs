@@ -45,10 +45,12 @@ impl SessionManager {
             TaskState::Stopped => OutcomeResult::Stopped,
             _ => return,
         };
+        // The task's end closed its last attempt (see `dispose_task`), so a review or check
+        // recorded later keeps its time.
         let attempt = task.attempts.last().cloned().unwrap_or_else(|| Attempt {
             route: task.route.clone(),
             started_at_ms: task.created_at_ms,
-            ended_at_ms: None,
+            ended_at_ms: Some(task.updated_at_ms),
             end: None,
         });
         self.record_outcome(task, &attempt, result).await;
@@ -176,7 +178,8 @@ impl SessionManager {
         let window = quota
             .windows
             .iter()
-            .filter(|window| window.bucket.is_none() && window.model.is_none())
+            // Provider-wide windows (Codex's main bucket has a name; a model's own has a model).
+            .filter(|window| window.model.is_none())
             .min_by_key(|window| window.window_minutes.unwrap_or(i64::MAX))?;
         let samples =
             self.runtime

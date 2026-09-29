@@ -2176,6 +2176,8 @@ impl SessionManager {
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.state = state;
                 t.blocked_reason = None;
+                // Its last model's part is over.
+                fallback::end_attempt(t, None);
                 if kept.is_some() {
                     t.kept = kept;
                 }

@@ -210,8 +210,9 @@ impl QuotaSnapshot {
     /// Takes in what a running session reported (`Event`) or a fresh read (`Read`):
     /// - a read replaces everything, its limit included;
     /// - an event updates the windows it names (for a Codex bucket: all of that bucket's
-    ///   windows) and keeps the others; it sets or clears a usage-window limit, but a spend
-    ///   control or credits stop is lifted only by a read.
+    ///   windows) and keeps the others; it sets a limit, and lifts a usage-window limit only
+    ///   when it names the window that was hit; a spend control or credits stop is lifted
+    ///   only by a read.
     pub fn merge(&mut self, incoming: &QuotaSnapshot) {
         if incoming.source == QuotaSource::Read {
             *self = incoming.clone();
@@ -236,11 +237,17 @@ impl QuotaSnapshot {
                 window.window_minutes.unwrap_or(i64::MAX),
             )
         });
-        let sticky = self
-            .limit
-            .as_ref()
-            .is_some_and(|limit| limit.kind != LimitKind::UsageWindow);
-        if !sticky || incoming.limit.is_some() {
+        // An event without a limit lifts a usage-window limit only if it speaks for the window
+        // that was hit (or, when the limit named none, for a provider-wide window): news about
+        // another window or a model's own bucket says nothing about it.
+        let lifts = self.limit.as_ref().is_none_or(|limit| {
+            limit.kind == LimitKind::UsageWindow
+                && match limit.window.as_deref() {
+                    Some(hit) => incoming.windows.iter().any(|window| window.id == hit),
+                    None => incoming.windows.iter().any(|window| window.model.is_none()),
+                }
+        });
+        if incoming.limit.is_some() || lifts {
             self.limit.clone_from(&incoming.limit);
         }
         self.observed_at_ms = self.observed_at_ms.max(incoming.observed_at_ms);
