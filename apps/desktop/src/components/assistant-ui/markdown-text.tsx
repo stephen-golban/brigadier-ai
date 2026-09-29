@@ -80,6 +80,11 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, streaming }) => {
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
       rehypePlugins={streaming ? TAIL_FADE : undefined}
+      // Only text that still streams is revealed as it arrives. Settled text shows whole at
+      // once, also when it mounts again (the stored reply replacing the streamed one, a work
+      // block folding): revealed from nothing, it would shrink the thread for a moment and
+      // pull it off the newest message.
+      smooth={streaming === true}
       className="aui-md"
       urlTransform={keepLinks}
       components={markdownComponents}

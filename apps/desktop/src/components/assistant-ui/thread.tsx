@@ -10,6 +10,7 @@ import {
   type TextMessagePartProps,
   ThreadPrimitive,
   useAuiState,
+  useThreadViewportStore,
 } from "@assistant-ui/react";
 import {
   ArrowDown,
@@ -156,8 +157,9 @@ const ThreadRoot: FC<{
   return (
     <ThreadPrimitive.Root className="aui-root aui-thread-root bg-background @container flex h-full flex-col">
       <ComposerPrimitive.AttachmentDropzone className="group/drop relative flex min-h-0 flex-1 flex-col">
+        {/* Anchored at the bottom: the thread follows new text while it is scrolled to the end
+            and stays put once scrolled up. Nothing is kept below the last message. */}
         <ThreadPrimitive.Viewport
-          turnAnchor="top"
           data-slot="aui_thread-viewport"
           className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
         >
@@ -176,7 +178,7 @@ const ThreadRoot: FC<{
 
             <div
               data-slot="aui_message-group"
-              className="mb-14 flex flex-col gap-y-6 empty:hidden"
+              className="mb-6 flex flex-col gap-y-6 empty:hidden"
             >
               <ThreadPrimitive.Messages>
                 {() => <ThreadMessage />}
@@ -228,21 +230,61 @@ const SystemMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-/** ↓ once scrolled up; while the model works below, "•••" in its place. */
+/**
+ * Whether part of a message lies below what the thread shows above the composer, for the
+ * button that sits in the composer's footer. Measured from the last message itself, so the
+ * gap after it is nothing to scroll to, and measured again whenever the thread scrolls or
+ * anything in it changes size (text streaming in, an image loading, a work block folding, the
+ * composer growing), not only on scroll events.
+ */
+function useContentBelow(): [boolean, (button: HTMLButtonElement | null) => void] {
+  const [button, setButton] = useState<HTMLButtonElement | null>(null);
+  const [below, setBelow] = useState(false);
+  useLayoutEffect(() => {
+    const viewport = button?.closest<HTMLElement>("[data-slot=aui_thread-viewport]");
+    const footer = button?.closest<HTMLElement>(".aui-thread-viewport-footer");
+    const group = viewport?.querySelector<HTMLElement>("[data-slot=aui_message-group]");
+    if (!viewport || !footer || !group) return;
+    const measure = () => {
+      const last = group.lastElementChild;
+      const hidden = last
+        ? last.getBoundingClientRect().bottom - footer.getBoundingClientRect().top
+        : 0;
+      setBelow(hidden > BELOW_TOLERANCE_PX);
+    };
+    measure();
+    const resized = new ResizeObserver(measure);
+    for (const element of [viewport, footer, group]) resized.observe(element);
+    viewport.addEventListener("scroll", measure, { passive: true });
+    return () => {
+      resized.disconnect();
+      viewport.removeEventListener("scroll", measure);
+    };
+  }, [button]);
+  return [below, setButton];
+}
+
+/** Rounding slack before a message counts as hidden under the composer. */
+const BELOW_TOLERANCE_PX = 2;
+
+/** ↓ once part of a message is out of view below; while the model works, "•••" in its place. */
 const ThreadScrollToBottom: FC = () => {
   const running = useAuiState((s) => s.thread.isRunning);
+  const viewport = useThreadViewportStore();
+  const [below, ref] = useContentBelow();
   return (
-    <ThreadPrimitive.ScrollToBottom asChild>
-      <TooltipIconButton
-        tooltip="Scroll to bottom"
-        variant="outline"
-        size="icon-lg"
-        data-running={running || undefined}
-        className="aui-thread-scroll-to-bottom border-border bg-background hover:bg-accent rounded-capsule absolute -top-12 z-10 self-center group-has-data-[slot=composer-capsule]/footer:-top-22 disabled:invisible"
-      >
-        {running ? <DotsHorizontal className="animate-pulse motion-reduce:animate-none" /> : <ArrowDown />}
-      </TooltipIconButton>
-    </ThreadPrimitive.ScrollToBottom>
+    <TooltipIconButton
+      ref={ref}
+      tooltip="Scroll to bottom"
+      variant="outline"
+      size="icon-lg"
+      disabled={!below}
+      onClick={() => viewport.getState().scrollToBottom()}
+      data-running={running || undefined}
+      className="aui-thread-scroll-to-bottom border-border bg-background hover:bg-accent rounded-capsule absolute -top-12 z-10 self-center group-has-data-[slot=composer-capsule]/footer:-top-22 disabled:invisible"
+    >
+      {running ? <DotsHorizontal className="animate-pulse motion-reduce:animate-none" /> : <ArrowDown />}
+    </TooltipIconButton>
   );
 };
 
