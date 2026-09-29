@@ -14,6 +14,7 @@ import { applyBrainEvents } from "@/state/brain";
 import { applyEvents, useApp } from "@/state/store";
 import { startMenuBar } from "@/state/menuBar";
 import { onDictationDisconnected, onDictationUpdate } from "@/state/dictation";
+import { openUninstall } from "@/state/storage";
 import { emitTerminalOutput } from "@/state/terminals";
 
 let queued: EventEnvelope[] = [];
@@ -113,6 +114,9 @@ function onBridgeEvent(message: BridgeEvent) {
       break;
     case "openFolderMenu":
       void openFolderPicker();
+      break;
+    case "uninstallMenu":
+      openUninstall();
       break;
   }
 }

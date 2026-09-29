@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect } from "react";
 
 import { AppSidebar } from "@/app/AppSidebar";
 import { AddProjectDialog } from "@/app/dialogs/AddProjectDialog";
+import { StorageDialog } from "@/app/dialogs/StorageDialog";
+import { UninstallDialog } from "@/app/dialogs/UninstallDialog";
 import { FolderDropZone } from "@/app/FolderDropZone";
 import { ArchivedView } from "@/app/ArchivedView";
 import { ConversationView } from "@/app/ConversationView";
@@ -119,6 +121,8 @@ export function App() {
         </SidebarInset>
         <OnboardingDialog />
         <AddProjectDialog />
+        <StorageDialog />
+        <UninstallDialog />
         <FolderDropZone />
       </SidebarProvider>
       <StatusBar />

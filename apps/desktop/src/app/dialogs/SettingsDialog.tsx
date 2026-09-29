@@ -2,6 +2,7 @@ import { useId, useState, type FormEvent } from "react";
 
 import { ErrorLine, errorText, Field, RadioChoice, SwitchRow } from "@/app/dialogs/fields";
 import { MemoriesSection } from "@/app/dialogs/MemoriesSection";
+import { StorageSection } from "@/app/dialogs/StorageSection";
 import {
   ModelSelector,
   type ModelGroup,
@@ -213,6 +214,8 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
       </Field>
 
       <MemoriesSection />
+
+      <StorageSection onOpenStorage={() => onOpenChange(false)} />
 
       <p className="text-muted-foreground text-xs">
         Routing, secrets and the other settings arrive with the full Settings screen (Phase 9).

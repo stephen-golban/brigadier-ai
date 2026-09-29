@@ -55,6 +55,8 @@ pub enum BridgeEvent {
     FoldersOpened,
     /// File › Open Folder… was chosen: pick folders to add as projects.
     OpenFolderMenu,
+    /// Brigadier › Uninstall Brigadier… was chosen.
+    UninstallMenu,
 }
 
 /// A conversation the menu-bar item lists under "Running".

@@ -19,6 +19,7 @@ mod smoke;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use brigadier_core::storage::UninstallApp;
 use brigadier_core::{ConventionsExport, ProjectId};
 use brigadier_ipc::app::{AppInfo, BridgeEvent, RunningChat, SmokeReport, UiMeasurements};
 use brigadier_ipc::protocol::{IpcError, Request, Response};
@@ -47,6 +48,32 @@ static OPENED_FOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[tauri::command]
 fn app_info(state: State<'_, AppState>) -> AppInfo {
     state.info.clone()
+}
+
+/// The running app, for Uninstall Brigadier…: its bundle identifier, the app bundle it runs
+/// from (macOS) and its pid.
+#[tauri::command]
+fn uninstall_app(app: tauri::AppHandle) -> UninstallApp {
+    let bundle_path = if cfg!(target_os = "macos") {
+        std::env::current_exe().ok().and_then(|exe| {
+            exe.ancestors()
+                .find(|dir| dir.extension().is_some_and(|ext| ext == "app"))
+                .map(|dir| dir.display().to_string())
+        })
+    } else {
+        None
+    };
+    UninstallApp {
+        identifier: app.config().identifier.clone(),
+        bundle_path,
+        pid: std::process::id(),
+    }
+}
+
+/// Quits the app the orderly way (the daemon drains and quits first).
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    shell::quit(&app, 0);
 }
 
 #[tauri::command]
@@ -443,6 +470,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            uninstall_app,
+            quit_app,
             ipc_request,
             ipc_subscribe,
             app_ready,
