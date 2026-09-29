@@ -100,7 +100,8 @@ export function FaultControl() {
   const toolCalls = Number(after);
   const target: FaultTarget | null =
     kind === "task"
-      ? taskId
+      ? // Only a task of the open board: a pick left from another conversation doesn't count.
+        taskId && taskOptions.some((option) => option.value === taskId)
         ? { type: "task", taskId }
         : null
       : conversationId

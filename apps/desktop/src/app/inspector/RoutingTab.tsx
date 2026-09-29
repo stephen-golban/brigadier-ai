@@ -54,6 +54,9 @@ export function RoutingTab() {
 function PreviewSection() {
   const groups = useModelGroups();
   const projects = useApp((s) => s.projects);
+  // What routing depends on besides the question: the providers' state and the user's rules.
+  const providers = useApp((s) => s.providers.view?.providers);
+  const rules = useApp((s) => s.settings.routingOverrides);
   // The open conversation's project, to begin with.
   const [projectId, setProjectId] = useState<string | null>(
     () => selectedConversation(useApp.getState())?.projectId ?? null,
@@ -75,9 +78,9 @@ function PreviewSection() {
       }
     });
   };
-  // Read again whenever the question changes.
+  // Read again whenever the question, a provider's state or a rule changes.
   // oxlint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(run, [projectId, areas]);
+  useEffect(run, [projectId, areas, providers, rules]);
   const list = Object.values(projects).toSorted((a, b) => a.name.localeCompare(b.name));
 
   return (
