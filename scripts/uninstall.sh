@@ -257,46 +257,63 @@ for item in "${WORKTREES[@]}"; do
 done
 for repo in "${REPOS[@]}"; do run git -C "$repo" worktree prune || uncertain "could not prune git worktrees in $repo"; done
 
-# Base provenance comes from the recorded session setup or task workspace.
-bases=$(
-  "${SQLITE[@]}" "SELECT json_extract(payload,'\$.setup.repo'),
-      json_extract(payload,'\$.setup.environment.branch'),
-      json_extract(payload,'\$.setup.environment.base')
+# Which branches are Brigadier's, in which repository, and what each one's work lands on (its
+# target). A branch qualifies only as recorded, in its recorded repository: first the branches
+# kept when their conversation went (bound to the tip they had then), then session branches
+# from their session's setup, then task branches with their session's repository.
+branches=$(
+  "${SQLITE[@]}" "SELECT json_extract(e.payload,'\$.repo'), json_extract(b.value,'\$.name'),
+      json_extract(b.value,'\$.target'), json_extract(b.value,'\$.tip'), ''
+    FROM events e, json_each(e.payload,'\$.branches') b WHERE e.kind='branches.kept';
+    SELECT json_extract(payload,'\$.setup.repo'), json_extract(payload,'\$.setup.environment.branch'),
+      json_extract(payload,'\$.setup.environment.base'), '', ''
     FROM events WHERE kind='conversation.setUp'
-      AND json_extract(payload,'\$.setup.environment.type')='newWorktree'
-    UNION
-    SELECT json_extract(payload,'\$.task.workspace.worktree'), json_extract(payload,'\$.task.workspace.branch'),
-      json_extract(payload,'\$.task.workspace.base')
-    FROM events WHERE kind='task.updated' AND json_extract(payload,'\$.task.workspace.branch') IS NOT NULL" 2>/dev/null
-) || error 'could not query branch provenance'
+      AND json_extract(payload,'\$.setup.environment.type')='newWorktree';
+    SELECT s.repo, t.branch, t.target, '', t.worktree FROM
+      (SELECT json_extract(payload,'\$.task.conversationId') AS conversation,
+          json_extract(payload,'\$.task.workspace.branch') AS branch,
+          json_extract(payload,'\$.task.workspace.target') AS target,
+          json_extract(payload,'\$.task.workspace.worktree') AS worktree, MAX(seq)
+        FROM events WHERE kind='task.updated'
+        GROUP BY json_extract(payload,'\$.task.id')) t
+      LEFT JOIN
+      (SELECT json_extract(payload,'\$.id') AS id, json_extract(payload,'\$.setup.repo') AS repo, MAX(seq)
+        FROM events WHERE kind='conversation.setUp' GROUP BY json_extract(payload,'\$.id')) s
+      ON s.id=t.conversation
+      WHERE t.branch IS NOT NULL" 2>/dev/null
+) || error 'could not query branch records'
 HANDLED_BRANCHES=()
-while IFS=$'\037' read -r recorded_repo branch base; do
+while IFS=$'\037' read -r repo branch target tip worktree; do
   [[ "$branch" = brigadier/* ]] || continue
-  [[ "$branch" != *$'\n'* && "$base" != *$'\n'* ]] || { uncertain "invalid branch record: $branch"; continue; }
-  if [[ "$recorded_repo" = "$DATA/worktrees/"* ]]; then
-    repo=
+  [[ "$branch" =~ ^brigadier/[A-Za-z0-9._/-]+$ && "$branch" != *..* ]] || { uncertain "unsafe branch name: $branch"; continue; }
+  # A task whose session record is gone: its worktree's ledger record names the repository.
+  if [[ -z "$repo" && -n "$worktree" ]]; then
     for item in "${WORKTREES[@]}"; do
-      [[ "${item#*$'\037'}" = "$recorded_repo" ]] && repo=${item%%$'\037'*}
-    done
-  elif [[ -n "$recorded_repo" ]]; then repo=$recorded_repo
-  else
-    repo=
-    for item in "${BRANCH_REPOS[@]}"; do
-      if [[ "${item%%$'\037'*}" = "$branch" ]]; then repo=${item#*$'\037'}; break; fi
+      [[ "${item#*$'\037'}" = "$worktree" ]] && repo=${item%%$'\037'*}
     done
   fi
-  [[ -n "$repo" && -d "$repo" ]] || { uncertain "branch $branch has no confirmed repository; inspect it manually"; continue; }
-  [[ "$branch" =~ ^brigadier/[A-Za-z0-9._/-]+$ ]] || { uncertain "unsafe branch name: $branch"; continue; }
-  HANDLED_BRANCHES+=("$branch"$'\037'"$repo")
-  git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || continue
-  if [[ -z "$base" ]]; then
-    uncertain "branch $branch has no recorded base; kept. Delete manually if wanted: git -C '$repo' branch -D '$branch'"
-  elif ! git -C "$repo" merge-base --is-ancestor "$branch" "$base" 2>/dev/null; then
-    kept "unmerged branch $branch; delete manually if wanted: git -C '$repo' branch -D '$branch'"
+  if [[ -z "$repo" ]] || ! valid_external "$repo" || [[ ! -d "$repo" ]]; then
+    uncertain "branch $branch has no confirmed repository; inspect it manually"; continue
+  fi
+  item="$branch"$'\037'"$repo"
+  handled=0
+  for known in "${HANDLED_BRANCHES[@]}"; do [[ "$known" = "$item" ]] && handled=1; done
+  (( handled )) && continue
+  HANDLED_BRANCHES+=("$item")
+  current=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null) || continue
+  manual="git -C '$repo' branch -D '$branch'"
+  if [[ -n "$tip" && "$current" != "$tip" ]]; then
+    kept "branch $branch changed since Brigadier recorded it; delete manually if wanted: $manual"
+  elif [[ ! "$target" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
+    uncertain "branch $branch has no recorded target; kept. Delete manually if wanted: $manual"
+  elif ! target_tip=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$target^{commit}" 2>/dev/null); then
+    uncertain "branch $branch: its target $target is gone; kept. Delete manually if wanted: $manual"
+  elif ! git -C "$repo" merge-base --is-ancestor "$current" "$target_tip" 2>/dev/null; then
+    kept "unmerged branch $branch; delete manually if wanted: $manual"
   elif (( DRY )); then say "DRY RUN: git -C $repo branch -d $branch"
   elif git -C "$repo" branch -d "$branch"; then removed "merged branch $branch in $repo"
   else uncertain "git refused safe deletion of branch $branch; inspect: git -C '$repo' branch -d '$branch'"; fi
-done <<< "$bases"
+done <<< "$branches"
 for item in "${BRANCH_REPOS[@]}"; do
   branch=${item%%$'\037'*}; repo=${item#*$'\037'}
   [[ "$branch" = brigadier/* ]] || continue
