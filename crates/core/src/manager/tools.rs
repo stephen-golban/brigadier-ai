@@ -63,6 +63,15 @@ impl SessionManager {
                                 .into(),
                         ));
                     }
+                    // Brigadier prepares a merge from the conflicting task's work; with no
+                    // task there is nothing to prepare, and the worker can't merge by itself.
+                    (None, TaskKind::Merge) => {
+                        return Err(Error::Invalid(
+                            "a merge task needs `subject`: the task whose work conflicts with \
+                             the session's branch"
+                                .into(),
+                        ));
+                    }
                     (None, _) => None,
                 };
                 if args.kind == TaskKind::Review

@@ -981,7 +981,7 @@ impl SessionManager {
             Ok(ready) => ready,
             Err(paths) => {
                 return Err(Error::Invalid(format!(
-                    "`{branch}` conflicts with the current `{base}` in: {}. Delegate a merge task that merges `{base}` into the session's work, land it, then finish again.",
+                    "`{branch}` conflicts with the current `{base}` in: {}. Nothing was merged. Brigadier resolves conflicts only between a task and the session branch, not between the session branch and `{base}`: tell the user which files conflict, so they can merge the two branches themselves; call finish_session again if they ask.",
                     paths.join(", ")
                 )));
             }
