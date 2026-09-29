@@ -9,6 +9,7 @@ import {
   TextMessagePartProvider,
   type TextMessagePartProps,
   ThreadPrimitive,
+  useAuiEvent,
   useAuiState,
   useThreadViewportStore,
 } from "@assistant-ui/react";
@@ -158,8 +159,11 @@ const ThreadRoot: FC<{
     <ThreadPrimitive.Root className="aui-root aui-thread-root bg-background @container flex h-full flex-col">
       <ComposerPrimitive.AttachmentDropzone className="group/drop relative flex min-h-0 flex-1 flex-col">
         {/* Anchored at the bottom: the thread follows new text while it is scrolled to the end
-            and stays put once scrolled up. Nothing is kept below the last message. */}
+            and stays put once scrolled up, also when a turn starts by itself (a worker's report
+            in a session); only the user's own message takes it to the end
+            (`ThreadScrollToBottom`). Nothing is kept below the last message. */}
         <ThreadPrimitive.Viewport
+          scrollToBottomOnRunStart={false}
           data-slot="aui_thread-viewport"
           className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
         >
@@ -272,6 +276,11 @@ const ThreadScrollToBottom: FC = () => {
   const running = useAuiState((s) => s.thread.isRunning);
   const viewport = useThreadViewportStore();
   const [below, ref] = useContentBelow();
+  // The user's own message (sent, or an edit sent) is followed to the end from wherever the
+  // thread was scrolled.
+  useAuiEvent({ scope: "thread", event: "composer.send" }, () =>
+    viewport.getState().scrollToBottom(),
+  );
   return (
     <TooltipIconButton
       ref={ref}
