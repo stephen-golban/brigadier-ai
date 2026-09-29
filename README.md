@@ -17,7 +17,7 @@ crates/        Rust workspace (see PLAN.md §3)
   providers/     Provider trait, normalized events, Claude and Codex adapters, replay fixtures
   git/           git engine: worktrees, snapshots, candidates, guarded landing
   mcp-server/    the Brigadier MCP server the orchestrator and workers talk to
-  router/        static routing table (task kind → vendor, model, effort)
+  router/        routing: model registry, quota forecasts, outcome learning, decide()
   daemon/        brigadierd
   …              crates for later phases
 apps/desktop/  Tauri 2 shell (src-tauri/) and the React UI (src/)
@@ -371,6 +371,38 @@ Files: `brains/<project>/brain.sqlite` and `index.sqlite`, `brains/personal.sqli
 model under `models/embeddings/`, all in the data directory. The index is a cache and can be
 rebuilt. Plan note: PLAN.md's cloud embedding fallback is not built, because Brigadier holds no
 API keys; without the model, retrieval is FTS5 plus the graph.
+
+## Routing and quota
+
+Brigadier picks each worker's model itself; the card says why ("why this model", with the
+factors in its details).
+
+- **Registry.** `registry/models.json` rates every model Brigadier drives: tier, strengths per
+  task category, area modifiers, efforts, context window and modalities. The app ships a copy
+  and the daemon checks this repository for a newer revision a minute after launch and then
+  daily (the Usage page can ask now). A download is taken only if it reads within fixed bounds
+  (no Fable, efforts up to `high`, only CLIs and capabilities Brigadier drives) and its revision
+  is higher; it is cached in `cache/registry/` in the data directory. It is not signed yet.
+  Development builds can point `BRIGADIER_REGISTRY_URL` at another HTTPS address or at plain
+  HTTP on 127.0.0.1 or ::1, to try an update against a local copy.
+- **New models.** A model a CLI lists that the registry doesn't know is researched once, on
+  spare quota (the Brain enrichment setting), from its release notes and benchmarks, and gets
+  one in five scouting, research and verify tasks as a trial until it has three outcomes.
+- **Outcomes.** Every model's run of a task is recorded per project in `routing.sqlite`
+  (result, first review, rework, checks, time, tokens, quota share), and nudges that model's
+  score for that kind of task in that project.
+- **Your rules.** Settings → Routing: never, prefer or only a model, family or vendor, for some
+  task kinds or areas, everywhere or in one project. Rules always win, during fallback too.
+- **Quota.** The daemon reads Claude's and Codex's usage windows (every 5 minutes while work
+  runs, every 30 when idle, and live from the sessions), keeps a week of samples, and projects
+  each window to its reset. New work shifts away from a provider whose window runs hot. The
+  Usage page (sidebar, or the status bar's chip) shows the windows, their estimates, Brigadier's
+  own tokens, hand-offs and waits, and the models with what routing learned.
+- **Fallback.** A worker whose provider hits a limit (or that keeps failing) hands its task to
+  the best eligible model in the same worktree, with the spec, a progress log and the current
+  diff; with none left the task waits for the earliest reset while others go on. An
+  orchestrator or Chat continues on the other vendor and goes back after the reset; your saved
+  model choices are never changed by it.
 
 ## Build and sign (macOS)
 
