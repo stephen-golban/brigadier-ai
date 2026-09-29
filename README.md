@@ -86,6 +86,35 @@ Data lives in `~/Library/Application Support/Brigadier` (`%LOCALAPPDATA%\Brigadi
 `~/.local/share/brigadier`). Set `BRIGADIER_DATA_DIR` to use a throwaway directory; each data
 directory gets its own daemon.
 
+## Uninstall
+
+Use **Uninstall Brigadier…** in the app's Storage dialog when the app is still
+installed. If the app has already been deleted, run the standalone script from
+this repository:
+
+```sh
+scripts/uninstall.sh --dry-run --app-id ai.brigadier.app
+scripts/uninstall.sh --app-id ai.brigadier.app
+```
+
+The script accepts `--keep-data`, `--data-dir PATH`, `--app-id ID`, `--app PATH`,
+`--dev`, `--dry-run`, and `-h`. Its default data directory is
+`$BRIGADIER_DATA_DIR` or `~/Library/Application Support/Brigadier`; the
+default app path is `/Applications/Brigadier.app` for the default identifier.
+The default identifier must be named explicitly. For one development instance,
+pass `--dev --app-id ai.brigadier.<name> --data-dir PATH` (and `--app PATH` if
+there is a bundle). `--dev` never sweeps other identifiers or data directories.
+
+The script asks that instance's daemon to quit, removes recorded clean git
+worktrees and merged Brigadier branches, and moves its data and exact per-app
+folders to the Trash. Dirty worktrees and unmerged branches stay; the summary
+prints a command for each one to resolve manually. It removes only
+ledger-recorded Claude session files and Codex rollouts, and reports Codex
+state database rows and trust entries it cannot confirm. A remaining worktree
+keeps the data directory in place and makes the script exit nonzero. You can
+also keep the data directory intentionally with `--keep-data`. Empty the Trash
+to reclaim the space moved there.
+
 ## Verify
 
 ```sh
