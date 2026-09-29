@@ -371,6 +371,9 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
     json!({
         // The Project Brain is Brigadier's memory; workers do not write Claude's.
         "autoMemoryEnabled": false,
+        // At a usage limit the session reports it and stops, so Brigadier can hand the work to
+        // another model, instead of waiting for the reset on its own.
+        "autoContinueAtUsageLimit": false,
         "permissions": permissions,
         "sandbox": sandbox,
         // A repository's `AGENTS.md` files load next to its `CLAUDE.md` files (by default
