@@ -195,6 +195,11 @@ impl Terminals {
             .map_err(|err| Error::Invalid(format!("couldn't resize the terminal: {err}")))
     }
 
+    /// How many terminals run.
+    pub fn count(&self) -> usize {
+        lock(&self.live).len()
+    }
+
     /// Ends a terminal's shell; closing one that already ended is fine.
     pub fn close(&self, id: &str) {
         let terminal = lock(&self.live).remove(id);

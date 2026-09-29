@@ -108,6 +108,11 @@ impl BrainJobs {
         self.live.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Whether a job runs now.
+    pub(crate) fn running(&self) -> bool {
+        self.live().is_some()
+    }
+
     /// Asks for a project's skeleton pass (from the indexing thread, after its first scan).
     pub(crate) fn want_skeleton(&self, project: ProjectId) {
         let _ = self.skeletons.send(project);

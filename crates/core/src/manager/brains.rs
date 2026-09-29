@@ -583,6 +583,27 @@ impl SessionManager {
     }
 
     /// The Brains' counters for the daemon's metrics.
+    /// The Brains' work in progress, said plainly: a Brain job, an index scan, the embedding
+    /// model's download. Empty when none runs.
+    pub fn brain_work(&self) -> Vec<String> {
+        let mut work = Vec::new();
+        if self.brains.jobs.running() {
+            work.push("a Brain job".to_owned());
+        }
+        if self
+            .brains
+            .projects()
+            .values()
+            .any(|project| project.indexing.load(Ordering::Acquire))
+        {
+            work.push("indexing a project".to_owned());
+        }
+        if self.brains.downloading.load(Ordering::Acquire) {
+            work.push("downloading the embedding model".to_owned());
+        }
+        work
+    }
+
     pub fn brain_counters(&self) -> BrainCounters {
         BrainCounters {
             query_ms: self

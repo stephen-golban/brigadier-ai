@@ -110,6 +110,18 @@ impl Dictation {
         }
     }
 
+    /// What dictation is doing now (a dictation, the model's download), said plainly.
+    pub fn work(&self) -> Vec<String> {
+        let mut work = Vec::new();
+        if !lock(&self.live).is_empty() {
+            work.push("dictation".to_owned());
+        }
+        if lock(&self.download).is_some() {
+            work.push("downloading the speech model".to_owned());
+        }
+        work
+    }
+
     /// Starts downloading the model (answered at once: see the module docs). Already there,
     /// it says so; already downloading, nothing changes.
     pub fn download(self: &Arc<Self>) {

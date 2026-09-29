@@ -279,7 +279,15 @@ pub async fn connect(
     platform: &dyn Platform,
     client: ClientInfo,
 ) -> Result<(Connection, DaemonInfo, i64), Error> {
-    let paths = platform.paths();
+    connect_to(platform.paths(), client).await
+}
+
+/// Connects to the daemon of the data directory `paths` describes (not necessarily this
+/// process's own) and completes the handshake with its token.
+pub async fn connect_to(
+    paths: &AppPaths,
+    client: ClientInfo,
+) -> Result<(Connection, DaemonInfo, i64), Error> {
     let token = Token::read(&paths.token_path)?;
     let stream = Stream::connect(endpoint_name(&paths.ipc_endpoint)?).await?;
     let mut connection = Connection::new(stream);

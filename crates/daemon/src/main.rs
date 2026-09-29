@@ -17,14 +17,17 @@
 //! - `brigadierd mcp`: the stdio bridge CLI sessions start for the Brigadier MCP tools
 //!   ([`bridge`]);
 //! - started through a command-gate link (`git`, `gh`, `npm`, …): the outward-command gate
-//!   ([`gate`]).
+//!   ([`gate`]);
+//! - `brigadierd quit`: asks a data directory's daemon to quit ([`quit`]).
 
 mod awake;
 mod bridge;
 mod dictation;
 mod gate;
+mod idle;
 mod logging;
 mod metrics;
+mod quit;
 mod server;
 mod supervisor;
 mod terminals;
@@ -107,6 +110,10 @@ fn main() -> ExitCode {
     {
         return dictation::transcribe_main(std::env::args_os().skip(2));
     }
+    // `brigadierd quit [--data-dir PATH]`: asks that data directory's daemon to quit.
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "quit") {
+        return quit::main(std::env::args_os().skip(2));
+    }
     // `brigadierd index-scan <db> <root> <threads>`: one code index scan (see
     // `brigadier_index::ScanHelper`).
     if std::env::args_os()
@@ -120,7 +127,7 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(err) => {
             eprintln!(
-                "brigadierd: {err}\nusage: brigadierd [--data-dir PATH] [--foreground]\n       brigadierd mcp [--data-dir PATH]"
+                "brigadierd: {err}\nusage: brigadierd [--data-dir PATH] [--foreground]\n       brigadierd mcp [--data-dir PATH]\n       brigadierd quit [--data-dir PATH]"
             );
             return ExitCode::from(2);
         }
@@ -303,11 +310,12 @@ async fn run(
     );
     supervisor.spawn_critical("wal checkpointer", checkpoint_loop(store.clone()));
     supervisor.spawn(awake.clone().run(stopping.clone()));
+    supervisor.spawn(idle::exit_when_idle(daemon.clone(), stopping.clone()));
     tracing::info!("brigadierd ready");
 
     let reason = tokio::select! {
         signal = termination_signal() => signal,
-        _ = quit_rx.recv() => "quit requested by a client",
+        Some(reason) = quit_rx.recv() => reason,
         state = store.writer_stopped() => {
             tracing::error!(state = ?state, "store writer stopped; exiting");
             stopping.cancel();

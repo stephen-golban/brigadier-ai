@@ -127,6 +127,11 @@ impl Metrics {
         self.streaming_changed.notify_waiters();
     }
 
+    /// How many app connections (token holders) are open.
+    pub fn clients(&self) -> usize {
+        self.clients.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
     pub fn connection_opened(&self, id: u64, client: ClientInfo) {
         self.connections.fetch_add(1, Ordering::Relaxed);
         self.clients

@@ -613,6 +613,8 @@ pub enum Request {
     SimulateUsageLimit {
         provider: ProviderKind,
     },
+    /// Whether this daemon is in use: another Brigadier asks before offering to stop it.
+    GetDaemonActivity,
     /// Orderly quit: stop admitting writes, commit what is queued, acknowledge, exit.
     Shutdown,
 }
@@ -878,6 +880,9 @@ pub enum Response {
     SimulateUsageLimit {
         session: Box<RawSession>,
     },
+    GetDaemonActivity {
+        activity: DaemonActivity,
+    },
     Shutdown,
 }
 
@@ -1019,6 +1024,17 @@ pub struct KeepAwakeStatus {
     pub lid_closed: LidClosed,
     /// Why keeping awake (or the lid-closed part of it) isn't working, when it isn't.
     pub error: Option<String>,
+}
+
+/// Whether a daemon is in use, as `getDaemonActivity` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonActivity {
+    /// App connections other than the one asking.
+    pub clients: u32,
+    /// What runs, said plainly (a turn or a worker, a terminal, a Brain job, …); empty when
+    /// nothing does.
+    pub running: Vec<String>,
 }
 
 /// Staying awake with the lid closed.

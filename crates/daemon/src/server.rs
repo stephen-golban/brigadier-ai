@@ -12,8 +12,9 @@ use brigadier_core::runtime::{Runtime, StartRaw};
 use brigadier_core::{ConversationId, Core, MAX_ATTACHMENT_BYTES};
 use brigadier_ipc::metrics::{DaemonMetrics, Diagnostics, budgets};
 use brigadier_ipc::protocol::{
-    ArtifactText, ClientFrame, ClientInfo, DaemonInfo, DictationUpdate, ErrorCode, EventEnvelope,
-    IpcError, Outcome, RawJson, Request, Response, SendOutcome, ServerFrame, TerminalOutput,
+    ArtifactText, ClientFrame, ClientInfo, DaemonActivity, DaemonInfo, DictationUpdate, ErrorCode,
+    EventEnvelope, IpcError, Outcome, RawJson, Request, Response, SendOutcome, ServerFrame,
+    TerminalOutput,
 };
 use brigadier_ipc::{Accepted, Connection, Listener, Reader, Token, Writer};
 use brigadier_providers::ProviderKind;
@@ -25,6 +26,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::awake::Awake;
 use crate::dictation::Dictation;
+use crate::idle;
 use crate::metrics::Metrics;
 use crate::supervisor::Supervisor;
 use crate::terminals::Terminals;
@@ -54,8 +56,8 @@ pub struct Daemon {
     pub supervisor: Supervisor,
     /// Cancelled once the store has drained; connections then say goodbye and close.
     pub closing: CancellationToken,
-    /// A client asked the daemon to quit.
-    pub quit: mpsc::Sender<()>,
+    /// Asks the daemon to quit, saying why (a client asked, nobody used it for a while).
+    pub quit: mpsc::Sender<&'static str>,
     /// Becomes true when all admitted writes are committed during shutdown.
     pub drained: watch::Receiver<bool>,
     pub connections: TaskTracker,
@@ -79,7 +81,7 @@ impl Daemon {
         metrics: Arc<Metrics>,
         supervisor: Supervisor,
         closing: CancellationToken,
-        quit: mpsc::Sender<()>,
+        quit: mpsc::Sender<&'static str>,
         drained: watch::Receiver<bool>,
         dictation: Arc<Dictation>,
         awake: Arc<Awake>,
@@ -405,7 +407,7 @@ impl Session {
             }
             Request::Shutdown => {
                 // Stop admission and drain first; acknowledge only once writes are committed.
-                let _ = self.daemon.quit.try_send(());
+                let _ = self.daemon.quit.try_send("quit requested by a client");
                 let mut drained = self.daemon.drained.clone();
                 let _ = drained.wait_for(|drained| *drained).await;
                 self.respond(id, Ok(Response::Shutdown)).await?;
@@ -1208,6 +1210,14 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         },
         Request::SimulateUsageLimit { provider } => Response::SimulateUsageLimit {
             session: Box::new(daemon.runtime.simulate_usage_limit(provider).await?),
+        },
+        Request::GetDaemonActivity => Response::GetDaemonActivity {
+            activity: DaemonActivity {
+                // The asking connection is one of them.
+                clients: u32::try_from(daemon.metrics.clients().saturating_sub(1))
+                    .unwrap_or(u32::MAX),
+                running: idle::running(daemon).await,
+            },
         },
         Request::Subscribe { .. } | Request::SetMetricsStreaming { .. } | Request::Shutdown => {
             return Err(IpcError {
