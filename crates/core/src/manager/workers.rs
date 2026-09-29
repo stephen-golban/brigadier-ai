@@ -1,7 +1,8 @@
 //! The worker runtime: one CLI session per task.
 //!
-//! A task goes in; Brigadier routes it to a model (the static table in `crates/router`, where
-//! the orchestrator's vendor is not an input), gives it a workspace, and starts the worker:
+//! A task goes in; Brigadier routes it to a model (`crates/router`: by capability, quota and
+//! outcomes, where the orchestrator's vendor is not an input), gives it a workspace, and starts
+//! the worker:
 //!
 //! - **Workspace.** Write tasks get a worktree on a new task branch, read tasks a detached
 //!   worktree, research tasks none. Worktrees start from the session branch's latest commit
