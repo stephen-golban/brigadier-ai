@@ -103,8 +103,9 @@ const DISABLED_FEATURES: &[&str] = &[
 
 /// What a Codex orchestrator session (read-only access, `ToolSet::None`, Brigadier's MCP server
 /// trusted, every approval declined) still has, as verified against Codex 0.156.1 by capturing
-/// the model request and by adversarial live turns. The shell tools, sub-agents, image viewing,
-/// image generation, web search, goals and the sleep tool are gone.
+/// the model request and by adversarial live turns, and rechecked live on 0.158.0. The shell
+/// tools, sub-agents, image viewing, image generation, web search, goals and the sleep tool are
+/// gone.
 pub const ORCHESTRATOR_RESIDUE: &str = "Codex orchestrators keep these built-ins: `exec` \
     (JavaScript in an isolate with no file system, network or console, which only calls the \
     tools below), `apply_patch` (every patch is an approval request, and Brigadier declines it), \
@@ -116,12 +117,12 @@ pub const ORCHESTRATOR_RESIDUE: &str = "Codex orchestrators keep these built-ins
 /// without an approval that Brigadier declines, and no sub-agent can act for it. `Err` carries
 /// the reason to show before falling back to a Claude orchestrator.
 ///
-/// Verified for Codex 0.156.1 (the version these bindings come from; a different version gets a
-/// warning notice when its session starts): a read-only thread with `untrusted` approvals and
-/// the restricted feature set exposes no command tool at all, so no exec-policy rule or
-/// sandbox gap can let a command run; `apply_patch` asks and is declined, leaving no file;
-/// the Brigadier MCP tools run without an elicitation. What remains is
-/// [`ORCHESTRATOR_RESIDUE`].
+/// Verified for Codex 0.156.1 and rechecked live on 0.158.0 (the version these bindings come
+/// from; a different version gets a warning notice when its session starts): a read-only thread
+/// with `untrusted` approvals and the restricted feature set exposes no command tool at all, so
+/// no exec-policy rule or sandbox gap can let a command run; `apply_patch` asks and is
+/// declined, leaving no file; the Brigadier MCP tools run without an elicitation. What remains
+/// is [`ORCHESTRATOR_RESIDUE`].
 pub fn orchestrator_lockdown() -> std::result::Result<(), String> {
     Ok(())
 }

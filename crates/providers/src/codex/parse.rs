@@ -622,7 +622,8 @@ impl Parser {
         let kind = match &error.codex_error_info {
             Some(I::UsageLimitExceeded) => ErrorKind::UsageLimit,
             Some(I::RateLimitExceeded) => ErrorKind::RateLimit,
-            Some(I::ServerOverloaded) => ErrorKind::Overloaded,
+            // The flex service tier has no capacity right now: temporary, like an overload.
+            Some(I::ServerOverloaded | I::FlexUnavailable) => ErrorKind::Overloaded,
             Some(I::ContextWindowExceeded) => ErrorKind::ContextWindow,
             Some(I::Unauthorized) => ErrorKind::Auth,
             Some(I::SessionBudgetExceeded) => ErrorKind::Billing,
