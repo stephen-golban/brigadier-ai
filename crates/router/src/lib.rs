@@ -1,47 +1,105 @@
-//! Choosing the provider, model and reasoning effort for each piece of work.
+//! Choosing the provider, model and reasoning effort for each piece of work (docs/PLAN.md §6
+//! Phase 5). The orchestrator's own vendor is never an input (§2 principle 3): a query carries
+//! the task, what each provider can offer now, the user's rules and what outcomes taught.
 //!
-//! Phase 3 routes with a **static table** (docs/PLAN.md §6 Phase 3); capability scores,
-//! outcome learning and quota balancing replace it in Phase 5. The orchestrator's own vendor
-//! is never an input (§2 principle 3): a request only carries the task category, what each
-//! provider can offer right now, an optional pin and, for reviews, the author to avoid.
+//! # Registry
 //!
-//! # The table
+//! `registry/models.json` ([`Registry`]) records per model its tier, strengths per task category
+//! (0–10: how well suited it is, weighing quality against cost), area modifiers (±2), efforts,
+//! context window and modalities. The app ships a copy ([`Registry::bundled`]) and the daemon
+//! downloads newer revisions ([`Registry::parse`], [`Registry::is_newer_than`]). Every copy
+//! passes the same bounds (see [`load`]'s docs): no Fable, efforts only up to `high`, only CLIs
+//! Brigadier drives, only capabilities their adapters implement.
 //!
-//! | Category       | Tie order     | Claude                          | Codex                                   |
-//! |----------------|---------------|---------------------------------|-----------------------------------------|
-//! | Scout          | Codex, Claude | Sonnet low → Haiku              | `*-luna` low → `*-sol` low              |
-//! | Research       | Codex, Claude | Sonnet medium                   | `*-luna` medium → `*-sol` low           |
-//! | Implement      | Claude, Codex | Opus medium                     | `*-sol` medium → `*-astra` medium       |
-//! | Review         | Codex, Claude | Opus high → Sonnet high         | `*-astra` high → `*-sol` high           |
-//! | Merge          | Claude, Codex | Opus high                       | `*-sol` high → `*-astra` high           |
-//! | Verify         | Codex, Claude | Sonnet low                      | `*-luna` medium → `*-sol` low           |
-//! | Chat           | Claude, Codex | the CLI's default model         | the CLI's default model                 |
+//! # Merge
 //!
-//! - **Models come from the live catalog.** An entry names a model family (Claude's `opus`,
-//!   `sonnet`, `haiku` aliases; Codex's `astra`, `sol`, `luna` lines) and matches the first
-//!   model in the CLI's own list whose id has that word (then one whose alias resolves to it),
-//!   so `gpt-6-sol` is preferred over `gpt-5.6-sol` and a new `gpt-6.1-sol` is picked up
-//!   unchanged. When no entry matches, the CLI's default model is used, then its first model;
-//!   with no catalog at all, the CLI's default (`model: None`). A renamed model never breaks
-//!   routing.
-//! - **Never Fable, never above `high`.** Fable models are filtered out of every catalog and
-//!   every pin; efforts are capped at `high` and at what the model accepts.
-//! - **Which vendor.** Only usable providers are candidates. A review avoids the vendor that
-//!   wrote the change; if that vendor is the only one usable, a *different model* of it
-//!   reviews (`cross_vendor: Some(false)`, said in the reason). Otherwise a pinned provider
-//!   wins; otherwise the provider with fewer running workers ([`RouteRequest::running`]), so
-//!   parallel work spreads across both vendors and their quotas; a tie follows the row order.
-//! - **Tie orders.** Write work (implement, merge) starts on Claude and read-only work (scout,
-//!   research, verify) on Codex, so in a typical session the two draw on different quotas and
-//!   every write lands on a vendor whose change the other one reviews. Opus is Claude's strongest
-//!   routable coding model; for Codex, `*-sol` is its coding workhorse and `*-astra` (its
-//!   frontier model) is kept for reviews. Claude's scouts use Sonnet at low effort rather than
-//!   Haiku, which is a generation older; Haiku is the fallback.
-//! - **Chat fallback** ([`fallback`]): after a usage limit, the other vendor's model of the same
-//!   class (Opus ↔ `*-astra`, Sonnet ↔ `*-sol`, Haiku ↔ `*-luna`), keeping the effort where the
-//!   model accepts it.
+//! [`merge()`] joins each CLI's live list with the registry: a model is **curated** (its own
+//! entry), **inherited** (a newer member of a family entry, `gpt-6.1-sol` from `sol`),
+//! **researched** (placed by a research note, within ±2 of unrated) or **unknown** (tier
+//! unrated, strength 5). Fable models are listed but excluded.
+//!
+//! # Eligibility
+//!
+//! A model may take a task when all of these hold ([`decide`]):
+//! - it isn't Fable, and its provider is logged in;
+//! - **no confirmed limit**: a provider limit (usage window, spend control, credits), a window
+//!   that limits it at 97% used, or its own scoped bucket used up. A limit is a hard exclusion,
+//!   never a large penalty;
+//! - it isn't excluded by the query (it or its provider just failed on the task);
+//! - no applicable `never` rule names it, and it is inside an applicable `only` rule's target;
+//! - it meets the task's needs (image input, image generation, context window);
+//! - its tier is at or above the task's quality floor ([`default_floor`]);
+//! - for reviews, its vendor differs from the author's when another vendor can review; else a
+//!   different model of the same vendor reviews, and the reason says so.
+//!
+//! # Score
+//!
+//! `strength(category) + mean area modifier + learned adjustment − quota penalty − load penalty
+//! + trial bonus`, less small penalties for a legacy model (−1) and an inherited one not yet
+//! proven here (−0.25). The learned adjustment ([`learn()`]) is a Beta-shrunk success rate
+//! against the registry prior, capped at ±2.5. The quota penalty ([`forecast`]) is 0 below a
+//! projected 70% and rises smoothly to 6 at a projected 100%; each running worker on the
+//! provider costs 0.25 (at most 1.5). A `prefer` rule wins whenever its target is eligible, over
+//! a pin too. Effort is the registry's default for the category (else low for scouting and
+//! checks, medium for research, implementation and orchestration, high for reviews and merges),
+//! fitted to what the model accepts and never above `high`.
+//!
+//! # Trials
+//!
+//! An unknown or researched model with fewer than 3 outcomes may run scouting, research and
+//! verification — never implementation, reviews, merges or orchestration — when the query holds
+//! a trial slot (the caller gives at most 1 in 5 low-risk tasks one) and it meets the task's
+//! needs. Its tier doesn't pass the floor; the trial path stands in for that check, with a +4
+//! bonus.
+//!
+//! # Overrides
+//!
+//! `never`, `prefer` and `only` rules ([`OverrideRule`]) apply by project, category and area.
+//! They beat scores, balancing and pins, and hold during fallback: when every model an `only`
+//! rule allows is unavailable, the task waits, naming the rule and the limit.
+//!
+//! # Quota heat and balancing
+//!
+//! Each window's rate of use gives a forecast at its reset; a provider is Warm at a projected
+//! 70%, Hot at 90% (or 85% used), Limited at a limit or 97% used ([`forecast`]). The penalty
+//! shifts new work to the other provider as a window heats up; when that changes the vendor,
+//! the explanation says `balancing` and the reason names the window.
+//!
+//! # Waiting
+//!
+//! With nothing eligible, [`decide`] returns [`Decision::Wait`] with the earliest reset among
+//! the models kept out only by a limit (none when no reset would help). Fallback is the same
+//! call with the failed provider or model excluded and the same floor, areas and rules.
+//!
+//! # Tie order
+//!
+//! Scores that tie follow the Phase 3 table's vendor order, then each CLI's own order (newest
+//! first). Write work starts on Claude and read-only work on Codex, so in a typical session the
+//! two draw on different quotas and every write lands on a vendor whose change the other
+//! reviews:
+//!
+//! | Category       | Ties go to    |
+//! |----------------|---------------|
+//! | Scout          | Codex, Claude |
+//! | Research       | Codex, Claude |
+//! | Implement      | Claude, Codex |
+//! | Review         | Codex, Claude |
+//! | Merge          | Claude, Codex |
+//! | Verify         | Codex, Claude |
+//! | Chat           | Claude, Codex |
+//! | Orchestrate    | Claude, Codex |
+//!
+//! # Phase 3 API
+//!
+//! [`route`] and [`fallback`] keep the Phase 3 static table (family words `opus`, `sonnet`,
+//! `haiku`, `astra`, `sol`, `luna`) until the core moves to [`decide`]. The registry's strengths
+//! reproduce the table's choices when every provider is cool and idle.
 
+mod areas;
+pub mod decide;
 mod explain;
+pub mod forecast;
+pub mod learn;
 pub mod load;
 pub mod merge;
 mod outcome;
@@ -56,7 +114,16 @@ use ts_rs::TS;
 
 use table::{Entry, Pick, Tier};
 
+pub use areas::infer_areas;
+pub use decide::{
+    Decision, Exclusion, Needs, ProviderState, Query, Routed, Waiting, allows_trials, decide,
+    default_floor, rule_text, targets,
+};
 pub use explain::{Alternative, Explanation, Factor};
+pub use forecast::{
+    active_limit, heat, provider_quota, quota_penalty, window_applies, window_state,
+};
+pub use learn::{learn, learned_for};
 pub use load::{Parsed, RegistryError};
 pub use merge::{OutcomeCount, TRIAL_OUTCOMES, merge, outcome_counts};
 pub use outcome::{Learned, Outcome, OutcomeResult};

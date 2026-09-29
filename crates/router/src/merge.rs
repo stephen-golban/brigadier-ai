@@ -331,3 +331,30 @@ fn unrated_strengths() -> BTreeMap<TaskCategory, f64> {
         .map(|category| (category, UNRATED_STRENGTH))
         .collect()
 }
+
+/// A registry entry as a model to route to when its CLI's list isn't loaded yet: the entry's
+/// first id is one the CLI accepts.
+pub(crate) fn from_entry(entry: &RegistryModel, provider: ProviderKind) -> Option<MergedModel> {
+    let id = entry.matches.ids.first()?.clone();
+    let mut model = MergedModel {
+        provider,
+        display_name: id.clone(),
+        id,
+        status: ModelStatus::Curated,
+        registry_key: None,
+        family: entry.matches.family.clone(),
+        tier: QualityTier::Unrated,
+        strengths: unrated_strengths(),
+        area_strengths: BTreeMap::new(),
+        efforts: entry.efforts.clone(),
+        context_window: None,
+        knowledge_cutoff: None,
+        modalities: Modalities::default(),
+        legacy: false,
+        excluded: false,
+        trial: None,
+        research: None,
+    };
+    apply_entry(&mut model, entry, ModelStatus::Curated, &[]);
+    Some(model)
+}
