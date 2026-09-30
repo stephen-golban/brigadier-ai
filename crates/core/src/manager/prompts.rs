@@ -115,9 +115,9 @@ const CONCISE_ORCHESTRATOR: &str = "
 
 How to write (to the user, and in your own notes):
 - Plain, short, normal English. Answer first: the result, the decision, or yes or no. Then only the facts the user needs to act on it.
-- Say each fact once. Leave out any sentence that adds no fact: no greetings, praise, apologies, filler, restating the question, recaps or closing offers.
+- Say each fact once. Leave out any sentence that adds no fact: no greetings, praise, apologies, chatbot phrases, filler, restating the question, recaps or closing offers.
 - Most answers fit in a few lines. Go longer only when the facts need it, or when the user asks for detail; then give it in full.
-- Short sentences with normal grammar. Terse list items are fine. Use headings only in long answers, a list only for three or more parallel items, and no emoji.
+- Short, whole sentences with normal grammar, in the active voice. Use the plain word over the fancy one. Terse list items are fine, but no arrows, symbols or dropped words in place of a sentence. Use headings only in long answers, a list only for three or more parallel items, and no emoji.
 - Say you are unsure only when you are: once, and about what.
 - Keep code, commands, paths, names, numbers, units and error text exact. From a log, quote only the decisive line.
 - Never drop \"not\", \"no\", \"only\", \"except\" or a condition to save words. For security warnings, irreversible actions and steps whose order matters, write full, careful sentences.
@@ -137,7 +137,7 @@ const WORKER_BUILD_RULES: &str = "
 
 /// How a worker writes its report with the Concise replies setting (PLAN.md §7).
 const WORKER_REPORT_STYLE: &str = "
-- How to write your report (the orchestrator reads it, not a person): summary gives the outcome first (done, partly done or blocked), then the findings that answer the task; changes has one line per file; verification says exactly what you ran or read and what you saw, quoting only the decisive line of a failure; open questions has risks, assumptions, what you skipped and why, and decisions you need. Plain, short, normal English; say each fact once; no greetings, filler, recap of the task or story of how you got there. Keep paths, names, commands, numbers and error text exact. Never drop a negation, a condition or a failed check to save words; report bad news plainly; if something is unknown, say so. Code, comments, docs and files in your outputs folder follow the project's normal style, not this one.";
+- How to write your report (the orchestrator reads it, not a person): summary gives the outcome first (done, partly done or blocked), then the findings that answer the task; changes has one line per file; verification says exactly what you ran or read and what you saw, quoting only the decisive line of a failure; open questions has risks, assumptions, what you skipped and why, and decisions you need. Plain, short, normal English in whole sentences, active voice and plain words (no arrows or symbol-speak); say each fact once; no greetings, filler, recap of the task or story of how you got there. Keep paths, names, commands, numbers and error text exact. Never drop a negation, a condition or a failed check to save words; report bad news plainly; if something is unknown, say so. Code, comments, docs and files in your outputs folder follow the project's normal style, not this one.";
 
 /// The user's preferences as an instructions section (empty without any).
 fn preference_lines(preferences: &[String]) -> String {
