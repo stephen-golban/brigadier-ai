@@ -21,9 +21,9 @@ use std::sync::Arc;
 
 use brigadier_core::tools::{Role, ToolHost};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerConfig,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    Implementation, InitializeRequestParams, InitializeResult, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -31,6 +31,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
 pub use catalog::tools_for;
+
+/// How long a CLI may keep the tool list (a day): it is fixed for the life of a grant.
+const TOOLS_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// The name the CLIs know the server by (their tools show up as `mcp__brigadier__<tool>`).
 pub const SERVER_NAME: &str = "brigadier";
@@ -125,9 +128,14 @@ impl ServerHandler for BrigadierServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(
-            tools_for(self.role()?).to_vec(),
-        ))
+        // Protocol 2026-07-28 requires both cache fields: Claude Code rejects the whole list
+        // without them, and the session starts with no Brigadier tools. A role's tools never
+        // change while its grant lives, and they are the grant's own.
+        Ok(
+            ListToolsResult::with_all_items(tools_for(self.role()?).to_vec())
+                .with_ttl_ms(TOOLS_TTL_MS)
+                .with_cache_scope(CacheScope::Private),
+        )
     }
 
     async fn call_tool(
