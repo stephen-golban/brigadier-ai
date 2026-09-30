@@ -2,8 +2,7 @@ import { create } from "zustand";
 
 import { request } from "@/ipc/client";
 import type { EventEnvelope, OverrideRule, UsageView } from "@/ipc/generated";
-import { updateSettings } from "@/state/actions";
-import { useApp } from "@/state/store";
+import { editSettings } from "@/state/settings";
 
 /**
  * The Usage page's data: one `getUsage` read, taken again when a provider is checked and every
@@ -86,25 +85,19 @@ export async function checkRegistry(): Promise<void> {
   await loadUsage();
 }
 
-/**
- * Rule changes, one at a time: each starts from the settings the one before it saved, so two
- * quick changes can't answer out of order and drop one of them.
- */
-let ruleWrites: Promise<void> = Promise.resolve();
-
-function changeRules(change: (rules: readonly OverrideRule[]) => OverrideRule[]): Promise<void> {
-  const write = ruleWrites.then(() => {
-    const settings = useApp.getState().settings;
-    return updateSettings({ ...settings, routingOverrides: change(settings.routingOverrides) });
-  });
-  // A failed write is the caller's to report; the next one still runs.
-  ruleWrites = write.catch(() => undefined);
-  return write;
+/** A change to the routing rules, through the settings writer (edits must be idempotent). */
+async function changeRules(change: (rules: readonly OverrideRule[]) => OverrideRule[]): Promise<void> {
+  await editSettings((settings) => ({
+    ...settings,
+    routingOverrides: change(settings.routingOverrides),
+  }));
 }
 
 /** Adds a routing rule to the user's settings. */
 export function addOverride(rule: OverrideRule): Promise<void> {
-  return changeRules((rules) => [...rules, rule]);
+  return changeRules((rules) =>
+    rules.some((existing) => existing.id === rule.id) ? [...rules] : [...rules, rule],
+  );
 }
 
 /** Removes a routing rule from the user's settings. */

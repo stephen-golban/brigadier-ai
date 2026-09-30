@@ -233,17 +233,70 @@ function byId<T extends { id: string }>(items: readonly T[]): Record<string, T> 
   return Object.fromEntries(items.map((item) => [item.id, item]));
 }
 
+/** A change to the settings, made on the latest ones (see `editSettings`). */
+export type SettingsEdit = (settings: Settings) => Settings;
+
+/**
+ * The settings as the daemon last reported them, and the edits made since that it has not
+ * answered yet, oldest first. What the app shows is those edits applied on top, so a newer
+ * edit is never undone by an older answer or a `settingsChanged` event arriving meanwhile.
+ */
+let confirmedSettings: Settings | null = null;
+const pendingEdits: SettingsEdit[] = [];
+
+/** The settings to show: the confirmed ones with every pending edit applied, in order. */
+function shownSettings(): Settings {
+  const base = confirmedSettings ?? useApp.getState().settings;
+  return pendingEdits.reduce((settings, edit) => edit(settings), base);
+}
+
+/** Shows `shownSettings()`, switching the density tokens with it. */
+function showSettings(): Settings {
+  const settings = shownSettings();
+  applyDensity(settings.density);
+  useApp.setState({ settings });
+  return settings;
+}
+
+/** Records settings the daemon reported (a load, a write's answer or an event). */
+function confirmSettings(settings: Settings): Settings {
+  confirmedSettings = settings;
+  const shown = pendingEdits.reduce((current, edit) => edit(current), settings);
+  applyDensity(shown.density);
+  return shown;
+}
+
+/** Starts showing `edit`; the settings writer sends it in its turn (state/settings.ts). */
+export function beginSettingsEdit(edit: SettingsEdit): void {
+  pendingEdits.push(edit);
+  showSettings();
+}
+
+/** The settings `edit` should be sent as: the confirmed ones with the edits up to it applied. */
+export function settingsThrough(edit: SettingsEdit): Settings {
+  const upTo = pendingEdits.indexOf(edit);
+  const base = confirmedSettings ?? useApp.getState().settings;
+  return pendingEdits.slice(0, upTo + 1).reduce((settings, next) => next(settings), base);
+}
+
+/** Ends `edit`: saved (`saved` is the daemon's answer) or failed (`saved` is null). */
+export function endSettingsEdit(edit: SettingsEdit, saved: Settings | null): Settings {
+  const at = pendingEdits.indexOf(edit);
+  if (at !== -1) pendingEdits.splice(at, 1);
+  if (saved) confirmedSettings = saved;
+  return showSettings();
+}
+
 export function replaceCatalog(
   projects: readonly Project[],
   conversations: readonly Conversation[],
   settings: Settings,
 ): void {
-  applyDensity(settings.density);
   useApp.setState({
     catalogLoaded: true,
     projects: byId(projects),
     conversations: byId(conversations),
-    settings,
+    settings: confirmSettings(settings),
   });
 }
 
@@ -454,8 +507,7 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
       return { ...slice, projects };
     }
     case "settingsChanged":
-      applyDensity(event.settings.density);
-      return { ...slice, settings: event.settings };
+      return { ...slice, settings: confirmSettings(event.settings) };
     case "rawSessionCreated":
     case "rawSessionUpdated":
     case "rawEvent":

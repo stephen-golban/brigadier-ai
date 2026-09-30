@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import type { Density, KeepAwake, ModelChoice, PermissionLevel, Settings } from "@/ipc/generated";
+import type { Density, KeepAwake, ModelChoice, PermissionLevel } from "@/ipc/generated";
 import {
   ALWAYS_ASK_NOTE,
   builtInDefault,
@@ -29,7 +29,7 @@ import {
   PERMISSION_LEVELS,
   useModelGroups,
 } from "@/lib/setup";
-import { setDensity, updateSettings } from "@/state/actions";
+import { setDensity } from "@/state/actions";
 import {
   KEEP_AWAKE_OPTIONS,
   lidClosedHint,
@@ -38,6 +38,7 @@ import {
   useKeepAwake,
 } from "@/state/keepAwake";
 import { reopenOnboarding } from "@/state/onboarding";
+import { editSettings } from "@/state/settings";
 import { useApp } from "@/state/store";
 
 /** The defaults new conversations start from. The full Settings screen comes in Phase 9. */
@@ -84,9 +85,9 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
     setBusy(true);
     setError(null);
     try {
-      // Density (and anything changed elsewhere meanwhile) is taken from the latest settings.
-      const next: Settings = {
-        ...useApp.getState().settings,
+      // Density (and anything changed elsewhere meanwhile) is kept from the latest settings.
+      await editSettings((settings) => ({
+        ...settings,
         defaultOrchestrator: orchestrator,
         defaultChatModel: chatModel,
         defaultPermission: permission,
@@ -94,8 +95,7 @@ function SettingsForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         showFullAccessNotice: fullAccessNotice,
         hibernateAfterMinutes: minutes,
         enrichBrain,
-      };
-      await updateSettings(next);
+      }));
       onOpenChange(false);
     } catch (cause) {
       setError(errorText(cause));

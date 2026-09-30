@@ -55,7 +55,7 @@ import type { Conversation } from "@/ipc/generated";
 import type { ComposerProps } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
-import { updateSettings } from "@/state/actions";
+import { setSetting } from "@/state/settings";
 import { useBoard } from "@/state/board";
 import {
   cancelDictation,
@@ -307,7 +307,7 @@ function FullAccessNotice({ conversation }: { conversation: Conversation }) {
           size="xs"
           className="rounded-capsule"
           onClick={() =>
-            void updateSettings({ ...useApp.getState().settings, showFullAccessNotice: false }).catch(
+            void setSetting("showFullAccessNotice", false).catch(
               (error: unknown) => console.error("couldn't save the setting", error),
             )
           }

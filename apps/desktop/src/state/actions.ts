@@ -22,12 +22,11 @@ import type {
   RemoveProjectReport,
   RepoInfo,
   RestoreOutcome,
-  Settings,
   Setup,
   SetupRequest,
 } from "@/ipc/generated";
-import { applyDensity } from "@/lib/density";
 import { savePinnedSummary } from "@/lib/pinnedSummary";
+import { setSetting } from "@/state/settings";
 import {
   boardFromView,
   boardOf,
@@ -889,30 +888,8 @@ export async function loadEarlierOrchestratorLog(): Promise<void> {
 
 // ----- settings --------------------------------------------------------------------------
 
-/**
- * Settings writes, one at a time: each is shown at once and sent after the one before it
- * answered, so the daemon keeps the last one made (a Save and a routing rule can't cross).
- */
-let settingsWrites: Promise<unknown> = Promise.resolve();
-
-export async function updateSettings(settings: Settings): Promise<void> {
-  const previous = useApp.getState().settings;
-  applyDensity(settings.density);
-  useApp.setState({ settings });
-  const write = settingsWrites.then(() => request({ method: "updateSettings", settings }));
-  settingsWrites = write.catch(() => undefined);
-  try {
-    const { settings: saved } = await write;
-    useApp.setState({ settings: saved });
-  } catch (error) {
-    applyDensity(previous.density);
-    useApp.setState({ settings: previous });
-    throw error;
-  }
-}
-
 export async function setDensity(density: Density): Promise<void> {
-  await updateSettings({ ...useApp.getState().settings, density });
+  await setSetting("density", density);
 }
 
 export function setPinnedSummary(shown: boolean): void {

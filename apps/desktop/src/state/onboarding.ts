@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import { request } from "@/ipc/client";
 import type { ProjectCandidate, ProviderKind, TerminalInfo } from "@/ipc/generated";
-import { updateSettings } from "@/state/actions";
+import { setSetting } from "@/state/settings";
 import { useApp } from "@/state/store";
 
 /**
@@ -20,7 +20,7 @@ export function reopenOnboarding(): void {
 export async function finishOnboarding(): Promise<void> {
   useOnboarding.setState({ reopened: false });
   const settings = useApp.getState().settings;
-  if (!settings.onboarded) await updateSettings({ ...settings, onboarded: true });
+  if (!settings.onboarded) await setSetting("onboarded", true);
 }
 
 /** The repositories the user's own Claude Code and Codex sessions worked in. */

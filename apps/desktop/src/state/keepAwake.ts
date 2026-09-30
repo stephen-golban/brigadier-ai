@@ -2,8 +2,7 @@ import { create } from "zustand";
 
 import { request } from "@/ipc/client";
 import type { KeepAwake, KeepAwakeStatus } from "@/ipc/generated";
-import { updateSettings } from "@/state/actions";
-import { useApp } from "@/state/store";
+import { setSetting } from "@/state/settings";
 
 /**
  * Keeping the computer awake: the daemon applies the `keepAwake` settings; this holds how
@@ -22,7 +21,7 @@ export async function loadKeepAwake(): Promise<void> {
 }
 
 export async function setKeepAwake(keepAwake: KeepAwake): Promise<void> {
-  await updateSettings({ ...useApp.getState().settings, keepAwake });
+  await setSetting("keepAwake", keepAwake);
   await loadKeepAwake();
 }
 
@@ -31,10 +30,7 @@ export async function setKeepAwake(keepAwake: KeepAwake): Promise<void> {
  * an administrator password; without it, the option stays off.
  */
 export async function setKeepAwakeLidClosed(on: boolean): Promise<void> {
-  await updateSettings({
-    ...useApp.getState().settings,
-    keepAwakeLidClosed: on,
-  });
+  await setSetting("keepAwakeLidClosed", on);
   if (!on || useKeepAwake.getState().status?.lidClosed !== "needsSetup") {
     await loadKeepAwake();
     return;
@@ -44,10 +40,7 @@ export async function setKeepAwakeLidClosed(on: boolean): Promise<void> {
     const { status } = await request({ method: "setUpLidClosed" });
     useKeepAwake.setState({ status });
     if (status.lidClosed === "needsSetup") {
-      await updateSettings({
-        ...useApp.getState().settings,
-        keepAwakeLidClosed: false,
-      });
+      await setSetting("keepAwakeLidClosed", false);
     }
   } finally {
     useKeepAwake.setState({ settingUp: false });
