@@ -12,7 +12,9 @@
  *               (Claude's mark), border-border,
  *               bg-input, ring-ring, bg-code-surface, bg-composer (the composer card),
  *               bg-rail (rail cards), bg-rail-controls (the rail's utility bar),
- *               bg-sidebar(-accent|-primary|…), chart-1…5, text-glyph-1…8 (a worker's glyph).
+ *               bg-sidebar(-accent|-primary|…), bg-chrome (the window around the page surface),
+ *               border-divider (hairlines between columns, rows and cards), bg-toggle-on (a
+ *               switch that is on), chart-1…5, text-glyph-1…8 (a worker's glyph).
  *               Opacity modifiers (bg-muted/40) are fine.
  *   Spacing     the numeric scale (p-2, gap-1.5, mt-3 …) multiplies --spacing, which density sets.
  *   Controls    h-control-{xs,sm,md,lg}       heights of buttons, inputs, menu rows, toggles
@@ -20,7 +22,11 @@
  *               size-icon-button-{xs,sm,md,lg} square icon-only buttons
  *               size-icon-{xs,sm,md,lg}       icon glyphs (apps-sdk-ui icons are 1em/currentColor)
  *               h-pill, px-pill               badges and status pills
- *               h-row, h-row-sm               list rows (sidebar items, event rows)
+ *               h-row, h-row-sm               list rows (event rows, menus)
+ *               h-nav-row                     sidebar and Settings navigation rows
+ *               w-switch-width, h-switch-height, size-switch-thumb, translate-x-switch-travel
+ *                                             an on/off switch
+ *               min-w-settings-control        the room a Settings row keeps for its control
  *               max-h-action-list             a worker's expanded run of actions (9 rows)
  *               max-h-command-list            the composer's / menu (10 rows and a half, then scrolls)
  *               h-kbd, min-w-kbd              keyboard hints
@@ -30,27 +36,37 @@
  *               max-h-queue-max               the queue card's maximum height (then it scrolls)
  *               size-attachment-thumb, w-attachment-card  an image attachment, a file attachment
  *               mx-rail-inset, -mb-rail-tuck  the composer rail: its side inset, the tuck under the card
- *   Layout      w-sidebar, w-sidebar-icon     sidebar widths
+ *   Layout      w-rail                        the window's navigation rail
+ *               w-sidebar, min-w-sidebar-min, max-w-sidebar-max  the sidebar panel beside the
+ *                                             rail: default width and how far it resizes
+ *               p-surface-inset               the page surface's gap to the window's end and bottom
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
  *               h-status-bar                  the status bar along the bottom of the window
  *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
+ *               max-w-settings                the Settings page's column
  *               max-w-setup, h-setup          the first-run setup sheet (near full window, capped)
  *               setup-card                    a setup card's minimum width in its auto-filled grid
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
  *               rounded-dialog, rounded-thread (message bubbles), rounded-composer (the composer
  *               card), rounded-rail (the rail's top corners), rounded-menu (menus), rounded-tooltip,
  *               rounded-capsule,
- *               rounded-document, plus rounded-{xs,sm,md,lg,xl,2xl}
+ *               rounded-document, rounded-page (the page surface), rounded-nav (sidebar and
+ *               Settings navigation rows), rounded-settings (a Settings card),
+ *               plus rounded-{xs,sm,md,lg,xl,2xl}
  *   Type        text-{2xs,xs,sm,base,lg,xl,2xl} (UI roles, each with its line height), text-hero,
+ *               text-page-title (a Settings page's title), text-label (a Settings row's label),
  *               text-code (code blocks), text-code-inline (inline code, em-relative)
  *   Tracking    tracking-hero, tracking-section, tracking-eyebrow (small uppercase labels)
  *   Fonts       font-sans, font-display, font-mono (system stacks, no downloads)
  *   Shadows     shadow-hairline (the composer card's inner edge), shadow-menu, shadow-tooltip,
- *               shadow-summary (the pinned summary)
- *   Motion      ease-summary-shift, ease-summary-card (the pinned summary)
+ *               shadow-summary (the pinned summary), shadow-thumb (a switch's thumb),
+ *               shadow-page (the page surface)
+ *   Motion      ease-summary-shift, ease-summary-card (the pinned summary), ease-sidebar (the
+ *               sidebar opening and closing), ease-enter (a section's list opening or closing),
+ *               ease-standard (a disclosure chevron turning)
  *
  * Density: <html data-density="normal|compact">. Every size and spacing token below is
  * redefined for compact, so switching the attribute tightens the whole app at once.
@@ -132,10 +148,26 @@
   /* The composer rail: inset from the card's sides, tucked under its top edge. */
   --spacing-rail-inset: 0.8125rem;
   --spacing-rail-tuck: 0.25rem;
-  --spacing-sidebar: 16rem;
-  --spacing-sidebar-icon: 3rem;
+  /* The navigation rail along the window's start, and the sidebar panel beside it: its width,
+     and how far it resizes. The panel opens from nothing to its width beside the rail. */
+  --spacing-rail: 3.25rem;
+  --spacing-sidebar: 18rem;
+  --spacing-sidebar-min: 11.75rem;
+  --spacing-sidebar-max: 29.25rem;
+  --spacing-nav-row: 1.875rem;
+  /* The page surface (sidebar panel, content, Inspector) keeps this gap to the window's end
+     and bottom. */
+  --spacing-surface-inset: 0.25rem;
+  /* An on/off switch: its track and thumb. */
+  --spacing-switch-width: 2rem;
+  --spacing-switch-height: 1.25rem;
+  --spacing-switch-thumb: 1rem;
+  /* How far the thumb moves to the on side (it rests 2px from either end). */
+  --spacing-switch-travel: calc(var(--spacing-switch-width) - var(--spacing-switch-thumb) - 0.125rem);
+  /* A Settings row keeps at least this much room for its control. */
+  --spacing-settings-control: min(10rem, 40cqw);
   /* Window chrome: top bars, room for the macOS traffic lights, the Inspector panel. */
-  --spacing-titlebar: 3rem;
+  --spacing-titlebar: 2.75rem;
   --spacing-status-bar: 1.625rem;
   --spacing-traffic-lights: 4.75rem;
   --spacing-inspector: 28rem;
@@ -153,6 +185,7 @@
   --container-lg: 32rem;
   --container-setup: min(68rem, calc(100vw - 2rem));
   --container-thread: 52rem;
+  --container-settings: 48rem;
   /* The pinned summary's card. */
   --container-summary: 18.75rem;
 
@@ -174,6 +207,10 @@
   --radius-menu: 1.25rem;
   --radius-tooltip: 1rem;
   --radius-capsule: 9999px;
+  /* The page surface; sidebar and Settings navigation rows; a Settings card. */
+  --radius-page: 0.75rem;
+  --radius-nav: 0.78125rem;
+  --radius-settings: 1.25rem;
 
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
@@ -189,6 +226,11 @@
   --text-xl--line-height: 1.75rem;
   --text-2xl: 1.5rem;
   --text-2xl--line-height: 2rem;
+  /* A Settings page's title; a Settings row's label. */
+  --text-page-title: 1.75rem;
+  --text-page-title--line-height: 2.125rem;
+  --text-label: 0.8125rem;
+  --text-label--line-height: 1.125rem;
   /* The new chat's "What should we build?" hero text. */
   --text-hero: 1.875rem;
   --text-hero--line-height: 2.25rem;
@@ -200,11 +242,19 @@
   --shadow-tooltip: 0 8px 18px oklch(0 0 0 / 25%);
   --shadow-menu: 0 12px 32px oklch(0 0 0 / 35%);
   --shadow-summary: 0 3px 7.5px oklch(0 0 0 / 4%), 0 0 20px oklch(0 0 0 / 5%);
+  /* A switch's thumb; the page surface's hairline edge and soft drop. */
+  --shadow-thumb: 0 1px 2px oklch(0 0 0 / 20%);
+  --shadow-page: 0 0 0 0.5px oklch(1 0 0 / 6%), 0 4px 16px oklch(0 0 0 / 5%);
 
   /* The pinned summary's motion: springs sampled for CSS. The thread's column moving aside
      settles without a bounce in 350ms; the card eases in from the pane's end in 300ms. */
   --ease-summary-shift: linear(0, 0.055, 0.177, 0.322, 0.463, 0.589, 0.694, 0.779, 0.844, 0.893, 0.929, 0.954, 0.972, 0.983, 0.991, 0.996, 1);
   --ease-summary-card: linear(0, 0.109, 0.309, 0.503, 0.658, 0.773, 0.852, 0.906, 0.941, 0.963, 0.978, 0.986, 0.992, 0.995, 0.997, 0.998, 1);
+  /* The sidebar opens and closes on a spring that settles in 300ms with a slight overshoot. */
+  --ease-sidebar: linear(0, 0.07, 0.218, 0.383, 0.537, 0.666, 0.768, 0.844, 0.899, 0.937, 0.962, 0.979, 0.989, 0.995, 0.999, 1.001, 1.001, 1.002, 1.001, 1.001, 1);
+  /* A section's list opening or closing (300ms); a disclosure chevron turning (150ms). */
+  --ease-enter: cubic-bezier(0.19, 1, 0.22, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
 
   --tracking-hero: -0.015em;
   --tracking-section: -0.01em;
@@ -257,6 +307,9 @@
   --color-glyph-6: var(--glyph-6);
   --color-glyph-7: var(--glyph-7);
   --color-glyph-8: var(--glyph-8);
+  --color-chrome: var(--chrome);
+  --color-divider: var(--divider);
+  --color-toggle-on: var(--toggle-on);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -326,7 +379,13 @@
   --glyph-6: oklch(0.7 0.15 250);
   --glyph-7: oklch(0.72 0.16 30);
   --glyph-8: oklch(0.82 0.15 115);
-  --sidebar: oklch(0.235 0.003 var(--tint));
+  /* The window around the page surface (rail, top bar), and the sidebar panel: the page
+     colour laid over it at 65%. */
+  --chrome: color-mix(in oklab, var(--foreground) 7%, var(--background));
+  --divider: oklch(0.985 0.002 var(--tint) / 8%);
+  /* Blue: a switch that is on. */
+  --toggle-on: oklch(0.63 0.18 259);
+  --sidebar: color-mix(in oklab, var(--background) 65%, var(--chrome));
   --sidebar-foreground: oklch(0.985 0.002 var(--tint));
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0.002 var(--tint));
@@ -366,8 +425,15 @@
   --spacing-attachment-card: 12.5rem;
   --spacing-rail-inset: 0.625rem;
   --spacing-rail-tuck: 0.1875rem;
-  --spacing-sidebar: 14rem;
-  --spacing-sidebar-icon: 2.5rem;
+  --spacing-rail: 2.75rem;
+  --spacing-sidebar: 16rem;
+  --spacing-sidebar-min: 10.5rem;
+  --spacing-sidebar-max: 26rem;
+  --spacing-nav-row: 1.625rem;
+  --spacing-switch-width: 1.75rem;
+  --spacing-switch-height: 1.125rem;
+  --spacing-switch-thumb: 0.875rem;
+  --spacing-settings-control: min(7.5rem, 40cqw);
   --spacing-status-bar: 1.375rem;
   --spacing-titlebar: 2.5rem;
   --spacing-inspector: 24rem;
@@ -391,6 +457,9 @@
   --radius-rail: 1rem;
   --radius-menu: 1rem;
   --radius-tooltip: 0.75rem;
+  --radius-page: 0.625rem;
+  --radius-nav: 0.625rem;
+  --radius-settings: 1rem;
 
   --text-2xs: 0.625rem;
   --text-2xs--line-height: 0.875rem;
@@ -408,6 +477,19 @@
   --text-2xl--line-height: 1.75rem;
   --text-hero: 1.5rem;
   --text-hero--line-height: 1.875rem;
+  --text-page-title: 1.5rem;
+  --text-page-title--line-height: 1.875rem;
+  --text-label: 0.75rem;
+  --text-label--line-height: 1rem;
   --text-code: 0.75rem;
   --text-code--line-height: 1.125rem;
+}
+
+/* WebKit before 17.2 has no linear() easing: the springs fall back to the closest curve. */
+@supports not (transition-timing-function: linear(0, 1)) {
+  :root {
+    --ease-summary-shift: cubic-bezier(0.26, 0.2, 0.2, 1);
+    --ease-summary-card: cubic-bezier(0.34, 0.75, 0.15, 1);
+    --ease-sidebar: cubic-bezier(0.38, 0.85, 0.15, 1);
+  }
 }
