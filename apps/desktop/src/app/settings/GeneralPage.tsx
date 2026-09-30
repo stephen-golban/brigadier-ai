@@ -132,6 +132,9 @@ export function GeneralPage() {
   );
 }
 
+/** The range Hibernate after accepts: a minute to a week. */
+const HIBERNATE_MINUTES = { min: 1, max: 10_080 } as const;
+
 /** Minutes before an idle conversation hibernates: saved when the field is left or on Enter. */
 function HibernateRow() {
   const id = useId();
@@ -146,7 +149,11 @@ function HibernateRow() {
   const commit = () => {
     if (typed === null) return;
     const value = Number(typed);
-    if (!Number.isInteger(value) || value < 1) {
+    if (
+      !Number.isInteger(value) ||
+      value < HIBERNATE_MINUTES.min ||
+      value > HIBERNATE_MINUTES.max
+    ) {
       setInvalid(true);
       return;
     }
@@ -160,13 +167,14 @@ function HibernateRow() {
       label={GENERAL_ROWS.hibernate.label}
       description={GENERAL_ROWS.hibernate.description}
       htmlFor={id}
-      error={invalid ? "A whole number of minutes, at least 1." : save.error}
+      error={invalid ? "A whole number of minutes, from 1 to 10,080 (a week)." : save.error}
     >
       <Input
         id={id}
         type="number"
         inputMode="numeric"
-        min={1}
+        min={HIBERNATE_MINUTES.min}
+        max={HIBERNATE_MINUTES.max}
         step={1}
         value={text}
         aria-invalid={invalid || undefined}
