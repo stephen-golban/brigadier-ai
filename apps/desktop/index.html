@@ -1,12 +1,33 @@
 <!doctype html>
-<html lang="en" data-density="normal" class="bg-background text-foreground">
+<html lang="en" data-density="normal" data-splash class="bg-background text-foreground">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Brigadier</title>
+    <!-- Linked here rather than imported by the script, so the startup screen below is styled
+         from the first frame, before any script runs. -->
+    <link rel="stylesheet" href="/src/styles/globals.css" />
   </head>
   <body class="bg-background text-foreground">
+    <!-- The startup screen, until the app is ready (src/lib/splash.ts). -->
+    <div id="splash" data-tauri-drag-region>
+      <div class="splash-mark" aria-hidden="true">
+        <span class="splash-mark-base"></span>
+        <span class="splash-mark-sweep"></span>
+      </div>
+      <div class="splash-foot">
+        <p id="splash-note" class="text-muted-foreground text-sm">Still starting…</p>
+        <button
+          id="splash-retry"
+          type="button"
+          hidden
+          class="bg-muted/50 text-foreground hover:bg-muted rounded-control h-control-sm px-button-sm inline-flex items-center text-sm font-medium outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
+        >
+          Try again
+        </button>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

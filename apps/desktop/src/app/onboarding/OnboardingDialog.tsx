@@ -39,6 +39,7 @@ import { pickFolder } from "@/ipc/client";
 import type { ProjectCandidate, ProviderKind } from "@/ipc/generated";
 import { formatAgo, shortPath } from "@/lib/format";
 import { providerStatusText } from "@/lib/setup";
+import { useRevealed } from "@/lib/splash";
 import { cn } from "@/lib/utils";
 import { createProject, select } from "@/state/actions";
 import { checkFolder } from "@/state/addProject";
@@ -71,7 +72,9 @@ export function OnboardingDialog() {
   const onboarded = useApp((s) => s.settings.onboarded);
   const smoke = useApp((s) => s.info?.smoke ?? false);
   const reopened = useOnboarding((s) => s.reopened);
-  const open = catalogLoaded && !smoke && (!onboarded || reopened);
+  // Not under the startup screen: it would take focus there, unseen.
+  const revealed = useRevealed();
+  const open = revealed && catalogLoaded && !smoke && (!onboarded || reopened);
   const [confirmSkip, setConfirmSkip] = useState(false);
   return (
     <Dialog open={open}>

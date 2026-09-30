@@ -15,6 +15,7 @@ import { SidebarPanel, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
 import { appReady, nowEpochMs } from "@/ipc/client";
 import { nextPaint, setFrameSampling } from "@/lib/perf";
+import { markMounted, revealApp } from "@/lib/splash";
 import { markStartup } from "@/lib/startup";
 import { setMetricsStreaming, toggleInspector, toggleSettings } from "@/state/actions";
 import { openFolderPicker } from "@/state/addProject";
@@ -60,7 +61,10 @@ export function App() {
   const connected = useApp((s) => s.connection.status === "connected");
   const catalogLoaded = useApp((s) => s.catalogLoaded);
 
-  // Cold start ends at the first paint that shows the loaded catalog.
+  useEffect(markMounted, []);
+
+  // Cold start ends when the app is usable: the loaded catalog painted and the startup screen
+  // gone.
   useEffect(() => {
     if (!catalogLoaded || readyReported) return;
     readyReported = true;
@@ -68,6 +72,10 @@ export function App() {
     void nextPaint()
       .then(() => {
         markStartup("paint");
+        return revealApp();
+      })
+      .then(() => {
+        markStartup("revealed");
         return appReady(nowEpochMs());
       })
       .then((coldStartMs) => {

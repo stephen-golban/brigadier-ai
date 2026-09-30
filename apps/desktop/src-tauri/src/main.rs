@@ -332,12 +332,32 @@ fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), IpcError> {
         })
 }
 
-/// The webview painted its first interactive frame at `paint_ms` (ms since the Unix epoch).
-/// Returns cold start: process start to that paint.
+/// The app became usable at `ready_ms` (ms since the Unix epoch): its loaded catalog painted
+/// and the startup screen gone. Returns cold start: process start to then.
 #[tauri::command]
-fn app_ready(state: State<'_, AppState>, paint_ms: f64) -> f64 {
+fn app_ready(state: State<'_, AppState>, ready_ms: f64) -> f64 {
     let mut cold_start = state.cold_start_ms.lock().expect("cold start lock");
-    *cold_start.get_or_insert(paint_ms - state.info.process_start_ms)
+    *cold_start.get_or_insert(ready_ms - state.info.process_start_ms)
+}
+
+/// The window's backdrop behind the startup screen (the blur on macOS), from the config.
+fn startup_backdrop(app: &tauri::AppHandle) -> Option<tauri::utils::config::WindowEffectsConfig> {
+    app.config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == shell::MAIN_WINDOW)
+        .and_then(|window| window.window_effects.clone())
+}
+
+/// The startup screen has gone and the app covers the window: its backdrop goes too.
+#[tauri::command]
+fn startup_finished(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    if startup_backdrop(&app).is_some()
+        && let Err(err) = window.set_effects(None)
+    {
+        tracing::warn!(error = %err, "could not clear the startup backdrop");
+    }
 }
 
 /// Completes the smoke check with the webview's measurements.
@@ -450,12 +470,18 @@ fn main() {
             }
             Ok(())
         })
-        // A new page in the app's webview knows none of the Browser tabs' pages: drop them.
         .on_page_load(|webview, payload| {
             if webview.label() == shell::MAIN_WINDOW
                 && payload.event() == tauri::webview::PageLoadEvent::Started
             {
+                // A new page in the app's webview knows none of the Browser tabs' pages: drop them.
                 let _ = webview.app_handle().run_on_main_thread(browser::close_all);
+                // It starts on the startup screen again, which needs the backdrop behind it.
+                if let Some(backdrop) = startup_backdrop(webview.app_handle())
+                    && let Err(err) = webview.window().set_effects(backdrop)
+                {
+                    tracing::warn!(error = %err, "could not restore the startup backdrop");
+                }
             }
         })
         .on_window_event(|window, event| {
@@ -475,6 +501,7 @@ fn main() {
             ipc_request,
             ipc_subscribe,
             app_ready,
+            startup_finished,
             smoke_finish,
             pick_folder,
             pick_folders,

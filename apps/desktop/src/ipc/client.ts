@@ -67,9 +67,14 @@ export function appInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("app_info");
 }
 
-/** Reports the first interactive paint; resolves to cold start in ms. */
-export function appReady(paintMs: number): Promise<number> {
-  return invoke<number>("app_ready", { paintMs });
+/** Reports when the app became usable; resolves to cold start in ms. */
+export function appReady(readyMs: number): Promise<number> {
+  return invoke<number>("app_ready", { readyMs });
+}
+
+/** The startup screen has gone: the window drops its startup backdrop. */
+export function startupFinished(): Promise<void> {
+  return invoke("startup_finished");
 }
 
 export function smokeFinish(

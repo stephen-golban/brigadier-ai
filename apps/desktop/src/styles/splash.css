@@ -1,0 +1,117 @@
+/* The startup screen (`#splash` in index.html, driven by src/lib/splash.ts). Loaded with the
+   page, before any script runs; its values are the "Startup screen" tokens. While it shows,
+   the page is clear, so the window's backdrop shows through, and the app renders unseen. */
+
+html[data-splash],
+html[data-splash] body {
+  background: transparent;
+}
+
+html[data-splash] #root {
+  opacity: 0;
+}
+
+html[data-splash="leaving"] #root {
+  opacity: 1;
+  transition: opacity var(--splash-reveal) ease-out;
+}
+
+#splash {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity var(--splash-reveal) ease-out;
+}
+
+html[data-splash="leaving"] #splash {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-mark {
+  position: relative;
+  width: var(--splash-mark-size);
+  height: var(--splash-mark-size);
+  opacity: 0;
+  animation: splash-in var(--splash-mark-in) ease-out var(--splash-mark-in-delay) forwards;
+  pointer-events: none;
+}
+
+.splash-mark > span {
+  position: absolute;
+  inset: 0;
+  -webkit-mask: url("../../src-tauri/icons/mark.svg") center / contain no-repeat;
+  mask: url("../../src-tauri/icons/mark.svg") center / contain no-repeat;
+}
+
+.splash-mark-base {
+  background: var(--splash-mark-color);
+}
+
+/* A soft band of light that crosses the mark now and then. */
+.splash-mark-sweep {
+  background-image: linear-gradient(
+    112deg,
+    transparent 22%,
+    var(--splash-sweep-edge) 38%,
+    var(--splash-sweep-peak) 49%,
+    var(--splash-sweep-edge) 56%,
+    transparent 74%
+  );
+  background-position: 140% 0;
+  background-repeat: no-repeat;
+  background-size: 220% 100%;
+  animation: splash-sweep var(--splash-sweep-period) var(--splash-sweep-ease) infinite;
+}
+
+/* Below the mark, so the mark stays centred: "Still starting…" and Try again. */
+.splash-foot {
+  position: absolute;
+  top: calc(50% + var(--splash-mark-size) / 2 + var(--splash-foot-gap));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--splash-foot-gap);
+}
+
+/* Shown by itself once startup runs long, even if no script runs; at once when set. */
+#splash-note {
+  opacity: 0;
+  animation: splash-in var(--splash-reveal) ease-out var(--splash-late-after) forwards;
+}
+
+#splash-note[data-shown] {
+  animation-delay: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-mark {
+    animation: none;
+    opacity: 1;
+  }
+  .splash-mark-sweep {
+    display: none;
+  }
+  html[data-splash] #root,
+  #splash {
+    transition: none;
+  }
+}
+
+@keyframes splash-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes splash-sweep {
+  from {
+    background-position: 140% 0;
+  }
+  to {
+    background-position: -105% 0;
+  }
+}
