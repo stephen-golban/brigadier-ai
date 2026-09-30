@@ -84,10 +84,16 @@ export function BrowserTab({ conversationId }: { conversationId: string }) {
     observer.observe(document.body, { childList: true });
     let placed = "";
     let frame = 0;
+    // The side panel clips its contents while it opens, closes or hides; the page, drawn over
+    // the window rather than in it, shows only once the tab is wholly in view.
+    const clip = element.closest("[data-slot=side-panel-clip]");
     const place = () => {
       const rect = element.getBoundingClientRect();
+      const box = clip?.getBoundingClientRect();
+      const whole =
+        !box || (rect.left >= box.left - 0.5 && rect.right <= box.right + 0.5);
       const bounds: BrowserBounds | null =
-        rect.width > 0 && rect.height > 0 && !covered(rect, layers)
+        whole && rect.width > 0 && rect.height > 0 && !covered(rect, layers)
           ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
           : null;
       const key = JSON.stringify(bounds);

@@ -62,8 +62,9 @@ export function TopBar({
       data-tauri-drag-region
       className={cn(
         // In the titlebar strip, above the page surface. With the sidebar panel closed it
-        // starts clear of the sidebar toggle, which stays where it is.
-        "h-titlebar ease-sidebar flex shrink-0 items-center gap-1 px-3 transition-[padding] duration-300 motion-reduce:transition-none",
+        // starts clear of the sidebar toggle, which stays where it is. Its end sits in the
+        // surface inset already, so pe-1 leaves its buttons 8px from the window's edge.
+        "h-titlebar ease-sidebar flex shrink-0 items-center gap-1 ps-3 pe-1 transition-[padding] duration-300 motion-reduce:transition-none",
         state === "collapsed" && "ps-titlebar-clear",
       )}
     >

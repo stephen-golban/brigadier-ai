@@ -38,6 +38,7 @@ import {
 } from "@/app/sidebar/nav";
 import { BrigadierGlyph } from "@/components/glyphs/brand-glyph";
 import { Spinner } from "@/components/glyphs/spinner";
+import { TITLEBAR_BUTTON, TitlebarTips } from "@/components/titlebar-button";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -86,15 +87,17 @@ export function TitlebarToggle() {
   const { sidebar } = useShortcuts();
   return (
     <div className="h-titlebar start-titlebar-start absolute top-0 z-20 flex items-center">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
-        </TooltipTrigger>
-        <TooltipContent side="bottom">
-          {open ? "Hide sidebar" : "Show sidebar"}
-          <Kbd>{sidebar}</Kbd>
-        </TooltipContent>
-      </Tooltip>
+      <TitlebarTips>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <SidebarTrigger className={TITLEBAR_BUTTON} />
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {open ? "Hide sidebar" : "Show sidebar"}
+            <Kbd>{sidebar}</Kbd>
+          </TooltipContent>
+        </Tooltip>
+      </TitlebarTips>
     </div>
   );
 }

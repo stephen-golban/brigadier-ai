@@ -13,6 +13,8 @@
  *               bg-input, ring-ring, bg-code-surface, bg-composer (the composer card),
  *               bg-rail (rail cards), bg-rail-controls (the rail's utility bar),
  *               bg-sidebar(-accent|-primary|…), bg-chrome (the window around the page surface),
+ *               text-toolbar-foreground, bg-toolbar-{hover,active,pressed,pressed-hover} (the
+ *               titlebar's icon buttons), bg-panel-tab (the side panel's active tab),
  *               border-divider (hairlines between columns, rows and cards), bg-toggle-on (a
  *               switch that is on), chart-1…5, text-glyph-1…8 (a worker's glyph).
  *               Opacity modifiers (bg-muted/40) are fine.
@@ -53,6 +55,13 @@
  *               ps-titlebar-clear             the top bar's inset clearing it while the
  *                                             sidebar panel is closed
  *               w-agents                      a session's agents panel
+ *               rounded-toolbar-button        the titlebar's icon buttons
+ *               side-panel-{min,chat-min,preferred,chat-room}  the side panel's width: its
+ *                                             least, the least it leaves the thread, its
+ *                                             preferred, and the room it leaves by default
+ *               narrowest-window              a window narrower than this hides the side panel
+ *               panel-resize-step             an arrow key's move of the side panel's edge
+ *               w-panel-tab, min-w-panel-tab-min  a side panel tab: its width, its least
  *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
  *               max-w-settings                the Settings page's column
@@ -75,9 +84,11 @@
  *   Fonts       font-sans, font-display, font-mono (system stacks, no downloads)
  *   Shadows     shadow-hairline (the composer card's inner edge), shadow-menu, shadow-tooltip,
  *               shadow-summary (the pinned summary), shadow-thumb (a switch's thumb),
- *               shadow-page (the page surface), shadow-peek (the sidebar panel peeking)
+ *               shadow-page (the page surface), shadow-peek (the sidebar panel peeking),
+ *               shadow-side-panel (the side panel over the thread), shadow-panel-tab (its
+ *               active tab)
  *   Motion      ease-summary-shift, ease-summary-card (the pinned summary), ease-sidebar (the
- *               sidebar opening and closing), ease-enter (a section's list opening or closing),
+ *               sidebar opening and closing), ease-panel (the side panel), ease-enter (a section's list opening or closing),
  *               ease-standard (a disclosure chevron turning)
  *
  * Density: <html data-density="normal|compact">. Every size and spacing token below is
@@ -206,6 +217,20 @@
       var(--spacing-rail)
   );
   --spacing-agents: 26rem;
+  /* The side panel beside the thread. Its width is at least side-panel-min and leaves the
+     thread at least side-panel-chat-min; by default it takes side-panel-preferred, or more
+     where the thread keeps side-panel-chat-room (see SidePanel.tsx). */
+  --spacing-side-panel-min: 20rem;
+  --spacing-side-panel-chat-min: 22rem;
+  --spacing-side-panel-preferred: 40rem;
+  --spacing-side-panel-chat-room: 31.25rem;
+  --spacing-panel-resize-step: 0.625rem;
+  /* A window narrower than this hides the side panel whatever the sidebar does. */
+  --spacing-narrowest-window: 45rem;
+  /* A side panel tab shares the strip up to its width, down to its least, then the strip
+     scrolls. */
+  --spacing-panel-tab: 15rem;
+  --spacing-panel-tab-min: 5.625rem;
   --spacing-setup: min(60rem, calc(100dvh - 2rem));
   --spacing-setup-card: 13rem;
   --spacing-user-message: 22.5rem;
@@ -245,6 +270,8 @@
   --radius-page: 0.75rem;
   /* The closed sidebar panel peeking over the content. */
   --radius-peek: 0.5rem;
+  /* The titlebar's icon buttons (the sidebar toggle, the side panel's buttons). */
+  --radius-toolbar-button: 0.625rem;
   --radius-nav: 0.78125rem;
   --radius-settings: 1.25rem;
 
@@ -286,6 +313,9 @@
   --shadow-page: 0 0 0 0.5px oklch(1 0 0 / 6%), 0 4px 16px oklch(0 0 0 / 5%);
   /* The closed sidebar panel peeking over the content: a hairline inside, a soft drop. */
   --shadow-peek: inset 0 0 0 0.5px oklch(1 0 0 / 8.2%), 0 4px 16px oklch(0 0 0 / 5%);
+  /* The side panel casting onto the thread beside it; its active tab lifted off the strip. */
+  --shadow-side-panel: -8px 0 16px -8px oklch(0 0 0 / 18%);
+  --shadow-panel-tab: inset 0 0 0 0.5px var(--panel-tab-border), 0 1px 2px oklch(0 0 0 / 8%);
 
   /* The pinned summary's motion: springs sampled for CSS. The thread's column moving aside
      settles without a bounce in 350ms; the card eases in from the pane's end in 300ms. */
@@ -293,6 +323,9 @@
   --ease-summary-card: linear(0, 0.109, 0.309, 0.503, 0.658, 0.773, 0.852, 0.906, 0.941, 0.963, 0.978, 0.986, 0.992, 0.995, 0.997, 0.998, 1);
   /* The sidebar opens and closes on a spring that settles in 300ms with a slight overshoot. */
   --ease-sidebar: linear(0, 0.07, 0.218, 0.383, 0.537, 0.666, 0.768, 0.844, 0.899, 0.937, 0.962, 0.979, 0.989, 0.995, 0.999, 1.001, 1.001, 1.002, 1.001, 1.001, 1);
+  /* The side panel opens and closes on a spring that settles in 500ms with a slight
+     overshoot (bounce 0.1). */
+  --ease-panel: linear(0, 0.059, 0.187, 0.337, 0.481, 0.608, 0.713, 0.796, 0.859, 0.905, 0.938, 0.961, 0.977, 0.987, 0.994, 0.998, 1, 1.001, 1.001, 1.002, 1);
   /* A section's list opening or closing (300ms); a disclosure chevron turning (150ms). */
   --ease-enter: cubic-bezier(0.19, 1, 0.22, 1);
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
@@ -349,6 +382,12 @@
   --color-glyph-7: var(--glyph-7);
   --color-glyph-8: var(--glyph-8);
   --color-chrome: var(--chrome);
+  --color-toolbar-foreground: var(--toolbar-foreground);
+  --color-toolbar-hover: var(--toolbar-hover);
+  --color-toolbar-active: var(--toolbar-active);
+  --color-toolbar-pressed: var(--toolbar-pressed);
+  --color-toolbar-pressed-hover: var(--toolbar-pressed-hover);
+  --color-panel-tab: var(--panel-tab);
   --color-divider: var(--divider);
   --color-toggle-on: var(--toggle-on);
   --color-sidebar: var(--sidebar);
@@ -426,6 +465,17 @@
   /* The page surface's hairline edge over the chrome (as its shadow-page ring draws it). */
   --page-edge: color-mix(in oklab, oklch(1 0 0) 6%, var(--chrome));
   --divider: oklch(0.985 0.002 var(--tint) / 8%);
+  /* The titlebar's icon buttons: the glyph at rest, and the wash while hovered, held down,
+     switched on (aria-pressed) and switched on and hovered. All follow the foreground, so a
+     light theme gets its own. */
+  --toolbar-foreground: color-mix(in oklab, var(--foreground) 50%, transparent);
+  --toolbar-hover: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --toolbar-active: color-mix(in oklab, var(--foreground) 16%, transparent);
+  --toolbar-pressed: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --toolbar-pressed-hover: color-mix(in oklab, var(--foreground) 10%, transparent);
+  /* The side panel's active tab: its fill, and its hairline (drawn by shadow-panel-tab). */
+  --panel-tab: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --panel-tab-border: color-mix(in oklab, var(--foreground) 10%, transparent);
   /* Blue: a switch that is on. */
   --toggle-on: oklch(0.63 0.18 259);
   --sidebar: color-mix(in oklab, var(--background) 65%, var(--chrome));
@@ -492,6 +542,13 @@
   --spacing-page-toolbar: 2.5rem;
   --spacing-titlebar: 2.5rem;
   --spacing-agents: 22rem;
+  --spacing-side-panel-min: 17.5rem;
+  --spacing-side-panel-chat-min: 19.5rem;
+  --spacing-side-panel-preferred: 35rem;
+  --spacing-side-panel-chat-room: 27.5rem;
+  --spacing-panel-resize-step: 0.5rem;
+  --spacing-panel-tab: 13rem;
+  --spacing-panel-tab-min: 4.75rem;
   --spacing-user-message: 18.75rem;
 
   --radius-xs: 0.125rem;
@@ -512,6 +569,7 @@
   --radius-tooltip: 0.75rem;
   --radius-nav: 0.625rem;
   --radius-settings: 1rem;
+  --radius-toolbar-button: 0.5rem;
 
   --text-2xs: 0.625rem;
   --text-2xs--line-height: 0.875rem;

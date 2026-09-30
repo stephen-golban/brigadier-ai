@@ -29,8 +29,8 @@ import { WorkerDiffs } from "@/app/conversation/WorkerSummary";
 import { ProjectCombobox } from "@/app/conversation/RailPickers";
 import {
   SidePanel,
+  PanelButtons,
   SidePanelContext,
-  SidePanelToggle,
   useSidePanel,
 } from "@/app/conversation/SidePanel";
 import { BlobAttachmentAdapter } from "@/app/conversation/attachments";
@@ -717,7 +717,7 @@ export function ConversationView({
     [conversation, resolved, targets, mentions, running, onResume, pulled, attachments],
   );
 
-  const fullscreen = sidePanel.state.open && sidePanel.state.fullscreen;
+  const fullscreen = sidePanel.visible && sidePanel.state.fullscreen;
   // The pinned summary, in a session's own view.
   const summary = setup?.type === "session" && !embedded;
   // A file link in an answer opens in the Files tab when it is one of the session's files.
@@ -746,7 +746,11 @@ export function ConversationView({
               <AssistantRuntimeProvider runtime={runtime}>
                 <AttachmentReaderContext.Provider value={reader}>
                   <OpenFileContext.Provider value={openFileAt}>
-                    <div data-embedded-view={embedded || undefined} className="flex h-full min-h-0">
+                    <div
+                      ref={embedded ? undefined : sidePanel.workspace}
+                      data-embedded-view={embedded || undefined}
+                      className="flex h-full min-h-0"
+                    >
                       <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
                         {!embedded && (
                           <TopBar onRename={conversation && !archived ? () => setRenaming(true) : undefined}>
@@ -754,7 +758,7 @@ export function ConversationView({
                               <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
                             )}
                             {conversation && summary && <PinnedSummaryToggle conversation={conversation} />}
-                            {!sidePanel.state.open && <SidePanelToggle />}
+                            {!sidePanel.visible && <PanelButtons />}
                           </TopBar>
                         )}
                         {error && (
