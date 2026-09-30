@@ -36,7 +36,7 @@ export const PROVIDERS_ROWS = {
   agents: {
     label: "Agents",
     description:
-      "Brigadier gets its work done through the coding agents on this computer, with your own subscriptions. Turn one off and Brigadier doesn't use it at all.",
+      "The coding agents on this computer that do Brigadier's work, with your own subscriptions.",
   },
   models: {
     label: "Available models",
@@ -143,7 +143,8 @@ export function ProvidersPage() {
                         {status.path}
                       </span>
                     ) : (
-                      "Not installed"
+                      // How to install it by hand, where the agent says.
+                      (status?.guidance ?? "Not installed")
                     )
                   }
                 >
@@ -187,7 +188,6 @@ function AgentRow({
   const state = agentState(overview);
   const label = PROVIDER_LABELS[provider];
   const needs = state === "install" || state === "signIn";
-  const guidance = needs ? overview?.status?.guidance : null;
   return (
     <SettingsRow
       label={
@@ -198,12 +198,9 @@ function AgentRow({
       }
       description={
         on ? (
-          <span className="flex flex-col gap-0.5">
-            <span className="flex items-center gap-1.5">
-              {needs && <span aria-hidden className="bg-warning size-1.5 shrink-0 rounded-full" />}
-              {providerStatusText(overview)}
-            </span>
-            {guidance && <span>{guidance}</span>}
+          <span className="flex items-center gap-1.5">
+            {needs && <span aria-hidden className="bg-warning size-1.5 shrink-0 rounded-full" />}
+            {providerStatusText(overview)}
           </span>
         ) : (
           OFF_NOTE
