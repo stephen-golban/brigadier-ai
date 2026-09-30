@@ -620,6 +620,26 @@ impl Access {
             Self::ReadOnly | Self::Full => &[],
         }
     }
+
+    /// The same access with its writable roots as the file system resolves them
+    /// ([`crate::policy::real_path`]): a CLI that compares paths as text then sees
+    /// `/private/tmp/x` inside a root given as `/tmp/x`.
+    #[must_use]
+    pub fn resolved(&self) -> Self {
+        let real = |roots: &[PathBuf]| -> Vec<PathBuf> {
+            roots
+                .iter()
+                .map(|root| crate::policy::real_path(root).unwrap_or_else(|| root.clone()))
+                .collect()
+        };
+        let mut access = self.clone();
+        match &mut access {
+            Self::Workspace { extra_roots } => *extra_roots = real(extra_roots),
+            Self::Scoped { writable_roots, .. } => *writable_roots = real(writable_roots),
+            Self::ReadOnly | Self::Full => {}
+        }
+        access
+    }
 }
 
 /// How a session begins.

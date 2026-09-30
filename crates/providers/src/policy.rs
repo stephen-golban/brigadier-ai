@@ -141,10 +141,21 @@ pub fn route(request: &ApprovalRequest, access: &Access, mode: ApprovalMode) -> 
             if request.kind != ApprovalKind::FileChange {
                 return Route::Allow;
             }
-            let cwd = request.cwd.as_deref().map(std::path::Path::new);
+            // Compared as the file system resolves them: `/tmp/x` and `/private/tmp/x` are one
+            // folder on macOS.
+            let cwd = request
+                .cwd
+                .as_deref()
+                .and_then(|cwd| real_path(std::path::Path::new(cwd)));
+            let roots: Vec<std::path::PathBuf> = writable_roots
+                .iter()
+                .filter_map(|root| real_path(root))
+                .collect();
             let writable = |path: &std::path::Path| {
-                writable_roots.iter().any(|root| path.starts_with(root))
-                    || (*write_cwd && cwd.is_some_and(|cwd| path.starts_with(cwd)))
+                real_path(path).is_some_and(|path| {
+                    roots.iter().any(|root| path.starts_with(root))
+                        || (*write_cwd && cwd.as_ref().is_some_and(|cwd| path.starts_with(cwd)))
+                })
             };
             if !request.paths.is_empty()
                 && request
@@ -157,6 +168,29 @@ pub fn route(request: &ApprovalRequest, access: &Access, mode: ApprovalMode) -> 
                 Route::AskUser
             }
         }
+    }
+}
+
+/// `path` as the file system resolves it, symlinks included (`/tmp` → `/private/tmp` on
+/// macOS), also for a file not created yet: its deepest existing folder is resolved and the
+/// rest appended. `None` for a relative path or one with `..` in it, which could lead anywhere.
+pub fn real_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+    {
+        return None;
+    }
+    let mut rest = Vec::new();
+    let mut existing = path;
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return Some(rest.iter().rev().fold(real, |path, part| path.join(part)));
+        }
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
     }
 }
 
@@ -682,4 +716,120 @@ fn split_git_cmdline(value: &str) -> Vec<String> {
         words.push(word);
     }
     words
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    /// A folder `real/scratch/outputs` and a symlink `link` → `real`, as `/tmp` → `/private/tmp`.
+    struct Linked {
+        base: PathBuf,
+    }
+
+    impl Linked {
+        fn new(name: &str) -> Self {
+            let base = std::env::temp_dir()
+                .join(format!("brigadier-policy-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(base.join("real/scratch/outputs")).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(base.join("real"), base.join("link")).unwrap();
+            Self { base }
+        }
+
+        fn real(&self) -> PathBuf {
+            self.base.join("real").canonicalize().unwrap()
+        }
+
+        fn link(&self) -> PathBuf {
+            self.base.join("link")
+        }
+    }
+
+    impl Drop for Linked {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    fn write(path: &Path) -> ApprovalRequest {
+        ApprovalRequest {
+            id: "1".into(),
+            kind: ApprovalKind::FileChange,
+            tool: "Write".into(),
+            command: None,
+            cwd: None,
+            paths: vec![path.display().to_string()],
+            reason: None,
+            escalation: false,
+            input: None,
+            grant: None,
+        }
+    }
+
+    fn scoped(root: PathBuf) -> Access {
+        Access::Scoped {
+            write_cwd: false,
+            writable_roots: vec![root],
+            network: false,
+            deny_read: Vec::new(),
+            unix_sockets: Vec::new(),
+        }
+    }
+
+    fn routed(path: &Path, root: PathBuf) -> Route {
+        route(&write(path), &scoped(root), ApprovalMode::Delegated)
+    }
+
+    #[test]
+    fn a_new_file_resolves_through_its_existing_folders() {
+        let dirs = Linked::new("new");
+        assert_eq!(
+            real_path(&dirs.link().join("scratch/outputs/a/b.md")),
+            Some(dirs.real().join("scratch/outputs/a/b.md"))
+        );
+    }
+
+    #[test]
+    fn either_spelling_of_a_linked_root_is_inside_it() {
+        let dirs = Linked::new("spell");
+        let file = "scratch/outputs/navigation.md";
+        // The root as configured (through the link), the file as the CLI resolved it; and the
+        // other way round.
+        assert_eq!(
+            routed(&dirs.real().join(file), dirs.link().join("scratch")),
+            Route::Allow
+        );
+        assert_eq!(
+            routed(&dirs.link().join(file), dirs.real().join("scratch")),
+            Route::Allow
+        );
+        assert_eq!(
+            routed(&dirs.link().join(file), dirs.link().join("scratch")),
+            Route::Allow
+        );
+    }
+
+    #[test]
+    fn a_path_outside_or_climbing_out_is_not() {
+        let dirs = Linked::new("out");
+        let root = dirs.link().join("scratch");
+        assert_eq!(
+            routed(&dirs.real().join("elsewhere.md"), root.clone()),
+            Route::AskUser
+        );
+        assert_eq!(
+            routed(
+                &dirs.link().join("scratch/outputs/../../x.md"),
+                root.clone()
+            ),
+            Route::AskUser
+        );
+        assert_eq!(routed(Path::new("scratch/x.md"), root), Route::AskUser);
+    }
 }

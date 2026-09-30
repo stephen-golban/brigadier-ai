@@ -217,9 +217,16 @@ impl Claude {
             }
             .into(),
         );
+        // Both spellings of a root behind a symlink (`/tmp` → `/private/tmp`): Claude matches
+        // the path as a tool was given it.
         for root in spec.access.writable_roots() {
+            let real = resolved(root);
             args.push("--add-dir".into());
             args.push(root.display().to_string());
+            if real != *root {
+                args.push("--add-dir".into());
+                args.push(real.display().to_string());
+            }
         }
         if let Some(model) = &spec.model {
             args.push("--model".into());

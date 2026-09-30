@@ -395,6 +395,13 @@ impl Provider for Codex {
 
     fn start(&self, spec: SessionSpec, ledger: Arc<dyn Ledger>) -> BoxFuture<'_, Result<Started>> {
         Box::pin(async move {
+            // Codex resolves its working directory (below) and so the paths it writes: its
+            // writable roots must be resolved too, in the thread's config and in every turn's
+            // sandbox policy alike, or it asks to write inside them.
+            let spec = SessionSpec {
+                access: spec.access.resolved(),
+                ..spec
+            };
             if let Access::Scoped {
                 write_cwd: false, ..
             } = spec.access
