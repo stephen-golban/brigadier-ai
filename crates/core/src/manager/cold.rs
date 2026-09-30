@@ -1,9 +1,10 @@
 //! Rebirth when the prompt cache has expired (PLAN.md §7). An orchestrator's first turn after
 //! its CLI's cache lifetime would resume by sending the whole history again at the cache-write
 //! price. Instead, while the conversation idles and the cache is still warm, a fork writes a
-//! checkpoint: the handoff note a rebirth needs. If the next turn comes after the cache has
-//! expired and the checkpoint covers everything since the last model request, that turn is
-//! reborn from a briefing with it (trigger `CacheExpired`).
+//! checkpoint: the handoff note a rebirth needs. The checkpoint's fork reads the cache, which
+//! keeps it warm for another lifetime. If the next turn comes after the cache has expired and
+//! the checkpoint covers everything since the last model request, that turn is reborn from a
+//! briefing with it (trigger `CacheExpired`).
 //!
 //! Without a current checkpoint the turn resumes as before, so nothing said since is lost. A
 //! Codex orchestrator always resumes: how long Codex keeps its cache through the app-server is
@@ -55,8 +56,11 @@ impl CacheMark {
         idle >= from && idle < until
     }
 
-    fn expired(&self, lifetime: Duration, now: i64) -> bool {
-        now - self.at_ms >= lifetime.as_millis() as i64
+    /// The cache has expired: `lifetime` has passed since the last request, or since a later
+    /// request that read the cache (`refreshed_ms`).
+    fn expired(&self, lifetime: Duration, refreshed_ms: Option<i64>, now: i64) -> bool {
+        let since = refreshed_ms.map_or(self.at_ms, |at| at.max(self.at_ms));
+        now - since >= lifetime.as_millis() as i64
     }
 }
 
@@ -158,7 +162,18 @@ impl SessionManager {
         let mark = self.cache_mark_of(conv).await?;
         let lifetime = cache_lifetime(mark.provider)?;
         let now = now_ms();
-        if !mark.expired(lifetime, now)
+        let checkpoint = conv.checkpoint().await.filter(|checkpoint| {
+            checkpoint.ready()
+                && checkpoint.old_native_id.as_deref() == Some(mark.native_id.as_str())
+                && checkpoint.started_at_ms >= mark.at_ms
+        });
+        // The checkpoint's fork read the cache, and that refreshed its lifetime (measured on
+        // Claude Code 2.1.285: a resume 70 minutes after the last request, 20 after a fork,
+        // read the whole history from cache).
+        let refreshed = checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.ready_at_ms());
+        if !mark.expired(lifetime, refreshed, now)
             || mark.context < cold_rebirth_min_tokens(mark.provider, mark.window)
         {
             return None;
@@ -167,11 +182,6 @@ impl SessionManager {
         if resumes.as_deref() != Some(mark.native_id.as_str()) {
             return None;
         }
-        let checkpoint = conv.checkpoint().await.filter(|checkpoint| {
-            checkpoint.ready()
-                && checkpoint.old_native_id.as_deref() == Some(mark.native_id.as_str())
-                && checkpoint.started_at_ms >= mark.at_ms
-        });
         let Some(checkpoint) = checkpoint else {
             tracing::info!(conversation = %conv.id, context = mark.context, "the cache has expired but no checkpoint covers the last turn; resuming");
             return None;
