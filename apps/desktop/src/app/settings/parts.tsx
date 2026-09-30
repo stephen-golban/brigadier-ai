@@ -46,7 +46,7 @@ export function SettingsPage({
           <header className="flex items-start gap-4 py-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <h1 className="text-page-title font-medium">{title}</h1>
-              {description && <p className="text-muted-foreground text-sm">{description}</p>}
+              {description && <p className="text-foreground/65 text-sm">{description}</p>}
             </div>
             {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
           </header>
@@ -86,7 +86,7 @@ export function SettingsSection({
                 <span className="truncate">{title}</span>
               </h2>
             )}
-            {description && <p className="text-muted-foreground text-label">{description}</p>}
+            {description && <p className="text-foreground/65 text-label">{description}</p>}
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </div>
@@ -148,7 +148,7 @@ export function SettingsRow({
           <div className="text-label font-medium break-words">{label}</div>
         )}
         {description && (
-          <div className="text-muted-foreground text-xs break-words">{description}</div>
+          <div className="text-foreground/65 text-xs break-words">{description}</div>
         )}
         <ErrorLine error={error ?? null} />
       </div>
@@ -242,7 +242,7 @@ export function Segmented<T extends string>({
         <ToggleGroupPrimitive.Item
           key={option.value}
           value={option.value}
-          className="text-muted-foreground hover:text-foreground data-[state=on]:bg-foreground/5 data-[state=on]:text-foreground focus-visible:ring-ring/50 rounded-capsule text-label h-6 shrink-0 border border-transparent px-2 whitespace-nowrap transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
+          className="text-foreground/50 hover:text-foreground data-[state=on]:bg-foreground/5 data-[state=on]:text-foreground focus-visible:ring-ring/50 rounded-capsule text-label h-6 shrink-0 border border-transparent px-2 whitespace-nowrap transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
         >
           {option.label}
         </ToggleGroupPrimitive.Item>

@@ -63,7 +63,7 @@ export function SettingsNav() {
       <NavHeader title="Settings" />
       <div className="px-2 pb-2">
         <label className="h-nav-search rounded-capsule bg-foreground/8 focus-within:ring-ring/50 flex items-center gap-2 px-3 focus-within:ring-2">
-          <MagnifyingGlassSearch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
+          <MagnifyingGlassSearch aria-hidden className="text-foreground/65 size-icon-md shrink-0" />
           <input
             type="search"
             value={query}
@@ -119,11 +119,11 @@ export function SettingsNav() {
                       onMouseEnter={() => setActive(index)}
                       onClick={() => openResult(result)}
                     >
-                      <Icon aria-hidden className="text-muted-foreground mt-0.5" />
+                      <Icon aria-hidden className="text-foreground/65 mt-0.5" />
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate">{result.row?.label ?? result.page.label}</span>
                         {result.row && (
-                          <span className="text-muted-foreground truncate text-xs">
+                          <span className="text-foreground/50 truncate text-xs">
                             {result.page.label}
                           </span>
                         )}
@@ -148,7 +148,7 @@ export function SettingsNav() {
                         className={navRow}
                         onClick={() => openSettings(page.id)}
                       >
-                        <Icon aria-hidden className="text-muted-foreground" />
+                        <Icon aria-hidden className="text-foreground/65" />
                         <span className="truncate">{page.label}</span>
                       </button>
                     </li>
