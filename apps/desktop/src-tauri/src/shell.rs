@@ -107,6 +107,9 @@ const OPEN_FOLDER_ITEM: &str = "open-folder";
 /// Menu id of Brigadier › Uninstall Brigadier….
 #[cfg(target_os = "macos")]
 const UNINSTALL_ITEM: &str = "uninstall";
+/// Menu id of Brigadier › Settings….
+#[cfg(target_os = "macos")]
+const SETTINGS_ITEM: &str = "settings";
 
 /// The standard app menu with File › Open Folder… (⌘O) first. Choosing it has the webview ask
 /// for folders to add as projects.
@@ -124,13 +127,19 @@ pub fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
             file.insert_items(&[&open, &separator], 0)?;
         }
     }
-    // The app menu (macOS): Uninstall Brigadier… just above Quit.
+    // The app menu (macOS): Settings… (⌘,) after About, and Uninstall Brigadier… just above
+    // Quit.
     #[cfg(target_os = "macos")]
     if let Some(app_menu) = menu
         .items()?
         .first()
         .and_then(|item| item.as_submenu().cloned())
     {
+        let settings = MenuItemBuilder::with_id(SETTINGS_ITEM, "Settings…")
+            .accelerator("CmdOrCtrl+,")
+            .build(app)?;
+        let after_about = tauri::menu::PredefinedMenuItem::separator(app)?;
+        app_menu.insert_items(&[&after_about, &settings], 1)?;
         let uninstall =
             MenuItemBuilder::with_id(UNINSTALL_ITEM, "Uninstall Brigadier…").build(app)?;
         let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
@@ -142,6 +151,7 @@ pub fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
         let bridge_event = match event.id().as_ref() {
             OPEN_FOLDER_ITEM => BridgeEvent::OpenFolderMenu,
             UNINSTALL_ITEM => BridgeEvent::UninstallMenu,
+            SETTINGS_ITEM => BridgeEvent::SettingsMenu,
             _ => return,
         };
         show_main(app);

@@ -6,6 +6,7 @@ import {
   loadConversation,
   openConversation,
   openOrchestratorLog,
+  toggleSettings,
 } from "@/state/actions";
 import { applyActivityEvents, loadActivity } from "@/state/activity";
 import { openFolderPicker, takeFolders } from "@/state/addProject";
@@ -119,6 +120,9 @@ function onBridgeEvent(message: BridgeEvent) {
       break;
     case "uninstallMenu":
       openUninstall();
+      break;
+    case "settingsMenu":
+      toggleSettings();
       break;
   }
 }

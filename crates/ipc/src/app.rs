@@ -57,6 +57,8 @@ pub enum BridgeEvent {
     OpenFolderMenu,
     /// Brigadier › Uninstall Brigadier… was chosen.
     UninstallMenu,
+    /// Brigadier › Settings… (⌘,) was chosen: open Settings, or leave it when it is open.
+    SettingsMenu,
 }
 
 /// A conversation the menu-bar item lists under "Running".
