@@ -391,8 +391,12 @@ factors in its details).
 - **Outcomes.** Every model's run of a task is recorded per project in `routing.sqlite`
   (result, first review, rework, checks, time, tokens, quota share), and nudges that model's
   score for that kind of task in that project.
-- **Your rules.** Settings → Routing: never, prefer or only a model, family or vendor, for some
-  task kinds or areas, everywhere or in one project. Rules always win, during fallback too.
+- **Your routing.** Settings → Routing shows, for each kind of work, the models routing would
+  try next and why (Automatic), or lets you order them yourself with an effort for each
+  (Manual): the list is tried top-down, and with "Wait for these" work waits for those models
+  rather than going to others. Everywhere or per project, with area overrides. Rules there
+  (never, prefer or only a model, family or vendor) keep models from work, during fallback too.
+  No Fable, effort at most high, limits and cross-vendor review hold whatever you choose.
 - **Quota.** The daemon reads Claude's and Codex's usage windows (every 5 minutes while work
   runs, every 30 when idle, and live from the sessions), keeps a week of samples, and projects
   each window to its reset. New work shifts away from a provider whose window runs hot. The

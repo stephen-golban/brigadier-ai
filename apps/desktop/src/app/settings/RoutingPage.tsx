@@ -2,7 +2,7 @@ import { ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
 import { useState } from "react";
 
 import { CategoryCard } from "@/app/routing/CategoryCard";
-import { RulesSection } from "@/app/routing/RulesSection";
+import { RULES_ROW, RulesSection } from "@/app/routing/RulesSection";
 import {
   type Choice,
   SettingsButton,
@@ -31,6 +31,28 @@ import { AREA_LABELS, AREAS, RANKED_CATEGORIES } from "@/lib/routing";
 import { useModelGroups } from "@/lib/setup";
 import { resetToAutomatic, useRoutePreview } from "@/state/routing";
 import { useApp } from "@/state/store";
+
+/** The Routing page's rows, for Settings search; the page renders this copy. */
+export const ROUTING_ROWS = {
+  kinds: {
+    label: "Kinds of work",
+    description:
+      "What the next task of each kind would run on, now. The orchestrator's own model is picked in the composer.",
+  },
+  modes: {
+    label: "Automatic or Manual",
+    description: "Let routing rank the models for a kind of work, or try your own list top-down.",
+  },
+  areas: {
+    label: "Area overrides",
+    description: "A different list or rule for work that touches frontend, backend, infra, docs or tests.",
+  },
+  reset: {
+    label: "Reset to automatic",
+    description: "Every kind of work goes back to Automatic; your lists are kept.",
+  },
+  rules: RULES_ROW,
+} as const;
 
 /**
  * The Routing page: per kind of work, whether Brigadier ranks the models (Automatic, with the
@@ -67,14 +89,14 @@ export function RoutingPage() {
             onChange={(value) => setScope(value === "" ? null : value)}
           />
           <SettingsButton disabled={!manualHere} onClick={() => setResetting(true)}>
-            Reset to automatic
+            {ROUTING_ROWS.reset.label}
           </SettingsButton>
         </>
       }
     >
       <SettingsSection
-        title="Kinds of work"
-        description="What the next task of each kind would run on, now. The orchestrator's own model is picked in the composer."
+        title={ROUTING_ROWS.kinds.label}
+        description={ROUTING_ROWS.kinds.description}
         actions={<AreaPicker areas={areas} onChange={setAreas} />}
       >
         {error && (

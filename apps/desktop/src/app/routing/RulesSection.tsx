@@ -11,6 +11,13 @@ import { CATEGORY_LABELS, joinWords, RANKED_CATEGORIES, ruleSentence } from "@/l
 import { removeOverride } from "@/state/routing";
 import { useApp } from "@/state/store";
 
+/** The rules section's heading, for the page and Settings search. */
+export const RULES_ROW = {
+  label: "Rules",
+  description:
+    "Never and Only keep models from work, whether a row is Automatic or Manual. Prefer puts a model first where routing scores.",
+} as const;
+
 /**
  * Where a `prefer` rule does nothing: the kinds of work it covers whose own row is Manual in its
  * scope (a Manual list decides there, not preferences).
@@ -44,8 +51,8 @@ export function RulesSection({ groups }: { groups: readonly ModelGroup[] }) {
   const remove = useAction();
   return (
     <SettingsSection
-      title="Rules"
-      description="Never and Only keep models from work, whether a row is Automatic or Manual. Prefer puts a model first where routing scores."
+      title={RULES_ROW.label}
+      description={RULES_ROW.description}
       actions={
         !adding && (
           <SettingsButton onClick={() => setAdding(true)}>

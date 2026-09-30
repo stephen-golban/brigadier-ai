@@ -13,7 +13,7 @@ import { ARCHIVED_ROWS, ArchivedPage } from "@/app/settings/ArchivedPage";
 import { CONVERSATIONS_ROWS, ConversationsPage } from "@/app/settings/ConversationsPage";
 import { GENERAL_ROWS, GeneralPage } from "@/app/settings/GeneralPage";
 import { PERSONALIZATION_ROWS, PersonalizationPage } from "@/app/settings/PersonalizationPage";
-import { ROUTING_ROWS, RoutingRulesPage } from "@/app/settings/RoutingRulesPage";
+import { ROUTING_ROWS, RoutingPage } from "@/app/settings/RoutingPage";
 import { STORAGE_ROWS, StoragePage } from "@/app/settings/StoragePage";
 import type { SettingsPageId } from "@/state/store";
 
@@ -88,7 +88,7 @@ export const SETTINGS_PAGES: readonly SettingsPageEntry[] = [
     label: "Routing",
     icon: Shuffle,
     group: "Models",
-    component: RoutingRulesPage,
+    component: RoutingPage,
     rows: Object.values(ROUTING_ROWS),
   },
   {
