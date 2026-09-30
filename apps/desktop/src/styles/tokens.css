@@ -63,7 +63,8 @@
  *               rounded-dialog, rounded-thread (message bubbles), rounded-composer (the composer
  *               card), rounded-rail (the rail's top corners), rounded-menu (menus), rounded-tooltip,
  *               rounded-capsule,
- *               rounded-document, rounded-page (the page surface), rounded-nav (sidebar and
+ *               rounded-document, rounded-page (the page surface), rounded-peek (the sidebar
+ *               panel peeking over the content), rounded-nav (sidebar and
  *               Settings navigation rows), rounded-settings (a Settings card),
  *               plus rounded-{xs,sm,md,lg,xl,2xl}
  *   Type        text-{2xs,xs,sm,base,lg,xl,2xl} (UI roles, each with its line height), text-hero,
@@ -74,7 +75,7 @@
  *   Fonts       font-sans, font-display, font-mono (system stacks, no downloads)
  *   Shadows     shadow-hairline (the composer card's inner edge), shadow-menu, shadow-tooltip,
  *               shadow-summary (the pinned summary), shadow-thumb (a switch's thumb),
- *               shadow-page (the page surface)
+ *               shadow-page (the page surface), shadow-peek (the sidebar panel peeking)
  *   Motion      ease-summary-shift, ease-summary-card (the pinned summary), ease-sidebar (the
  *               sidebar opening and closing), ease-enter (a section's list opening or closing),
  *               ease-standard (a disclosure chevron turning)
@@ -244,6 +245,8 @@
   --radius-capsule: 9999px;
   /* The page surface; sidebar and Settings navigation rows; a Settings card. */
   --radius-page: 0.75rem;
+  /* The closed sidebar panel peeking over the content. */
+  --radius-peek: 0.5rem;
   --radius-nav: 0.78125rem;
   --radius-settings: 1.25rem;
 
@@ -283,6 +286,8 @@
   /* A switch's thumb; the page surface's hairline edge and soft drop. */
   --shadow-thumb: 0 1px 2px oklch(0 0 0 / 20%);
   --shadow-page: 0 0 0 0.5px oklch(1 0 0 / 6%), 0 4px 16px oklch(0 0 0 / 5%);
+  /* The closed sidebar panel peeking over the content: a hairline inside, a soft drop. */
+  --shadow-peek: inset 0 0 0 0.5px oklch(1 0 0 / 8.2%), 0 4px 16px oklch(0 0 0 / 5%);
 
   /* The pinned summary's motion: springs sampled for CSS. The thread's column moving aside
      settles without a bounce in 350ms; the card eases in from the pane's end in 300ms. */

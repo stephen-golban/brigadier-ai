@@ -12,10 +12,15 @@ import { cn } from "@/lib/utils";
  * their full width, so they are revealed rather than squeezed. ⌘B or ⌘⇧S (Ctrl on Windows and
  * Linux) toggle it. Its edge can be dragged to resize it; dragging it below half its smallest
  * width closes it. The width is remembered. In a narrow window it closes by itself, and opens
- * again once there is room.
+ * again once there is room. While it is closed, resting the pointer on a rail button peeks
+ * it: the panel floats over the content until the pointer has left both for a moment.
  */
 
 const WIDTH_KEY = "brigadier.sidebarWidth";
+/** How long the pointer rests on a rail button before the closed panel peeks, and how long
+    after it leaves before the peek goes. */
+const PEEK_OPEN_MS = 100;
+const PEEK_CLOSE_MS = 300;
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
@@ -27,6 +32,12 @@ type SidebarContextProps = {
   setWidth: (width: number | null) => void;
   resizing: boolean;
   setResizing: (resizing: boolean) => void;
+  /** The closed panel floats over the content while the pointer is on a rail button or it. */
+  peeking: boolean;
+  /** The pointer came onto a rail button or the peeking panel: peek (after a moment). */
+  holdPeek: () => void;
+  /** The pointer left them: stop peeking (after a moment, unless it comes back). */
+  releasePeek: () => void;
 };
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
@@ -95,6 +106,23 @@ function SidebarProvider({
   }, []);
   const [resizing, setResizing] = React.useState(false);
 
+  const [peekWanted, setPeekWanted] = React.useState(false);
+  const peekTimer = React.useRef<number | undefined>(undefined);
+  const schedulePeek = React.useCallback((wanted: boolean, delay: number) => {
+    window.clearTimeout(peekTimer.current);
+    peekTimer.current = window.setTimeout(() => setPeekWanted(wanted), delay);
+  }, []);
+  const holdPeek = React.useCallback(() => schedulePeek(true, PEEK_OPEN_MS), [schedulePeek]);
+  const releasePeek = React.useCallback(() => schedulePeek(false, PEEK_CLOSE_MS), [schedulePeek]);
+  React.useEffect(() => () => window.clearTimeout(peekTimer.current), []);
+  // Opening or closing the panel ends a peek.
+  const [seenOpen, setSeenOpen] = React.useState(open);
+  if (seenOpen !== open) {
+    setSeenOpen(open);
+    setPeekWanted(false);
+  }
+  const peeking = !open && peekWanted;
+
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -110,8 +138,20 @@ function SidebarProvider({
 
   const state = open ? "expanded" : "collapsed";
   const contextValue = React.useMemo<SidebarContextProps>(
-    () => ({ state, open, setOpen, toggleSidebar, width, setWidth, resizing, setResizing }),
-    [state, open, setOpen, toggleSidebar, width, setWidth, resizing],
+    () => ({
+      state,
+      open,
+      setOpen,
+      toggleSidebar,
+      width,
+      setWidth,
+      resizing,
+      setResizing,
+      peeking,
+      holdPeek,
+      releasePeek,
+    }),
+    [state, open, setOpen, toggleSidebar, width, setWidth, resizing, peeking, holdPeek, releasePeek],
   );
 
   return (
@@ -135,28 +175,43 @@ function SidebarProvider({
 
 /**
  * The sidebar panel: its column's top (in the titlebar strip) is left to the window chrome,
- * the rest is the panel's own surface. Only the column's width animates.
+ * the rest is the panel's own surface. Only the column's width animates. While it peeks, the
+ * closed column lets the panel float over the content, as a card inset from its edges.
  */
 function SidebarPanel({ className, children, ...props }: React.ComponentProps<"div">) {
-  const { open, resizing } = useSidebar();
+  const { open, resizing, peeking, holdPeek, releasePeek } = useSidebar();
   return (
     <div data-slot="sidebar-panel" data-state={open ? "expanded" : "collapsed"} className="relative flex h-full shrink-0">
       <div
-        inert={!open}
+        inert={!open && !peeking}
         className={cn(
-          "h-full overflow-hidden transition-[width] duration-300 ease-sidebar motion-reduce:transition-none",
+          "h-full transition-[width] duration-300 ease-sidebar motion-reduce:transition-none",
           open ? "sidebar-panel-width" : "w-0",
+          peeking ? "overflow-visible" : "overflow-hidden",
           resizing && "transition-none",
         )}
       >
-        <div className="sidebar-panel-width flex h-full flex-col">
+        <div
+          data-peeking={peeking || undefined}
+          // While peeking, only the card takes the pointer: the strip above it leaves the
+          // titlebar's controls reachable.
+          className={cn(
+            "sidebar-panel-width flex h-full flex-col",
+            peeking && "pointer-events-none relative z-30",
+          )}
+        >
           <div data-tauri-drag-region className="h-titlebar shrink-0" />
           <div
             data-sidebar="sidebar"
             className={cn(
-              "bg-sidebar text-sidebar-foreground rounded-s-page flex min-h-0 flex-1 flex-col",
+              "text-sidebar-foreground flex min-h-0 flex-1 flex-col",
+              peeking
+                ? "bg-popover rounded-peek shadow-peek pointer-events-auto my-1 ms-1"
+                : "bg-sidebar rounded-s-page",
               className,
             )}
+            onPointerEnter={peeking ? holdPeek : undefined}
+            onPointerLeave={peeking ? releasePeek : undefined}
             {...props}
           >
             {children}

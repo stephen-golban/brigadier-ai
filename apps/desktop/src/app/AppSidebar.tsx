@@ -216,6 +216,7 @@ function useUsageLeft(): number | null {
  * setup).
  */
 export function AppRail() {
+  const { open, holdPeek, releasePeek } = useSidebar();
   const inSettings = useApp((s) => s.selection.type === "settings");
   const inspectorOpen = useApp((s) => s.inspector.open);
   const usageLeft = useUsageLeft();
@@ -226,7 +227,14 @@ export function AppRail() {
       className="w-rail pt-titlebar flex h-full shrink-0 flex-col items-center gap-2 px-2 pb-1"
     >
       <div data-tauri-drag-region className="flex w-full flex-col items-center gap-2 pt-2">
-        <RailButton label="Home" selected={!inSettings} onClick={() => closeSettings()}>
+        <RailButton
+          label="Home"
+          selected={!inSettings}
+          onClick={() => closeSettings()}
+          // With the panel closed, resting on it peeks the panel.
+          onPointerEnter={open ? undefined : holdPeek}
+          onPointerLeave={open ? undefined : releasePeek}
+        >
           <Home />
         </RailButton>
       </div>
