@@ -91,6 +91,39 @@ export const KIND_HINTS: Record<TaskCategory, string> = {
   orchestrate: "Plans and delegates a session's work.",
 };
 
+/** A kind of work in plain words, as the Routing page's simple view names it: "Write code". */
+export const PLAIN_KIND_NAMES: Record<TaskCategory, string> = {
+  scout: "Explore the code",
+  research: "Research",
+  implement: "Write code",
+  review: "Review changes",
+  merge: "Resolve conflicts",
+  verify: "Run checks",
+  chat: "Take over a chat",
+  orchestrate: "Plan and delegate",
+};
+
+/** A kind of work as "best for …" reads it: "Best for writing code and reviewing changes". */
+export const PLAIN_KIND_WORDS: Record<TaskCategory, string> = {
+  scout: "exploring code",
+  research: "research",
+  implement: "writing code",
+  review: "reviewing changes",
+  merge: "resolving conflicts",
+  verify: "running checks",
+  chat: "chat",
+  orchestrate: "planning",
+};
+
+/** A quality tier in plain words, for the Models page. */
+export const PLAIN_TIERS: Record<QualityTier, string> = {
+  frontier: "Most capable",
+  strong: "Strong",
+  standard: "Balanced",
+  light: "Fast and light",
+  unrated: "Not rated yet",
+};
+
 /** The least capable tier each kind of work runs on unless the orchestrator asks for more. */
 export const DEFAULT_FLOORS: Record<TaskCategory, QualityTier> = {
   scout: "light",

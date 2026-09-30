@@ -404,7 +404,7 @@ function WaitingPill({ wait }: { wait: QuotaWait }) {
           type="button"
           data-slot="quota-wait-pill"
           aria-label={`${text}. ${reason} Open Routing settings.`}
-          onClick={() => openSettings("routing")}
+          onClick={() => openSettings("providers")}
           className="h-pill px-pill rounded-capsule bg-warning/15 text-warning hover:bg-warning/25 focus-visible:ring-ring/50 inline-flex max-w-sm min-w-0 shrink items-center gap-1 text-xs transition-colors outline-none focus-visible:ring-1"
         >
           <Clock aria-hidden className="size-icon-xs shrink-0" />

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ExplanationView } from "@/app/conversation/cards/RouteDetails";
 import { useAction } from "@/app/conversation/useAction";
 import { ManualList } from "@/app/routing/ManualList";
-import { type Choice, Segmented, SettingsCard, SettingsRow } from "@/app/settings/parts";
+import { type Choice, Segmented } from "@/app/settings/parts";
 import { HeatBadge } from "@/app/usage/UsagePage";
 import { effortLabel, type ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import { Badge } from "@/components/ui/badge";
@@ -83,9 +83,17 @@ function seed(route: RoutePreview | null): Ranking["entries"] {
     }));
 }
 
+/** How a row's mode reads in its summary. */
+const MODE_LABELS: Record<Exclude<Mode, "inherit">, string> = {
+  automatic: "Automatic",
+  manual: "Manual",
+};
+
 /**
- * One kind of work: whether routing scores it (Automatic) or tries the user's list (Manual),
- * everywhere or in the chosen project, with the live order and why, and its area overrides.
+ * One kind of work, as a row of the Routing page's card: its name, what its next task would run
+ * on and whether routing ranks the models (Automatic) or tries the user's list (Manual). Opening
+ * it shows the order and why, the choice between the two, and its area overrides, everywhere or
+ * in the chosen project.
  */
 export function CategoryCard({
   category,
@@ -144,19 +152,52 @@ export function CategoryCard({
   // The list in force here decides what the live preview's places are about.
   const livePlaces = own && route?.rankingId === own.id ? route.places : null;
 
+  const overrides = rankings.filter(
+    (ranking) =>
+      ranking.category === category && ranking.projectId === scope && ranking.areas.length > 0,
+  ).length;
+  const modeLabel =
+    mode === "inherit"
+      ? `As everywhere · ${everywhere?.manual ? "Manual" : "Automatic"}`
+      : MODE_LABELS[mode];
+
   return (
-    <SettingsCard>
-      <SettingsRow
-        label={name}
-        description={
-          mode === "inherit"
-            ? `${KIND_HINTS[category]} As everywhere: ${everywhere?.manual ? "your list" : "Automatic"}.`
-            : KIND_HINTS[category]
-        }
-      >
-        <Segmented label={`How ${name} work is routed`} value={mode} options={options} onChange={setMode} />
-      </SettingsRow>
-      <div className="flex flex-col">
+    <Collapsible data-slot="routing-kind">
+      <CollapsibleTrigger className="hover:bg-foreground/4 focus-visible:ring-ring/50 group flex w-full items-center gap-3 px-4 py-3 text-start outline-none focus-visible:ring-2 focus-visible:ring-inset">
+        <ChevronRight
+          aria-hidden
+          className="text-muted-foreground size-icon-xs shrink-0 transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none"
+        />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-label truncate font-medium">{name}</span>
+          <span className="text-foreground/65 truncate text-xs" title={KIND_HINTS[category]}>
+            {KIND_HINTS[category]}
+          </span>
+        </span>
+        <span className="flex max-w-1/2 min-w-0 shrink-0 flex-col items-end gap-0.5 text-end">
+          <NextSummary route={route} groups={groups} />
+          <span className="text-muted-foreground truncate text-xs">
+            {modeLabel}
+            {overrides > 0 && ` · ${overrides} area ${overrides === 1 ? "list" : "lists"}`}
+          </span>
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="bg-foreground/2 border-divider flex flex-col border-t">
+        <div className="flex items-center gap-3 px-4 pt-3">
+          <span className="text-foreground/65 min-w-0 flex-1 text-xs">
+            {mode === "manual"
+              ? "Your list, tried top-down: the first model with quota to spare takes the task."
+              : mode === "inherit"
+                ? `Follows the setting everywhere (${everywhere?.manual ? "your list" : "Automatic"}).`
+                : "Routing ranks the models by strength, what worked here and quota."}
+          </span>
+          <Segmented
+            label={`How ${name} work is routed`}
+            value={mode}
+            options={options}
+            onChange={setMode}
+          />
+        </div>
         {mode === "manual" && own ? (
           <ManualList
             ranking={own}
@@ -180,9 +221,33 @@ export function CategoryCard({
             {action.error}
           </p>
         )}
-      </div>
-      <AreaOverrides category={category} scope={scope} route={route} groups={groups} />
-    </SettingsCard>
+        <AreaOverrides category={category} scope={scope} route={route} groups={groups} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** What the next task of a kind would run on, or that it would wait, on the row's end. */
+function NextSummary({ route, groups }: { route: RoutePreview | null; groups: readonly ModelGroup[] }) {
+  const now = useNow(30_000);
+  if (!route) return <span className="text-muted-foreground text-xs">Reading…</span>;
+  const { outcome } = route;
+  if (outcome.type === "wait") {
+    return (
+      <span className="text-warning text-label flex items-center gap-1 truncate">
+        <Clock aria-hidden className="size-icon-xs shrink-0" />
+        Waits
+        {outcome.resetsAtMs !== null && ` · ${formatCountdown(outcome.resetsAtMs, now)}`}
+      </span>
+    );
+  }
+  return (
+    <span className="text-label truncate">
+      {choiceName(groups, outcome.choice)}
+      {outcome.choice.effort && (
+        <span className="text-muted-foreground"> · {effortLabel(outcome.choice.effort)}</span>
+      )}
+    </span>
   );
 }
 
@@ -389,8 +454,8 @@ function Outcome({ route, groups }: { route: RoutePreview | null; groups: readon
     <Collapsible className="px-4 pb-3 text-xs">
       <div className="flex items-baseline gap-1">
         <span className="text-muted-foreground min-w-0 flex-1">
-          <span className="text-foreground">Next: {choiceName(groups, outcome.choice)}</span>
-          {outcome.choice.effort && ` · ${effortLabel(outcome.choice.effort)}`} — {outcome.reason}
+          <span className="text-foreground">Why {choiceName(groups, outcome.choice)}:</span>{" "}
+          {outcome.reason}
         </span>
         {outcome.explanation && (
           <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group flex shrink-0 items-center gap-1">

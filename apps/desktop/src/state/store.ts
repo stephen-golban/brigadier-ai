@@ -27,7 +27,7 @@ export type SettingsPageId =
   | "conversations"
   | "personalization"
   | "usage"
-  | "routing"
+  | "providers"
   | "storage"
   | "inspector"
   | "archived";

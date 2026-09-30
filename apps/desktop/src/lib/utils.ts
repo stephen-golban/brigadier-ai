@@ -55,7 +55,7 @@ const twMerge = extendTailwindMerge({
         "setup",
         "setup-card",
       ],
-      container: ["thread", "setup", "summary", "settings"],
+      container: ["thread", "setup", "summary", "settings", "settings-wide"],
       radius: [
         "document",
         "control",

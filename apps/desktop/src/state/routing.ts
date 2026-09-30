@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import { request } from "@/ipc/client";
-import type { Area, OverrideRule, Ranking, RoutePreview } from "@/ipc/generated";
+import type {
+  Area,
+  OverrideRule,
+  ProviderKind,
+  Ranking,
+  RoutePreview,
+  TaskCategory,
+} from "@/ipc/generated";
+import { newRuleId } from "@/lib/routing";
 import { editSettings } from "@/state/settings";
 import { useApp } from "@/state/store";
 
@@ -80,6 +88,119 @@ export function resetToAutomatic(projectId: string | null): Promise<void> {
         : ranking,
     ),
   }));
+}
+
+/** A model named on its own, as a ranking place or a rule's target. */
+export type ModelRef = { provider: ProviderKind; id: string };
+
+/** A rule keeping a model from all work everywhere: what the Models page's switch turns on. */
+export function blocksModel(rule: OverrideRule, model: ModelRef): boolean {
+  return (
+    rule.effect === "never" &&
+    rule.target.type === "model" &&
+    rule.target.provider === model.provider &&
+    rule.target.id === model.id &&
+    rule.categories.length === 0 &&
+    rule.areas.length === 0 &&
+    rule.projectId === null
+  );
+}
+
+/** A rule keeping every model of an agent from all work everywhere (the agent switched off). */
+export function blocksProvider(rule: OverrideRule, provider: ProviderKind): boolean {
+  return (
+    rule.effect === "never" &&
+    rule.target.type === "vendor" &&
+    rule.target.provider === provider &&
+    rule.categories.length === 0 &&
+    rule.areas.length === 0 &&
+    rule.projectId === null
+  );
+}
+
+/** Lets routing hand an agent work, or keeps all its models from all work everywhere. */
+export function setProviderAllowed(provider: ProviderKind, allowed: boolean): Promise<void> {
+  const rule: OverrideRule = {
+    id: newRuleId(),
+    effect: "never",
+    target: { type: "vendor", provider },
+    categories: [],
+    areas: [],
+    projectId: null,
+    createdAtMs: Date.now(),
+  };
+  return changeRouting(({ rules }) => ({
+    rules: allowed
+      ? rules.filter((existing) => !blocksProvider(existing, provider))
+      : rules.some((existing) => blocksProvider(existing, provider))
+        ? rules
+        : [...rules, rule],
+  }));
+}
+
+/** Lets routing use a model, or keeps it from all work everywhere. */
+export function setModelAllowed(model: ModelRef, allowed: boolean): Promise<void> {
+  const rule: OverrideRule = {
+    id: newRuleId(),
+    effect: "never",
+    target: { type: "model", provider: model.provider, id: model.id },
+    categories: [],
+    areas: [],
+    projectId: null,
+    createdAtMs: Date.now(),
+  };
+  return changeRouting(({ rules }) => ({
+    rules: allowed
+      ? rules.filter((existing) => !blocksModel(existing, model))
+      : rules.some((existing) => blocksModel(existing, model))
+        ? rules
+        : [...rules, rule],
+  }));
+}
+
+/**
+ * What runs a kind of work everywhere: `null` for Automatic, else the one model (at routing's
+ * effort) tried first; when it can't take a task, routing picks as Automatic would. A list of
+ * several models is replaced; switching to Automatic keeps it for switching back.
+ */
+export function setKindModel(category: TaskCategory, model: ModelRef | null): Promise<void> {
+  const created: Ranking = {
+    id: newRankingId(),
+    category,
+    areas: [],
+    projectId: null,
+    manual: true,
+    entries: [],
+    only: false,
+    updatedAtMs: Date.now(),
+  };
+  return changeRouting(({ rankings }) => {
+    const index = rankings.findIndex(
+      (ranking) =>
+        ranking.category === category && ranking.projectId === null && ranking.areas.length === 0,
+    );
+    const current = index >= 0 ? rankings[index] : undefined;
+    if (!model) {
+      if (!current) return {};
+      return {
+        rankings: rankings.map((ranking, at) =>
+          at === index ? { ...ranking, manual: false, updatedAtMs: Date.now() } : ranking,
+        ),
+      };
+    }
+    const next: Ranking = {
+      ...(current ?? created),
+      manual: true,
+      only: false,
+      entries: [{ target: { type: "model", provider: model.provider, id: model.id }, effort: null }],
+      updatedAtMs: Date.now(),
+    };
+    return {
+      rankings: current
+        ? rankings.map((ranking, at) => (at === index ? next : ranking))
+        : [...rankings, next],
+    };
+  });
 }
 
 /** A new ranking's id. */

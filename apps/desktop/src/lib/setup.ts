@@ -164,3 +164,14 @@ export function sameModel(groups: readonly ModelGroup[], a: ModelChoice, b: Mode
   const model = findModel(groups, a);
   return model !== null && model === findModel(groups, b);
 }
+
+/** How an agent stands, in a few words: "Signed in with chatgpt · Pro plan", "Not installed". */
+export function providerStatusText(overview: ProviderOverview | undefined): string {
+  const status = overview?.status;
+  if (!status) return "Checking…";
+  if (!status.path) return "Not installed";
+  if (!status.loggedIn) return "Not signed in";
+  const method = status.authMethod ? `Signed in with ${status.authMethod}` : "Signed in";
+  const plan = status.plan ? ` · ${status.plan.charAt(0).toUpperCase()}${status.plan.slice(1)} plan` : "";
+  return method + plan;
+}

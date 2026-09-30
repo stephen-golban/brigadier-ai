@@ -1,15 +1,17 @@
-import { ChevronDown, ChevronRight } from "@openai/apps-sdk-ui/components/Icon";
-import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Reload } from "@openai/apps-sdk-ui/components/Icon";
+import { useState } from "react";
 
+import { useAction } from "@/app/conversation/useAction";
+import {
+  SettingsButton,
+  SettingsCard,
+  SettingsRow,
+  SettingsSection,
+  SettingsSwitch,
+} from "@/app/settings/parts";
 import { openUrl } from "@/ipc/client";
 import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,26 +27,27 @@ import type {
   MergedModel,
   OverrideRule,
   ProviderKind,
+  RegistryInfo,
   TaskCategory,
-  UsageView,
 } from "@/ipc/generated";
-import { formatDateTime, formatTokens } from "@/lib/format";
+import { formatAgo, formatDateTime, formatTokens } from "@/lib/format";
 import {
   AREA_LABELS,
   CATEGORIES,
   CATEGORY_LABELS,
   formatDelta,
+  joinWords,
   newRuleId,
-  PROVIDERS,
+  PLAIN_KIND_WORDS,
+  PLAIN_TIERS,
   ruleSentence,
   TIER_LABELS,
-  VENDOR_LABELS,
 } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
-import { addOverride } from "@/state/routing";
-import { setUsageProject, useUsage } from "@/state/usage";
+import { addOverride, blocksModel, setModelAllowed } from "@/state/routing";
+import { checkRegistry, setUsageProject } from "@/state/usage";
 
 /** Categories a model is scored for, as the grid's short heads. */
 const CATEGORY_HEADS: Record<TaskCategory, string> = {
@@ -58,21 +61,10 @@ const CATEGORY_HEADS: Record<TaskCategory, string> = {
   orchestrate: "Orchestrate",
 };
 
-/** "Curated", "Trial 1/3", "Never routed". */
-function statusLabel(model: MergedModel): string {
-  if (model.excluded) return "Never routed";
-  if (model.trial) return `Trial ${model.trial.outcomes}/${model.trial.needed}`;
-  switch (model.status) {
-    case "curated":
-      return "Curated";
-    case "inherited":
-      return "Inherited";
-    case "researched":
-      return "Researched";
-    case "unknown":
-      return "Unknown";
-  }
-}
+/** A kind of work counts among a model's best within this much of its top score. */
+const BEST_WITHIN = 0.5;
+/** "Best at" names at most this many kinds of work. */
+const BEST_SHOWN = 3;
 
 function statusHint(model: MergedModel): string {
   if (model.excluded) return "Brigadier never routes work to this model.";
@@ -91,100 +83,63 @@ function statusHint(model: MergedModel): string {
   }
 }
 
-const learnedKey = (provider: ProviderKind, model: string, category: TaskCategory) =>
+export const learnedKey = (provider: ProviderKind, model: string, category: TaskCategory) =>
   `${provider}\u0000${model}\u0000${category}`;
 
-/** The merged model list, per provider, with what outcomes taught routing in the chosen project. */
-export function ModelsSection({
-  view,
-  groups,
-}: {
-  view: UsageView;
-  groups: readonly ModelGroup[];
-}) {
-  const projects = useApp((s) => s.projects);
-  // The pick shows at once; the view says which project its adjustments are for once read.
-  const picked = useUsage((s) => s.projectId);
-  // Adjustments read for another project than the one picked are not shown while it is read.
-  const forPicked = view.projectId === picked;
-  const learned = useMemo(
-    () =>
-      new Map(
-        forPicked
-          ? view.learned.map((entry) => [learnedKey(entry.provider, entry.model, entry.category), entry])
-          : [],
-      ),
-    [view.learned, forPicked],
-  );
-  const projectName = picked ? (projects[picked]?.name ?? "Project") : null;
+/**
+ * "Best for writing code, reviewing changes and resolving conflicts": the kinds of work a
+ * model scores highest for, in plain words. `null` for a model without scores.
+ */
+function bestFor(model: MergedModel): string | null {
+  const scored = CATEGORIES.flatMap((category) => {
+    const strength = model.strengths[category];
+    return strength === null || strength === undefined ? [] : [{ category, strength }];
+  }).toSorted((a, b) => b.strength - a.strength);
+  const top = scored[0]?.strength;
+  if (top === undefined) return null;
+  const best = scored.filter((entry) => entry.strength >= top - BEST_WITHIN).slice(0, BEST_SHOWN);
+  return `Best for ${joinWords(best.map((entry) => PLAIN_KIND_WORDS[entry.category]))}`;
+}
+
+/** The registry in use, in a sentence, with "Check for updates". */
+export function RegistryCard({ registry, now }: { registry: RegistryInfo; now: number }) {
+  const check = useAction();
+  const source =
+    registry.source === "bundled"
+      ? "bundled with this version of Brigadier"
+      : `downloaded ${registry.fetchedAtMs !== null ? formatDateTime(registry.fetchedAtMs) : "from the repository"}`;
+  const checked =
+    registry.checkedAtMs !== null ? `checked ${formatAgo(registry.checkedAtMs, now)}` : "not checked yet";
   return (
-    <section aria-labelledby="usage-models" className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <h2 id="usage-models" className="min-w-0 flex-1 text-sm font-medium">
-          Models
-        </h2>
-        <span className="text-muted-foreground text-xs">Learned in</span>
-        <ProjectPicker projectId={picked} />
-      </div>
-      <p className="text-muted-foreground text-xs">
-        Every model the installed agents offer, with its registry strengths per kind of work (0–10)
-        and what outcomes {projectName ? `in ${projectName}` : "across your projects"} added or
-        took away.
-      </p>
-      {PROVIDERS.map((provider) => {
-        const models = view.models.filter((model) => model.provider === provider);
-        if (models.length === 0) return null;
-        const current = models.filter((model) => !model.legacy);
-        const legacy = models.filter((model) => model.legacy);
-        return (
-          <div key={provider} className="flex flex-col gap-1">
-            <h3 className="text-muted-foreground px-2 text-xs font-medium">
-              {VENDOR_LABELS[provider]}
-            </h3>
-            <ul className="flex flex-col divide-y">
-              {current.map((model) => (
-                <ModelRow
-                  key={model.id}
-                  model={model}
-                  learned={learned}
-                  projectId={picked}
-                  groups={groups}
-                />
-              ))}
-            </ul>
-            {legacy.length > 0 && (
-              <Collapsible>
-                <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group flex items-center gap-1 px-2 py-1 text-xs">
-                  <ChevronRight
-                    aria-hidden
-                    className="size-icon-xs transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none"
-                  />
-                  {legacy.length} legacy {legacy.length === 1 ? "model" : "models"}
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <ul className="flex flex-col divide-y">
-                    {legacy.map((model) => (
-                      <ModelRow
-                        key={model.id}
-                        model={model}
-                        learned={learned}
-                        projectId={picked}
-                        groups={groups}
-                      />
-                    ))}
-                  </ul>
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-          </div>
-        );
-      })}
-    </section>
+    <SettingsSection>
+      <SettingsCard>
+        <SettingsRow
+          label="Model registry"
+          description={
+            <>
+              Revision {registry.revision} ({registry.updated}), {source} · {registry.models}{" "}
+              models · {checked}
+              {registry.error && (
+                <span role="alert" className="text-warning block">
+                  The last check didn't update it: {registry.error}
+                </span>
+              )}
+            </>
+          }
+          error={check.error}
+        >
+          <SettingsButton disabled={check.busy} onClick={() => check.run(checkRegistry)}>
+            <Reload className={check.busy ? "animate-spin motion-reduce:animate-none" : undefined} />
+            Check for updates
+          </SettingsButton>
+        </SettingsRow>
+      </SettingsCard>
+    </SettingsSection>
   );
 }
 
 /** "All projects" or one project, for the learned adjustments. */
-function ProjectPicker({ projectId }: { projectId: string | null }) {
+export function ProjectPicker({ projectId }: { projectId: string | null }) {
   const projects = useApp((s) => s.projects);
   const list = Object.values(projects).toSorted((a, b) => a.name.localeCompare(b.name));
   const label = projectId ? (projects[projectId]?.name ?? "Project") : "All projects";
@@ -228,7 +183,12 @@ function learnedHint(entry: Learned): string {
   return `${parts.join(" · ")}: ${formatDelta(entry.adjustment)} to its score here.`;
 }
 
-function ModelRow({
+/**
+ * One model: its name, how capable it is and what it is best for, and a switch (off: Brigadier
+ * never hands it work). Its details show its score for every kind of work (with what outcomes
+ * added or took away), its facts, the user's rules about it and "Don't use for…".
+ */
+export function ModelRow({
   model,
   learned,
   projectId,
@@ -242,69 +202,94 @@ function ModelRow({
   const [open, setOpen] = useState(false);
   const rules = useApp((s) => s.settings.routingOverrides);
   const projects = useApp((s) => s.projects);
+  const toggle = useAction();
+  const ref = { provider: model.provider, id: model.id };
+  const on = !model.excluded && !rules.some((rule) => blocksModel(rule, ref));
   const own = rules.filter(
     (rule) =>
+      !blocksModel(rule, ref) &&
       rule.target.provider === model.provider &&
       ((rule.target.type === "model" && rule.target.id === model.id) ||
         (rule.target.type === "family" && rule.target.family === model.family)),
   );
+  const summary = model.excluded
+    ? "Brigadier never uses Fable models."
+    : [PLAIN_TIERS[model.tier], bestFor(model), model.trial && "new: tried on small tasks first"]
+        .filter(Boolean)
+        .join(" · ");
   return (
-    <li data-slot="usage-model" className="flex flex-col gap-2 px-2 py-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="group flex min-w-0 flex-1 items-center gap-1.5 text-start"
-        >
-          <ChevronRight
-            aria-hidden
-            className={cn(
-              "text-muted-foreground size-icon-xs shrink-0 transition-transform motion-reduce:transition-none",
-              open && "rotate-90",
-            )}
-          />
-          <span className="truncate text-sm group-hover:underline">{model.displayName}</span>
-          <span className="text-muted-foreground truncate font-mono text-2xs">{model.id}</span>
-        </button>
-        <Badge variant={model.trial ? "warning" : "secondary"} title={statusHint(model)}>
-          {statusLabel(model)}
-        </Badge>
-        <Badge variant="outline" title="Quality tier">
-          {TIER_LABELS[model.tier]}
-        </Badge>
-        {!model.excluded && <NeverMenu model={model} projectId={projectId} groups={groups} />}
+    <div data-slot="usage-model" className="@container flex flex-col gap-2 px-4 py-3">
+      <div className="flex items-center gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className={cn("text-label font-medium", !on && "text-muted-foreground")}>
+            {model.displayName}
+          </span>
+          <span className="text-foreground/65 text-xs">{summary}</span>
+          {own.length > 0 && (
+            <span className="text-muted-foreground text-xs">
+              {own.map((rule) => ruleSentence(rule, groups, projects)).join(". ")}.
+            </span>
+          )}
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+            className="text-muted-foreground hover:text-foreground flex w-fit items-center gap-1 pt-0.5 text-xs"
+          >
+            <ChevronRight
+              aria-hidden
+              className={cn(
+                "size-icon-xs transition-transform motion-reduce:transition-none",
+                open && "rotate-90",
+              )}
+            />
+            Details
+          </button>
+        </div>
+        <SettingsSwitch
+          label={`Use ${model.displayName}`}
+          checked={on}
+          disabled={model.excluded || toggle.busy}
+          onCheckedChange={(next) => toggle.run(() => setModelAllowed(ref, next))}
+        />
       </div>
-      <dl className="grid grid-cols-4 gap-x-3 gap-y-1 @md:grid-cols-8">
-        {CATEGORIES.map((category) => {
-          const strength = model.strengths[category];
-          const entry = learned.get(learnedKey(model.provider, model.id, category));
-          return (
-            <div key={category} className="flex min-w-0 flex-col">
-              <dt className="text-muted-foreground truncate text-2xs">{CATEGORY_HEADS[category]}</dt>
-              <dd className="flex items-baseline gap-1 text-xs tabular-nums">
-                <span>{strength ?? "–"}</span>
-                {entry && entry.adjustment !== 0 && (
-                  <span className="text-muted-foreground text-2xs" title={learnedHint(entry)}>
-                    {formatDelta(entry.adjustment)}
-                  </span>
-                )}
-              </dd>
-            </div>
-          );
-        })}
-      </dl>
-      {own.length > 0 && (
-        <ul className="flex flex-col gap-0.5">
-          {own.map((rule) => (
-            <li key={rule.id} className="text-muted-foreground text-xs">
-              Your rule: {ruleSentence(rule, groups, projects)}
-            </li>
-          ))}
-        </ul>
+      {toggle.error && (
+        <p role="alert" className="text-destructive text-xs">
+          {toggle.error}
+        </p>
       )}
-      {open && <ModelDetails model={model} />}
-    </li>
+      {open && (
+        <div className="flex flex-col gap-3 pt-1 ps-4">
+          <dl className="grid grid-cols-4 gap-x-3 gap-y-2 @md:grid-cols-8">
+            {CATEGORIES.map((category) => {
+              const strength = model.strengths[category];
+              const entry = learned.get(learnedKey(model.provider, model.id, category));
+              return (
+                <div key={category} className="flex min-w-0 flex-col">
+                  <dt className="text-muted-foreground truncate text-2xs">
+                    {CATEGORY_HEADS[category]}
+                  </dt>
+                  <dd className="flex items-baseline gap-1 text-xs tabular-nums">
+                    <span>{strength ?? "–"}</span>
+                    {entry && entry.adjustment !== 0 && (
+                      <span className="text-muted-foreground text-2xs" title={learnedHint(entry)}>
+                        {formatDelta(entry.adjustment)}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+          <p className="text-muted-foreground text-xs">
+            Scores run 0–10 per kind of work. {statusHint(model)}{" "}
+            <span className="font-mono">{model.id}</span>
+          </p>
+          <ModelDetails model={model} />
+          {!model.excluded && <NeverMenu model={model} projectId={projectId} groups={groups} />}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -322,7 +307,7 @@ function ModelDetails({ model }: { model: MergedModel }) {
   ].filter((fact): fact is string => typeof fact === "string" && fact.length > 0);
   const research = model.research;
   return (
-    <div className="ms-5 flex flex-col gap-2 text-xs">
+    <div className="flex flex-col gap-2 text-xs">
       <p className="text-muted-foreground">{facts.join(" · ")}</p>
       {areas.length > 0 && (
         <p className="text-muted-foreground">
@@ -403,8 +388,8 @@ function NeverMenu({
   return (
     <DropdownMenu onOpenChange={(open) => open && setScope(projectId ?? "")}>
       <DropdownMenuTrigger asChild>
-        <Button size="xs" variant="ghost">
-          Never use for…
+        <Button size="xs" variant="outline" className="w-fit">
+          Don't use for…
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-2xs">

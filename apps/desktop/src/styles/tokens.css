@@ -57,6 +57,7 @@
  *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
  *               max-w-settings                the Settings page's column
+ *               max-w-settings-wide           a Settings page with two panes (Providers)
  *               max-w-setup, h-setup          the first-run setup sheet (near full window, capped)
  *               setup-card                    a setup card's minimum width in its auto-filled grid
  *   Radii       rounded-control (buttons, inputs), rounded-surface (menus, popovers),
@@ -220,6 +221,7 @@
   --container-setup: min(68rem, calc(100vw - 2rem));
   --container-thread: 52rem;
   --container-settings: 48rem;
+  --container-settings-wide: 64rem;
   /* The pinned summary's card. */
   --container-summary: 18.75rem;
 

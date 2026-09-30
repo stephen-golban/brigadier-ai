@@ -30,11 +30,14 @@ export function SettingsPage({
   title,
   description,
   actions,
+  wide = false,
   children,
 }: {
   title: string;
   description?: ReactNode;
   actions?: ReactNode;
+  /** A wider column, for a page with panes side by side. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -42,7 +45,12 @@ export function SettingsPage({
       {/* The page's toolbar strip, for dragging the window. */}
       <div data-tauri-drag-region className="h-page-toolbar shrink-0" />
       <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
-        <div className="max-w-settings mx-auto flex w-full flex-col px-5 pt-4 pb-12">
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col px-5 pt-4 pb-12",
+            wide ? "max-w-settings-wide" : "max-w-settings",
+          )}
+        >
           <header className="flex items-start gap-4 py-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <h1 className="text-page-title font-medium">{title}</h1>

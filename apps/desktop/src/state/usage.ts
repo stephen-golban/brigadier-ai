@@ -1,11 +1,13 @@
+import { useEffect } from "react";
 import { create } from "zustand";
 
 import { request } from "@/ipc/client";
 import type { EventEnvelope, UsageView } from "@/ipc/generated";
+import { useApp } from "@/state/store";
 
 /**
- * The Usage page's data: one `getUsage` read, taken again when a provider is checked and every
- * minute while the page is shown.
+ * The Usage and Models pages' data: one `getUsage` read, taken again when a provider is checked
+ * and every minute while one of them is shown.
  */
 export type UsageState = {
   view: UsageView | null;
@@ -13,7 +15,7 @@ export type UsageState = {
   projectId: string | null;
   loading: boolean;
   error: string | null;
-  /** The page is mounted: provider checks read the view again. */
+  /** A page showing it is mounted: provider checks read the view again. */
   shown: boolean;
 };
 
@@ -82,4 +84,24 @@ export async function checkRegistry(): Promise<void> {
   const view = useUsage.getState().view;
   if (view) useUsage.setState({ view: { ...view, registry } });
   await loadUsage();
+}
+
+/** The view is read again this often while a page shows it and the window can be seen. */
+const REFRESH_EVERY_MS = 60_000;
+
+/** Reads the view on opening a page that shows it, then every minute while it can be seen. */
+export function useUsageRefresh(): void {
+  const connected = useApp((s) => s.connection.status === "connected");
+  useEffect(() => {
+    if (!connected) return;
+    setUsageShown(true);
+    void loadUsage();
+    const timer = window.setInterval(() => {
+      if (useApp.getState().windowVisible) void loadUsage();
+    }, REFRESH_EVERY_MS);
+    return () => {
+      window.clearInterval(timer);
+      setUsageShown(false);
+    };
+  }, [connected]);
 }

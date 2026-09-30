@@ -7,18 +7,15 @@ import {
   Shuffle,
   Warning,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useAction } from "@/app/conversation/useAction";
 import { SettingsButton, SettingsPage } from "@/app/settings/parts";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
-import { ModelsSection } from "@/app/usage/ModelsSection";
-import { RegistrySection } from "@/app/usage/RegistrySection";
 import { SaversSection } from "@/app/usage/SaversSection";
 import { WindowChart } from "@/app/usage/WindowChart";
 import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
-import { Badge } from "@/components/ui/badge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -50,32 +47,12 @@ import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { openConversation, refreshProviders } from "@/state/actions";
 import { useApp } from "@/state/store";
-import { loadUsage, setUsageShown, useUsage } from "@/state/usage";
-
-/** The view is read again this often while the page is shown and the window can be seen. */
-const REFRESH_EVERY_MS = 60_000;
-
-/** Reads the view on opening, then every minute while it can be seen. */
-function useUsageRefresh(): void {
-  const connected = useApp((s) => s.connection.status === "connected");
-  useEffect(() => {
-    if (!connected) return;
-    setUsageShown(true);
-    void loadUsage();
-    const timer = window.setInterval(() => {
-      if (useApp.getState().windowVisible) void loadUsage();
-    }, REFRESH_EVERY_MS);
-    return () => {
-      window.clearInterval(timer);
-      setUsageShown(false);
-    };
-  }, [connected]);
-}
+import { loadUsage, useUsage, useUsageRefresh } from "@/state/usage";
 
 /**
- * The Usage page: each provider's usage windows with their rolling estimates and history,
- * Brigadier's own use in each, what routing did about them, the merged model list and the
- * registry it comes from; then the usage savers' switches.
+ * The Usage page: each agent's usage windows, a row each (how much is used, when it resets,
+ * where it's heading; opening one shows its history and Brigadier's own use of it), what
+ * routing did about them lately, then the usage savers' switches.
  */
 export function UsagePage() {
   useUsageRefresh();
@@ -90,7 +67,7 @@ export function UsagePage() {
   return (
     <SettingsPage
       title="Usage"
-      description="How much of each agent's usage windows is spent, where it's heading, and what routing does about it."
+      description="How much of each agent's usage is left, and where it's heading."
       actions={
         <>
           {view && (
@@ -141,8 +118,6 @@ export function UsagePage() {
               ))}
             </section>
             <ActivitySection activity={view.activity} groups={groups} now={now} />
-            <ModelsSection view={view} groups={groups} />
-            <RegistrySection registry={view.registry} now={now} />
           </>
         )}
 
@@ -178,6 +153,7 @@ function missingReason(overview: ProviderOverview | undefined, usage: ProviderUs
   return null;
 }
 
+/** An agent's card: its plan and heat, then a row per usage window. */
 function ProviderSection({
   provider,
   usage,
@@ -198,10 +174,10 @@ function ProviderSection({
   const missing = missingReason(overview, usage);
   const windows = (quota?.windows ?? []).toSorted((a, b) => byLength(a.window, b.window));
   return (
-    <div className="bg-card rounded-surface flex flex-col gap-4 border p-4">
-      <div className="flex items-center gap-2">
+    <div className="bg-card border-divider rounded-settings flex flex-col border">
+      <div className="flex items-center gap-2 px-4 pt-3.5 pb-1">
         <ProviderGlyph provider={provider} className="size-icon-md shrink-0" />
-        <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
+        <h2 className="text-label min-w-0 flex-1 truncate font-medium">
           {PROVIDER_LABELS[provider]}
           {plan && (
             <span className="text-muted-foreground font-normal">
@@ -211,15 +187,15 @@ function ProviderSection({
             </span>
           )}
         </h2>
-        {quota && <HeatBadge heat={quota.heat} />}
         {quota?.observedAtMs != null && (
           <span className="text-muted-foreground text-2xs">
             Read {formatAgo(quota.observedAtMs, now)}
           </span>
         )}
+        {quota && <HeatBadge heat={quota.heat} />}
       </div>
       {quota?.limit && (
-        <p className="text-destructive text-sm">
+        <p className="text-destructive px-4 pt-1 text-sm">
           {VENDOR_LABELS[provider]} {limitPhrase(quota.limit, provider, overviews, now)}
           {quota.limit.resetsAtMs !== null &&
             ` · ${formatCountdown(quota.limit.resetsAtMs, now)} left`}
@@ -227,15 +203,15 @@ function ProviderSection({
         </p>
       )}
       {usage?.balancing && (
-        <p className="text-muted-foreground flex items-start gap-1.5 text-xs">
+        <p className="text-muted-foreground flex items-start gap-1.5 px-4 pt-1 text-xs">
           <Shuffle aria-hidden className="size-icon-xs mt-0.5 shrink-0" />
           <span>{usage.balancing}</span>
         </p>
       )}
       {missing ? (
-        <p className="text-muted-foreground text-xs">{missing}</p>
+        <p className="text-muted-foreground px-4 pt-1 pb-3.5 text-xs">{missing}</p>
       ) : (
-        <div className="flex flex-col divide-y">
+        <div className="flex flex-col py-1.5">
           {windows.map((state) => (
             <WindowRow
               key={state.window.id}
@@ -254,8 +230,8 @@ function ProviderSection({
 }
 
 /**
- * "≈72% at reset at the recent rate", "Runs out ≈20:40, 30m before reset". None once the window
- * is at its limit: it has run out already, and the heat badge says so.
+ * "≈72% at reset", "Runs out ≈20:40, 30m before reset", at the recent rate. None once the
+ * window is at its limit: it has run out already, and its percentage says so.
  */
 function forecastLine(state: WindowState, now: number): string | null {
   const { forecast, window, heat } = state;
@@ -269,6 +245,10 @@ function forecastLine(state: WindowState, now: number): string | null {
   return `≈${Math.round(forecast.projectedAtReset)}% at reset at the recent rate`;
 }
 
+/**
+ * A usage window on one line: its name, a bar, how much is used and when it resets; under it
+ * where it's heading. Opening it shows the window's history and Brigadier's own use of it.
+ */
 function WindowRow({
   provider,
   state,
@@ -284,64 +264,90 @@ function WindowRow({
   groups: readonly ModelGroup[];
   now: number;
 }) {
+  const [open, setOpen] = useState(false);
   const { window, forecast, heat } = state;
   const used = Math.round(Math.min(100, Math.max(0, window.usedPercent)));
   const scope = windowScope(window);
   const estimate = forecastLine(state, now);
+  const warm = heat === "hot" || heat === "limited";
   const span =
     window.resetsAtMs !== null && window.windowMinutes !== null
       ? { start: window.resetsAtMs - window.windowMinutes * 60_000, end: window.resetsAtMs }
       : null;
   return (
-    <div data-slot="usage-window" className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="text-sm">{window.label}</span>
-        {scope && <Badge variant="outline">{scope}</Badge>}
-        <span className="flex-1" />
-        <HeatBadge heat={heat} />
-        <span
-          className={cn(
-            "text-sm tabular-nums",
-            heat === "hot" || heat === "limited" ? HEAT_TONES[heat].text : "text-foreground",
-          )}
-        >
-          {used}% used
+    <Collapsible open={open} onOpenChange={setOpen} data-slot="usage-window">
+      <CollapsibleTrigger className="hover:bg-foreground/4 focus-visible:ring-ring/50 group flex w-full flex-col gap-1 px-4 py-2 text-start outline-none focus-visible:ring-2 focus-visible:ring-inset">
+        <span className="flex w-full items-center gap-4">
+          <span className="flex w-36 min-w-0 shrink items-center gap-1.5">
+            <ChevronRight
+              aria-hidden
+              className="text-muted-foreground size-icon-xs shrink-0 transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none"
+            />
+            <span className="text-label truncate" title={window.label}>
+              {window.label}
+            </span>
+          </span>
+          <span
+            role="meter"
+            aria-label={`${window.label} used`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={used}
+            className="bg-muted rounded-capsule h-1.5 min-w-12 flex-1 overflow-hidden"
+          >
+            <span
+              className={cn("block h-full", warm ? HEAT_TONES[heat].fill : "bg-muted-foreground/60")}
+              style={{ width: `${used}%` }}
+            />
+          </span>
+          <span className="flex shrink-0 items-baseline justify-end gap-2 text-xs tabular-nums">
+            <span
+              className={cn("text-label w-20 text-end", warm ? HEAT_TONES[heat].text : "text-foreground")}
+            >
+              {used}% used
+            </span>
+            {window.resetsAtMs !== null && (
+              <span
+                className="text-muted-foreground w-28 text-end"
+                title={`Resets ${formatResetAt(window.resetsAtMs, now)}`}
+              >
+                resets in {formatCountdown(window.resetsAtMs, now)}
+              </span>
+            )}
+          </span>
         </span>
-      </div>
-      <div
-        role="meter"
-        aria-label={`${window.label} used`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={used}
-        className="bg-muted rounded-capsule h-1.5 overflow-hidden"
-      >
-        <div className={cn("h-full", HEAT_TONES[heat].fill)} style={{ width: `${used}%` }} />
-      </div>
-      <div className="text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
-        {window.resetsAtMs !== null && (
-          <span className="tabular-nums">
-            Resets {formatResetAt(window.resetsAtMs, now)} · in{" "}
-            {formatCountdown(window.resetsAtMs, now)}
+        {(scope || estimate) && (
+          <span className="text-muted-foreground flex min-w-0 max-w-full gap-1.5 ps-5 text-xs">
+            {scope && <span className="truncate">{scope}</span>}
+            {scope && estimate && <span aria-hidden>·</span>}
+            {estimate && (
+              <span className={cn("truncate", forecast?.runsOutAtMs != null && "text-warning")}>
+                {estimate}
+              </span>
+            )}
           </span>
         )}
-        {estimate && (
-          <span className={cn(forecast?.runsOutAtMs != null && "text-warning")}>{estimate}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="flex flex-col gap-3 px-4 pt-1 pb-3 ps-9">
+        {window.resetsAtMs !== null && (
+          <p className="text-muted-foreground text-xs">
+            Resets {formatResetAt(window.resetsAtMs, now)}
+          </p>
         )}
-      </div>
-      {span && (
-        <WindowChart
-          samples={history?.samples ?? []}
-          startMs={span.start}
-          endMs={span.end}
-          nowMs={now}
-          usedPercent={window.usedPercent}
-          forecast={heat === "limited" ? null : forecast}
-          label={window.label}
-        />
-      )}
-      {tokens && <TokensView provider={provider} tokens={tokens} groups={groups} />}
-    </div>
+        {span && (
+          <WindowChart
+            samples={history?.samples ?? []}
+            startMs={span.start}
+            endMs={span.end}
+            nowMs={now}
+            usedPercent={window.usedPercent}
+            forecast={heat === "limited" ? null : forecast}
+            label={window.label}
+          />
+        )}
+        {tokens && <TokensView provider={provider} tokens={tokens} groups={groups} />}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -455,7 +461,7 @@ function ActivitySection({
   return (
     <section aria-labelledby="usage-activity" className="flex flex-col gap-2">
       <h2 id="usage-activity" className="text-sm font-medium">
-        Routing activity
+        Recent activity
       </h2>
       {activity.length === 0 ? (
         <p className="text-muted-foreground text-sm">

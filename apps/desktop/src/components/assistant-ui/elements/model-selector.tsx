@@ -2,6 +2,7 @@ import { Bolt, Check, ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
 import { type FC, type ReactNode, useState } from "react";
 
 import { composerPill } from "@/components/assistant-ui/elements/surfaces";
+import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -125,7 +126,7 @@ const FLYOUT =
   "w-xs max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto p-1";
 
 /**
- * The model and effort picker. The trigger reads "Opus 5.5 High": the
+ * The model and effort picker. The trigger reads "Opus 5.5 High" after its agent's logo: the
  * model and effort the conversation runs with, the CLI's defaults spelled out. The menu lists
  * the model's efforts (its default marked), Fast where the model has a fast tier, then each
  * provider with its model in use, opening to the side on its latest models and a Legacy row
@@ -212,6 +213,7 @@ export function ModelSelector({
           data-slot="model-selector-trigger"
           className={cn(composerPill, "text-muted-foreground gap-1", className)}
         >
+          <ProviderGlyph provider={value.provider} className="size-icon-sm shrink-0" />
           {fast && <Bolt aria-label="Fast" className="text-foreground" />}
           <span className="text-foreground truncate">{name}</span>
           {effort && <span className="shrink-0">{effortLabel(effort)}</span>}
@@ -274,6 +276,7 @@ export function ModelSelector({
                   disabled={group.unavailable !== null || group.models.length === 0}
                   data-slot="model-selector-provider"
                 >
+                  <ProviderGlyph provider={group.provider} className="size-icon-md shrink-0" />
                   <span className={cn(group.provider === value.provider && "font-medium")}>
                     {group.label}
                   </span>

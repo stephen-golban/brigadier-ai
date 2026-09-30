@@ -2,8 +2,8 @@ import {
   Archive,
   Chats,
   MemoryOnRemember,
+  Robot,
   SettingsCog,
-  Shuffle,
   Storage,
   Terminal,
   Usage,
@@ -14,8 +14,8 @@ import { ARCHIVED_ROWS, ArchivedPage } from "@/app/settings/ArchivedPage";
 import { CONVERSATIONS_ROWS, ConversationsPage } from "@/app/settings/ConversationsPage";
 import { GENERAL_ROWS, GeneralPage } from "@/app/settings/GeneralPage";
 import { PERSONALIZATION_ROWS, PersonalizationPage } from "@/app/settings/PersonalizationPage";
-import { ROUTING_ROWS, RoutingPage } from "@/app/settings/RoutingPage";
 import { STORAGE_ROWS, StoragePage } from "@/app/settings/StoragePage";
+import { PROVIDERS_ROWS, ProvidersPage } from "@/app/providers/ProvidersPage";
 import { SAVER_ROWS } from "@/app/usage/SaversSection";
 import type { SettingsPageId } from "@/state/store";
 
@@ -27,7 +27,7 @@ import type { SettingsPageId } from "@/state/store";
 
 export type SettingsRowCopy = { readonly label: string; readonly description?: string };
 
-export type SettingsGroup = "Personal" | "Models" | "System" | "Archived";
+export type SettingsGroup = "Personal" | "Agents" | "System" | "Archived";
 
 export type SettingsPageEntry = {
   id: SettingsPageId;
@@ -60,14 +60,12 @@ const INSPECTOR_ROWS: readonly SettingsRowCopy[] = [
 ];
 
 const USAGE_ROWS: readonly SettingsRowCopy[] = [
-  { label: "Usage windows", description: "How much of each agent's usage windows is spent." },
-  { label: "Routing activity", description: "What routing did about the usage windows." },
-  { label: "Models", description: "The merged model list routing picks from." },
-  { label: "Model registry", description: "Where the model list comes from, and its updates." },
+  { label: "Usage windows", description: "How much of each agent's usage is left." },
+  { label: "Recent activity", description: "Hand-offs, and work waiting for quota." },
   ...Object.values(SAVER_ROWS),
 ];
 
-export const SETTINGS_GROUPS: readonly SettingsGroup[] = ["Personal", "Models", "System", "Archived"];
+export const SETTINGS_GROUPS: readonly SettingsGroup[] = ["Personal", "Agents", "System", "Archived"];
 
 export const SETTINGS_PAGES: readonly SettingsPageEntry[] = [
   {
@@ -103,12 +101,12 @@ export const SETTINGS_PAGES: readonly SettingsPageEntry[] = [
     rows: USAGE_ROWS,
   },
   {
-    id: "routing",
-    label: "Routing",
-    icon: Shuffle,
-    group: "Models",
-    component: RoutingPage,
-    rows: Object.values(ROUTING_ROWS),
+    id: "providers",
+    label: "Providers",
+    icon: Robot,
+    group: "Agents",
+    component: ProvidersPage,
+    rows: Object.values(PROVIDERS_ROWS),
   },
   {
     id: "storage",

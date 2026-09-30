@@ -40,6 +40,7 @@ import {
 import { pickFolder } from "@/ipc/client";
 import type { ProjectCandidate, ProviderKind, ProviderOverview } from "@/ipc/generated";
 import { formatAgo, shortPath } from "@/lib/format";
+import { providerStatusText } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import {
   createProject,
@@ -344,16 +345,6 @@ function agentState(overview: ProviderOverview | undefined): AgentState {
   return status.loggedIn ? "ready" : "signIn";
 }
 
-function agentDetail(overview: ProviderOverview | undefined): string {
-  const status = overview?.status;
-  if (!status) return "Checking…";
-  if (!status.path) return "Not installed";
-  if (!status.loggedIn) return "Not signed in";
-  const method = status.authMethod ? `Signed in with ${status.authMethod}` : "Signed in";
-  const plan = status.plan ? ` · ${status.plan.charAt(0).toUpperCase()}${status.plan.slice(1)} plan` : "";
-  return method + plan;
-}
-
 /** Checks every agent again; results arrive as events. */
 async function checkAgents(): Promise<void> {
   try {
@@ -427,7 +418,7 @@ function AgentsStep({ onContinue }: { onContinue: () => void }) {
                       provider={provider}
                       path={overview?.status?.path ?? null}
                       state={state}
-                      detail={agentDetail(overview)}
+                      detail={providerStatusText(overview)}
                       settingUp={settingUp?.provider === provider}
                       onSetUp={(install) =>
                         setSetup({ provider, install, from: install ? "install" : "signIn" })

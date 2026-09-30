@@ -2,14 +2,16 @@ import { ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
 import { useState } from "react";
 
 import { CategoryCard } from "@/app/routing/CategoryCard";
+import { KindRow } from "@/app/routing/KindPicker";
 import { RULES_ROW, RulesSection } from "@/app/routing/RulesSection";
 import {
   type Choice,
   SettingsButton,
-  SettingsPage,
+  SettingsCard,
   SettingsSection,
   SettingsSelect,
 } from "@/app/settings/parts";
+import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,16 +30,25 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Area } from "@/ipc/generated";
 import { AREA_LABELS, AREAS, RANKED_CATEGORIES } from "@/lib/routing";
-import { useModelGroups } from "@/lib/setup";
 import { resetToAutomatic, useRoutePreview } from "@/state/routing";
 import { useApp } from "@/state/store";
 
 /** The Routing page's rows, for Settings search; the page renders this copy. */
 export const ROUTING_ROWS = {
-  kinds: {
-    label: "Kinds of work",
+  simple: {
+    label: "Who does what",
     description:
-      "What the next task of each kind would run on, now. The orchestrator's own model is picked in the composer.",
+      "Which model does each kind of work Brigadier hands out. Leave it on Automatic, or pick a model. The chat's own model is picked in the composer.",
+  },
+  advanced: {
+    label: "Advanced",
+    description:
+      "The full order and why, backup models, different settings per project or area, and rules like “never use this model for reviews”.",
+  },
+  kinds: {
+    label: "Kinds of work in detail",
+    description:
+      "Open one to see every model in the order routing would try it, and why, or to set an order of your own.",
   },
   modes: {
     label: "Automatic or Manual",
@@ -55,12 +66,40 @@ export const ROUTING_ROWS = {
 } as const;
 
 /**
- * The Routing page: per kind of work, whether Brigadier ranks the models (Automatic, with the
+ * Who does what: one row per kind of work in plain words, each with one choice: Automatic
+ * (what Brigadier would pick now shows) or a model the user picks.
+ */
+export function RoutingKinds({ groups }: { groups: readonly ModelGroup[] }) {
+  const { routes, error } = useRoutePreview(null, NO_AREAS);
+  return (
+    <SettingsSection title={ROUTING_ROWS.simple.label} description={ROUTING_ROWS.simple.description}>
+      {error && (
+        <p role="alert" className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
+      <SettingsCard>
+        {RANKED_CATEGORIES.map((category) => (
+          <KindRow
+            key={category}
+            category={category}
+            route={routes?.find((route) => route.category === category) ?? null}
+            groups={groups}
+          />
+        ))}
+      </SettingsCard>
+    </SettingsSection>
+  );
+}
+
+const NO_AREAS: Area[] = [];
+
+/**
+ * Routing in full: per kind of work, whether Brigadier ranks the models (Automatic, with the
  * live order and why) or tries the user's list (Manual), everywhere or in one project, with
  * area overrides; then the user's rules.
  */
-export function RoutingPage() {
-  const groups = useModelGroups();
+export function AdvancedRouting({ groups }: { groups: readonly ModelGroup[] }) {
   const projects = useApp((s) => s.projects);
   const rankings = useApp((s) => s.settings.routingRankings);
   const [scope, setScope] = useState<string | null>(null);
@@ -77,42 +116,45 @@ export function RoutingPage() {
   const manualHere = rankings.some((ranking) => ranking.projectId === scope && ranking.manual);
 
   return (
-    <SettingsPage
-      title="Routing"
-      description="How Brigadier picks a model and effort for each kind of work. Automatic ranks models by strength, what worked in the project and quota; Manual tries your list top-down."
-      actions={
-        <>
-          <SettingsSelect
-            label="Where these settings apply"
-            value={scope ?? ""}
-            options={scopes}
-            onChange={(value) => setScope(value === "" ? null : value)}
-          />
-          <SettingsButton disabled={!manualHere} onClick={() => setResetting(true)}>
-            {ROUTING_ROWS.reset.label}
-          </SettingsButton>
-        </>
-      }
-    >
+    <>
       <SettingsSection
         title={ROUTING_ROWS.kinds.label}
         description={ROUTING_ROWS.kinds.description}
-        actions={<AreaPicker areas={areas} onChange={setAreas} />}
+        actions={
+          <>
+            <SettingsSelect
+              label="Where these settings apply"
+              value={scope ?? ""}
+              options={scopes}
+              onChange={(value) => setScope(value === "" ? null : value)}
+            />
+            {manualHere && (
+              <SettingsButton onClick={() => setResetting(true)}>
+                {ROUTING_ROWS.reset.label}
+              </SettingsButton>
+            )}
+          </>
+        }
       >
+        <div className="flex justify-end">
+          <AreaPicker areas={areas} onChange={setAreas} />
+        </div>
         {error && (
           <p role="alert" className="text-destructive text-xs">
             {error}
           </p>
         )}
-        {RANKED_CATEGORIES.map((category) => (
-          <CategoryCard
-            key={category}
-            category={category}
-            route={routes?.find((route) => route.category === category) ?? null}
-            scope={scope}
-            groups={groups}
-          />
-        ))}
+        <SettingsCard>
+          {RANKED_CATEGORIES.map((category) => (
+            <CategoryCard
+              key={category}
+              category={category}
+              route={routes?.find((route) => route.category === category) ?? null}
+              scope={scope}
+              groups={groups}
+            />
+          ))}
+        </SettingsCard>
       </SettingsSection>
       <RulesSection groups={groups} />
       <p className="text-muted-foreground text-xs">
@@ -126,7 +168,7 @@ export function RoutingPage() {
         onOpenChange={setResetting}
         onConfirm={() => resetToAutomatic(scope)}
       />
-    </SettingsPage>
+    </>
   );
 }
 
@@ -140,7 +182,9 @@ function AreaPicker({ areas, onChange }: { areas: Area[]; onChange: (areas: Area
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button type="button" size="xs" variant="ghost" aria-label={`Preview for tasks touching: ${label}`}>
-          {label}
+          <span className="text-muted-foreground">Previewing</span>
+          {label.charAt(0).toLowerCase()}
+          {label.slice(1)}
           <ChevronDown />
         </Button>
       </DropdownMenuTrigger>
