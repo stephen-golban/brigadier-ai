@@ -803,7 +803,8 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
         inert={!visible}
         className={cn(
           "flex h-full justify-end overflow-clip",
-          full ? "flex-1" : "shadow-side-panel",
+          // A clip, unlike a scroller, doesn't let a flex item shrink below its content.
+          full ? "min-w-0 flex-1" : "shadow-side-panel",
           moving && !full && "ease-panel transition-[width] duration-500 motion-reduce:transition-none",
         )}
         style={full ? undefined : out ? size : { width: 0 }}

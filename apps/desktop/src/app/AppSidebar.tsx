@@ -86,7 +86,7 @@ export function TitlebarToggle() {
   const { open } = useSidebar();
   const { sidebar } = useShortcuts();
   return (
-    <div className="h-titlebar start-titlebar-start absolute top-0 z-20 flex items-center">
+    <div className="h-titlebar-toggle start-titlebar-start absolute top-0 z-20 flex items-center">
       <TitlebarTips>
         <Tooltip>
           <TooltipTrigger asChild>

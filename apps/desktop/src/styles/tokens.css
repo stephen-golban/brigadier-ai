@@ -52,6 +52,7 @@
  *                                             round over the columns
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
  *               start-titlebar-start          where the sidebar toggle sits in the titlebar
+ *               h-titlebar-toggle             the band it centres in (level with the lights)
  *               ps-titlebar-clear             the top bar's inset clearing it while the
  *                                             sidebar panel is closed
  *               w-agents                      a session's agents panel
@@ -212,6 +213,8 @@
      on macOS, see below); with the panel closed, the top bar beside the rail starts this far
      in, clear of it. */
   --spacing-titlebar-start: calc(var(--spacing) * 2);
+  /* The band the sidebar toggle centres in: the titlebar, or on macOS the traffic lights'. */
+  --spacing-titlebar-toggle: var(--spacing-titlebar);
   --spacing-titlebar-clear: calc(
     var(--spacing-titlebar-start) + var(--spacing-icon-button-md) + var(--spacing) * 2 -
       var(--spacing-rail)
@@ -488,12 +491,13 @@
   --sidebar-ring: oklch(0.556 0.004 var(--tint));
 }
 
-/* On macOS the toggle's centre sits 26px past the traffic lights; in full screen they are
-   gone and it moves to the titlebar's start. */
+/* On macOS the toggle's centre sits 26px past the traffic lights and level with them (they
+   stay put at any density); in full screen they are gone and it moves to the titlebar's start. */
 :root[data-platform="macos"]:not([data-fullscreen]) {
   --spacing-titlebar-start: calc(
     var(--spacing-traffic-lights) + 1.625rem - var(--spacing-icon-button-md) / 2
   );
+  --spacing-titlebar-toggle: 2.75rem;
 }
 
 :root[data-density="compact"] {
