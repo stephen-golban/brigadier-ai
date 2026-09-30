@@ -135,11 +135,6 @@
   );
 }
 
-/* A hairline on a column's end, between the sidebar panel and the content. */
-@utility border-e-hairline {
-  border-inline-end: 0.5px solid var(--color-divider);
-}
-
 /* A hairline down a column's start below the titlebar strip: the content beside the sidebar
    panel. */
 @utility body-divider {
