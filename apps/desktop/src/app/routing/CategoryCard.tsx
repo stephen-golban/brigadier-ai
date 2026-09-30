@@ -41,8 +41,8 @@ import {
   formatResetAt,
   formatScore,
   KIND_HINTS,
-  KIND_NAMES,
   newRuleId,
+  PLAIN_KIND_NAMES,
   ruleSentence,
 } from "@/lib/routing";
 import { cn } from "@/lib/utils";
@@ -113,7 +113,7 @@ export function CategoryCard({
   const everywhere = scope === null ? null : rowRanking(rankings, category, null);
   const mode: Mode = own ? (own.manual ? "manual" : "automatic") : scope ? "inherit" : "automatic";
   const action = useAction();
-  const name = KIND_NAMES[category];
+  const name = PLAIN_KIND_NAMES[category];
 
   const setMode = (next: Mode) =>
     action.run(async () => {
