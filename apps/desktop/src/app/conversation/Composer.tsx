@@ -26,6 +26,7 @@ import {
   openPermissionsHelp,
   PermissionPicker,
   ProjectSettingsButton,
+  ProvidersButton,
 } from "@/app/conversation/SetupPickers";
 import type { ComposerInputProps } from "@/app/conversation/ComposerEditor";
 import { type MentionMemory, Mentions } from "@/app/conversation/Mentions";
@@ -664,6 +665,7 @@ function ComposerHint({ target }: { target: ComposerTarget }) {
     return (
       <p className="text-muted-foreground flex items-center gap-2 px-2 text-xs">
         {problem}
+        {resolved.noModel && <ProvidersButton />}
         {project && !resolved.repoPath && <ProjectSettingsButton project={project} />}
         {repo.error && resolved.kind === "session" && (
           <span className="text-destructive">{repo.error}</span>

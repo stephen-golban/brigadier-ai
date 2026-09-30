@@ -100,6 +100,8 @@ export type ResolvedDraft = {
   target: DraftTarget | null;
   /** Why the draft can't be sent yet, in words. */
   problem: string | null;
+  /** No model is available: every agent is off or all its models are hidden on Providers. */
+  noModel: boolean;
 };
 
 /** Resolves a draft's setup: the composer's choices, then the project's, then the defaults. */
@@ -128,7 +130,7 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
   let problem: string | null = null;
   let target: DraftTarget | null = null;
   if (noModel) {
-    problem = "No model is available. Turn one on in Settings › Providers.";
+    problem = "No model is available. Turn one on in Providers.";
   } else if (kind === "chat") {
     target = { kind: "chat", setup: { type: "chat", model } };
   } else if (!project || !repoPath) {
@@ -176,5 +178,6 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
     groups,
     target,
     problem,
+    noModel,
   };
 }

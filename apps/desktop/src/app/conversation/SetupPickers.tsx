@@ -76,6 +76,16 @@ export function ProjectSettingsButton({ project }: { project: Project }) {
   );
 }
 
+/** Opens Settings › Providers, for when no model is available. */
+export function ProvidersButton() {
+  return (
+    <Button size="xs" variant="outline" onClick={() => openSettings("providers")}>
+      <SettingsIcon />
+      Open Providers
+    </Button>
+  );
+}
+
 
 // ----- permission ------------------------------------------------------------------------
 
