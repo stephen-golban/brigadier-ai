@@ -384,7 +384,7 @@ export function SummaryPane({ summary, children }: { summary: boolean; children:
     <div
       ref={pane}
       data-pinned={(summary && pinned) || undefined}
-      className="group/pane relative min-h-0 flex-1 data-pinned:data-[summary=shift]:thread-column:-translate-x-(--spacing-summary-shift) motion-safe:data-settled:thread-column:transition-[translate] motion-safe:data-settled:thread-column:duration-350 motion-safe:data-settled:thread-column:ease-summary-shift"
+      className="group/pane relative min-h-0 flex-1 overflow-x-clip data-pinned:data-[summary=shift]:thread-column:-translate-x-(--spacing-summary-shift) motion-safe:data-settled:thread-column:transition-[translate] motion-safe:data-settled:thread-column:duration-350 motion-safe:data-settled:thread-column:ease-summary-shift"
     >
       {children}
     </div>
