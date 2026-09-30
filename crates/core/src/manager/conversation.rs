@@ -1435,7 +1435,7 @@ impl SessionManager {
                 (
                     choice,
                     prompt,
-                    vec![self.brigadier_server(grant, ORCHESTRATOR_TOOL_TIMEOUT_SECS)],
+                    vec![self.brigadier_server(grant, ORCHESTRATOR_TOOL_TIMEOUT_SECS, false)],
                 )
             }
             (Some(Setup::Chat { .. }) | None, ConversationKind::Chat) => {
@@ -1455,7 +1455,7 @@ impl SessionManager {
                 (
                     fallback.unwrap_or(model),
                     prompts::chat(&memories),
-                    vec![self.brigadier_server(grant, CHAT_TOOL_TIMEOUT_SECS)],
+                    vec![self.brigadier_server(grant, CHAT_TOOL_TIMEOUT_SECS, false)],
                 )
             }
             (Some(Setup::Chat { .. }), ConversationKind::Session) => {
@@ -1595,8 +1595,14 @@ impl SessionManager {
         }
     }
 
-    /// The Brigadier MCP server entry a CLI session gets.
-    pub(crate) fn brigadier_server(&self, grant: String, timeout_secs: u64) -> McpServer {
+    /// The Brigadier MCP server entry a CLI session gets; `always_load` for a session that
+    /// should use its tools without looking them up first (see [`McpServer::always_load`]).
+    pub(crate) fn brigadier_server(
+        &self,
+        grant: String,
+        timeout_secs: u64,
+        always_load: bool,
+    ) -> McpServer {
         McpServer {
             name: "brigadier".into(),
             command: self.config.daemon_exe.clone(),
@@ -1608,6 +1614,7 @@ impl SessionManager {
             env: vec![("BRIGADIER_MCP_GRANT".into(), grant)],
             tool_timeout_secs: Some(timeout_secs),
             trusted: true,
+            always_load,
         }
     }
 

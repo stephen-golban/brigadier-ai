@@ -749,6 +749,10 @@ pub struct McpServer {
     pub tool_timeout_secs: Option<u64>,
     /// Its tool calls run without asking for approval (Brigadier's own server).
     pub trusted: bool,
+    /// Its tools are in the model's tool list from the start. Claude otherwise defers MCP
+    /// tools behind its tool search, and a model that has to look a tool up first tends to
+    /// fall back to its built-in ones.
+    pub always_load: bool,
 }
 
 /// Everything needed to start a provider session.

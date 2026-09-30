@@ -553,7 +553,7 @@ impl SessionManager {
                 unix_sockets: self.socket_path().into_iter().collect(),
             },
             append_system_prompt: Some(JOB_ROLE.to_owned()),
-            mcp_servers: vec![self.brigadier_server(grant.clone(), JOB_TOOL_TIMEOUT_SECS)],
+            mcp_servers: vec![self.brigadier_server(grant.clone(), JOB_TOOL_TIMEOUT_SECS, true)],
             tools: ToolSet::Default,
             env: vec![("TMPDIR".into(), scratch.to_string_lossy().into_owned())],
             path_prepend: Vec::new(),

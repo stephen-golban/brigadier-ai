@@ -786,7 +786,7 @@ impl SessionManager {
             origin,
             access: access.clone(),
             append_system_prompt: Some(prompt),
-            mcp_servers: vec![self.brigadier_server(worker_grant, WORKER_TOOL_TIMEOUT_SECS)],
+            mcp_servers: vec![self.brigadier_server(worker_grant, WORKER_TOOL_TIMEOUT_SECS, true)],
             tools: if usage.lean_worker_tools {
                 ToolSet::Lean
             } else {

@@ -943,15 +943,19 @@ fn token_usage(usage: &Value) -> TokenUsage {
     }
 }
 
-/// Text of a message or tool result: a string, or the text blocks of a content array.
+/// Text of a message or tool result: a string, or the text blocks of a content array (a tool
+/// search's result names the tools it loaded).
 fn content_text(value: &Value) -> String {
     match value.get("content") {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(blocks)) => blocks
             .iter()
             .filter_map(|block| match block {
-                Value::String(text) => Some(text.as_str()),
-                _ => str_of(block, "text"),
+                Value::String(text) => Some(text.clone()),
+                _ if str_of(block, "type") == Some("tool_reference") => {
+                    str_of(block, "tool_name").map(|name| format!("Loaded tool: {name}"))
+                }
+                _ => str_of(block, "text").map(str::to_owned),
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -1127,4 +1131,23 @@ pub fn user_message(content: Vec<Value>) -> String {
         "uuid": uuid::Uuid::new_v4().to_string(),
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::content_text;
+
+    #[test]
+    fn a_tool_search_result_names_the_tools_it_loaded() {
+        let result = json!({ "content": [
+            { "type": "tool_reference", "tool_name": "mcp__brigadier__code_search" },
+            { "type": "text", "text": "done" },
+        ]});
+        assert_eq!(
+            content_text(&result),
+            "Loaded tool: mcp__brigadier__code_search\ndone"
+        );
+    }
 }

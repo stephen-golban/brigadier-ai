@@ -287,6 +287,9 @@ fn mcp_config(servers: &[McpServer]) -> Value {
                 if let Some(secs) = server.tool_timeout_secs {
                     config["timeout"] = json!(secs * 1000);
                 }
+                if server.always_load {
+                    config["alwaysLoad"] = json!(true);
+                }
                 config
             })
         })
