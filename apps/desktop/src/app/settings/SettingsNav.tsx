@@ -82,7 +82,7 @@ export function SettingsNav() {
                   <li key={`${result.page.id}:${result.row?.label ?? ""}`}>
                     <button
                       type="button"
-                      className={cn(navRow, "h-auto items-start py-1.5")}
+                      className={cn(navRow, "h-auto items-start py-2.5")}
                       onClick={() => openResult(result)}
                     >
                       <Icon aria-hidden className="text-muted-foreground mt-0.5" />

@@ -1,4 +1,4 @@
-import { ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
+import { Check, ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
 import { ToggleGroup as ToggleGroupPrimitive } from "radix-ui";
 import { useId, type ComponentProps, type ReactNode } from "react";
 
@@ -60,12 +60,15 @@ export function SettingsPage({
 /** A heading over one or more cards (or any content), with optional actions at its end. */
 export function SettingsSection({
   title,
+  icon,
   description,
   actions,
   children,
   className,
 }: {
   title?: string;
+  /** Shown before the title (an archived group's folder). */
+  icon?: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
@@ -78,8 +81,9 @@ export function SettingsSection({
         <div className="flex min-h-11.5 items-center justify-between gap-4 pb-1.5">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             {title && (
-              <h2 id={id} className="text-sm font-medium">
-                {title}
+              <h2 id={id} className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                {icon}
+                <span className="truncate">{title}</span>
               </h2>
             )}
             {description && <p className="text-muted-foreground text-label">{description}</p>}
@@ -283,6 +287,7 @@ export function SettingsSelect<T extends string>({
             <DropdownMenuRadioItem
               key={option.value}
               value={option.value}
+              indicator={<Check className="size-icon-md" />}
               className={option.hint ? "h-auto py-1.5" : undefined}
             >
               <span className="flex min-w-0 flex-col">

@@ -1,4 +1,4 @@
-import { Archive } from "@openai/apps-sdk-ui/components/Icon";
+import { Archive, Chats, Folder, Trash } from "@openai/apps-sdk-ui/components/Icon";
 import { useMemo, useState } from "react";
 
 import { DeleteDialog } from "@/app/dialogs/DeleteDialog";
@@ -10,6 +10,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "@/app/settings/parts";
+import { Button } from "@/components/ui/button";
 import type { Conversation } from "@/ipc/generated";
 import { formatDateTime } from "@/lib/format";
 import { openConversation, restore } from "@/state/actions";
@@ -80,7 +81,7 @@ export function ArchivedPage() {
 
   return (
     <SettingsPage
-      title="Archived"
+      title="Archived chats"
       description="Archived sessions and chats keep their transcript and artifacts; their workers, worktrees and processes are gone. Unmerged branches are kept."
     >
       <ErrorLine error={error} />
@@ -94,6 +95,13 @@ export function ArchivedPage() {
         <SettingsSection
           key={group.key}
           title={group.label}
+          icon={
+            group.key === "chats" ? (
+              <Chats aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
+            ) : (
+              <Folder aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
+            )
+          }
           actions={<span className="text-muted-foreground text-label">{countLabel(group)}</span>}
         >
           <SettingsCard>
@@ -111,14 +119,21 @@ export function ArchivedPage() {
                 }
                 description={formatDateTime(conversation.updatedAtMs)}
               >
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Delete “${conversation.title}”…`}
+                  title="Delete…"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => setDeleting(conversation)}
+                >
+                  <Trash />
+                </Button>
                 <SettingsButton
                   disabled={busy === conversation.id}
                   onClick={() => onRestore(conversation.id)}
                 >
                   Unarchive
-                </SettingsButton>
-                <SettingsButton destructive onClick={() => setDeleting(conversation)}>
-                  Delete…
                 </SettingsButton>
               </SettingsRow>
             ))}
