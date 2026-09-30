@@ -15,6 +15,7 @@ import { GENERAL_ROWS, GeneralPage } from "@/app/settings/GeneralPage";
 import { PERSONALIZATION_ROWS, PersonalizationPage } from "@/app/settings/PersonalizationPage";
 import { ROUTING_ROWS, RoutingPage } from "@/app/settings/RoutingPage";
 import { STORAGE_ROWS, StoragePage } from "@/app/settings/StoragePage";
+import { SAVER_ROWS } from "@/app/usage/SaversSection";
 import type { SettingsPageId } from "@/state/store";
 
 /**
@@ -46,6 +47,7 @@ const USAGE_ROWS: readonly SettingsRowCopy[] = [
   { label: "Routing activity", description: "What routing did about the usage windows." },
   { label: "Models", description: "The merged model list routing picks from." },
   { label: "Model registry", description: "Where the model list comes from, and its updates." },
+  ...Object.values(SAVER_ROWS),
 ];
 
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = ["Personal", "Models", "System", "Archived"];

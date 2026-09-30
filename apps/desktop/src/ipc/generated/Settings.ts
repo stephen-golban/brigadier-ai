@@ -5,6 +5,7 @@ import type { ModelChoice } from "./ModelChoice";
 import type { OverrideRule } from "./OverrideRule";
 import type { PermissionLevel } from "./PermissionLevel";
 import type { Ranking } from "./Ranking";
+import type { UsageSettings } from "./UsageSettings";
 
 /**
  * User settings persisted by the core.
@@ -61,4 +62,8 @@ routingOverrides: Array<OverrideRule>,
  * The user's manual rankings per kind of work (global and per project, with area
  * overrides): where one is Manual, routing tries its models top-down instead of scoring.
  */
-routingRankings: Array<Ranking>, };
+routingRankings: Array<Ranking>, 
+/**
+ * Ways to use less Claude and Codex usage that are still being measured (PLAN.md §7).
+ */
+usage: UsageSettings, };

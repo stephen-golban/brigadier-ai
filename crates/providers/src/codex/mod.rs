@@ -211,7 +211,7 @@ impl Codex {
         let mut args: Vec<String> = vec!["app-server".into()];
         let tools = session.map(|session| session.tools).unwrap_or_default();
         let role_features: &[&str] = match tools {
-            ToolSet::Default => &[],
+            ToolSet::Default | ToolSet::Lean => &[],
             ToolSet::None | ToolSet::Web => RESTRICTED_FEATURES,
         };
         for feature in DISABLED_FEATURES.iter().chain(role_features) {
@@ -901,7 +901,7 @@ async fn thread_config(
         );
     }
     match spec.tools {
-        ToolSet::Default => {}
+        ToolSet::Default | ToolSet::Lean => {}
         ToolSet::None => {
             config.insert("web_search".into(), json!("disabled"));
         }

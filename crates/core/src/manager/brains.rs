@@ -675,6 +675,7 @@ impl SessionManager {
             });
         }
         let query = text.clone();
+        let code_pointers = self.core.settings().usage.code_pointers;
         let (answer, preferences) = blocking(move || {
             let answer = match &project {
                 Some(project) => Some(
@@ -685,6 +686,7 @@ impl SessionManager {
                             kinds: Vec::new(),
                             limit: None,
                             max_tokens: Some(QUERY_TOKENS),
+                            files: code_pointers,
                         })
                         .map_err(brain_error)?,
                 ),
@@ -697,6 +699,7 @@ impl SessionManager {
                         kinds: vec![NodeKind::Preference],
                         limit: Some(4),
                         max_tokens: Some(300),
+                        files: false,
                     })
                     .ok(),
                 None => None,

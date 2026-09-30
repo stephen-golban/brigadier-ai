@@ -1,7 +1,7 @@
 //! The role instructions each CLI session starts with, and the envelopes the orchestrator
 //! reads.
 
-use crate::model::{Conversation, Environment, PermissionLevel, Project, Setup};
+use crate::model::{Conversation, Environment, PermissionLevel, Project, Setup, UsageSettings};
 use crate::work::{Report, Task, TaskKind};
 
 /// Logged on `orch:<id>` when a conversation's CLI files were removed: the next CLI session
@@ -37,6 +37,7 @@ pub(crate) fn orchestrator(
     conversation: &Conversation,
     project: Option<&Project>,
     preferences: &[String],
+    usage: &UsageSettings,
 ) -> String {
     let (repo, environment, permission) = match &conversation.setup {
         Some(Setup::Session {
@@ -97,12 +98,46 @@ How to talk to the user:
 - Everything a user message sets in motion (your turns, the workers, their reports and landings) is one request, shown as one answer. Messages from Brigadier are not the user; each ends with what still runs for that request. While work for the request is still running, don't write to the user at all: reply with exactly {quiet} and nothing else, which Brigadier doesn't show (progress lines like "task-1 finished, waiting on task-2" are noise). This holds right after you delegate, too. Never write text before or between tool calls ("Let me…", "I'll delegate…"): call the tools, then reply {quiet} or your final answer. Write one short line only when something changed their plans.
 - When the request's work is done, or the user must decide something, write one final answer: what was found or done, what was verified and how (as the workers reported it), and what's next or the decision you need. Don't repeat what you already told them.
 - A message from Brigadier marked [for the user's earlier request: …] belongs to that earlier request; answer about it as such, briefly.
-- A [follow-up …] block is a message the user sent while you work on their request; it waits in their queue until you sort it with route_follow_up, silently (the user sees where it goes). If it belongs to this work (a question about the same thing, a detail or a change for it), it joins it: it reaches you at once as the user's message, and your one final answer covers it too. If it is a request of its own, it waits and reaches you on its own once this work is done; don't act on it before.{preferences}"#,
+- A [follow-up …] block is a message the user sent while you work on their request; it waits in their queue until you sort it with route_follow_up, silently (the user sees where it goes). If it belongs to this work (a question about the same thing, a detail or a change for it), it joins it: it reaches you at once as the user's message, and your one final answer covers it too. If it is a request of its own, it waits and reaches you on its own once this work is done; don't act on it before.{concise}{preferences}"#,
         today = today(),
         quiet = QUIET,
+        concise = if usage.concise_replies {
+            CONCISE_ORCHESTRATOR
+        } else {
+            ""
+        },
         preferences = preference_lines(preferences),
     )
 }
+
+/// The orchestrator's writing rules with the Concise replies setting (PLAN.md §7).
+const CONCISE_ORCHESTRATOR: &str = "
+
+How to write (to the user, and in your own notes):
+- Plain, short, normal English. Answer first: the result, the decision, or yes or no. Then only the facts the user needs to act on it.
+- Say each fact once. Leave out any sentence that adds no fact: no greetings, praise, apologies, filler, restating the question, recaps or closing offers.
+- Most answers fit in a few lines. Go longer only when the facts need it, or when the user asks for detail; then give it in full.
+- Short sentences with normal grammar. Terse list items are fine. Use headings only in long answers, a list only for three or more parallel items, and no emoji.
+- Say you are unsure only when you are: once, and about what.
+- Keep code, commands, paths, names, numbers, units and error text exact. From a log, quote only the decisive line.
+- Never drop \"not\", \"no\", \"only\", \"except\" or a condition to save words. For security warnings, irreversible actions and steps whose order matters, write full, careful sentences.
+- Your notes (remember, plans, handoff notes) follow the same rules: facts, decisions, open questions, paths.
+- This is about your own prose. Task specs stay complete, and commit messages follow the project's style.";
+
+/// A worker's pointer to the code index tools (PLAN.md §7).
+const WORKER_CODE_TOOLS: &str = "
+- To find code, use the Brigadier tools first: code_search (definitions and files by name), code_refs (where a symbol is defined and used) and project_map (the repository at a glance). They are instant and return less than grepping or reading whole files. Then read only the lines you need.";
+
+/// Rules for writing less code, for implement and merge workers (PLAN.md §7).
+const WORKER_BUILD_RULES: &str = "
+- Before writing something new, look for code in the repository that already does it, and reuse or extend that.
+- Add no abstraction, option or layer the task doesn't need.
+- When you change a shared function, type or contract, find all its callers and update them.
+- Never simplify away validation, error handling or security checks.";
+
+/// How a worker writes its report with the Concise replies setting (PLAN.md §7).
+const WORKER_REPORT_STYLE: &str = "
+- How to write your report (the orchestrator reads it, not a person): summary gives the outcome first (done, partly done or blocked), then the findings that answer the task; changes has one line per file; verification says exactly what you ran or read and what you saw, quoting only the decisive line of a failure; open questions has risks, assumptions, what you skipped and why, and decisions you need. Plain, short, normal English; say each fact once; no greetings, filler, recap of the task or story of how you got there. Keep paths, names, commands, numbers and error text exact. Never drop a negation, a condition or a failed check to save words; report bad news plainly; if something is unknown, say so. Code, comments, docs and files in your outputs folder follow the project's normal style, not this one.";
 
 /// The user's preferences as an instructions section (empty without any).
 fn preference_lines(preferences: &[String]) -> String {
@@ -119,7 +154,13 @@ fn preference_lines(preferences: &[String]) -> String {
 }
 
 /// A worker's role and task.
-pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &str) -> String {
+pub(crate) fn worker(
+    task: &Task,
+    repo_note: &str,
+    instructions: &str,
+    extra: &str,
+    usage: &UsageSettings,
+) -> String {
     let kind = match task.kind {
         TaskKind::Scout => {
             "scout: look around the repository and answer the question. Change nothing."
@@ -145,6 +186,16 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
     } else {
         "\n- Don't change files in the repository. Your scratch folder is yours for notes."
     };
+    let mut practices = String::new();
+    if usage.code_pointers && task.kind != TaskKind::Research {
+        practices.push_str(WORKER_CODE_TOOLS);
+    }
+    if usage.build_rules && matches!(task.kind, TaskKind::Implement | TaskKind::Merge) {
+        practices.push_str(WORKER_BUILD_RULES);
+    }
+    if usage.concise_replies {
+        practices.push_str(WORKER_REPORT_STYLE);
+    }
     format!(
         r#"You are a Brigadier worker. Today is {today}. Your models' knowledge may be older than today: check current docs before relying on any third-party API, version or CLI.
 
@@ -156,7 +207,7 @@ Rules:
 - You work alone on this task. If you are blocked by a question only the orchestrator can answer, call the ask_orchestrator tool (it waits for the answer). Don't ask about things you can find out yourself.{write_rules}
 - Pushing, publishing, deploying and other outward actions are not yours to do; if one seems needed, say so in the report.
 - Files meant for the orchestrator or the user (full findings, logs worth keeping, documents, generated images) go in your outputs folder. Brigadier attaches them to your report and the user saves them from the task card. Never write files to /tmp or anywhere else outside your worktree and scratch folder, even if the task names such a place: nobody could read them, and they would be left behind. Save them in your outputs folder and say so in the report.
-- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{instructions}{extra}
+- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{practices}{instructions}{extra}
 
 The task:
 {spec}"#,

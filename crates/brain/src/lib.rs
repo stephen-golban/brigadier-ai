@@ -237,6 +237,9 @@ pub struct BrainQuery {
     /// The answer text's budget in tokens, about 4 bytes each (default 1500).
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// The answer names each hit's files, so knowledge leads to code.
+    #[serde(default)]
+    pub files: bool,
 }
 
 /// One retrieved node.
@@ -699,7 +702,7 @@ impl Brain {
                 limit,
             )
         })?;
-        let text = format::answer(&hits, budget);
+        let text = format::answer(&hits, budget, query.files);
         Ok(BrainAnswer {
             hits,
             text,

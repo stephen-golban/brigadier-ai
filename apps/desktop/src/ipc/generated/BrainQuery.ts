@@ -16,4 +16,8 @@ limit: number | null,
 /**
  * The answer text's budget in tokens, about 4 bytes each (default 1500).
  */
-maxTokens: number | null, };
+maxTokens: number | null, 
+/**
+ * The answer names each hit's files, so knowledge leads to code.
+ */
+files: boolean, };

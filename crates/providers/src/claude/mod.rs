@@ -47,6 +47,13 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 /// The first version seen to run `/compact` sent as a stream-json message.
 const COMPACT_SINCE: &str = "2.1.282";
+/// Built-in tools a worker's lean start leaves out ([`ToolSet::Lean`]): scheduling, background
+/// agents and messaging, worktrees (Brigadier manages them), notebooks and the like. Each tool's
+/// description is part of every request; without these a worker starts at about 10k tokens
+/// instead of 15k (measured on 2.1.285). Skills, subagents, web and tool search stay.
+const LEAN_DENIED_TOOLS: &str = "Workflow,ScheduleWakeup,CronCreate,CronDelete,CronList,\
+RemoteTrigger,PushNotification,DesignSync,ReportFindings,EnterWorktree,ExitWorktree,ListAgents,\
+SendMessage,TaskStop,Monitor,NotebookEdit";
 
 pub struct Claude {
     platform: Arc<dyn Platform>,
@@ -184,6 +191,10 @@ impl Claude {
         args.push(mcp_config(&spec.mcp_servers).to_string());
         match spec.tools {
             ToolSet::Default => {}
+            ToolSet::Lean => {
+                args.push("--disallowedTools".into());
+                args.push(LEAN_DENIED_TOOLS.into());
+            }
             ToolSet::None => {
                 args.push("--tools".into());
                 args.push(String::new());

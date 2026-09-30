@@ -80,6 +80,9 @@ pub enum RebirthTrigger {
     Threshold,
     /// Its CLI session could not be resumed (lost files, a failed resume).
     Recovery,
+    /// Its prompt cache had expired when the next turn came: resuming would have sent the
+    /// whole history again at the cache-write price (PLAN.md §7).
+    CacheExpired,
 }
 
 /// One part of a rebirth briefing.
@@ -149,6 +152,40 @@ pub struct RebirthThresholds {
     /// The orchestrator is reborn before its next turn once the context passes this.
     pub swap_tokens: i64,
     pub window_tokens: Option<i64>,
+}
+
+/// How long an orchestrator's prompt cache lasts after its last request, where that is known
+/// (PLAN.md §7). Claude keeps a subscription's main conversation cached for an hour. How long
+/// Codex keeps it through the app-server is not measured yet, so a Codex orchestrator is never
+/// reborn for an expired cache.
+///
+/// A debug build takes `BRIGADIER_CACHE_TTL_SECS` as Claude's, so a cold rebirth can be tried
+/// in minutes.
+pub fn cache_lifetime(provider: ProviderKind) -> Option<std::time::Duration> {
+    match provider {
+        ProviderKind::Claude => {
+            if cfg!(debug_assertions)
+                && let Some(secs) = std::env::var("BRIGADIER_CACHE_TTL_SECS")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .filter(|secs| *secs > 0)
+            {
+                return Some(std::time::Duration::from_secs(secs));
+            }
+            Some(std::time::Duration::from_secs(3_600))
+        }
+        ProviderKind::Codex => None,
+    }
+}
+
+/// Below this context a cold resume costs less than a rebirth's briefing (about 25k tokens
+/// written, plus its checkpoint): the orchestrator just resumes.
+const COLD_REBIRTH_MIN_TOKENS: i64 = 60_000;
+
+/// The least context at which an orchestrator on `provider` is reborn for an expired cache
+/// (lower with the debug build's `BRIGADIER_REBIRTH_TOKENS`, like the size thresholds).
+pub fn cold_rebirth_min_tokens(provider: ProviderKind, window: Option<i64>) -> i64 {
+    COLD_REBIRTH_MIN_TOKENS.min(rebirth_thresholds(provider, window).prepare_tokens)
 }
 
 /// A project's Brain at a glance (or the Personal Brain's), for the Inspector.

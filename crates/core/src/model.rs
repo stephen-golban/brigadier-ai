@@ -520,6 +520,28 @@ pub struct Settings {
     /// The user's manual rankings per kind of work (global and per project, with area
     /// overrides): where one is Manual, routing tries its models top-down instead of scoring.
     pub routing_rankings: Vec<Ranking>,
+    /// Ways to use less Claude and Codex usage that are still being measured (PLAN.md §7).
+    pub usage: UsageSettings,
+}
+
+/// Usage savers still being measured (PLAN.md §7). Each stays off until completed tasks show
+/// it saves usage at equal quality.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UsageSettings {
+    /// A Claude orchestrator whose prompt cache has expired starts over from a briefing
+    /// instead of resuming, when a checkpoint written while the cache was warm covers
+    /// everything since.
+    pub rebirth_when_cache_expired: bool,
+    /// Claude workers start without the built-in tools they never use.
+    pub lean_worker_tools: bool,
+    /// The orchestrator writes plain, short English, and workers' reports are short.
+    pub concise_replies: bool,
+    /// Workers are told about Brigadier's code search tools, and Brain answers name each
+    /// hit's files.
+    pub code_pointers: bool,
+    /// Implement and merge workers follow a few rules for writing less code.
+    pub build_rules: bool,
 }
 
 impl Default for Settings {
@@ -538,6 +560,7 @@ impl Default for Settings {
             keep_awake_lid_closed: false,
             routing_overrides: Vec::new(),
             routing_rankings: Vec::new(),
+            usage: UsageSettings::default(),
         }
     }
 }

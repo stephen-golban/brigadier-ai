@@ -709,6 +709,9 @@ pub enum ToolSet {
     /// The CLI's usual tools (workers, raw sessions).
     #[default]
     Default,
+    /// The usual tools less the ones a Brigadier worker never uses, which only enlarge the
+    /// start of every request (a worker's lean start, PLAN.md §7). Codex: as `Default`.
+    Lean,
     /// None at all: only the MCP servers given (the orchestrator).
     None,
     /// Web search and fetch only (Chats).

@@ -58,6 +58,7 @@ function BlobText({ label, hash }: { label: string; hash: string }) {
 const TRIGGERS: Record<RebirthRecord["trigger"], string> = {
   threshold: "threshold",
   recovery: "recovery",
+  cacheExpired: "cache expired",
 };
 
 /** A wait shorter than this is not worth a mention. */

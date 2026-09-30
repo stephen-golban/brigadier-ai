@@ -3,4 +3,4 @@
 /**
  * Why an orchestrator was reborn.
  */
-export type RebirthTrigger = "threshold" | "recovery";
+export type RebirthTrigger = "threshold" | "recovery" | "cacheExpired";

@@ -686,7 +686,8 @@ impl SessionManager {
             (TaskKind::Merge, Some(subject)) => self.merge_brief(subject, &workspace).await,
             _ => String::new(),
         };
-        let prompt = prompts::worker(task, &repo_note, &native, &extra);
+        let usage = self.core.settings().usage;
+        let prompt = prompts::worker(task, &repo_note, &native, &extra, &usage);
 
         // Without the shims the worker's outward commands would run unasked.
         self.sync_gate().await?;
@@ -718,7 +719,11 @@ impl SessionManager {
             access: access.clone(),
             append_system_prompt: Some(prompt),
             mcp_servers: vec![self.brigadier_server(worker_grant, WORKER_TOOL_TIMEOUT_SECS)],
-            tools: ToolSet::Default,
+            tools: if usage.lean_worker_tools {
+                ToolSet::Lean
+            } else {
+                ToolSet::Default
+            },
             env: vec![
                 ("BRIGADIER_GATE".into(), gate_grant),
                 (

@@ -14,6 +14,7 @@ import { SettingsButton, SettingsPage } from "@/app/settings/parts";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
 import { ModelsSection } from "@/app/usage/ModelsSection";
 import { RegistrySection } from "@/app/usage/RegistrySection";
+import { SaversSection } from "@/app/usage/SaversSection";
 import { WindowChart } from "@/app/usage/WindowChart";
 import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
@@ -74,7 +75,7 @@ function useUsageRefresh(): void {
 /**
  * The Usage page: each provider's usage windows with their rolling estimates and history,
  * Brigadier's own use in each, what routing did about them, the merged model list and the
- * registry it comes from.
+ * registry it comes from; then the usage savers' switches.
  */
 export function UsagePage() {
   useUsageRefresh();
@@ -144,6 +145,8 @@ export function UsagePage() {
             <RegistrySection registry={view.registry} now={now} />
           </>
         )}
+
+        <SaversSection />
       </div>
     </SettingsPage>
   );

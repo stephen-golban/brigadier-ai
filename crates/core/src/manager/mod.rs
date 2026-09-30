@@ -19,6 +19,7 @@ mod brain_jobs;
 mod brains;
 mod branches;
 mod cards;
+mod cold;
 mod conversation;
 pub mod disk;
 mod fallback;
@@ -168,6 +169,7 @@ impl SessionManager {
         manager.open_brains().await;
         manager.start_hibernation_timer();
         manager.retry_waiting_on_provider_checks();
+        manager.start_checkpoint_timer();
         Ok(manager)
     }
 

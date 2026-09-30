@@ -71,7 +71,13 @@ export function BrainSearch({ brainKey }: { brainKey: string }) {
     if (!query) return;
     setBusy(true);
     setError(null);
-    queryBrain(brainKey, { text: query, kinds: kind === ALL ? [] : [kind], limit: null, maxTokens: null })
+    queryBrain(brainKey, {
+      text: query,
+      kinds: kind === ALL ? [] : [kind],
+      limit: null,
+      maxTokens: null,
+      files: false,
+    })
       .then((result) => setAnswer({ query, answer: result }))
       .catch((cause: unknown) => setError(errorText(cause)))
       .finally(() => setBusy(false));

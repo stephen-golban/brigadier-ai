@@ -81,6 +81,18 @@ and open threads; Decisions not kept yet (every decision or user preference sett
 conversation that is not in the Brain yet, one line each with the reason, or None); Promises made \
 to the user; What to do next (and what you are waiting for). At most about 1,500 words. Don't \
 call any tool. Reply with the note only.";
+/// A checkpoint's prompt: the same note, written while the conversation idles and its prompt
+/// cache is still warm, for a rebirth once the cache has expired.
+const CHECKPOINT_PROMPT: &str = "[Brigadier] This conversation has been idle for a while. If it \
+is still idle when your prompt cache expires, a fresh orchestrator will continue it from a \
+briefing. Brigadier already gives it every decision \
+recorded in the Project Brain (everything you kept with remember, plan approvals and the user's \
+answers to cards), the live board (tasks, plan, open cards, queued messages) and the last messages \
+verbatim. Write the handoff note it needs beyond that, in plain text under these headings: Goal \
+and open threads; Decisions not kept yet (every decision or user preference settled in this \
+conversation that is not in the Brain yet, one line each with the reason, or None); Promises made \
+to the user; What to do next (and what you are waiting for). At most about 1,500 words. Don't \
+call any tool. Reply with the note only.";
 
 /// The note's headings, lowercase, as [`note_decisions`] finds them.
 const NOTE_HEADINGS: &[&str] = &[
@@ -98,6 +110,16 @@ context with this briefing so you have room to work; the user sees one unbroken 
 Never mention a briefing, handoff, restart or new session, and don't greet the user or introduce \
 yourself again. What is settled below stays settled: don't ask it again or undo it. Your rules are \
 unchanged; the current turn follows the briefing.";
+
+/// Why a handoff note is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandoffPurpose {
+    /// The context passed the prepare threshold: a rebirth follows.
+    Threshold,
+    /// The conversation idles with a warm cache: a rebirth follows only if it stays idle until
+    /// the cache expires (PLAN.md §7).
+    Checkpoint,
+}
 
 /// A rebirth being prepared: the fork writing the handoff note.
 pub(crate) struct RebirthPrep {
@@ -174,16 +196,16 @@ impl Part {
 }
 
 impl SessionManager {
-    /// Starts writing the handoff note in a fork of the orchestrator's CLI session. The
-    /// returned preparation is ready once the fork is done.
+    /// Starts writing the handoff note in a fork of the orchestrator's CLI session, whose
+    /// context is `(tokens, window)`. The returned preparation is ready once the fork is done.
     pub(super) fn prepare_rebirth(
         &self,
         id: &ConversationId,
         provider: ProviderKind,
         choice: ModelChoice,
         native_id: Option<String>,
-        at_tokens: i64,
-        window: Option<i64>,
+        (at_tokens, window): (i64, Option<i64>),
+        purpose: HandoffPurpose,
     ) -> Arc<RebirthPrep> {
         let (done, note) = watch::channel(None);
         let prep = Arc::new(RebirthPrep {
@@ -199,13 +221,20 @@ impl SessionManager {
         let (manager, id, ready) = (self.arc(), id.clone(), prep.clone());
         self.spawn(async move {
             let written = match native_id {
-                Some(native_id) => manager.write_handoff(&id, provider, choice, native_id).await,
+                Some(native_id) => {
+                    manager
+                        .write_handoff(&id, provider, choice, native_id, purpose)
+                        .await
+                }
                 None => None,
             };
-            tracing::info!(conversation = %id, bytes = written.as_ref().map_or(0, String::len), "handoff note written");
+            tracing::info!(conversation = %id, bytes = written.as_ref().map_or(0, String::len), ?purpose, "handoff note written");
             // Its decisions are kept now, even if a swap that could not wait went ahead
-            // without the note: every later briefing carries them.
-            if let Some(note) = &written {
+            // without the note: every later briefing carries them. A checkpoint's are kept
+            // only if its rebirth happens (the briefing keeps them then).
+            if purpose == HandoffPurpose::Threshold
+                && let Some(note) = &written
+            {
                 let generation = manager.rebirths(&id).await + 1;
                 manager.keep_handoff_decisions(&id, note, generation).await;
             }
@@ -224,6 +253,7 @@ impl SessionManager {
         provider: ProviderKind,
         choice: ModelChoice,
         native_id: String,
+        purpose: HandoffPurpose,
     ) -> Option<String> {
         let conversation = self.core.conversation(id).ok()?;
         let project = conversation
@@ -242,6 +272,7 @@ impl SessionManager {
                 &conversation,
                 project.as_ref(),
                 &preferences,
+                &self.core.settings().usage,
             )),
             mcp_servers: Vec::new(),
             tools: ToolSet::None,
@@ -269,7 +300,11 @@ impl SessionManager {
         // A forked Codex thread may carry its parent's totals: its first report is a baseline.
         let meter = TokenMeter::new(provider == ProviderKind::Codex);
         let written = async {
-            session.send(TurnInput::text(HANDOFF_PROMPT)).await.ok()?;
+            let prompt = match purpose {
+                HandoffPurpose::Threshold => HANDOFF_PROMPT,
+                HandoffPurpose::Checkpoint => CHECKPOINT_PROMPT,
+            };
+            session.send(TurnInput::text(prompt)).await.ok()?;
             let mut parts: Vec<String> = Vec::new();
             while let Some(event) = events.recv().await {
                 match event {
@@ -783,6 +818,7 @@ impl SessionManager {
                         kinds: Vec::new(),
                         limit: Some(8),
                         max_tokens: Some(1_200),
+                        files: false,
                     })
                     .ok()
             };

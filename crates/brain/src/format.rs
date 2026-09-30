@@ -1,5 +1,5 @@
-//! The text a query answers with: each hit as a header, a warning when it is stale, its body
-//! and where it came from, best first, within a byte budget.
+//! The text a query answers with: each hit as a header, a warning when it is stale, its body,
+//! where it came from and (when asked) its files, best first, within a byte budget.
 
 use std::fmt::Write as _;
 
@@ -11,8 +11,10 @@ pub(crate) const BYTES_PER_TOKEN: usize = 4;
 const MAX_BODY: usize = 1_600;
 /// A hit is left out rather than shown with less body than this.
 const MIN_BODY: usize = 120;
+/// Files named per hit; the rest are counted.
+const MAX_FILES: usize = 6;
 
-pub(crate) fn answer(hits: &[BrainHit], budget: usize) -> String {
+pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
     if hits.is_empty() {
         return "Nothing in the Brain matches.".into();
     }
@@ -21,7 +23,11 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize) -> String {
         let node = &hit.node;
         let mut head = header(node);
         head.push('\n');
-        let tail = format!("{}\n", provenance(&node.provenance));
+        let mut tail = format!("{}\n", provenance(&node.provenance));
+        if files && !node.files.is_empty() {
+            tail.push_str(&file_line(node));
+            tail.push('\n');
+        }
         let separator = if out.is_empty() { 0 } else { 1 };
         let body = node.body.trim();
         // The header, where it came from, and the newline after a body.
@@ -81,6 +87,21 @@ fn header(node: &Node) -> String {
     );
     if let NodeState::Stale { reason, .. } = &node.state {
         let _ = write!(out, "\nSTALE: {reason} — re-check before relying on it");
+    }
+    out
+}
+
+/// `Files: crates/a.rs, crates/b.rs (+3 more)`.
+fn file_line(node: &Node) -> String {
+    let shown: Vec<&str> = node
+        .files
+        .iter()
+        .take(MAX_FILES)
+        .map(|file| file.path.as_str())
+        .collect();
+    let mut out = format!("Files: {}", shown.join(", "));
+    if node.files.len() > MAX_FILES {
+        let _ = write!(out, " (+{} more)", node.files.len() - MAX_FILES);
     }
     out
 }

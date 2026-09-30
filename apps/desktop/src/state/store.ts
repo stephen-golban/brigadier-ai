@@ -218,6 +218,13 @@ export const useApp = create<AppState>()(() => ({
     keepAwakeLidClosed: false,
     routingOverrides: [],
     routingRankings: [],
+    usage: {
+      rebirthWhenCacheExpired: false,
+      leanWorkerTools: false,
+      conciseReplies: false,
+      codePointers: false,
+      buildRules: false,
+    },
   },
   threads: {},
   pending: [],

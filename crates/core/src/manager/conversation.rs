@@ -37,6 +37,7 @@ use brigadier_store::StreamPage;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::cold::CacheMark;
 use super::prompts;
 use super::rebirth::{self, BriefingPlan, RebirthPrep};
 use super::usage::TokenOwner;
@@ -192,6 +193,11 @@ struct ConvState {
     wait_timer: u64,
     /// The model the waiting messages were for (it hit its limit).
     waited_model: Option<ModelChoice>,
+    /// The orchestrator's last model request, for knowing when its prompt cache expires
+    /// (recovered from the orchestrator log when absent, as after a restart).
+    cache: Option<CacheMark>,
+    /// A handoff note written while the cache was warm, for a rebirth once it has expired.
+    checkpoint: Option<Arc<RebirthPrep>>,
 }
 
 /// Where a request the orchestrator sent a worker back in stands, while the user has seen no
@@ -265,6 +271,30 @@ impl ConvLive {
     pub async fn idle_since_ms(&self) -> Option<i64> {
         let state = self.state.lock().await;
         (!state.busy && state.cli.is_some()).then_some(state.last_activity_ms)
+    }
+
+    /// The orchestrator's last model request as last seen live.
+    pub(super) async fn cache_mark(&self) -> Option<CacheMark> {
+        self.state.lock().await.cache.clone()
+    }
+
+    pub(super) async fn set_cache_mark(&self, mark: CacheMark) {
+        self.state.lock().await.cache = Some(mark);
+    }
+
+    /// The checkpoint written for a rebirth once the cache has expired, if any.
+    pub(super) async fn checkpoint(&self) -> Option<Arc<RebirthPrep>> {
+        self.state.lock().await.checkpoint.clone()
+    }
+
+    pub(super) async fn set_checkpoint(&self, checkpoint: Arc<RebirthPrep>) {
+        self.state.lock().await.checkpoint = Some(checkpoint);
+    }
+
+    /// A rebirth is on its way already (a handoff for the size threshold, or a briefing).
+    pub(super) async fn rebirth_pending(&self) -> bool {
+        let state = self.state.lock().await;
+        state.rebirth.is_some() || state.briefing.is_some() || state.fresh
     }
 
     /// The next CLI session must start from the transcript (its files are gone).
@@ -1107,6 +1137,7 @@ impl SessionManager {
         self.end_stand_in(&conv).await;
         if conv.kind == ConversationKind::Session {
             self.rebirth_if_ready(&conv).await;
+            self.rebirth_if_cache_expired(&conv).await;
         }
         let session = conv.kind == ConversationKind::Session;
         // A session's queued message goes once the requests have settled (no answer works).
@@ -1388,7 +1419,12 @@ impl SessionManager {
                     .as_ref()
                     .and_then(|id| self.core.project(id).ok());
                 let preferences = self.memory_lines(super::brain_jobs::MEMORY_BYTES).await;
-                let prompt = prompts::orchestrator(&conversation, project.as_ref(), &preferences);
+                let prompt = prompts::orchestrator(
+                    &conversation,
+                    project.as_ref(),
+                    &preferences,
+                    &self.core.settings().usage,
+                );
                 let grant = self.grants.issue(
                     &owner,
                     Role::Orchestrator {
@@ -2222,6 +2258,15 @@ impl SessionManager {
                 let mut state = conv.state.lock().await;
                 let window = window_tokens.or(state.context.and_then(|(_, window)| window));
                 state.context = Some((*used_tokens, window));
+                if conv.kind == ConversationKind::Session {
+                    state.cache = Some(CacheMark {
+                        native_id: cli.session.native_id(),
+                        provider: cli.provider,
+                        at_ms: now_ms(),
+                        context: *used_tokens,
+                        window,
+                    });
+                }
             }
             ProviderEvent::CompactionStarted { automatic }
                 if conv.kind == ConversationKind::Session =>
@@ -2434,8 +2479,8 @@ impl SessionManager {
                     cli.provider,
                     cli.model.clone(),
                     Some(cli.session.native_id()),
-                    used,
-                    window,
+                    (used, window),
+                    rebirth::HandoffPurpose::Threshold,
                 );
                 tracing::info!(conversation = %conv.id, used, "preparing the orchestrator's rebirth");
                 conv.state.lock().await.rebirth = Some(prep.clone());
@@ -2480,6 +2525,7 @@ impl SessionManager {
         let mut state = conv.state.lock().await;
         state.closing = false;
         state.rebirth = None;
+        state.checkpoint = None;
         state.context = None;
         state.fresh = true;
         state.reseed = false;
@@ -2490,6 +2536,38 @@ impl SessionManager {
             prep: Some(prep),
             swap_started_at_ms,
         });
+    }
+
+    /// Between turns: an orchestrator whose prompt cache has expired, with a checkpoint that
+    /// covers everything since its last request, is reborn from it instead of resuming
+    /// (PLAN.md §7). A live CLI closes; the next turn starts fresh from a briefing.
+    async fn rebirth_if_cache_expired(&self, conv: &Arc<ConvLive>) {
+        if conv.turn_running().await || conv.rebirth_pending().await {
+            return;
+        }
+        let Some(plan) = self.cold_rebirth_plan(conv).await else {
+            return;
+        };
+        let cli = {
+            let mut state = conv.state.lock().await;
+            if state.busy || state.closing {
+                return;
+            }
+            // Nothing else starts a turn meanwhile.
+            state.closing = true;
+            state.cli.take()
+        };
+        if let Some(cli) = cli {
+            cli.session.close().await;
+            cli.ended.cancelled().await;
+        }
+        let mut state = conv.state.lock().await;
+        state.closing = false;
+        state.checkpoint = None;
+        state.context = None;
+        state.fresh = true;
+        state.reseed = false;
+        state.briefing = Some(plan);
     }
 
     /// The model a conversation continues on after `cli`'s model hit a usage limit: the
@@ -2934,7 +3012,11 @@ impl SessionManager {
     }
 
     /// The native id of the conversation's last CLI session with `provider`, to resume it.
-    async fn last_native_id(&self, id: &ConversationId, provider: ProviderKind) -> Option<String> {
+    pub(super) async fn last_native_id(
+        &self,
+        id: &ConversationId,
+        provider: ProviderKind,
+    ) -> Option<String> {
         let page = self
             .core
             .store()
