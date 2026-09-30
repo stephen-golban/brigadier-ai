@@ -280,6 +280,9 @@ function confirmSettings(settings: Settings): Settings {
 
 /** Starts showing `edit`; the settings writer sends it in its turn (state/settings.ts). */
 export function beginSettingsEdit(edit: SettingsEdit): void {
+  // Before the first load the shown settings are the base; keep them unedited, so a failed
+  // edit goes back to them.
+  confirmedSettings ??= useApp.getState().settings;
   pendingEdits.push(edit);
   showSettings();
 }
