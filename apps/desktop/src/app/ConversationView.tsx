@@ -485,6 +485,8 @@ export function ConversationView({
   const picked =
     setup?.type === "chat" ? setup.model : setup?.type === "session" ? setup.orchestrator : null;
   const running = run === "running" || run === "starting";
+  // Messages waiting for quota: nothing runs, but Stop (and Esc) drops them.
+  const waitingForQuota = conversation?.quotaWait != null;
   const reworkable = useBoard((s) =>
     s.board?.conversationId === conversationId && s.board ? reworkableRequest(s.board) : null,
   );
@@ -675,7 +677,7 @@ export function ConversationView({
       await regenerate(conversationId, storedIdOf(parentId)).catch(fail);
     },
     isLoading: thread.loading && thread.items.length === 0,
-    isRunning: running,
+    isRunning: running || waitingForQuota,
     isDisabled: archived,
     isSendDisabled: conversation === null && resolved.problem !== null,
     queue,

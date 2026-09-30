@@ -807,7 +807,9 @@ impl SessionManager {
     /// Stops the running turn. The queue pauses so nothing is sent until the user resumes.
     pub async fn interrupt(&self, id: ConversationId) -> Result<()> {
         let conv = self.conv(&id)?;
-        // Messages waiting for quota: the user no longer wants them sent.
+        // Messages waiting for quota: the user no longer wants them sent. After a retry that
+        // is looking now (it could record the wait again once they are gone).
+        let retrying = conv.retry.lock().await;
         let stopped = {
             let mut state = conv.state.lock().await;
             if state.waiting {
@@ -830,6 +832,7 @@ impl SessionManager {
             self.stop_waiting(&conv).await;
             self.settle_requests(&id).await;
         }
+        drop(retrying);
         let cli = conv.state.lock().await.cli.clone();
         let waiting = !self
             .core
