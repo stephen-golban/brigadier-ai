@@ -12,6 +12,7 @@ import type {
   SetupRequest,
 } from "@/ipc/generated";
 import {
+  nothingAvailable,
   resolveModel,
   resolvePermission,
   useAvailableModelGroups,
@@ -111,11 +112,7 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
   const draft = useDraft(projectId);
   const listed = useModelGroups();
   const groups = useAvailableModelGroups();
-  // Every agent is switched off, or every model a list names is made unavailable.
-  const nothingAvailable =
-    listed.length > 0 &&
-    !groups.some((group) => group.models.length > 0) &&
-    (groups.length === 0 || listed.some((group) => group.models.length > 0));
+  const noModel = nothingAvailable(listed, groups);
   const repoPath = project?.repos[0]?.path ?? null;
   const repo = useRepoInfo(kind === "session" ? repoPath : null);
 
@@ -130,7 +127,7 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
 
   let problem: string | null = null;
   let target: DraftTarget | null = null;
-  if (nothingAvailable) {
+  if (noModel) {
     problem = "No model is available. Turn one on in Settings › Providers.";
   } else if (kind === "chat") {
     target = { kind: "chat", setup: { type: "chat", model } };

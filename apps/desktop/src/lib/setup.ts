@@ -85,7 +85,8 @@ export function useModelGroups(): ModelGroup[] {
 
 /**
  * The groups with only what the user made available on Providers: an agent switched off is
- * left out, and so is each model made unavailable.
+ * left out, and so is each model made unavailable, and an agent with none of its listed models
+ * left. An agent whose list isn't read yet stays, with no models.
  */
 export function availableGroups(
   groups: readonly ModelGroup[],
@@ -98,7 +99,20 @@ export function availableGroups(
       models: group.models.filter((model) =>
         modelAvailable(settings, { provider: group.provider, id: model.id }),
       ),
-    }));
+    }))
+    .filter(
+      (group) =>
+        group.models.length > 0 ||
+        !groups.some((entry) => entry.provider === group.provider && entry.models.length > 0),
+    );
+}
+
+/**
+ * Nothing can start a conversation: every agent is switched off or has none of its listed
+ * models available. An agent on whose list isn't read yet may still run its default model.
+ */
+export function nothingAvailable(listed: readonly ModelGroup[], available: readonly ModelGroup[]): boolean {
+  return listed.length > 0 && available.length === 0;
 }
 
 /**
