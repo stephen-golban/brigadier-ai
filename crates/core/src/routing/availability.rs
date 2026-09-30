@@ -59,11 +59,15 @@ pub fn check_choice(settings: &Settings, choice: &ModelChoice) -> Result<(), Str
     }
 }
 
-/// The rule keeping `model` from worker tasks everywhere: what the Routing page's switch
-/// turns off and on.
+/// How the id of a [`worker_rule`] Brigadier added for a model it just saw starts: the Routing
+/// page tags that model "New" until the user turns its switch.
+pub const NEW_MODEL_RULE: &str = "new-model-";
+
+/// The rule keeping a model it just saw from worker tasks everywhere, the rule the Routing
+/// page's switch turns off and on (the switch writes its own id).
 pub fn worker_rule(provider: ProviderKind, id: &str, now_ms: i64) -> OverrideRule {
     OverrideRule {
-        id: uuid::Uuid::now_v7().to_string(),
+        id: format!("{NEW_MODEL_RULE}{}", uuid::Uuid::now_v7()),
         effect: OverrideEffect::Never,
         target: OverrideTarget::Model {
             provider,
@@ -208,6 +212,7 @@ mod tests {
         assert_eq!(next.routing_overrides.len(), 1);
         let rule = &next.routing_overrides[0];
         assert!(is_worker_rule(rule, ProviderKind::Claude, "fresh"));
+        assert!(rule.id.starts_with(NEW_MODEL_RULE));
         assert!(!rule.categories.contains(&TaskCategory::Chat));
         assert!(!rule.categories.contains(&TaskCategory::Orchestrate));
         // Seen again: nothing changes, and a rule the user removed stays removed.
