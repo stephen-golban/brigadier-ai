@@ -47,23 +47,42 @@ export async function setKeepAwakeLidClosed(on: boolean): Promise<void> {
   }
 }
 
+/** The choices from least to most awake, as the rail's menu and Settings offer them. */
 export const KEEP_AWAKE_OPTIONS: readonly {
   value: KeepAwake;
   label: string;
   hint: string;
 }[] = [
-  {
-    value: "always",
-    label: "On",
-    hint: "Keep this computer awake continuously",
-  },
+  { value: "off", label: "Off", hint: "The computer sleeps as it normally would" },
   {
     value: "agents",
-    label: "Agents",
-    hint: "Stay awake while an agent is working",
+    label: "While agents work",
+    hint: "Stays awake while an agent is working, then sleeps as usual",
   },
-  { value: "off", label: "Off", hint: "Allow normal system sleep" },
+  { value: "always", label: "Always", hint: "Stays awake until you turn this off" },
 ];
+
+/** How keeping awake stands right now, in a few words: awake or not, and why. */
+export function keepAwakeState(
+  keepAwake: KeepAwake,
+  status: KeepAwakeStatus | null,
+): { awake: boolean; text: string } {
+  if (!status) return { awake: false, text: "Checking…" };
+  if (status.active) {
+    return {
+      awake: true,
+      text: status.lidClosed === "active" ? "Awake, even with the lid closed" : "Awake now",
+    };
+  }
+  switch (keepAwake) {
+    case "agents":
+      return { awake: false, text: "No agent is working" };
+    case "off":
+      return { awake: false, text: "Normal sleep" };
+    default:
+      return { awake: false, text: "Not active" };
+  }
+}
 
 /** What the lid option does, as it stands now. */
 export function lidClosedHint(status: KeepAwakeStatus | null, settingUp: boolean): string {

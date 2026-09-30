@@ -7,7 +7,6 @@ import {
   Download,
   Folder,
   FolderOpen,
-  Home,
   MagnifyingGlassSearch,
   Pencil,
   Pin,
@@ -15,10 +14,8 @@ import {
   Settings,
   SettingsCog,
   Sleep,
-  Terminal,
   Trash,
   Unpin,
-  Usage,
   X,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { memo, useMemo, useState, type ComponentProps, type ReactNode } from "react";
@@ -28,6 +25,8 @@ import { errorText } from "@/app/dialogs/fields";
 import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
 import { RemoveProjectDialog } from "@/app/dialogs/RemoveProjectDialog";
 import { NameDialog } from "@/app/NameDialog";
+import { useShortcuts } from "@/app/shortcuts";
+import { KeepAwakeMenu, UsageMenu } from "@/app/RailStatus";
 import { openSearch } from "@/app/SearchDialog";
 import {
   navRow,
@@ -36,6 +35,7 @@ import {
   NavHeader,
   NavList,
   NavSection,
+  RailButton,
   rowAction,
 } from "@/app/sidebar/nav";
 import { BrigadierGlyph } from "@/components/glyphs/brand-glyph";
@@ -53,7 +53,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
@@ -71,30 +70,13 @@ import {
   openSettings,
   renameConversation,
   select,
-  setInspectorOpen,
   setPinned,
   setProjectExpanded,
 } from "@/state/actions";
 import { useRowActivity } from "@/state/activity";
 import { openAddProject } from "@/state/addProject";
 import { exportProjectConventions } from "@/state/brain";
-import { reopenOnboarding } from "@/state/onboarding";
 import { useApp } from "@/state/store";
-
-// ----- shortcuts -------------------------------------------------------------------------
-
-function useShortcuts() {
-  const mac = useApp((s) => s.info?.platform === "macos");
-  return {
-    mac,
-    sidebar: mac ? "⌘B" : "Ctrl+B",
-    back: mac ? "⌘[" : "Alt+←",
-    forward: mac ? "⌘]" : "Alt+→",
-    search: mac ? "⌘K" : "Ctrl+K",
-    settings: mac ? "⌘," : "Ctrl+,",
-    inspector: mac ? "⌥⌘I" : "Ctrl+Alt+I",
-  };
-}
 
 // ----- titlebar and rail -----------------------------------------------------------------
 
@@ -167,59 +149,17 @@ export function TitlebarControls() {
   );
 }
 
-/** A button on the rail: an icon, its name in a tooltip, a pill behind it while selected. */
-function RailButton({
-  label,
-  selected = false,
-  children,
-  ...props
-}: ComponentProps<"button"> & { label: string; selected?: boolean }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          aria-current={selected ? "page" : undefined}
-          className={cn(
-            "size-rail-button rounded-nav focus-visible:ring-ring/50 relative flex shrink-0 items-center justify-center outline-none transition-colors duration-150 focus-visible:ring-2 [&_svg]:relative [&_svg]:size-icon-lg",
-            "before:rounded-nav before:bg-foreground/8 before:absolute before:inset-0 before:opacity-0 before:transition-opacity before:duration-150 hover:before:opacity-100 data-[state=open]:before:opacity-100",
-            selected ? "text-foreground before:opacity-100" : "text-muted-foreground hover:text-foreground",
-          )}
-          {...props}
-        >
-          {children}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right">{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-/** The share of the tightest usage window still left, when an agent has reported one. */
-function useUsageLeft(): number | null {
-  return useApp((s) => {
-    let left: number | null = null;
-    for (const overview of s.providers.view?.providers ?? []) {
-      for (const window of overview.quota?.windows ?? []) {
-        const remaining = Math.round(100 - Math.min(100, Math.max(0, window.usedPercent)));
-        left = left === null ? remaining : Math.min(left, remaining);
-      }
-    }
-    return left;
-  });
-}
-
 /**
  * The navigation rail along the window's start, on the window chrome: Home (chats and
- * projects) at the top, and at the bottom Brigadier's menu (Usage, the Inspector, Settings,
- * setup).
+ * projects, under Brigadier's mark) at the top; at the bottom keeping the computer awake, the
+ * agents' usage, and Settings (where the Inspector and setup are too).
  */
 export function AppRail() {
   const { open, holdPeek, releasePeek } = useSidebar();
   const inSettings = useApp((s) => s.selection.type === "settings");
-  const inspectorOpen = useApp((s) => s.inspector.open);
-  const usageLeft = useUsageLeft();
+  const onUsagePage = useApp(
+    (s) => s.selection.type === "settings" && s.selection.page === "usage",
+  );
   const shortcuts = useShortcuts();
   return (
     <nav
@@ -235,43 +175,22 @@ export function AppRail() {
           onPointerEnter={open ? undefined : holdPeek}
           onPointerLeave={open ? undefined : releasePeek}
         >
-          <Home />
+          {/* The mark stands a size above the rail's icons, and bright whether or not Home is
+              the page. */}
+          <BrigadierGlyph aria-hidden className="text-foreground size-rail-mark!" />
         </RailButton>
       </div>
       <div data-tauri-drag-region className="min-h-0 w-full flex-1" />
-      <DropdownMenu modal={false}>
-        <DropdownMenuTrigger asChild>
-          <RailButton label="Brigadier" selected={false}>
-            <BrigadierGlyph aria-hidden />
-          </RailButton>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="start" className="min-w-56">
-          <DropdownMenuItem onSelect={() => openSettings("usage")}>
-            <Usage />
-            Usage
-            {usageLeft !== null && (
-              <span className="text-muted-foreground ms-auto ps-2 text-xs tabular-nums">
-                {usageLeft}% left
-              </span>
-            )}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setInspectorOpen(!inspectorOpen)}>
-            <Terminal />
-            {inspectorOpen ? "Hide Inspector" : "Inspector"}
-            <DropdownMenuShortcut>{shortcuts.inspector}</DropdownMenuShortcut>
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openSettings()}>
-            <Settings />
-            Settings
-            <DropdownMenuShortcut>{shortcuts.settings}</DropdownMenuShortcut>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => reopenOnboarding()}>
-            <SettingsCog />
-            Run setup again
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <KeepAwakeMenu />
+      <UsageMenu />
+      <RailButton
+        label="Settings"
+        shortcut={shortcuts.settings}
+        selected={inSettings && !onUsagePage}
+        onClick={() => openSettings()}
+      >
+        <Settings />
+      </RailButton>
     </nav>
   );
 }

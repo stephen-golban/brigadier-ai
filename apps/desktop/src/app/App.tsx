@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { useEffect } from "react";
 
 import { AppRail, AppSidebar, TitlebarControls } from "@/app/AppSidebar";
 import { AddProjectDialog } from "@/app/dialogs/AddProjectDialog";
@@ -8,7 +8,6 @@ import { FolderDropZone } from "@/app/FolderDropZone";
 import { ConversationView } from "@/app/ConversationView";
 import { OnboardingDialog } from "@/app/onboarding/OnboardingDialog";
 import { GlobalSearch } from "@/app/SearchDialog";
-import { StatusBar } from "@/app/StatusBar";
 import { SettingsNav } from "@/app/settings/SettingsNav";
 import { SettingsView } from "@/app/settings/SettingsView";
 import { runSmoke } from "@/app/smoke";
@@ -20,17 +19,12 @@ import { markStartup } from "@/lib/startup";
 import {
   goBack,
   goForward,
-  setInspectorOpen,
   setMetricsStreaming,
+  toggleInspector,
   toggleSettings,
 } from "@/state/actions";
 import { openFolderPicker } from "@/state/addProject";
 import { useApp, type Selection } from "@/state/store";
-
-// The Inspector is a developer view: keep it off the cold-start path.
-const Inspector = lazy(() =>
-  import("@/app/inspector/Inspector").then((module) => ({ default: module.Inspector })),
-);
 
 let readyReported = false;
 
@@ -65,7 +59,9 @@ function PageCorners() {
 
 export function App() {
   const selection = useApp((s) => s.selection);
-  const inspectorOpen = useApp((s) => s.inspector.open);
+  const inspectorOpen = useApp(
+    (s) => s.selection.type === "settings" && s.selection.page === "inspector",
+  );
   const windowVisible = useApp((s) => s.windowVisible);
   const connected = useApp((s) => s.connection.status === "connected");
   const catalogLoaded = useApp((s) => s.catalogLoaded);
@@ -104,7 +100,7 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code === "KeyI" && event.altKey && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        setInspectorOpen(!useApp.getState().inspector.open);
+        toggleInspector();
       }
       const mac = useApp.getState().info?.platform === "macos";
       // Back and Forward: ⌘[ and ⌘] on macOS, Alt+← and Alt+→ elsewhere.
@@ -137,8 +133,8 @@ export function App() {
   return (
     <div className="bg-chrome flex h-full flex-col">
       <SidebarProvider className="relative min-h-0 flex-1">
-        {/* The page surface the sidebar panel, the content and the Inspector sit on; their
-            headers stay above it, in the titlebar strip. */}
+        {/* The page surface the sidebar panel and the content sit on; their headers stay
+            above it, in the titlebar strip. */}
         <div
           aria-hidden
           data-slot="page-surface"
@@ -163,11 +159,6 @@ export function App() {
               )}
               <Toaster className="top-titlebar pt-2" />
             </div>
-            {inspectorOpen && (
-              <Suspense fallback={null}>
-                <Inspector />
-              </Suspense>
-            )}
           </main>
         </div>
         <TitlebarControls />
@@ -178,7 +169,6 @@ export function App() {
         <UninstallDialog />
         <FolderDropZone />
       </SidebarProvider>
-      <StatusBar />
     </div>
   );
 }

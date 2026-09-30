@@ -5,6 +5,7 @@ import {
   SettingsCog,
   Shuffle,
   Storage,
+  Terminal,
   Usage,
 } from "@openai/apps-sdk-ui/components/Icon";
 import { lazy, type ComponentType, type SVGProps } from "react";
@@ -37,10 +38,26 @@ export type SettingsPageEntry = {
   rows: readonly SettingsRowCopy[];
 };
 
-// The Usage page (charts and all) loads when first opened, off the cold-start path.
+// The Usage page (charts and all) and the Inspector (a developer view) load when first
+// opened, off the cold-start path.
 const UsagePage = lazy(() =>
   import("@/app/usage/UsagePage").then((module) => ({ default: module.UsagePage })),
 );
+
+const InspectorPage = lazy(() =>
+  import("@/app/inspector/InspectorPage").then((module) => ({ default: module.InspectorPage })),
+);
+
+// What search finds on the Inspector's page: its tabs.
+const INSPECTOR_ROWS: readonly SettingsRowCopy[] = [
+  { label: "Events", description: "The live event stream." },
+  { label: "Orchestrator", description: "The open session's orchestrator context." },
+  { label: "Project Brains", description: "What each project's Brain holds." },
+  { label: "Processes", description: "The processes Brigadier runs." },
+  { label: "Performance", description: "Metrics against the performance budgets." },
+  { label: "Providers", description: "Raw provider sessions." },
+  { label: "Routing preview", description: "What routing would pick." },
+];
 
 const USAGE_ROWS: readonly SettingsRowCopy[] = [
   { label: "Usage windows", description: "How much of each agent's usage windows is spent." },
@@ -100,6 +117,14 @@ export const SETTINGS_PAGES: readonly SettingsPageEntry[] = [
     group: "System",
     component: StoragePage,
     rows: Object.values(STORAGE_ROWS),
+  },
+  {
+    id: "inspector",
+    label: "Inspector",
+    icon: Terminal,
+    group: "System",
+    component: InspectorPage,
+    rows: INSPECTOR_ROWS,
   },
   {
     id: "archived",

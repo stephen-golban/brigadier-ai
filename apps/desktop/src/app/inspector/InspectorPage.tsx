@@ -1,4 +1,3 @@
-import { X } from "@openai/apps-sdk-ui/components/Icon";
 import { useEffect, useRef } from "react";
 
 import { BrainTab } from "@/app/inspector/brain/BrainTab";
@@ -8,10 +7,8 @@ import { PerformanceTab } from "@/app/inspector/PerformanceTab";
 import { ProcessesTab } from "@/app/inspector/ProcessesTab";
 import { ProvidersTab } from "@/app/inspector/providers/ProvidersTab";
 import { RoutingTab } from "@/app/inspector/RoutingTab";
-import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
-import { setInspectorOpen, setInspectorTab } from "@/state/actions";
+import { setInspectorTab } from "@/state/actions";
 import { type InspectorTab, useApp } from "@/state/store";
 
 function isTab(value: string): value is InspectorTab {
@@ -27,41 +24,34 @@ function isTab(value: string): value is InspectorTab {
 }
 
 /**
- * Developer view: live event stream, the open session's orchestrator context, the Project
- * Brains, processes,
- * metrics against the §4 budgets, raw provider sessions, and a routing preview.
+ * The Inspector, a page of Settings for developers: the live event stream, the open session's
+ * orchestrator context, the Project Brains, processes, metrics against the §4 budgets, raw
+ * provider sessions, and a routing preview, a tab each. The tabs fill the page's column down
+ * to the window's bottom, each scrolling on its own.
  */
-export function Inspector() {
+export function InspectorPage() {
   const tab = useApp((s) => s.inspector.tab);
   const tabs = useRef<HTMLDivElement>(null);
-  // The narrow Inspector cannot fit every tab; the strip scrolls and keeps the open one in view.
+  // A narrow window cannot fit every tab; the strip scrolls and keeps the open one in view.
   useEffect(() => {
     tabs.current
       ?.querySelector(`[role="tab"][id$="-trigger-${tab}"]`)
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [tab]);
   return (
-    <aside
-      aria-label="Inspector"
-      className={cn(
-        "column-divider flex h-full shrink-0 flex-col",
-        tab === "providers" || tab === "brain" || tab === "routing"
-          ? "w-inspector-wide"
-          : "w-inspector",
-      )}
-    >
+    <div data-slot="settings-page" className="flex h-full flex-col">
+      {/* The page's toolbar strip, for dragging the window. */}
+      <div data-tauri-drag-region className="h-page-toolbar shrink-0" />
       <Tabs
         value={tab}
         onValueChange={(value) => isTab(value) && setInspectorTab(value)}
-        className="flex min-h-0 flex-1 flex-col gap-0"
+        className="max-w-settings mx-auto flex min-h-0 w-full flex-1 flex-col gap-0 px-5 pt-4"
       >
-        <div
-          data-tauri-drag-region
-          className="h-titlebar flex shrink-0 items-center gap-2 px-2"
-        >
+        <header className="flex flex-col gap-4 py-3">
+          <h1 className="text-page-title font-medium">Inspector</h1>
           <TabsList
             ref={tabs}
-            className="hide-scrollbar min-w-0 flex-1 justify-start overflow-x-auto"
+            className="hide-scrollbar max-w-full min-w-0 justify-start self-start overflow-x-auto"
           >
             <TabsTrigger value="events">Events</TabsTrigger>
             <TabsTrigger value="orchestrator">Orchestrator</TabsTrigger>
@@ -71,15 +61,7 @@ export function Inspector() {
             <TabsTrigger value="providers">Providers</TabsTrigger>
             <TabsTrigger value="routing">Routing</TabsTrigger>
           </TabsList>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Close Inspector"
-            onClick={() => setInspectorOpen(false)}
-          >
-            <X />
-          </Button>
-        </div>
+        </header>
         <TabsContent value="events" className="flex min-h-0 flex-col">
           <EventsTab />
         </TabsContent>
@@ -102,6 +84,6 @@ export function Inspector() {
           <RoutingTab />
         </TabsContent>
       </Tabs>
-    </aside>
+    </div>
   );
 }

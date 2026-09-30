@@ -231,6 +231,11 @@ function show(selection: Selection): void {
 /** Where leaving Settings goes back to: what was shown when it opened. */
 let beforeSettings: Selection = { type: "draft", kind: "chat" };
 
+/** What was shown when Settings opened (what the Inspector's Orchestrator tab starts on). */
+export function shownBeforeSettings(): Selection {
+  return beforeSettings;
+}
+
 /** Shows a page of Settings, remembering what to go back to. */
 export function openSettings(page: SettingsPageId = "general"): void {
   const { selection } = useApp.getState();
@@ -975,10 +980,17 @@ export function setPinnedSummary(shown: boolean): void {
   useApp.setState({ pinnedSummary: shown });
 }
 
-export function setInspectorOpen(open: boolean, tab?: InspectorTab): void {
-  useApp.setState((state) => ({
-    inspector: { ...state.inspector, open, tab: tab ?? state.inspector.tab },
-  }));
+/** Opens the Inspector's page in Settings, on `tab` when given. */
+export function openInspector(tab?: InspectorTab): void {
+  if (tab) setInspectorTab(tab);
+  openSettings("inspector");
+}
+
+/** ⌥⌘I : opens the Inspector, or leaves it when it is the page shown. */
+export function toggleInspector(): void {
+  const { selection } = useApp.getState();
+  if (selection.type === "settings" && selection.page === "inspector") closeSettings();
+  else openInspector();
 }
 
 export function setInspectorTab(tab: InspectorTab): void {

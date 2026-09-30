@@ -26,6 +26,8 @@
  *               h-nav-row                     sidebar and Settings navigation rows
  *               size-rail-button, h-nav-header, h-nav-search  the rail's buttons, the sidebar
  *                                             panel's header, the Settings search field
+ *               size-rail-mark                Brigadier's mark on the rail (Home), a step
+ *                                             above the other rail icons
  *               w-resize-handle               the sidebar panel's grab area
  *               w-switch-width, h-switch-height, size-switch-thumb, translate-x-switch-travel
  *                                             an on/off switch
@@ -51,8 +53,6 @@
  *                                             toggle sit in the titlebar, and their width
  *               ps-titlebar-clear             the top bar's inset clearing them while the
  *                                             sidebar panel is closed
- *               h-status-bar                  the status bar along the bottom of the window
- *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
  *               max-w-thread, max-w-{2xs,xs,sm,md,lg} readable column / surface widths
@@ -170,6 +170,7 @@
   /* The rail's buttons; the sidebar panel's header (its title and actions); the Settings
      search field. */
   --spacing-rail-button: 2.25rem;
+  --spacing-rail-mark: 1.5rem;
   --spacing-nav-header: 3.25rem;
   --spacing-nav-search: 2.25rem;
   /* The sidebar's list fades out this far under its header, and this far above its end, while
@@ -193,9 +194,8 @@
   --spacing-page-toolbar: 2.875rem;
   /* A Settings row keeps at least this much room for its control. */
   --spacing-settings-control: min(10rem, 40cqw);
-  /* Window chrome: top bars, room for the macOS traffic lights, the Inspector panel. */
+  /* Window chrome: top bars, room for the macOS traffic lights. */
   --spacing-titlebar: 2.75rem;
-  --spacing-status-bar: 1.625rem;
   --spacing-traffic-lights: 4.75rem;
   /* Back, Forward and the sidebar toggle stay in the titlebar where it starts (right after
      the traffic lights on macOS, see below); with the panel closed, the top bar beside the
@@ -206,8 +206,6 @@
     var(--spacing-titlebar-start) + var(--spacing-titlebar-controls) + var(--spacing) * 2 -
       var(--spacing-rail)
   );
-  --spacing-inspector: 28rem;
-  --spacing-inspector-wide: 42rem;
   --spacing-agents: 26rem;
   --spacing-setup: min(60rem, calc(100dvh - 2rem));
   --spacing-setup-card: 13rem;
@@ -480,6 +478,7 @@
   --spacing-sidebar-max: 26rem;
   --spacing-nav-row: 1.625rem;
   --spacing-rail-button: 2rem;
+  --spacing-rail-mark: 1.25rem;
   --spacing-nav-header: 2.75rem;
   --spacing-nav-search: 1.875rem;
   --spacing-switch-width: 1.75rem;
@@ -487,10 +486,7 @@
   --spacing-switch-thumb: 0.875rem;
   --spacing-settings-control: min(7.5rem, 40cqw);
   --spacing-page-toolbar: 2.5rem;
-  --spacing-status-bar: 1.375rem;
   --spacing-titlebar: 2.5rem;
-  --spacing-inspector: 24rem;
-  --spacing-inspector-wide: 36rem;
   --spacing-agents: 22rem;
   --spacing-user-message: 18.75rem;
 

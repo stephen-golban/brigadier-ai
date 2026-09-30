@@ -29,6 +29,7 @@ export type SettingsPageId =
   | "usage"
   | "routing"
   | "storage"
+  | "inspector"
   | "archived";
 
 /**
@@ -188,7 +189,6 @@ export type AppState = {
       conversation, kept across launches. */
   pinnedSummary: boolean;
   inspector: {
-    open: boolean;
     tab: InspectorTab;
     /** Newest first. */
     events: EventEnvelope[];
@@ -238,7 +238,6 @@ export const useApp = create<AppState>()(() => ({
   coldStartMs: null,
   pinnedSummary: cachedPinnedSummary(),
   inspector: {
-    open: false,
     tab: "events",
     events: [],
     metrics: null,

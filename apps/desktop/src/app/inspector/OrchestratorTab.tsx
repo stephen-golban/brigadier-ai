@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ContextChart } from "@/app/inspector/ContextChart";
+import { Picker } from "@/app/inspector/providers/Picker";
 import {
   type BreachRow,
   type ContextPoint,
@@ -21,7 +22,11 @@ import type { RebirthThresholds } from "@/ipc/generated";
 import { formatBytes, formatClock } from "@/lib/format";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
-import { loadEarlierOrchestratorLog, openOrchestratorLog } from "@/state/actions";
+import {
+  loadEarlierOrchestratorLog,
+  openOrchestratorLog,
+  shownBeforeSettings,
+} from "@/state/actions";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 
@@ -31,21 +36,33 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The open session's id, or `null` when the main area shows a chat, a draft or nothing. */
-function useOpenSession(): string | null {
-  return useApp((s) => {
-    if (s.selection.type !== "conversation") return null;
-    const conversation = s.conversations[s.selection.id];
-    return conversation?.kind === "session" ? conversation.id : null;
-  });
-}
-
 /**
- * The open session's orchestrator: every context injection against the CLI's reported
- * context size, so it is visible that its context grows only by messages and reports.
+ * A session's orchestrator: every context injection against the CLI's reported context size,
+ * so it is visible that its context grows only by messages and reports. It starts on the
+ * session open before Settings (else the newest one); the picker shows another.
  */
 export function OrchestratorTab() {
-  const sessionId = useOpenSession();
+  const conversations = useApp((s) => s.conversations);
+  // The sessions to choose from, newest first.
+  const options = useMemo(
+    () =>
+      Object.values(conversations)
+        .filter(
+          (conversation) =>
+            conversation.kind === "session" &&
+            conversation.lifecycle !== "archived" &&
+            conversation.sideOf === null,
+        )
+        .toSorted((a, b) => b.updatedAtMs - a.updatedAtMs)
+        .map((conversation) => ({ value: conversation.id, label: conversation.title })),
+    [conversations],
+  );
+  const [picked, setPicked] = useState<string | null>(() => {
+    const before = shownBeforeSettings();
+    return before.type === "conversation" ? before.id : null;
+  });
+  const sessionId =
+    options.find((option) => option.value === picked)?.value ?? options[0]?.value ?? null;
   const [failure, setFailure] = useState<{ sessionId: string; message: string } | null>(null);
 
   // Follow the open session's log while this tab shows; stop following when it closes.
@@ -62,12 +79,20 @@ export function OrchestratorTab() {
   if (sessionId === null) {
     return (
       <p className="text-muted-foreground p-4 text-xs">
-        Open a session to see its orchestrator.
+        Start a session to see its orchestrator.
       </p>
     );
   }
   const error = failure?.sessionId === sessionId ? failure.message : null;
-  return <OrchestratorLogView sessionId={sessionId} error={error} />;
+  return (
+    <>
+      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs">
+        <span className="text-muted-foreground">Session</span>
+        <Picker label="Session" value={sessionId} options={options} onChange={setPicked} />
+      </div>
+      <OrchestratorLogView sessionId={sessionId} error={error} />
+    </>
+  );
 }
 
 function OrchestratorLogView({ sessionId, error }: { sessionId: string; error: string | null }) {

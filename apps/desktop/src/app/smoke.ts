@@ -8,7 +8,7 @@ import {
   summarize,
 } from "@/lib/perf";
 import { startupBreakdown } from "@/lib/startup";
-import { runProbeBurst, setInspectorOpen, setMetricsStreaming } from "@/state/actions";
+import { openInspector, runProbeBurst, setMetricsStreaming } from "@/state/actions";
 import { useApp } from "@/state/store";
 
 const PROBES = 200;
@@ -26,7 +26,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * §4 budgets and quits.
  */
 export async function runSmoke(): Promise<void> {
-  setInspectorOpen(true, "events");
+  openInspector("events");
   await setMetricsStreaming(true);
   await sleep(SETTLE_MS);
 

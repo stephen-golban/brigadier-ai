@@ -1,6 +1,8 @@
 import { ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
-import { useId, type ReactNode } from "react";
+import { useId, type ComponentProps, type ReactNode } from "react";
 
+import { Kbd } from "@/components/ui/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 /*
@@ -109,5 +111,41 @@ export function NavEmpty({ children, className }: { children: ReactNode; classNa
     <li className={cn("text-foreground/35 h-nav-row flex items-center px-2 text-sm", className)}>
       {children}
     </li>
+  );
+}
+
+/**
+ * A button on the rail: an icon, its name (and shortcut) in a tooltip, a pill behind it while
+ * selected.
+ */
+export function RailButton({
+  label,
+  shortcut,
+  selected = false,
+  children,
+  ...props
+}: ComponentProps<"button"> & { label: string; shortcut?: string; selected?: boolean }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          aria-current={selected ? "page" : undefined}
+          className={cn(
+            "size-rail-button rounded-nav focus-visible:ring-ring/50 relative flex shrink-0 items-center justify-center outline-none transition-colors duration-150 focus-visible:ring-2 [&_svg]:relative [&_svg]:size-icon-lg",
+            "before:rounded-nav before:bg-foreground/8 before:absolute before:inset-0 before:opacity-0 before:transition-opacity before:duration-150 hover:before:opacity-100 data-[state=open]:before:opacity-100",
+            selected ? "text-foreground before:opacity-100" : "text-muted-foreground hover:text-foreground",
+          )}
+          {...props}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">
+        {label}
+        {shortcut && <Kbd>{shortcut}</Kbd>}
+      </TooltipContent>
+    </Tooltip>
   );
 }
