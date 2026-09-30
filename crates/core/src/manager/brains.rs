@@ -987,13 +987,23 @@ impl SessionManager {
 
     /// A read-only task reported, or a write task landed: its report becomes a node (the
     /// task's question with its answer), each of its decisions another, linked to the report
-    /// and to the modules it touched.
-    pub(crate) fn learn_report(&self, task: &Task, report: &Report) {
+    /// and to the modules it touched. `order`, when given, is held while it is kept, so the
+    /// task's reports are kept in the order they came.
+    pub(crate) fn learn_report(
+        &self,
+        task: &Task,
+        report: &Report,
+        order: Option<Arc<tokio::sync::Mutex<()>>>,
+    ) {
         let manager = self.arc();
         let learning = Learning::start(self.arc(), &task.conversation_id);
         let (task, report) = (task.clone(), report.clone());
         self.spawn(async move {
             let _learning = learning;
+            let _order = match &order {
+                Some(order) => Some(order.lock().await),
+                None => None,
+            };
             if let Err(err) = manager.record_report(&task, &report).await {
                 tracing::warn!(task = %task.id, error = %err, "the Brain could not keep a report");
             }

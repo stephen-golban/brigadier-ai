@@ -2,7 +2,7 @@
 //! reads.
 
 use crate::model::{Conversation, Environment, PermissionLevel, Project, Setup, UsageSettings};
-use crate::work::{Report, Task, TaskKind};
+use crate::work::{ArtifactRef, Report, Task, TaskKind};
 
 /// Logged on `orch:<id>` when a conversation's CLI files were removed: the next CLI session
 /// starts over from the transcript instead of resuming.
@@ -207,7 +207,7 @@ Rules:
 - You work alone on this task. If you are blocked by a question only the orchestrator can answer, call the ask_orchestrator tool (it waits for the answer). Don't ask about things you can find out yourself.{write_rules}
 - Pushing, publishing, deploying and other outward actions are not yours to do; if one seems needed, say so in the report.
 - Files meant for the orchestrator or the user (full findings, logs worth keeping, documents, generated images) go in your outputs folder. Brigadier attaches them to your report and the user saves them from the task card. Never write files to /tmp or anywhere else outside your worktree and scratch folder, even if the task names such a place: nobody could read them, and they would be left behind. Save them in your outputs folder and say so in the report.
-- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{practices}{instructions}{extra}
+- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message, and never say in the report that they are below or in a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{practices}{instructions}{extra}
 
 The task:
 {spec}"#,
@@ -279,6 +279,31 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
     }
     text.push_str("\n[/report]");
     text
+}
+
+/// What a worker wrote after its report (see [`report_envelope`]): in full when it fits the
+/// report's size, else its first part and the artifact that holds it all.
+pub(crate) fn late_findings_envelope(task: &Task, artifact: &ArtifactRef, text: &str) -> String {
+    let limit = super::workers::REPORT_MAX_BYTES;
+    let shown = if text.len() > limit {
+        let mut end = limit;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!(
+            "{}\n[…cut; read_artifact {} reads all {} bytes]",
+            &text[..end],
+            artifact.id,
+            artifact.bytes
+        )
+    } else {
+        text.to_owned()
+    };
+    format!(
+        "[report task-{} · addendum] The worker wrote this after its report, which left it out; \
+         it is kept with the report as {}:\n{shown}\n[/report]",
+        task.number, artifact.id
+    )
 }
 
 /// Asks the orchestrator to sort a follow-up the user sent while `request` works.

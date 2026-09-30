@@ -836,7 +836,7 @@ impl SessionManager {
         if let Ok(updated) = &updated
             && let Some(report) = &updated.report
         {
-            self.learn_report(updated, report);
+            self.learn_report(updated, report, None);
         }
         // The task branch is fully on the target now; it was Brigadier's, so it goes too.
         let branch = task.workspace.as_ref().and_then(|w| w.branch.clone());

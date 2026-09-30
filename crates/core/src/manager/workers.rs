@@ -141,6 +141,9 @@ pub(crate) struct TaskLive {
     wait_timer: std::sync::atomic::AtomicU64,
     /// Hand-overs the current attempt made, once counted from its recorded events.
     handovers: std::sync::Mutex<Option<u32>>,
+    /// Held while the Brain keeps one of the task's reports, so a report and the findings
+    /// added to it later are kept in that order.
+    pub(crate) learning: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl TaskLive {
@@ -258,6 +261,7 @@ impl TaskLive {
             reroute: tokio::sync::Mutex::new(()),
             wait_timer: std::sync::atomic::AtomicU64::new(0),
             handovers: std::sync::Mutex::new(None),
+            learning: Arc::default(),
         }
     }
 
@@ -1539,7 +1543,9 @@ impl SessionManager {
         }
         let cutoff = live.take_cutoff().await;
         if task.report.is_some() && task.state != TaskState::Running {
-            // Reported; the worker waits (write tasks can be sent back to fix things).
+            // Reported; the worker waits (write tasks can be sent back to fix things). What it
+            // wrote after its report reaches the orchestrator first.
+            let task = self.late_findings(live, task).await;
             if !task.kind.writes() {
                 // Not from inside the worker's own event pump: closing waits for it.
                 let manager = self.arc();
@@ -1937,7 +1943,7 @@ impl SessionManager {
         live.state.lock().await.nudged = true;
         // A write task's claims are knowledge only once its work lands (see `landed`).
         if !task.kind.writes() {
-            self.learn_report(&task, &report);
+            self.learn_report(&task, &report, Some(live.learning.clone()));
         }
         if reviewing {
             self.review_reported(&task).await;
@@ -2028,6 +2034,74 @@ impl SessionManager {
         };
         live.state.lock().await.unsent = Some(artifact.clone());
         Some(artifact)
+    }
+
+    /// What the worker wrote after its report, in the turn that reported: kept as an artifact
+    /// of the report and sent to the orchestrator, when it is long enough to be findings or
+    /// the report points at it ("the findings are below"). Answers the task as it is now.
+    async fn late_findings(&self, live: &Arc<TaskLive>, task: Task) -> Task {
+        let message = live.state.lock().await.last_message.take();
+        let (Some(message), Some(report)) = (message, task.report.as_ref()) else {
+            return task;
+        };
+        let message = message.trim();
+        if task.kind == TaskKind::Review || !is_late_findings(&report.summary, message) {
+            return task;
+        }
+        let text = self.redact_for(live, message).await;
+        let bytes = text.clone().into_bytes();
+        let size = bytes.len() as u64;
+        let hash = match self.core.store().blobs().put(bytes).await {
+            Ok(hash) => hash,
+            Err(err) => {
+                tracing::warn!(task = %live.id, error = %err, "could not keep the worker's late findings");
+                return task;
+            }
+        };
+        let artifact = ArtifactRef {
+            id: hash.to_string(),
+            title: "What the worker wrote after its report".into(),
+            kind: ArtifactKind::Note,
+            mime: "text/markdown".into(),
+            bytes: size,
+            file_name: Some(format!("task-{}-after-report.md", task.number)),
+        };
+        let added = artifact.clone();
+        let updated = self
+            .update_task(&task.conversation_id, &task.id, move |task| {
+                if let Some(report) = task.report.as_mut()
+                    && !report.artifacts.iter().any(|kept| kept.id == added.id)
+                {
+                    report.artifacts.push(added);
+                }
+            })
+            .await;
+        let Ok(updated) = updated else {
+            return task;
+        };
+        tracing::info!(task = %task.id, bytes = size, "kept what the worker wrote after its report");
+        let envelope = Envelope {
+            kind: InjectionKind::Report,
+            label: format!("report task-{} (addendum)", task.number),
+            task_id: Some(task.id.clone()),
+            text: prompts::late_findings_envelope(&updated, &artifact, &text),
+        };
+        let request = self
+            .request_for(&task.conversation_id, Some(&task.id))
+            .await;
+        if let Some(conv) = self
+            .queue_envelope(&task.conversation_id, envelope, request)
+            .await
+        {
+            self.settle_requests(&task.conversation_id).await;
+            self.kick(&conv);
+        }
+        if !updated.kind.writes()
+            && let Some(report) = &updated.report
+        {
+            self.learn_report(&updated, report, Some(live.learning.clone()));
+        }
+        updated
     }
 
     /// `message_worker`: answers a blocking question, steers a running worker, or sends a
@@ -2692,4 +2766,42 @@ pub(crate) fn route_label(task: &Task) -> String {
         let _ = write!(label, ", took over from {}", before.join(", then "));
     }
     label
+}
+
+/// Whether `message`, written after a report with `summary`, holds findings the report left
+/// out: any message the summary points at ("reproduced below"), else a long one.
+fn is_late_findings(summary: &str, message: &str) -> bool {
+    const POINTERS: [&str; 7] = [
+        "below",
+        "following message",
+        "next message",
+        "final message",
+        "last message",
+        "my message",
+        "in a message",
+    ];
+    if message.is_empty() {
+        return false;
+    }
+    let summary = summary.to_lowercase();
+    message.len() >= KEEP_MESSAGE_MIN_BYTES || POINTERS.iter().any(|word| summary.contains(word))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_message_the_report_points_at_is_kept_however_short() {
+        let summary = "Zustand stores; the full findings are reproduced below.";
+        assert!(is_late_findings(summary, "Stores live in src/store/*.ts."));
+        assert!(!is_late_findings(summary, ""));
+    }
+
+    #[test]
+    fn a_short_message_after_a_full_report_is_not() {
+        let summary = "The app uses Zustand; its stores are in src/store/.";
+        assert!(!is_late_findings(summary, "Report submitted."));
+        assert!(is_late_findings(summary, &"Details. ".repeat(60)));
+    }
 }

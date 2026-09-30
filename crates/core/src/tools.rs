@@ -440,11 +440,13 @@ pub struct ArtifactInput {
 }
 
 /// `submit_report`: the worker's final structured report (about 800 tokens at most; details go
-/// into artifacts). Call it exactly once, at the end.
+/// into artifacts). Call it exactly once, at the end: the orchestrator reads only this report,
+/// never your messages.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitReport {
-    /// What was done, in a few sentences.
+    /// What was done and what you found, in a few sentences. It must hold your findings (or
+    /// name the artifact that does): never say they are below or in a message.
     pub summary: String,
     /// Repo-relative paths changed, created or deleted (every new file you want kept must be
     /// listed).
