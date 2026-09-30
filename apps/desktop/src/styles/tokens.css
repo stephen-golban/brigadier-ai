@@ -44,6 +44,8 @@
  *               w-sidebar, min-w-sidebar-min, max-w-sidebar-max  the sidebar panel beside the
  *                                             rail: default width and how far it resizes
  *               p-surface-inset               the page surface's gap to the window's end and bottom
+ *               page-corner page-corner-{top,bottom}-{start,end}  a page surface corner kept
+ *                                             round over the columns
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
  *               ps-titlebar-clear             the top bar's inset clearing the sidebar toggle
  *                                             while the panel is closed (macOS)
@@ -412,6 +414,8 @@
   /* The window around the page surface (rail, top bar), and the sidebar panel: the page
      colour laid over it at 65%. */
   --chrome: color-mix(in oklab, var(--foreground) 7%, var(--background));
+  /* The page surface's hairline edge over the chrome (as its shadow-page ring draws it). */
+  --page-edge: color-mix(in oklab, oklch(1 0 0) 6%, var(--chrome));
   --divider: oklch(0.985 0.002 var(--tint) / 8%);
   /* Blue: a switch that is on. */
   --toggle-on: oklch(0.63 0.18 259);
@@ -491,7 +495,6 @@
   --radius-rail: 1rem;
   --radius-menu: 1rem;
   --radius-tooltip: 0.75rem;
-  --radius-page: 0.625rem;
   --radius-nav: 0.625rem;
   --radius-settings: 1rem;
 

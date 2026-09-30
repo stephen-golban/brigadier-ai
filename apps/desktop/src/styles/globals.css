@@ -135,6 +135,46 @@
   );
 }
 
+/* A corner of the page surface: it paints the window chrome (and the surface's hairline edge)
+   outside the surface's rounded corner, over whatever the columns draw there, so the corner
+   stays round whichever column's background reaches it. Each corner's utility places its cap
+   and centres the circle on the cap's inner corner. */
+@utility page-corner {
+  position: absolute;
+  width: var(--radius-page);
+  height: var(--radius-page);
+  background: radial-gradient(
+    circle at var(--page-corner),
+    transparent calc(var(--radius-page) - 0.5px),
+    var(--page-edge) var(--radius-page),
+    var(--color-chrome) calc(var(--radius-page) + 0.5px)
+  );
+  /* Right to left, the start and end caps swap sides: mirror them so the circle does too. */
+  &:dir(rtl) {
+    scale: -1 1;
+  }
+}
+@utility page-corner-top-start {
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  --page-corner: 100% 100%;
+}
+@utility page-corner-top-end {
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  --page-corner: 0 100%;
+}
+@utility page-corner-bottom-start {
+  inset-block-end: 0;
+  inset-inline-start: 0;
+  --page-corner: 100% 0;
+}
+@utility page-corner-bottom-end {
+  inset-block-end: 0;
+  inset-inline-end: 0;
+  --page-corner: 0 0;
+}
+
 /* A hairline down a column's start below the titlebar strip: the content beside the sidebar
    panel. */
 @utility body-divider {

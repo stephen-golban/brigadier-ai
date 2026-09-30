@@ -42,6 +42,21 @@ function viewKey(selection: Selection): string {
   }
 }
 
+/** Keeps the page surface's corners round over the columns that fill it (see page-corner). */
+function PageCorners() {
+  return (
+    <div
+      aria-hidden
+      className="top-titlebar start-rail end-surface-inset bottom-surface-inset pointer-events-none absolute z-20"
+    >
+      <span className="page-corner page-corner-top-start" />
+      <span className="page-corner page-corner-top-end" />
+      <span className="page-corner page-corner-bottom-start" />
+      <span className="page-corner page-corner-bottom-end" />
+    </div>
+  );
+}
+
 export function App() {
   const selection = useApp((s) => s.selection);
   const inspectorOpen = useApp((s) => s.inspector.open);
@@ -111,6 +126,7 @@ export function App() {
           data-slot="page-surface"
           className="bg-background rounded-page shadow-page top-titlebar start-rail end-surface-inset bottom-surface-inset pointer-events-none absolute"
         />
+        <PageCorners />
         <AppRail />
         <div className="relative flex min-w-0 flex-1 pb-surface-inset pe-surface-inset">
           <SidebarPanel>{selection.type === "settings" ? <SettingsNav /> : <AppSidebar />}</SidebarPanel>
