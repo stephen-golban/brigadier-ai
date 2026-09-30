@@ -2,8 +2,10 @@
 import type { Density } from "./Density";
 import type { KeepAwake } from "./KeepAwake";
 import type { ModelChoice } from "./ModelChoice";
+import type { ModelRef } from "./ModelRef";
 import type { OverrideRule } from "./OverrideRule";
 import type { PermissionLevel } from "./PermissionLevel";
+import type { ProviderKind } from "./ProviderKind";
 import type { Ranking } from "./Ranking";
 import type { UsageSettings } from "./UsageSettings";
 
@@ -66,4 +68,23 @@ routingRankings: Array<Ranking>,
 /**
  * Ways to use less Claude and Codex usage (PLAN.md §7).
  */
-usage: UsageSettings, };
+usage: UsageSettings, 
+/**
+ * Agents switched off on the Providers page: their models are hidden from every picker
+ * and get no work, not even in the background. Conversations already running go on.
+ */
+disabledProviders: Array<ProviderKind>, 
+/**
+ * Models the Providers page makes unavailable: hidden from every picker and never used.
+ */
+hiddenModels: Array<ModelRef>, 
+/**
+ * Every model Brigadier has seen in its agent's list. One seen after its agent's first
+ * list starts without worker tasks (a rule the Routing page's switch removes).
+ */
+knownModels: Array<ModelRef>, 
+/**
+ * The shape saved settings were last brought up to ([`SETTINGS_VERSION`]). Settings saved
+ * before it existed read as 0, so their conversions run.
+ */
+settingsVersion: number, };

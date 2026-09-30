@@ -247,17 +247,25 @@ impl SessionManager {
             ProviderKind::Claude => "haiku",
             ProviderKind::Codex => "luna",
         };
-        let model = self
+        // A model the user made unavailable isn't used: then the first one that is.
+        let settings = self.core.settings();
+        let available =
+            |id: &str| crate::routing::availability::model_available(&settings, provider, id);
+        let models = self
             .runtime
             .overview(provider)
             .and_then(|overview| overview.models)
-            .and_then(|catalog| {
-                catalog
-                    .models
-                    .into_iter()
-                    .find(|model| model.id.contains(family))
+            .map(|catalog| catalog.models)
+            .unwrap_or_default();
+        let model = models
+            .iter()
+            .find(|model| model.id.contains(family) && available(&model.id))
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|model| !model.legacy && available(&model.id))
             })
-            .map_or_else(|| family.to_owned(), |model| model.id);
+            .map_or_else(|| family.to_owned(), |model| model.id.clone());
         let effort = (provider == ProviderKind::Codex).then(|| "low".to_owned());
         (model, effort)
     }

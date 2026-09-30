@@ -667,7 +667,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
     let sessions = &daemon.sessions;
     Ok(match request {
         Request::GetCatalog => Response::GetCatalog {
-            catalog: core.catalog(),
+            catalog: Box::new(core.catalog()),
         },
         Request::GetActivity => Response::GetActivity {
             activity: core.activity().await,
@@ -1152,16 +1152,21 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             let before = core.settings();
             let settings = core.update_settings(settings).await?;
             daemon.awake.apply().await;
-            // New rules or rankings may let work waiting for quota run now.
+            // New rules or rankings, or an agent or model turned back on, may let work waiting
+            // for quota run now.
             if before.routing_overrides != settings.routing_overrides
                 || before.routing_rankings != settings.routing_rankings
+                || before.disabled_providers != settings.disabled_providers
+                || before.hidden_models != settings.hidden_models
             {
                 let sessions = daemon.sessions.clone();
                 daemon
                     .supervisor
                     .spawn(async move { sessions.retry_waiting_work().await });
             }
-            Response::UpdateSettings { settings }
+            Response::UpdateSettings {
+                settings: Box::new(settings),
+            }
         }
         Request::GetKeepAwake => Response::GetKeepAwake {
             status: daemon.awake.apply().await,

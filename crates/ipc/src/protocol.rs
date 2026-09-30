@@ -706,7 +706,7 @@ pub enum Request {
 )]
 pub enum Response {
     GetCatalog {
-        catalog: Catalog,
+        catalog: Box<Catalog>,
     },
     GetActivity {
         activity: Vec<ConversationActivity>,
@@ -910,7 +910,7 @@ pub enum Response {
         text: String,
     },
     UpdateSettings {
-        settings: Settings,
+        settings: Box<Settings>,
     },
     Subscribe {
         last_seq: i64,

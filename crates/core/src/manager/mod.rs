@@ -354,6 +354,15 @@ impl SessionManager {
         title: Option<String>,
         setup: Option<SetupRequest>,
     ) -> Result<Conversation> {
+        let orchestrator = match &setup {
+            Some(SetupRequest::Session { orchestrator, .. }) => Some(orchestrator),
+            Some(SetupRequest::Chat { model }) => Some(model),
+            None => None,
+        };
+        if let Some(choice) = orchestrator {
+            crate::routing::availability::check_choice(&self.core.settings(), choice)
+                .map_err(Error::Invalid)?;
+        }
         if let Some(SetupRequest::Session {
             repo,
             environment:
@@ -454,9 +463,16 @@ impl SessionManager {
         }
     }
 
-    /// Logged in and not refusing work: no limit, or one whose reset has passed (the quota
-    /// monitor's view).
+    /// Switched on, logged in and not refusing work (see [`Self::provider_ready`]).
     fn provider_usable(&self, kind: ProviderKind) -> bool {
+        crate::routing::availability::provider_on(&self.core.settings(), kind)
+            && self.provider_ready(kind)
+    }
+
+    /// Logged in and not refusing work: no limit, or one whose reset has passed (the quota
+    /// monitor's view). Whether the user switched it off is not asked: a conversation already
+    /// running on it goes on.
+    fn provider_ready(&self, kind: ProviderKind) -> bool {
         self.runtime.overview(kind).is_some_and(|overview| {
             overview
                 .status

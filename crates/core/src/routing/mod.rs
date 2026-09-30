@@ -1,5 +1,6 @@
 //! Routing's memory and senses: the quota monitor and `routing.sqlite`.
 
+pub mod availability;
 pub mod meter;
 pub mod monitor;
 pub mod registry;

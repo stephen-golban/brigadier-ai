@@ -629,6 +629,17 @@ impl Runtime {
     }
 
     async fn record_overview(&self, mut overview: ProviderOverview) {
+        // A model seen for the first time is known before routing can pick it.
+        if let Some(catalog) = &overview.models {
+            let ids: Vec<String> = catalog
+                .models
+                .iter()
+                .map(|model| model.id.clone())
+                .collect();
+            if let Err(err) = self.core.note_models(overview.provider, &ids).await {
+                tracing::warn!(error = %err, "could not record the models seen");
+            }
+        }
         // The monitor's view with its estimates, as of this check.
         overview.usage = self.provider_usage(overview.provider, now_ms());
         self.state()

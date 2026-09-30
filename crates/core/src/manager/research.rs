@@ -135,14 +135,22 @@ impl SessionManager {
         });
     }
 
-    /// Models the CLIs list that neither the registry nor research has placed yet.
+    /// Models the CLIs list that neither the registry nor research has placed yet (and the
+    /// user hasn't made unavailable).
     async fn unresearched_models(&self) -> Vec<(ProviderKind, String)> {
+        let settings = self.core.settings();
         self.routing_inputs(None, now_ms())
             .await
             .models
             .into_iter()
             .filter(|model| {
-                model.status == brigadier_router::ModelStatus::Unknown && !model.excluded
+                model.status == brigadier_router::ModelStatus::Unknown
+                    && !model.excluded
+                    && crate::routing::availability::model_available(
+                        &settings,
+                        model.provider,
+                        &model.id,
+                    )
             })
             .map(|model| (model.provider, model.id))
             .collect()

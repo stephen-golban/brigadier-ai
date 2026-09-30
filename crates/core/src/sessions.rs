@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use brigadier_providers::ProviderEvent;
+use brigadier_providers::{ProviderEvent, ProviderKind};
 use brigadier_store::{NewEvent, Retention, Store, StreamPage};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -71,6 +71,9 @@ pub struct Core {
     /// Boards of the conversations read since start, kept current by every write through
     /// [`Core::record_conversation`].
     boards: tokio::sync::Mutex<HashMap<ConversationId, Board>>,
+    /// Held across a settings change the core makes itself (read, change, write), so a
+    /// change from a client isn't lost in between.
+    settings_writes: tokio::sync::Mutex<()>,
 }
 
 impl Core {
@@ -112,11 +115,16 @@ impl Core {
             projection.touch(&id, head.at_ms);
         }
 
-        Ok(Arc::new(Self {
+        let core = Arc::new(Self {
             store,
             projection: Mutex::new(projection),
             boards: tokio::sync::Mutex::new(HashMap::new()),
-        }))
+            settings_writes: tokio::sync::Mutex::new(()),
+        });
+        if let Some(settings) = crate::routing::availability::migrate(&core.settings()) {
+            core.update_settings(settings).await?;
+        }
+        Ok(core)
     }
 
     pub fn store(&self) -> &Store {
@@ -331,6 +339,15 @@ impl Core {
                     "the setup does not match the conversation kind".into(),
                 ));
             }
+        }
+        // Switching to a model the user made unavailable isn't allowed; staying on one is.
+        let same_model = conversation.setup.as_ref().is_some_and(|current| {
+            let (now, next) = (current.choice(), setup.choice());
+            now.provider == next.provider && now.model == next.model
+        });
+        if !same_model {
+            crate::routing::availability::check_choice(&self.settings(), setup.choice())
+                .map_err(Error::Invalid)?;
         }
         let mut events = vec![(
             streams::CATALOG.into(),
@@ -1473,7 +1490,26 @@ impl Core {
         Ok(board)
     }
 
+    /// Records the models an agent's list names as known; one seen after the agent's first
+    /// list gets no worker tasks until the user allows it
+    /// ([`crate::routing::availability::note_models`]).
+    pub async fn note_models(&self, provider: ProviderKind, ids: &[String]) -> Result<()> {
+        let _writes = self.settings_writes.lock().await;
+        let settings = self.settings();
+        if let Some(next) =
+            crate::routing::availability::note_models(&settings, provider, ids, now_ms())
+        {
+            self.write_settings(next).await?;
+        }
+        Ok(())
+    }
+
     pub async fn update_settings(&self, settings: Settings) -> Result<Settings> {
+        let _writes = self.settings_writes.lock().await;
+        self.write_settings(settings).await
+    }
+
+    async fn write_settings(&self, settings: Settings) -> Result<Settings> {
         self.record(vec![(
             streams::SETTINGS.into(),
             DomainEvent::SettingsChanged {

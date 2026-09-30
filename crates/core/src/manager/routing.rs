@@ -126,11 +126,12 @@ impl SessionManager {
         }
     }
 
-    /// Whether the model `choice` names can run now: its provider usable, and no window that
+    /// Whether the model `choice` names can run now: its provider ready, and no window that
     /// limits that model used up (a model's own weekly window included). A model routing
-    /// doesn't list is judged by its provider.
+    /// doesn't list is judged by its provider. Whether the user switched it off is not asked:
+    /// this is about a conversation already running on it.
     pub(crate) async fn choice_available(&self, choice: &ModelChoice) -> bool {
-        if !self.provider_usable(choice.provider) {
+        if !self.provider_ready(choice.provider) {
             return false;
         }
         let Some(id) = choice.model.as_deref() else {
@@ -169,6 +170,9 @@ impl SessionManager {
             Trial::Never => false,
         };
         let project_id = ask.project_id.map(|id| id.0.as_str());
+        // Agents switched off and models made unavailable aren't considered at all.
+        let (models, providers) =
+            crate::routing::availability::routable(&settings, &inputs.models, &inputs.providers);
         let mut preview = brigadier_router::preview(&Query {
             category: ask.category,
             areas: ask.areas,
@@ -183,14 +187,14 @@ impl SessionManager {
             project_id,
             running: &running,
             trial_slot,
-            providers: &inputs.providers,
-            models: &inputs.models,
+            providers: &providers,
+            models: &models,
             registry: &inputs.registry,
             learned: &inputs.learned,
             now_ms: now,
         });
         if let Decision::Run(routed) = preview.decision {
-            preview.decision = Decision::Run(cheap_for_development(routed, &inputs.models));
+            preview.decision = Decision::Run(cheap_for_development(routed, &models));
         }
         (preview, trial_slot)
     }

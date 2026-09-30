@@ -302,6 +302,14 @@ impl Setup {
             SetupRequest::Chat { model } => Self::Chat { model },
         }
     }
+
+    /// The model it runs on: a session's orchestrator, a Chat's model.
+    pub fn choice(&self) -> &ModelChoice {
+        match self {
+            Self::Session { orchestrator, .. } => orchestrator,
+            Self::Chat { model } => model,
+        }
+    }
 }
 
 /// Changes to a project; absent fields stay as they are.
@@ -522,6 +530,30 @@ pub struct Settings {
     pub routing_rankings: Vec<Ranking>,
     /// Ways to use less Claude and Codex usage (PLAN.md §7).
     pub usage: UsageSettings,
+    /// Agents switched off on the Providers page: their models are hidden from every picker
+    /// and get no work, not even in the background. Conversations already running go on.
+    pub disabled_providers: Vec<ProviderKind>,
+    /// Models the Providers page makes unavailable: hidden from every picker and never used.
+    pub hidden_models: Vec<ModelRef>,
+    /// Every model Brigadier has seen in its agent's list. One seen after its agent's first
+    /// list starts without worker tasks (a rule the Routing page's switch removes).
+    pub known_models: Vec<ModelRef>,
+    /// The shape saved settings were last brought up to ([`SETTINGS_VERSION`]). Settings saved
+    /// before it existed read as 0, so their conversions run.
+    #[serde(default)]
+    pub settings_version: u32,
+}
+
+/// The settings' shape: each step up converts saved settings once (see
+/// [`crate::routing::availability::migrate`]).
+pub const SETTINGS_VERSION: u32 = 1;
+
+/// A model named by its CLI's id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRef {
+    pub provider: ProviderKind,
+    pub id: String,
 }
 
 /// Usage savers (PLAN.md §7). One is on by default once completed tasks show it saves usage at
@@ -581,6 +613,10 @@ impl Default for Settings {
             routing_overrides: Vec::new(),
             routing_rankings: Vec::new(),
             usage: UsageSettings::default(),
+            disabled_providers: Vec::new(),
+            hidden_models: Vec::new(),
+            known_models: Vec::new(),
+            settings_version: SETTINGS_VERSION,
         }
     }
 }
