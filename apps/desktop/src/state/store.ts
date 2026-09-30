@@ -224,6 +224,8 @@ export const useApp = create<AppState>()(() => ({
       conciseReplies: false,
       codePointers: false,
       buildRules: false,
+      workerHandoff: false,
+      workerHandoffTokens: 160000,
     },
   },
   threads: {},

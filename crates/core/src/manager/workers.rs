@@ -111,6 +111,11 @@ struct TaskLiveState {
     /// Transient provider errors (overloaded, server, network) in a row: the first is retried
     /// on the same model, the second hands the task on.
     transient: u32,
+    /// The worker's latest context size, in tokens.
+    context: Option<i64>,
+    /// The worker was asked to end this turn with a handoff note (PLAN.md §7): a fresh session
+    /// takes over when the turn ends.
+    handoff_asked: bool,
 }
 
 /// A task's live worker.
@@ -154,6 +159,29 @@ impl TaskLive {
     /// A turn went through: transient errors are no longer in a row.
     pub(crate) async fn clear_transient(&self) {
         self.state.lock().await.transient = 0;
+    }
+
+    /// Notes the worker's context size. Answers whether to ask the worker, now, to end its
+    /// turn with a handoff note: once per turn, only while a turn runs that no hand-on or
+    /// question waits in.
+    pub(crate) async fn note_context(&self, tokens: i64, handoff_at: Option<i64>) -> bool {
+        let mut state = self.state.lock().await;
+        state.context = Some(tokens);
+        let ask = handoff_at.is_some_and(|at| tokens >= at)
+            && state.busy
+            && !state.handoff_asked
+            && !state.stopping
+            && state.cutoff.is_none()
+            && state.question.is_none();
+        if ask {
+            state.handoff_asked = true;
+        }
+        ask
+    }
+
+    /// The worker's latest context size, while this daemon has seen one.
+    pub(crate) async fn context(&self) -> Option<i64> {
+        self.state.lock().await.context
     }
 
     /// The worker's CLI session, while one runs.
@@ -597,8 +625,8 @@ impl SessionManager {
         let conversation_id = task.conversation_id.clone();
         let owner = format!("task:{}", task.id);
         // A resumed Codex thread's token totals include the turns counted before.
-        let continues = task.route.choice.provider == ProviderKind::Codex
-            && matches!(origin, Origin::Resume { .. });
+        let resumed = matches!(origin, Origin::Resume { .. });
+        let continues = task.route.choice.provider == ProviderKind::Codex && resumed;
         let recorded = task
             .workspace
             .clone()
@@ -766,6 +794,10 @@ impl SessionManager {
             state.busy = true;
             state.nudged = false;
             state.stopping = false;
+            state.handoff_asked = false;
+            if !resumed {
+                state.context = None;
+            }
         }
         #[cfg(debug_assertions)]
         self.arm_env_fault(&task.id, provider).await;
@@ -793,26 +825,31 @@ impl SessionManager {
             Some(id) => self.task_by_id(&task.conversation_id, id).await.ok(),
             None => None,
         };
-        self.update_task(&task.conversation_id, &task.id, |t| {
-            t.candidate = None;
-            t.review = None;
-            if t.report.is_some() {
-                t.rework_rounds += 1;
-            }
-        })
-        .await?;
-        self.launch_worker(
-            live,
-            task,
-            subject.as_ref(),
-            Origin::Resume { native_id },
-            TurnInput {
-                text,
-                files: Vec::new(),
-            },
-        )
-        .await?;
-        self.sent_back(task).await;
+        let task = self
+            .update_task(&task.conversation_id, &task.id, |t| {
+                t.candidate = None;
+                t.review = None;
+                if t.report.is_some() {
+                    t.rework_rounds += 1;
+                }
+            })
+            .await?;
+        if self.worker_over_handoff(live, &task.id).await {
+            self.hand_over_worker(live, &task, None, Some(text)).await?;
+        } else {
+            self.launch_worker(
+                live,
+                &task,
+                subject.as_ref(),
+                Origin::Resume { native_id },
+                TurnInput {
+                    text,
+                    files: Vec::new(),
+                },
+            )
+            .await?;
+        }
+        self.sent_back(&task).await;
         Ok(())
     }
 
@@ -1328,6 +1365,9 @@ impl SessionManager {
                 )
                 .await;
             }
+            ProviderEvent::ContextSize { used_tokens, .. } => {
+                self.worker_context(live, cli, *used_tokens).await;
+            }
             ProviderEvent::TurnStarted { .. } => {
                 live.state.lock().await.last_message = None;
             }
@@ -1400,15 +1440,16 @@ impl SessionManager {
         cli: &Arc<Cli>,
         status: TurnStatus,
     ) {
-        let nudge = {
+        let (nudge, handoff_asked) = {
             let mut state = live.state.lock().await;
             state.busy = false;
+            let handoff_asked = std::mem::take(&mut state.handoff_asked);
             if state.stopping {
                 return;
             }
             let nudge = !state.nudged;
             state.nudged = true;
-            nudge
+            (nudge, handoff_asked)
         };
         let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await else {
             return;
@@ -1438,6 +1479,21 @@ impl SessionManager {
             return;
         }
         if status == TurnStatus::Interrupted {
+            return;
+        }
+        if handoff_asked && status == TurnStatus::Completed {
+            // It ended its turn with a handoff note, as asked: a fresh session takes over.
+            // Not from inside the worker's own event pump: closing waits for it.
+            live.clear_transient().await;
+            let note = live.state.lock().await.last_message.clone();
+            let manager = self.arc();
+            let live = live.clone();
+            self.spawn(async move {
+                if let Err(err) = manager.hand_over_worker(&live, &task, note, None).await {
+                    let reason = format!("The task could not continue in a fresh session: {err}");
+                    manager.worker_failed(&task, &reason).await;
+                }
+            });
             return;
         }
         if status == TurnStatus::Completed {
@@ -1919,6 +1975,19 @@ impl SessionManager {
                  message with its hand-off.",
                 task.number, wait.reason
             ));
+        }
+        let hand_over = !state.busy
+            && state.cli.is_some()
+            && self
+                .worker_handoff_at()
+                .zip(state.context)
+                .is_some_and(|(at, tokens)| tokens >= at);
+        if hand_over {
+            // Between turns, with a context past the hand-off size: the message starts a fresh
+            // session rather than one more large turn (PLAN.md §7).
+            drop(state);
+            live.close_cli().await;
+            state = live.state.lock().await;
         }
         let Some(cli) = state.cli.clone() else {
             drop(state);

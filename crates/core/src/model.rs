@@ -526,7 +526,7 @@ pub struct Settings {
 
 /// Usage savers still being measured (PLAN.md §7). Each stays off until completed tasks show
 /// it saves usage at equal quality.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UsageSettings {
     /// A Claude orchestrator whose prompt cache has expired starts over from a briefing
@@ -542,6 +542,25 @@ pub struct UsageSettings {
     pub code_pointers: bool,
     /// Implement and merge workers follow a few rules for writing less code.
     pub build_rules: bool,
+    /// A worker whose context passes `worker_handoff_tokens` continues in a fresh session of
+    /// the same model, from its own handoff note and its full transcript on disk.
+    pub worker_handoff: bool,
+    /// The worker context, in tokens, at which the hand-off happens.
+    pub worker_handoff_tokens: u32,
+}
+
+impl Default for UsageSettings {
+    fn default() -> Self {
+        Self {
+            rebirth_when_cache_expired: false,
+            lean_worker_tools: false,
+            concise_replies: false,
+            code_pointers: false,
+            build_rules: false,
+            worker_handoff: false,
+            worker_handoff_tokens: 160_000,
+        }
+    }
 }
 
 impl Default for Settings {

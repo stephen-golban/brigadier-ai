@@ -50,6 +50,7 @@ mod undo;
 mod uninstall;
 mod usage;
 mod usage_view;
+mod worker_handoff;
 mod workers;
 
 use std::collections::HashMap;

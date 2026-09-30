@@ -435,6 +435,45 @@ impl SessionManager {
 
     /// Writes the successor's hand-off files and answers its first message.
     async fn write_task_handoff(&self, task: &Task) -> Result<String> {
+        let (dir, has_diff) = self.write_handoff_files(task).await?;
+        let before = task
+            .attempts
+            .iter()
+            .rev()
+            .find(|attempt| attempt.end.is_some());
+        let (who, why) = match before {
+            Some(attempt) => (
+                model_label(&attempt.route.choice),
+                attempt.end.as_ref().map_or_else(String::new, end_phrase),
+            ),
+            None => ("another model".to_owned(), String::new()),
+        };
+        let mut text = format!(
+            "You are taking over task-{} from {who}, which stopped{why}. Its hand-off is in {}: \
+             spec.md (the task and every later instruction from the orchestrator) and \
+             progress.md (what it did, in order)",
+            task.number,
+            dir.display()
+        );
+        if task.kind.writes() {
+            text.push_str(if has_diff {
+                ", and diff.patch (its changes against the task's base, as the worktree holds \
+                 them now). Read them first and check the worktree: keep its work unless it is \
+                 wrong, don't redo what is done, then finish the task and verify it"
+            } else {
+                ". It left no changes in the worktree yet. Read them first, then do the task \
+                 and verify it"
+            });
+        } else {
+            text.push_str(". Read them first, don't redo what is done, then finish the task");
+        }
+        text.push_str(". Report with submit_report as your rules say.");
+        Ok(text)
+    }
+
+    /// Writes `<scratch>/handoff/`: spec.md, progress.md and, for a write task, diff.patch.
+    /// Answers the folder and whether the worktree has changes.
+    pub(crate) async fn write_handoff_files(&self, task: &Task) -> Result<(PathBuf, bool)> {
         let workspace = task
             .workspace
             .clone()
@@ -481,39 +520,7 @@ impl SessionManager {
             })
             .await?;
         }
-        let before = task
-            .attempts
-            .iter()
-            .rev()
-            .find(|attempt| attempt.end.is_some());
-        let (who, why) = match before {
-            Some(attempt) => (
-                model_label(&attempt.route.choice),
-                attempt.end.as_ref().map_or_else(String::new, end_phrase),
-            ),
-            None => ("another model".to_owned(), String::new()),
-        };
-        let mut text = format!(
-            "You are taking over task-{} from {who}, which stopped{why}. Its hand-off is in {}: \
-             spec.md (the task and every later instruction from the orchestrator) and \
-             progress.md (what it did, in order)",
-            task.number,
-            dir.display()
-        );
-        if task.kind.writes() {
-            text.push_str(if has_diff {
-                ", and diff.patch (its changes against the task's base, as the worktree holds \
-                 them now). Read them first and check the worktree: keep its work unless it is \
-                 wrong, don't redo what is done, then finish the task and verify it"
-            } else {
-                ". It left no changes in the worktree yet. Read them first, then do the task \
-                 and verify it"
-            });
-        } else {
-            text.push_str(". Read them first, don't redo what is done, then finish the task");
-        }
-        text.push_str(". Report with submit_report as your rules say.");
-        Ok(text)
+        Ok((dir, has_diff))
     }
 
     /// What the models before did on `task`, oldest first, from its transcript.

@@ -27,4 +27,13 @@ codePointers: boolean,
 /**
  * Implement and merge workers follow a few rules for writing less code.
  */
-buildRules: boolean, };
+buildRules: boolean, 
+/**
+ * A worker whose context passes `worker_handoff_tokens` continues in a fresh session of
+ * the same model, from its own handoff note and its full transcript on disk.
+ */
+workerHandoff: boolean, 
+/**
+ * The worker context, in tokens, at which the hand-off happens.
+ */
+workerHandoffTokens: number, };
