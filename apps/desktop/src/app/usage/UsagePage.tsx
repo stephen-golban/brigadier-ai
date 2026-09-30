@@ -10,6 +10,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { useAction } from "@/app/conversation/useAction";
+import { SettingsButton, SettingsPage } from "@/app/settings/parts";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
 import { ModelsSection } from "@/app/usage/ModelsSection";
 import { RegistrySection } from "@/app/usage/RegistrySection";
@@ -17,7 +18,6 @@ import { WindowChart } from "@/app/usage/WindowChart";
 import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -87,37 +87,31 @@ export function UsagePage() {
   const refresh = useAction();
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="@container max-w-thread mx-auto flex flex-col gap-8 px-4 py-6">
-        <div className="flex items-start gap-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <h1 className="text-2xl">Usage</h1>
-            <p className="text-muted-foreground text-sm">
-              How much of each agent's usage windows is spent, where it's heading, and what
-              routing does about it.
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {view && (
-              <span className="text-muted-foreground text-xs">
-                Updated {formatAgo(view.atMs, now)}
-              </span>
-            )}
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label="Read usage again"
-              disabled={loading || refresh.busy}
-              onClick={() =>
-                // A fresh read from each agent; its results arrive as provider checks.
-                refresh.run(() => Promise.all([refreshProviders(), loadUsage()]))
-              }
-            >
-              <Reload className={loading ? "animate-spin motion-reduce:animate-none" : undefined} />
-            </Button>
-          </div>
-        </div>
-
+    <SettingsPage
+      title="Usage"
+      description="How much of each agent's usage windows is spent, where it's heading, and what routing does about it."
+      actions={
+        <>
+          {view && (
+            <span className="text-muted-foreground text-xs">
+              Updated {formatAgo(view.atMs, now)}
+            </span>
+          )}
+          <SettingsButton
+            aria-label="Read usage again"
+            disabled={loading || refresh.busy}
+            onClick={() =>
+              // A fresh read from each agent; its results arrive as provider checks.
+              refresh.run(() => Promise.all([refreshProviders(), loadUsage()]))
+            }
+          >
+            <Reload className={loading ? "animate-spin motion-reduce:animate-none" : undefined} />
+            Refresh
+          </SettingsButton>
+        </>
+      }
+    >
+      <div className="@container flex flex-col gap-8">
         {error && (
           <p role="alert" className="text-destructive text-sm">
             Couldn't read usage: {error}
@@ -151,7 +145,7 @@ export function UsagePage() {
           </>
         )}
       </div>
-    </div>
+    </SettingsPage>
   );
 }
 

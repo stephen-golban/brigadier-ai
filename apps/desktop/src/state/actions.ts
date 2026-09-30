@@ -49,6 +49,7 @@ import {
   type ProvidersState,
   type RawTranscript,
   type Selection,
+  type SettingsPageId,
   type Thread,
   upsertRawSession,
   useApp,
@@ -173,6 +174,31 @@ export function select(selection: Selection): void {
   void loadConversation(selection.id).catch((error: unknown) => {
     console.error("loading the conversation failed", error);
   });
+}
+
+/** Where leaving Settings goes back to: what was shown when it opened. */
+let beforeSettings: Selection = { type: "draft", kind: "chat" };
+
+/** Shows a page of Settings, remembering what to go back to. */
+export function openSettings(page: SettingsPageId = "general"): void {
+  const { selection } = useApp.getState();
+  if (selection.type !== "settings") beforeSettings = selection;
+  select({ type: "settings", page });
+}
+
+/** Leaves Settings for what was shown before it (a new chat if that conversation is gone). */
+export function closeSettings(): void {
+  if (useApp.getState().selection.type !== "settings") return;
+  const back = beforeSettings;
+  const gone = back.type === "conversation" && !useApp.getState().conversations[back.id];
+  const lost = back.type === "draft" && back.kind === "session" && !useApp.getState().projects[back.projectId];
+  select(gone || lost ? { type: "draft", kind: "chat" } : back);
+}
+
+/** ⌘, : opens Settings, or leaves it when it is open. */
+export function toggleSettings(): void {
+  if (useApp.getState().selection.type === "settings") closeSettings();
+  else openSettings();
 }
 
 export function openConversation(id: string): void {
@@ -733,7 +759,7 @@ export async function archive(id: string): Promise<void> {
   }
   toast(conversation.kind === "chat" ? "Archived chat" : "Archived session", {
     actions: [
-      { label: "View", run: () => select({ type: "archived" }) },
+      { label: "View", run: () => openSettings("archived") },
       {
         label: "Undo",
         run: () =>

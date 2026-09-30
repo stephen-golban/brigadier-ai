@@ -2,6 +2,8 @@ import { ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
 import { ToggleGroup as ToggleGroupPrimitive } from "radix-ui";
 import { useId, type ComponentProps, type ReactNode } from "react";
 
+import { useAction } from "@/app/conversation/useAction";
+import { ErrorLine } from "@/app/dialogs/fields";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,7 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
+import type { Settings } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
+import { setSetting } from "@/state/settings";
+import { useApp } from "@/state/store";
 
 /*
  * The parts every Settings page is built from: a page (title, optional description and actions,
@@ -101,24 +106,29 @@ export function SettingsCard({ children, className }: { children: ReactNode; cla
 
 /**
  * One setting: its label and description on the start, its control on the end. `htmlFor` ties
- * the label to a control with that id; without it, give the control its own label.
+ * the label to a control with that id; without it, give the control its own label. `error` is
+ * what the last change of it failed with.
  */
 export function SettingsRow({
   label,
   description,
   htmlFor,
+  error,
   children,
   className,
 }: {
   label: ReactNode;
   description?: ReactNode;
   htmlFor?: string;
+  error?: string | null;
   children?: ReactNode;
   className?: string;
 }) {
   return (
     <div
       data-slot="settings-row"
+      // Settings search scrolls to the row it found by this.
+      data-setting={typeof label === "string" ? label : undefined}
       className={cn("@container flex items-center justify-between gap-6 px-4 py-3", className)}
     >
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -132,6 +142,7 @@ export function SettingsRow({
         {description && (
           <div className="text-muted-foreground text-xs break-words">{description}</div>
         )}
+        <ErrorLine error={error ?? null} />
       </div>
       {children && (
         <div className="flex max-w-full min-w-settings-control shrink-0 items-center justify-end gap-2">
@@ -165,6 +176,31 @@ export function SettingsSwitch({
       disabled={disabled}
       onCheckedChange={onCheckedChange}
     />
+  );
+}
+
+type BooleanSetting = {
+  [K in keyof Settings]: Settings[K] extends boolean ? K : never;
+}[keyof Settings];
+
+/** A row for a setting that is on or off, applied at once. */
+export function SwitchSetting({
+  setting,
+  row,
+}: {
+  setting: BooleanSetting;
+  row: { label: string; description: string };
+}) {
+  const checked = useApp((s) => s.settings[setting]);
+  const save = useAction();
+  return (
+    <SettingsRow label={row.label} description={row.description} error={save.error}>
+      <SettingsSwitch
+        label={row.label}
+        checked={checked}
+        onCheckedChange={(on) => save.run(() => setSetting(setting, on))}
+      />
+    </SettingsRow>
   );
 }
 

@@ -1,0 +1,137 @@
+import {
+  Archive,
+  Chats,
+  MemoryOnRemember,
+  SettingsCog,
+  Shuffle,
+  Storage,
+  Usage,
+} from "@openai/apps-sdk-ui/components/Icon";
+import { lazy, type ComponentType, type SVGProps } from "react";
+
+import { ARCHIVED_ROWS, ArchivedPage } from "@/app/settings/ArchivedPage";
+import { CONVERSATIONS_ROWS, ConversationsPage } from "@/app/settings/ConversationsPage";
+import { GENERAL_ROWS, GeneralPage } from "@/app/settings/GeneralPage";
+import { PERSONALIZATION_ROWS, PersonalizationPage } from "@/app/settings/PersonalizationPage";
+import { ROUTING_ROWS, RoutingRulesPage } from "@/app/settings/RoutingRulesPage";
+import { STORAGE_ROWS, StoragePage } from "@/app/settings/StoragePage";
+import type { SettingsPageId } from "@/state/store";
+
+/**
+ * The pages of Settings, in the order the navigation lists them, each in its group. A page's
+ * rows (label and description) are what Settings search finds; each page module exports the
+ * copy it renders, so the two never drift apart.
+ */
+
+export type SettingsRowCopy = { readonly label: string; readonly description?: string };
+
+export type SettingsGroup = "Personal" | "Models" | "System" | "Archived";
+
+export type SettingsPageEntry = {
+  id: SettingsPageId;
+  label: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+  group: SettingsGroup;
+  component: ComponentType;
+  rows: readonly SettingsRowCopy[];
+};
+
+// The Usage page (charts and all) loads when first opened, off the cold-start path.
+const UsagePage = lazy(() =>
+  import("@/app/usage/UsagePage").then((module) => ({ default: module.UsagePage })),
+);
+
+const USAGE_ROWS: readonly SettingsRowCopy[] = [
+  { label: "Usage windows", description: "How much of each agent's usage windows is spent." },
+  { label: "Routing activity", description: "What routing did about the usage windows." },
+  { label: "Models", description: "The merged model list routing picks from." },
+  { label: "Model registry", description: "Where the model list comes from, and its updates." },
+];
+
+export const SETTINGS_GROUPS: readonly SettingsGroup[] = ["Personal", "Models", "System", "Archived"];
+
+export const SETTINGS_PAGES: readonly SettingsPageEntry[] = [
+  {
+    id: "general",
+    label: "General",
+    icon: SettingsCog,
+    group: "Personal",
+    component: GeneralPage,
+    rows: Object.values(GENERAL_ROWS),
+  },
+  {
+    id: "conversations",
+    label: "Conversations",
+    icon: Chats,
+    group: "Personal",
+    component: ConversationsPage,
+    rows: Object.values(CONVERSATIONS_ROWS),
+  },
+  {
+    id: "personalization",
+    label: "Personalization",
+    icon: MemoryOnRemember,
+    group: "Personal",
+    component: PersonalizationPage,
+    rows: Object.values(PERSONALIZATION_ROWS),
+  },
+  {
+    id: "usage",
+    label: "Usage",
+    icon: Usage,
+    group: "Personal",
+    component: UsagePage,
+    rows: USAGE_ROWS,
+  },
+  {
+    id: "routing",
+    label: "Routing",
+    icon: Shuffle,
+    group: "Models",
+    component: RoutingRulesPage,
+    rows: Object.values(ROUTING_ROWS),
+  },
+  {
+    id: "storage",
+    label: "Storage",
+    icon: Storage,
+    group: "System",
+    component: StoragePage,
+    rows: Object.values(STORAGE_ROWS),
+  },
+  {
+    id: "archived",
+    label: "Archived chats",
+    icon: Archive,
+    group: "Archived",
+    component: ArchivedPage,
+    rows: Object.values(ARCHIVED_ROWS),
+  },
+];
+
+export function settingsPage(id: SettingsPageId): SettingsPageEntry {
+  // Every id has an entry: the list is written out above.
+  return SETTINGS_PAGES.find((page) => page.id === id) ?? SETTINGS_PAGES[0]!;
+}
+
+export type SettingsSearchResult = { page: SettingsPageEntry; row: SettingsRowCopy | null };
+
+/** Pages and rows whose words contain every word of the query, pages first. */
+export function searchSettings(query: string): SettingsSearchResult[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const matches = (text: string) => {
+    const haystack = text.toLowerCase();
+    return words.every((word) => haystack.includes(word));
+  };
+  const results: SettingsSearchResult[] = [];
+  for (const page of SETTINGS_PAGES) {
+    if (matches(page.label)) results.push({ page, row: null });
+  }
+  for (const page of SETTINGS_PAGES) {
+    for (const row of page.rows) {
+      if (matches(`${row.label} ${row.description ?? ""}`)) results.push({ page, row });
+    }
+  }
+  return results;
+}

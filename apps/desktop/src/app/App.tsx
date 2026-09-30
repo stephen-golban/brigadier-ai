@@ -5,10 +5,10 @@ import { AddProjectDialog } from "@/app/dialogs/AddProjectDialog";
 import { StorageDialog } from "@/app/dialogs/StorageDialog";
 import { UninstallDialog } from "@/app/dialogs/UninstallDialog";
 import { FolderDropZone } from "@/app/FolderDropZone";
-import { ArchivedView } from "@/app/ArchivedView";
 import { ConversationView } from "@/app/ConversationView";
 import { OnboardingDialog } from "@/app/onboarding/OnboardingDialog";
 import { StatusBar } from "@/app/StatusBar";
+import { SettingsView } from "@/app/settings/SettingsView";
 import { runSmoke } from "@/app/smoke";
 import { TopBar } from "@/app/TopBar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -25,11 +25,6 @@ const Inspector = lazy(() =>
   import("@/app/inspector/Inspector").then((module) => ({ default: module.Inspector })),
 );
 
-// The Usage page loads when first opened, off the cold-start path too.
-const UsagePage = lazy(() =>
-  import("@/app/usage/UsagePage").then((module) => ({ default: module.UsagePage })),
-);
-
 let readyReported = false;
 
 /** Drafts share one key: switching the composer's project must not lose the typed text. */
@@ -39,10 +34,8 @@ function viewKey(selection: Selection): string {
       return selection.id;
     case "draft":
       return "draft";
-    case "archived":
-      return "archived";
-    case "usage":
-      return "usage";
+    case "settings":
+      return "settings";
     case "none":
       return "none";
   }
@@ -108,17 +101,11 @@ export function App() {
         <AppSidebar />
         <SidebarInset className="h-full flex-row overflow-hidden">
           <div className="relative flex h-full min-w-0 flex-1 flex-col">
-            {selection.type === "archived" || selection.type === "usage" ? (
+            {selection.type === "settings" ? (
               <>
                 <TopBar />
                 <div className="min-h-0 flex-1">
-                  {selection.type === "archived" ? (
-                    <ArchivedView />
-                  ) : (
-                    <Suspense fallback={null}>
-                      <UsagePage />
-                    </Suspense>
-                  )}
+                  <SettingsView page={selection.page} />
                 </div>
               </>
             ) : (

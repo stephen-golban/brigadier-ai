@@ -21,11 +21,23 @@ import type {
 import { applyDensity, cachedDensity } from "@/lib/density";
 import { cachedPinnedSummary } from "@/lib/pinnedSummary";
 
-/** What the main area shows. Drafts become real conversations on their first message. */
+/** A page of Settings. */
+export type SettingsPageId =
+  | "general"
+  | "conversations"
+  | "personalization"
+  | "usage"
+  | "routing"
+  | "storage"
+  | "archived";
+
+/**
+ * What the main area shows. Drafts become real conversations on their first message. Settings
+ * takes the sidebar panel (its navigation) and the main area (the page).
+ */
 export type Selection =
   | { type: "none" }
-  | { type: "archived" }
-  | { type: "usage" }
+  | { type: "settings"; page: SettingsPageId }
   | { type: "conversation"; id: string }
   | { type: "draft"; kind: "chat" }
   | { type: "draft"; kind: "session"; projectId: string };

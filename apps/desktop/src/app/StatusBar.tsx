@@ -23,7 +23,7 @@ import type {
 import { formatCountdown } from "@/lib/format";
 import { HEAT_LABELS } from "@/lib/routing";
 import { cn } from "@/lib/utils";
-import { loadProviders, refreshProviders, select } from "@/state/actions";
+import { loadProviders, openSettings, refreshProviders } from "@/state/actions";
 import {
   KEEP_AWAKE_OPTIONS,
   lidClosedHint,
@@ -150,7 +150,9 @@ function useUsageRefresh(): void {
 function Usage() {
   useUsageRefresh();
   const providers = useApp((s) => s.providers.view?.providers);
-  const onPage = useApp((s) => s.selection.type === "usage");
+  const onPage = useApp(
+    (s) => s.selection.type === "settings" && s.selection.page === "usage",
+  );
   const now = useNow();
   const shown = (providers ?? []).filter(withQuota);
   return (
@@ -158,7 +160,7 @@ function Usage() {
       type="button"
       aria-label="Agent usage: open the Usage page"
       aria-current={onPage ? "page" : undefined}
-      onClick={() => select({ type: "usage" })}
+      onClick={() => openSettings("usage")}
       className="hover:bg-accent/70 hover:text-foreground focus-visible:ring-ring/50 flex min-w-0 items-center gap-3 overflow-hidden rounded-xs px-1 py-0.5 outline-none focus-visible:ring-1"
     >
       {shown.length === 0 ? (

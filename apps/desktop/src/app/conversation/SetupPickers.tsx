@@ -54,7 +54,7 @@ import {
 } from "@/lib/setup";
 import { choiceName, formatResetAt, VENDOR_LABELS } from "@/lib/routing";
 import { cn } from "@/lib/utils";
-import { select, updateSetup } from "@/state/actions";
+import { openSettings, updateSetup } from "@/state/actions";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
@@ -365,7 +365,7 @@ function StandInPill({
           type="button"
           data-slot="stand-in-model"
           aria-label={`${text}. ${fallback.reason} Open the Usage page.`}
-          onClick={() => select({ type: "usage" })}
+          onClick={() => openSettings("usage")}
           className="h-pill px-pill rounded-capsule bg-warning/15 text-warning hover:bg-warning/25 focus-visible:ring-ring/50 inline-flex max-w-sm min-w-0 shrink items-center gap-1 text-xs transition-colors outline-none focus-visible:ring-1"
         >
           <Shuffle aria-hidden className="size-icon-xs shrink-0" />

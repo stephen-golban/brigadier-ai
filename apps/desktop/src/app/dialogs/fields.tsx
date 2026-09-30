@@ -1,5 +1,5 @@
 import { Check, FolderOpen } from "@openai/apps-sdk-ui/components/Icon";
-import { Checkbox as CheckboxPrimitive, RadioGroup, Switch as SwitchPrimitive } from "radix-ui";
+import { Checkbox as CheckboxPrimitive, RadioGroup } from "radix-ui";
 import { useId, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -93,39 +93,6 @@ export function FolderField({
         </Button>
       </div>
       <ErrorLine error={error} />
-    </div>
-  );
-}
-
-/** An on/off switch with its label. */
-export function SwitchRow({
-  label,
-  hint,
-  checked,
-  onCheckedChange,
-}: {
-  label: string;
-  hint?: ReactNode;
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="flex items-start gap-3">
-      <div className="grid flex-1 gap-0.5">
-        <label htmlFor={id} className="text-sm">
-          {label}
-        </label>
-        {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
-      </div>
-      <SwitchPrimitive.Root
-        id={id}
-        checked={checked}
-        onCheckedChange={onCheckedChange}
-        className="data-[state=checked]:bg-primary bg-input focus-visible:ring-ring/50 rounded-capsule inline-flex h-control-xs w-control-md shrink-0 items-center p-0.5 transition-colors outline-none focus-visible:ring-1 data-[state=checked]:justify-end"
-      >
-        <SwitchPrimitive.Thumb className="bg-foreground data-[state=checked]:bg-primary-foreground rounded-capsule block size-icon-sm" />
-      </SwitchPrimitive.Root>
     </div>
   );
 }

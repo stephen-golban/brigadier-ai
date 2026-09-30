@@ -24,7 +24,6 @@ import { DeleteDialog } from "@/app/dialogs/DeleteDialog";
 import { errorText } from "@/app/dialogs/fields";
 import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
 import { RemoveProjectDialog } from "@/app/dialogs/RemoveProjectDialog";
-import { SettingsDialog } from "@/app/dialogs/SettingsDialog";
 import { NameDialog } from "@/app/NameDialog";
 import { SearchDialog } from "@/app/SearchDialog";
 import { Spinner } from "@/components/glyphs/spinner";
@@ -66,6 +65,7 @@ import { cn } from "@/lib/utils";
 import {
   archive,
   openConversation,
+  openSettings,
   renameConversation,
   select,
   setInspectorOpen,
@@ -80,7 +80,6 @@ import { useApp } from "@/state/store";
 type DialogState =
   | { type: "projectSettings"; project: Project }
   | { type: "rename"; conversation: Conversation }
-  | { type: "settings" }
   | null;
 
 type Sections = {
@@ -148,8 +147,9 @@ export function AppSidebar() {
   const isChatDraft = useApp(
     (s) => s.selection.type === "draft" && s.selection.kind === "chat",
   );
-  const isArchived = useApp((s) => s.selection.type === "archived");
-  const isUsage = useApp((s) => s.selection.type === "usage");
+  const settingsPage = useApp((s) => (s.selection.type === "settings" ? s.selection.page : null));
+  const isArchived = settingsPage === "archived";
+  const isUsage = settingsPage === "usage";
   const archivedCount = useApp(
     (s) =>
       Object.values(s.conversations).filter(
@@ -215,7 +215,7 @@ export function AppSidebar() {
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={isUsage} onClick={() => select({ type: "usage" })}>
+            <SidebarMenuButton isActive={isUsage} onClick={() => openSettings("usage")}>
               <Analytics />
               <span>Usage</span>
             </SidebarMenuButton>
@@ -223,7 +223,7 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton
               isActive={isArchived}
-              onClick={() => select({ type: "archived" })}
+              onClick={() => openSettings("archived")}
             >
               <Archive />
               <span className="flex-1">Archived</span>
@@ -334,7 +334,7 @@ export function AppSidebar() {
         )}
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setDialog({ type: "settings" })}>
+            <SidebarMenuButton onClick={() => openSettings()}>
               <Settings />
               <span>Settings</span>
             </SidebarMenuButton>
@@ -357,10 +357,6 @@ export function AppSidebar() {
         open={dialog?.type === "projectSettings"}
         onOpenChange={(open) => !open && setDialog(null)}
         project={dialog?.type === "projectSettings" ? dialog.project : null}
-      />
-      <SettingsDialog
-        open={dialog?.type === "settings"}
-        onOpenChange={(open) => !open && setDialog(null)}
       />
       <DeleteDialog
         conversation={deleting}
