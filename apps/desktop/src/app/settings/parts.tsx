@@ -1,10 +1,15 @@
-import { Check, ChevronDown } from "@openai/apps-sdk-ui/components/Icon";
+import { Check, ChevronDown, ChevronRight } from "@openai/apps-sdk-ui/components/Icon";
 import { ToggleGroup as ToggleGroupPrimitive } from "radix-ui";
 import { useId, type ComponentProps, type ReactNode } from "react";
 
 import { useAction } from "@/app/conversation/useAction";
 import { ErrorLine } from "@/app/dialogs/fields";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -101,6 +106,34 @@ export function SettingsSection({
       )}
       <div className="flex flex-col gap-1.5">{children}</div>
     </section>
+  );
+}
+
+/**
+ * A page's power features, closed until asked for: "Advanced" and a line on what is inside,
+ * then its sections.
+ */
+export function SettingsAdvanced({
+  description,
+  children,
+}: {
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <Collapsible data-slot="settings-advanced">
+      <CollapsibleTrigger className="focus-visible:ring-ring/50 group flex w-full items-start gap-2 rounded-xs text-start outline-none focus-visible:ring-2">
+        <ChevronRight
+          aria-hidden
+          className="text-muted-foreground size-icon-sm mt-0.5 shrink-0 transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none"
+        />
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-sm font-medium">Advanced</span>
+          <span className="text-foreground/65 text-label">{description}</span>
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="flex flex-col gap-10 pt-6">{children}</CollapsibleContent>
+    </Collapsible>
   );
 }
 

@@ -28,6 +28,7 @@ export type SettingsPageId =
   | "personalization"
   | "usage"
   | "providers"
+  | "routing"
   | "storage"
   | "inspector"
   | "archived";

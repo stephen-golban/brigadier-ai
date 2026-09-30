@@ -10,6 +10,7 @@ import {
   SwitchSetting,
 } from "@/app/settings/parts";
 import {
+  findModel,
   ModelSelector,
   type ModelGroup,
 } from "@/components/assistant-ui/elements/model-selector";
@@ -22,7 +23,9 @@ import {
   PERMISSION_DETAILS,
   PERMISSION_LABELS,
   PERMISSION_LEVELS,
+  useAvailableModelGroups,
   useModelGroups,
+  withChoice,
 } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { setSetting } from "@/state/settings";
@@ -51,7 +54,7 @@ export const CONVERSATIONS_ROWS = {
 } as const;
 
 export function ConversationsPage() {
-  const groups = useModelGroups();
+  const groups = useAvailableModelGroups();
   const orchestrator = useApp((s) => s.settings.defaultOrchestrator);
   const chatModel = useApp((s) => s.settings.defaultChatModel);
   const permission = useApp((s) => s.settings.defaultPermission);
@@ -124,13 +127,22 @@ function DefaultModelRow({
   fallback: ModelChoice;
 }) {
   const save = useAction();
+  const all = useModelGroups();
   const change = (choice: ModelChoice | null) => save.run(() => setSetting(setting, choice));
+  // A saved model made unavailable on Providers stays saved; new conversations skip it.
+  const gone = value !== null && findModel(all, value) !== null && findModel(groups, value) === null;
   return (
-    <SettingsRow label={label} description={description} error={save.error}>
+    <SettingsRow
+      label={label}
+      description={
+        gone ? `${description} It isn't available now, so new conversations use another model.` : description
+      }
+      error={save.error}
+    >
       {value && <SettingsButton onClick={() => change(null)}>Use automatic</SettingsButton>}
       <ModelSelector
         label={label}
-        groups={groups}
+        groups={value ? withChoice(groups, all, value) : groups}
         value={value ?? fallback}
         defaultChoice={fallback}
         onChange={change}

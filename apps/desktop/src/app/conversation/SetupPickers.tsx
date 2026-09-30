@@ -53,6 +53,8 @@ import {
   PERMISSION_LEVELS,
   PERMISSIONS_HELP_URL,
   resolveModel,
+  useModelGroups,
+  withChoice,
 } from "@/lib/setup";
 import { choiceName, formatResetAt, VENDOR_LABELS, withResetTime } from "@/lib/routing";
 import { cn } from "@/lib/utils";
@@ -285,7 +287,10 @@ function FullAccessDialog({
 
 // ----- model -----------------------------------------------------------------------------
 
-/** Model and effort of a started conversation; changing them updates its setup. */
+/**
+ * Model and effort of a started conversation; changing them updates its setup. `groups` are
+ * the available models; the one it runs on shows even when it isn't available any more.
+ */
 export function ConversationModelPicker({
   conversation,
   groups,
@@ -293,7 +298,7 @@ export function ConversationModelPicker({
   onOpenChange,
 }: {
   conversation: Conversation;
-  groups: ModelGroup[];
+  groups: readonly ModelGroup[];
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -312,6 +317,8 @@ export function ConversationModelPicker({
         : fallback;
   // A session created before setups existed gets one on first use; until then it can't change.
   const fixed = setup === null && conversation.kind === "session";
+  const all = useModelGroups();
+  const shown = withChoice(groups, all, current);
 
   return (
     <>
@@ -321,11 +328,11 @@ export function ConversationModelPicker({
         </span>
       )}
       {conversation.fallback && (
-        <StandInPill fallback={conversation.fallback} groups={groups} />
+        <StandInPill fallback={conversation.fallback} groups={all} />
       )}
       {conversation.quotaWait && <WaitingPill wait={conversation.quotaWait} />}
       <ModelSelector
-        groups={groups}
+        groups={shown}
         value={current}
         defaultChoice={fallback}
         disabled={fixed || action.busy}
@@ -404,7 +411,7 @@ function WaitingPill({ wait }: { wait: QuotaWait }) {
           type="button"
           data-slot="quota-wait-pill"
           aria-label={`${text}. ${reason} Open Routing settings.`}
-          onClick={() => openSettings("providers")}
+          onClick={() => openSettings("routing")}
           className="h-pill px-pill rounded-capsule bg-warning/15 text-warning hover:bg-warning/25 focus-visible:ring-ring/50 inline-flex max-w-sm min-w-0 shrink items-center gap-1 text-xs transition-colors outline-none focus-visible:ring-1"
         >
           <Clock aria-hidden className="size-icon-xs shrink-0" />

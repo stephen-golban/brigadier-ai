@@ -8,6 +8,7 @@ import type { ModelGroup } from "@/components/assistant-ui/elements/model-select
 import { Button } from "@/components/ui/button";
 import type { OverrideRule, Ranking } from "@/ipc/generated";
 import { CATEGORY_LABELS, joinWords, RANKED_CATEGORIES, ruleSentence } from "@/lib/routing";
+import { isWorkerRule } from "@/state/providers";
 import { removeOverride } from "@/state/routing";
 import { useApp } from "@/state/store";
 
@@ -44,7 +45,11 @@ function shadowedBy(rule: OverrideRule, rankings: readonly Ranking[]): string | 
  * `prefer` puts one first where routing scores. Adding or removing one applies at once.
  */
 export function RulesSection({ groups }: { groups: readonly ModelGroup[] }) {
-  const rules = useApp((s) => s.settings.routingOverrides);
+  const all = useApp((s) => s.settings.routingOverrides);
+  // The "Models Brigadier can give work to" switches show their own rules.
+  const rules = all.filter(
+    (rule) => !(rule.target.type === "model" && isWorkerRule(rule, rule.target)),
+  );
   const rankings = useApp((s) => s.settings.routingRankings);
   const projects = useApp((s) => s.projects);
   const [adding, setAdding] = useState(false);

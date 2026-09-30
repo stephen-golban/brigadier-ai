@@ -35,9 +35,11 @@ import {
   tierBelow,
   VENDOR_LABELS,
 } from "@/lib/routing";
-import { modelName } from "@/lib/setup";
+import { modelName, useAvailableModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
+import { providerOn } from "@/state/providers";
 import { changeRanking } from "@/state/routing";
+import { useApp } from "@/state/store";
 
 /** The efforts a place may ask for: routing never goes above high. */
 const EFFORTS = ["low", "medium", "high"] as const;
@@ -287,6 +289,9 @@ function AddPlaceMenu({
   onAdd: (target: OverrideTarget) => void;
 }) {
   const { families } = useFamilies();
+  // Only what the user made available is offered; names still come from every list.
+  const available = useAvailableModelGroups();
+  const availability = useApp((s) => s.settings);
   const listed = (target: OverrideTarget) => entries.some((entry) => sameTarget(entry.target, target));
   return (
     <DropdownMenu modal={false}>
@@ -297,8 +302,8 @@ function AddPlaceMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-h-96 w-xs overflow-y-auto">
-        {PROVIDERS.map((provider, index) => {
-          const group = groups.find((entry) => entry.provider === provider);
+        {PROVIDERS.filter((provider) => providerOn(availability, provider)).map((provider, index) => {
+          const group = available.find((entry) => entry.provider === provider);
           const models = (group?.models ?? []).filter((model) => !model.legacy && !isFable(model));
           const vendor: OverrideTarget = { type: "vendor", provider };
           return (

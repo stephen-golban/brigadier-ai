@@ -17,8 +17,10 @@ import { useNow } from "@/hooks/use-now";
 import type { ProviderKind, Ranking, RoutePreview, TaskCategory } from "@/ipc/generated";
 import { formatCountdown } from "@/lib/format";
 import { choiceName, isFable, KIND_HINTS, PLAIN_KIND_NAMES, placeName } from "@/lib/routing";
+import { useAvailableModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
-import { blocksModel, setKindModel } from "@/state/routing";
+import { mayWork } from "@/state/providers";
+import { setKindModel } from "@/state/routing";
 import { useApp } from "@/state/store";
 
 /** The picker's value for Automatic, and for a list of several models (set under Advanced). */
@@ -54,6 +56,7 @@ export function KindRow({
 }) {
   const rankings = useApp((s) => s.settings.routingRankings);
   const rules = useApp((s) => s.settings.routingOverrides);
+  const available = useAvailableModelGroups();
   const action = useAction();
   const now = useNow(30_000);
   const ranking = everywhereRanking(rankings, category);
@@ -191,8 +194,14 @@ export function KindRow({
                 </span>
               </DropdownMenuRadioItem>
             )}
-            {groups.map((group) => {
-              const models = group.models.filter((model) => !model.legacy && !isFable(model));
+            {available.map((group) => {
+              // Only models Brigadier may give work to (the switches above) can be picked.
+              const models = group.models.filter(
+                (model) =>
+                  !model.legacy &&
+                  !isFable(model) &&
+                  mayWork(rules, { provider: group.provider, id: model.id }),
+              );
               if (models.length === 0) return null;
               return (
                 <div key={group.provider}>
@@ -204,22 +213,16 @@ export function KindRow({
                       <span className="font-normal normal-case">· {group.unavailable}</span>
                     )}
                   </DropdownMenuLabel>
-                  {models.map((model) => {
-                    const off = rules.some((rule) =>
-                      blocksModel(rule, { provider: group.provider, id: model.id }),
-                    );
-                    return (
-                      <DropdownMenuRadioItem
-                        key={model.id}
-                        value={modelKey(group.provider, model.id)}
-                        disabled={group.unavailable !== null || off}
-                        indicator={<Check className="size-icon-md" />}
-                      >
-                        {model.displayName}
-                        {off && <span className="text-muted-foreground">Turned off in Models</span>}
-                      </DropdownMenuRadioItem>
-                    );
-                  })}
+                  {models.map((model) => (
+                    <DropdownMenuRadioItem
+                      key={model.id}
+                      value={modelKey(group.provider, model.id)}
+                      disabled={group.unavailable !== null}
+                      indicator={<Check className="size-icon-md" />}
+                    >
+                      {model.displayName}
+                    </DropdownMenuRadioItem>
+                  ))}
                 </div>
               );
             })}

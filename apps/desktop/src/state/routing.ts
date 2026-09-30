@@ -3,13 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { request } from "@/ipc/client";
 import type {
   Area,
+  ModelRef,
   OverrideRule,
-  ProviderKind,
   Ranking,
   RoutePreview,
   TaskCategory,
 } from "@/ipc/generated";
-import { newRuleId } from "@/lib/routing";
 import { editSettings } from "@/state/settings";
 import { useApp } from "@/state/store";
 
@@ -90,74 +89,6 @@ export function resetToAutomatic(projectId: string | null): Promise<void> {
   }));
 }
 
-/** A model named on its own, as a ranking place or a rule's target. */
-export type ModelRef = { provider: ProviderKind; id: string };
-
-/** A rule keeping a model from all work everywhere: what the Models page's switch turns on. */
-export function blocksModel(rule: OverrideRule, model: ModelRef): boolean {
-  return (
-    rule.effect === "never" &&
-    rule.target.type === "model" &&
-    rule.target.provider === model.provider &&
-    rule.target.id === model.id &&
-    rule.categories.length === 0 &&
-    rule.areas.length === 0 &&
-    rule.projectId === null
-  );
-}
-
-/** A rule keeping every model of an agent from all work everywhere (the agent switched off). */
-export function blocksProvider(rule: OverrideRule, provider: ProviderKind): boolean {
-  return (
-    rule.effect === "never" &&
-    rule.target.type === "vendor" &&
-    rule.target.provider === provider &&
-    rule.categories.length === 0 &&
-    rule.areas.length === 0 &&
-    rule.projectId === null
-  );
-}
-
-/** Lets routing hand an agent work, or keeps all its models from all work everywhere. */
-export function setProviderAllowed(provider: ProviderKind, allowed: boolean): Promise<void> {
-  const rule: OverrideRule = {
-    id: newRuleId(),
-    effect: "never",
-    target: { type: "vendor", provider },
-    categories: [],
-    areas: [],
-    projectId: null,
-    createdAtMs: Date.now(),
-  };
-  return changeRouting(({ rules }) => ({
-    rules: allowed
-      ? rules.filter((existing) => !blocksProvider(existing, provider))
-      : rules.some((existing) => blocksProvider(existing, provider))
-        ? rules
-        : [...rules, rule],
-  }));
-}
-
-/** Lets routing use a model, or keeps it from all work everywhere. */
-export function setModelAllowed(model: ModelRef, allowed: boolean): Promise<void> {
-  const rule: OverrideRule = {
-    id: newRuleId(),
-    effect: "never",
-    target: { type: "model", provider: model.provider, id: model.id },
-    categories: [],
-    areas: [],
-    projectId: null,
-    createdAtMs: Date.now(),
-  };
-  return changeRouting(({ rules }) => ({
-    rules: allowed
-      ? rules.filter((existing) => !blocksModel(existing, model))
-      : rules.some((existing) => blocksModel(existing, model))
-        ? rules
-        : [...rules, rule],
-  }));
-}
-
 /**
  * What runs a kind of work everywhere: `null` for Automatic, else the one model (at routing's
  * effort) tried first; when it can't take a task, routing picks as Automatic would. A list of
@@ -225,6 +156,8 @@ export function useRoutePreview(
   const providers = useApp((s) => s.providers.view?.providers);
   const rules = useApp((s) => s.settings.routingOverrides);
   const rankings = useApp((s) => s.settings.routingRankings);
+  const disabledProviders = useApp((s) => s.settings.disabledProviders);
+  const hiddenModels = useApp((s) => s.settings.hiddenModels);
   const [routes, setRoutes] = useState<RoutePreview[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
@@ -248,8 +181,8 @@ export function useRoutePreview(
       if (useApp.getState().windowVisible) read();
     }, PREVIEW_EVERY_MS);
     return () => window.clearInterval(timer);
-    // Read again whenever a provider's state, a rule or a ranking changes.
+    // Read again whenever a provider's state, a rule, a ranking or what's available changes.
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
-  }, [connected, projectId, areasKey, providers, rules, rankings]);
+  }, [connected, projectId, areasKey, providers, rules, rankings, disabledProviders, hiddenModels]);
   return { routes, error };
 }

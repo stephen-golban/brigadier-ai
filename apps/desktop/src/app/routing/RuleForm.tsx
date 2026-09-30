@@ -36,6 +36,8 @@ import {
   targetName,
   VENDOR_LABELS,
 } from "@/lib/routing";
+import { useAvailableModelGroups } from "@/lib/setup";
+import { providerOn } from "@/state/providers";
 import { addOverride } from "@/state/routing";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
@@ -197,6 +199,9 @@ function TargetPicker({
   onChange: (target: OverrideTarget) => void;
 }) {
   const { families, error } = useFamilies();
+  // Only what the user made available is offered; names still come from every list.
+  const available = useAvailableModelGroups();
+  const availability = useApp((s) => s.settings);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -206,8 +211,8 @@ function TargetPicker({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-xs">
-        {PROVIDERS.map((provider, index) => {
-          const group = groups.find((entry) => entry.provider === provider);
+        {PROVIDERS.filter((provider) => providerOn(availability, provider)).map((provider, index) => {
+          const group = available.find((entry) => entry.provider === provider);
           // Routing never uses a Fable model, so no rule is about one.
           const models = (group?.models ?? []).filter((model) => !model.legacy && !isFable(model));
           const words = families.get(provider) ?? [];

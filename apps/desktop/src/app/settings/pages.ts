@@ -3,6 +3,7 @@ import {
   Chats,
   MemoryOnRemember,
   Robot,
+  Shuffle,
   SettingsCog,
   Storage,
   Terminal,
@@ -16,6 +17,7 @@ import { GENERAL_ROWS, GeneralPage } from "@/app/settings/GeneralPage";
 import { PERSONALIZATION_ROWS, PersonalizationPage } from "@/app/settings/PersonalizationPage";
 import { STORAGE_ROWS, StoragePage } from "@/app/settings/StoragePage";
 import { PROVIDERS_ROWS, ProvidersPage } from "@/app/providers/ProvidersPage";
+import { ROUTING_PAGE_ROWS, RoutingPage } from "@/app/routing/RoutingPage";
 import { SAVER_ROWS } from "@/app/usage/SaversSection";
 import type { SettingsPageId } from "@/state/store";
 
@@ -107,6 +109,14 @@ export const SETTINGS_PAGES: readonly SettingsPageEntry[] = [
     group: "Agents",
     component: ProvidersPage,
     rows: Object.values(PROVIDERS_ROWS),
+  },
+  {
+    id: "routing",
+    label: "Routing",
+    icon: Shuffle,
+    group: "Agents",
+    component: RoutingPage,
+    rows: Object.values(ROUTING_PAGE_ROWS),
   },
   {
     id: "storage",

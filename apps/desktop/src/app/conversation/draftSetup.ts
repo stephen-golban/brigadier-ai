@@ -11,7 +11,12 @@ import type {
   RepoInfo,
   SetupRequest,
 } from "@/ipc/generated";
-import { resolveModel, resolvePermission, useModelGroups } from "@/lib/setup";
+import {
+  resolveModel,
+  resolvePermission,
+  useAvailableModelGroups,
+  useModelGroups,
+} from "@/lib/setup";
 import { type DraftTarget, getRepoInfo } from "@/state/actions";
 import { type DraftSetup, emptyDraft, type Selection, useApp } from "@/state/store";
 
@@ -104,7 +109,13 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
   const project = useApp((s) => (projectId ? (s.projects[projectId] ?? null) : null));
   const settings = useApp((s) => s.settings);
   const draft = useDraft(projectId);
-  const groups = useModelGroups();
+  const listed = useModelGroups();
+  const groups = useAvailableModelGroups();
+  // Every agent is switched off, or every model a list names is made unavailable.
+  const nothingAvailable =
+    listed.length > 0 &&
+    !groups.some((group) => group.models.length > 0) &&
+    (groups.length === 0 || listed.some((group) => group.models.length > 0));
   const repoPath = project?.repos[0]?.path ?? null;
   const repo = useRepoInfo(kind === "session" ? repoPath : null);
 
@@ -119,7 +130,9 @@ export function useResolvedDraft(selection: Selection): ResolvedDraft {
 
   let problem: string | null = null;
   let target: DraftTarget | null = null;
-  if (kind === "chat") {
+  if (nothingAvailable) {
+    problem = "No model is available. Turn one on in Settings › Providers.";
+  } else if (kind === "chat") {
     target = { kind: "chat", setup: { type: "chat", model } };
   } else if (!project || !repoPath) {
     problem = "This project has no repository yet. Add one in its settings.";

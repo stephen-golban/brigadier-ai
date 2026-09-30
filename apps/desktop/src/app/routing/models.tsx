@@ -7,7 +7,6 @@ import {
   SettingsCard,
   SettingsRow,
   SettingsSection,
-  SettingsSwitch,
 } from "@/app/settings/parts";
 import { openUrl } from "@/ipc/client";
 import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
@@ -25,6 +24,7 @@ import {
 import type {
   Learned,
   MergedModel,
+  ModelInfo,
   OverrideRule,
   ProviderKind,
   RegistryInfo,
@@ -44,9 +44,10 @@ import {
   TIER_LABELS,
 } from "@/lib/routing";
 import { cn } from "@/lib/utils";
+import { blocksModel, isWorkerRule, mayWork } from "@/state/providers";
+import { addOverride } from "@/state/routing";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
-import { addOverride, blocksModel, setModelAllowed } from "@/state/routing";
 import { checkRegistry, setUsageProject } from "@/state/usage";
 
 /** Categories a model is scored for, as the grid's short heads. */
@@ -90,7 +91,7 @@ export const learnedKey = (provider: ProviderKind, model: string, category: Task
  * "Best for writing code, reviewing changes and resolving conflicts": the kinds of work a
  * model scores highest for, in plain words. `null` for a model without scores.
  */
-function bestFor(model: MergedModel): string | null {
+export function bestFor(model: MergedModel): string | null {
   const scored = CATEGORIES.flatMap((category) => {
     const strength = model.strengths[category];
     return strength === null || strength === undefined ? [] : [{ category, strength }];
@@ -99,6 +100,15 @@ function bestFor(model: MergedModel): string | null {
   if (top === undefined) return null;
   const best = scored.filter((entry) => entry.strength >= top - BEST_WITHIN).slice(0, BEST_SHOWN);
   return `Best for ${joinWords(best.map((entry) => PLAIN_KIND_WORDS[entry.category]))}`;
+}
+
+/**
+ * A model in a few plain words: "Most capable · Best for writing code…" when Brigadier has
+ * rated it, else the agent's own description of it.
+ */
+export function modelSummary(info: ModelInfo, merged: MergedModel | undefined): string {
+  if (!merged || merged.tier === "unrated") return info.description;
+  return [PLAIN_TIERS[merged.tier], bestFor(merged)].filter(Boolean).join(" · ");
 }
 
 /** The registry in use, in a sentence, with "Check for updates". */
@@ -184,9 +194,9 @@ function learnedHint(entry: Learned): string {
 }
 
 /**
- * One model: its name, how capable it is and what it is best for, and a switch (off: Brigadier
- * never hands it work). Its details show its score for every kind of work (with what outcomes
- * added or took away), its facts, the user's rules about it and "Don't use for…".
+ * One model under Advanced: its name, how capable it is and what it is best for, and the
+ * user's rules about it. Its details show its score for every kind of work (with what
+ * outcomes added or took away), its facts and "Don't use for…".
  */
 export function ModelRow({
   model,
@@ -202,62 +212,55 @@ export function ModelRow({
   const [open, setOpen] = useState(false);
   const rules = useApp((s) => s.settings.routingOverrides);
   const projects = useApp((s) => s.projects);
-  const toggle = useAction();
   const ref = { provider: model.provider, id: model.id };
-  const on = !model.excluded && !rules.some((rule) => blocksModel(rule, ref));
+  const works = !model.excluded && mayWork(rules, ref);
+  // The Routing switch's own rules show as the switch, not as sentences here.
   const own = rules.filter(
     (rule) =>
       !blocksModel(rule, ref) &&
+      !isWorkerRule(rule, ref) &&
       rule.target.provider === model.provider &&
       ((rule.target.type === "model" && rule.target.id === model.id) ||
         (rule.target.type === "family" && rule.target.family === model.family)),
   );
   const summary = model.excluded
-    ? "Brigadier never uses Fable models."
-    : [PLAIN_TIERS[model.tier], bestFor(model), model.trial && "new: tried on small tasks first"]
+    ? "Brigadier never gives work to Fable models."
+    : [
+        PLAIN_TIERS[model.tier],
+        bestFor(model),
+        !works && "gets no work",
+        works && model.trial && "new: tried on small tasks first",
+      ]
         .filter(Boolean)
         .join(" · ");
   return (
     <div data-slot="usage-model" className="@container flex flex-col gap-2 px-4 py-3">
-      <div className="flex items-center gap-4">
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className={cn("text-label font-medium", !on && "text-muted-foreground")}>
-            {model.displayName}
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className={cn("text-label font-medium", !works && "text-muted-foreground")}>
+          {model.displayName}
+        </span>
+        <span className="text-foreground/65 text-xs">{summary}</span>
+        {own.length > 0 && (
+          <span className="text-muted-foreground text-xs">
+            {own.map((rule) => ruleSentence(rule, groups, projects)).join(". ")}.
           </span>
-          <span className="text-foreground/65 text-xs">{summary}</span>
-          {own.length > 0 && (
-            <span className="text-muted-foreground text-xs">
-              {own.map((rule) => ruleSentence(rule, groups, projects)).join(". ")}.
-            </span>
-          )}
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-            className="text-muted-foreground hover:text-foreground flex w-fit items-center gap-1 pt-0.5 text-xs"
-          >
-            <ChevronRight
-              aria-hidden
-              className={cn(
-                "size-icon-xs transition-transform motion-reduce:transition-none",
-                open && "rotate-90",
-              )}
-            />
-            Details
-          </button>
-        </div>
-        <SettingsSwitch
-          label={`Use ${model.displayName}`}
-          checked={on}
-          disabled={model.excluded || toggle.busy}
-          onCheckedChange={(next) => toggle.run(() => setModelAllowed(ref, next))}
-        />
+        )}
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="text-muted-foreground hover:text-foreground flex w-fit items-center gap-1 pt-0.5 text-xs"
+        >
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              "size-icon-xs transition-transform motion-reduce:transition-none",
+              open && "rotate-90",
+            )}
+          />
+          Details
+        </button>
       </div>
-      {toggle.error && (
-        <p role="alert" className="text-destructive text-xs">
-          {toggle.error}
-        </p>
-      )}
       {open && (
         <div className="flex flex-col gap-3 pt-1 ps-4">
           <dl className="grid grid-cols-4 gap-x-3 gap-y-2 @md:grid-cols-8">

@@ -9,6 +9,7 @@ import {
 import type {
   Environment,
   ModelChoice,
+  ModelInfo,
   PermissionLevel,
   Project,
   ProviderOverview,
@@ -16,6 +17,7 @@ import type {
   Setup,
 } from "@/ipc/generated";
 import { loadProviders } from "@/state/actions";
+import { type Availability, modelAvailable, providerOn } from "@/state/providers";
 import { useApp } from "@/state/store";
 
 export const PERMISSION_LEVELS: readonly PermissionLevel[] = [
@@ -81,6 +83,56 @@ export function useModelGroups(): ModelGroup[] {
   return useMemo(() => (providers ? groupsOf(providers) : NO_GROUPS), [providers]);
 }
 
+/**
+ * The groups with only what the user made available on Providers: an agent switched off is
+ * left out, and so is each model made unavailable.
+ */
+export function availableGroups(
+  groups: readonly ModelGroup[],
+  settings: Availability,
+): ModelGroup[] {
+  return groups
+    .filter((group) => providerOn(settings, group.provider))
+    .map((group) => ({
+      ...group,
+      models: group.models.filter((model) =>
+        modelAvailable(settings, { provider: group.provider, id: model.id }),
+      ),
+    }));
+}
+
+/**
+ * The live model lists with only the available models: what every picker offers. Names of
+ * past work come from [`useModelGroups`], which keeps everything.
+ */
+export function useAvailableModelGroups(): ModelGroup[] {
+  const groups = useModelGroups();
+  const disabledProviders = useApp((s) => s.settings.disabledProviders);
+  const hiddenModels = useApp((s) => s.settings.hiddenModels);
+  return useMemo(
+    () => availableGroups(groups, { disabledProviders, hiddenModels }),
+    [groups, disabledProviders, hiddenModels],
+  );
+}
+
+/**
+ * `groups` with `choice`'s model put back from `all` when it isn't available any more, so a
+ * running conversation's picker still names the model it runs on.
+ */
+export function withChoice(
+  groups: readonly ModelGroup[],
+  all: readonly ModelGroup[],
+  choice: ModelChoice,
+): readonly ModelGroup[] {
+  const model = findModel(groups, choice) ? null : findModel(all, choice);
+  const group = all.find((entry) => entry.provider === choice.provider);
+  if (!model || !group) return groups;
+  const shown = groups.find((entry) => entry.provider === choice.provider);
+  return shown
+    ? groups.map((entry) => (entry === shown ? { ...entry, models: [...entry.models, model] } : entry))
+    : [...groups, { ...group, models: [model] }];
+}
+
 /** Whether a Chat's CLI can compact its context on request; a session's never does. */
 export function useCanCompact(setup: Setup | null | undefined): boolean {
   return useApp(
@@ -92,18 +144,41 @@ export function useCanCompact(setup: Setup | null | undefined): boolean {
   );
 }
 
+/** An agent's own default model, else its first current one. */
+function agentDefault(group: ModelGroup): ModelInfo | undefined {
+  return (
+    group.models.find((entry) => entry.isDefault) ??
+    group.models.find((entry) => !entry.legacy) ??
+    group.models[0]
+  );
+}
+
 /** The first ready provider's default model: the last step of the resolution order. */
 export function builtInDefault(groups: readonly ModelGroup[]): ModelChoice {
   const ready = groups.find((group) => group.unavailable === null && group.models.length > 0);
-  const model = ready?.models.find((entry) => entry.isDefault) ?? ready?.models[0];
+  const model = ready && agentDefault(ready);
   if (!ready || !model) return { provider: "claude", model: null, effort: null };
   return { provider: ready.provider, model: model.id, effort: model.defaultEffort };
 }
 
 /**
+ * A saved choice as it can be used now, given the available `groups`: kept when its model is
+ * there (or its agent's list isn't known yet), else that agent's default model; `null` when
+ * the agent is switched off or has no model left, so the next choice in line is tried.
+ */
+function availableChoice(groups: readonly ModelGroup[], choice: ModelChoice): ModelChoice | null {
+  const group = groups.find((entry) => entry.provider === choice.provider);
+  if (!group) return null;
+  if (group.models.length === 0 || findModel(groups, choice)) return choice;
+  const model = agentDefault(group);
+  return model ? { provider: group.provider, model: model.id, effort: model.defaultEffort } : null;
+}
+
+/**
  * The model a new conversation starts with: the session choice, then the project's remembered
  * choice, then the global default in Settings (a Chat's own default first), then the first
- * ready provider's default.
+ * ready provider's default. `groups` are the available ones: a saved choice that isn't
+ * available any more stands for its agent's default model (the saved preference stays).
  */
 export function resolveModel(
   explicit: ModelChoice | null,
@@ -112,13 +187,16 @@ export function resolveModel(
   settings: Settings,
   groups: readonly ModelGroup[],
 ): ModelChoice {
-  return completeChoice(
-    groups,
-    explicit ??
-      (kind === "session" ? project?.prefs.orchestrator : settings.defaultChatModel) ??
-      settings.defaultOrchestrator ??
-      builtInDefault(groups),
-  );
+  const chain = [
+    explicit,
+    kind === "session" ? project?.prefs.orchestrator : settings.defaultChatModel,
+    settings.defaultOrchestrator,
+  ];
+  for (const choice of chain) {
+    const usable = choice ? availableChoice(groups, choice) : null;
+    if (usable) return completeChoice(groups, usable);
+  }
+  return completeChoice(groups, builtInDefault(groups));
 }
 
 /**
