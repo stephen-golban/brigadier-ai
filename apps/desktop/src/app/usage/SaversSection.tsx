@@ -7,7 +7,7 @@ import type { UsageSettings } from "@/ipc/generated";
 import { editSettings } from "@/state/settings";
 import { useApp } from "@/state/store";
 
-/** The usage savers still being measured (PLAN.md §7), for the Usage page and Settings search. */
+/** The usage savers (PLAN.md §7), for the Usage page and Settings search. */
 export const SAVER_ROWS = {
   rebirthWhenCacheExpired: {
     label: "Start over when the cache has expired",
@@ -56,7 +56,7 @@ export function SaversSection() {
   return (
     <SettingsSection
       title="Use less usage"
-      description="Ways to spend less of the usage windows that are still being measured."
+      description="Ways to spend less of the usage windows. Those that showed a saving at equal quality are on by default."
     >
       <SettingsCard>
         {(Object.keys(SAVER_ROWS) as Saver[]).map((saver) => (

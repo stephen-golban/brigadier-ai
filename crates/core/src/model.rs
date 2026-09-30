@@ -520,12 +520,13 @@ pub struct Settings {
     /// The user's manual rankings per kind of work (global and per project, with area
     /// overrides): where one is Manual, routing tries its models top-down instead of scoring.
     pub routing_rankings: Vec<Ranking>,
-    /// Ways to use less Claude and Codex usage that are still being measured (PLAN.md §7).
+    /// Ways to use less Claude and Codex usage (PLAN.md §7).
     pub usage: UsageSettings,
 }
 
-/// Usage savers still being measured (PLAN.md §7). Each stays off until completed tasks show
-/// it saves usage at equal quality.
+/// Usage savers (PLAN.md §7). One is on by default once completed tasks show it saves usage at
+/// equal quality. A field missing from saved settings (as in settings from before it existed)
+/// takes its default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UsageSettings {
@@ -552,10 +553,10 @@ pub struct UsageSettings {
 impl Default for UsageSettings {
     fn default() -> Self {
         Self {
-            rebirth_when_cache_expired: false,
-            lean_worker_tools: false,
+            rebirth_when_cache_expired: true,
+            lean_worker_tools: true,
             concise_replies: false,
-            code_pointers: false,
+            code_pointers: true,
             build_rules: false,
             worker_handoff: false,
             worker_handoff_tokens: 160_000,
@@ -1367,5 +1368,30 @@ pub mod streams {
     /// A composer draft's pinned attachments: a conversation id, or `new` for a new chat.
     pub fn draft(scope: &str) -> String {
         format!("draft:{scope}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_settings_without_usage_savers_take_their_defaults() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.usage, UsageSettings::default());
+        assert!(settings.usage.rebirth_when_cache_expired);
+        assert!(settings.usage.lean_worker_tools);
+        assert!(settings.usage.code_pointers);
+        assert!(!settings.usage.concise_replies);
+        assert!(!settings.usage.build_rules);
+        assert!(!settings.usage.worker_handoff);
+
+        let settings: Settings =
+            serde_json::from_str(r#"{"usage":{"buildRules":true,"leanWorkerTools":false}}"#)
+                .unwrap();
+        assert!(settings.usage.build_rules);
+        assert!(!settings.usage.lean_worker_tools);
+        assert!(settings.usage.rebirth_when_cache_expired);
+        assert_eq!(settings.usage.worker_handoff_tokens, 160_000);
     }
 }

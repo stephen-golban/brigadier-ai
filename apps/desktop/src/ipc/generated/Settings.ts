@@ -64,6 +64,6 @@ routingOverrides: Array<OverrideRule>,
  */
 routingRankings: Array<Ranking>, 
 /**
- * Ways to use less Claude and Codex usage that are still being measured (PLAN.md §7).
+ * Ways to use less Claude and Codex usage (PLAN.md §7).
  */
 usage: UsageSettings, };

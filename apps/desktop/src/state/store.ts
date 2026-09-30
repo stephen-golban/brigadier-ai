@@ -219,10 +219,10 @@ export const useApp = create<AppState>()(() => ({
     routingOverrides: [],
     routingRankings: [],
     usage: {
-      rebirthWhenCacheExpired: false,
-      leanWorkerTools: false,
+      rebirthWhenCacheExpired: true,
+      leanWorkerTools: true,
       conciseReplies: false,
-      codePointers: false,
+      codePointers: true,
       buildRules: false,
       workerHandoff: false,
       workerHandoffTokens: 160000,
