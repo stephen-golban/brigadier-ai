@@ -50,7 +50,6 @@ const twMerge = extendTailwindMerge({
         "titlebar",
         "titlebar-clear",
         "titlebar-start",
-        "titlebar-controls",
         "traffic-lights",
         "setup",
         "setup-card",

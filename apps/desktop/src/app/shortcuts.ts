@@ -6,8 +6,6 @@ export function useShortcuts() {
   return {
     mac,
     sidebar: mac ? "⌘B" : "Ctrl+B",
-    back: mac ? "⌘[" : "Alt+←",
-    forward: mac ? "⌘]" : "Alt+→",
     search: mac ? "⌘K" : "Ctrl+K",
     settings: mac ? "⌘," : "Ctrl+,",
     inspector: mac ? "⌥⌘I" : "Ctrl+Alt+I",

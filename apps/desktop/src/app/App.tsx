@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { AppRail, AppSidebar, TitlebarControls } from "@/app/AppSidebar";
+import { AppRail, AppSidebar, TitlebarToggle } from "@/app/AppSidebar";
 import { AddProjectDialog } from "@/app/dialogs/AddProjectDialog";
 import { StorageDialog } from "@/app/dialogs/StorageDialog";
 import { UninstallDialog } from "@/app/dialogs/UninstallDialog";
@@ -16,13 +16,7 @@ import { Toaster } from "@/components/ui/toast";
 import { appReady, nowEpochMs } from "@/ipc/client";
 import { nextPaint, setFrameSampling } from "@/lib/perf";
 import { markStartup } from "@/lib/startup";
-import {
-  goBack,
-  goForward,
-  setMetricsStreaming,
-  toggleInspector,
-  toggleSettings,
-} from "@/state/actions";
+import { setMetricsStreaming, toggleInspector, toggleSettings } from "@/state/actions";
 import { openFolderPicker } from "@/state/addProject";
 import { useApp, type Selection } from "@/state/store";
 
@@ -103,18 +97,6 @@ export function App() {
         toggleInspector();
       }
       const mac = useApp.getState().info?.platform === "macos";
-      // Back and Forward: ⌘[ and ⌘] on macOS, Alt+← and Alt+→ elsewhere.
-      const back = mac
-        ? event.metaKey && !event.altKey && !event.shiftKey && event.code === "BracketLeft"
-        : event.altKey && !event.ctrlKey && !event.metaKey && event.key === "ArrowLeft";
-      const forward = mac
-        ? event.metaKey && !event.altKey && !event.shiftKey && event.code === "BracketRight"
-        : event.altKey && !event.ctrlKey && !event.metaKey && event.key === "ArrowRight";
-      if (back || forward) {
-        event.preventDefault();
-        if (back) goBack();
-        else goForward();
-      }
       // Settings: on macOS the app menu's ⌘, does it.
       if (!mac && event.key === "," && event.ctrlKey && !event.altKey && !event.shiftKey) {
         event.preventDefault();
@@ -161,7 +143,7 @@ export function App() {
             </div>
           </main>
         </div>
-        <TitlebarControls />
+        <TitlebarToggle />
         <GlobalSearch />
         <OnboardingDialog />
         <AddProjectDialog />

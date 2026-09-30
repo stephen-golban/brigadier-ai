@@ -161,59 +161,7 @@ export async function loadFullText(
   }
 }
 
-/** How many views Back can return through. */
-const HISTORY_LIMIT = 50;
-
-function sameView(a: Selection, b: Selection): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/** Whether a view from the history can still be shown (its conversation or project remains). */
-function stillThere(selection: Selection): boolean {
-  const { conversations, projects } = useApp.getState();
-  if (selection.type === "conversation") return selection.id in conversations;
-  if (selection.type === "draft" && selection.kind === "session") {
-    return selection.projectId in projects;
-  }
-  return true;
-}
-
-/** Shows `selection`; what was shown before is where Back returns to. */
 export function select(selection: Selection): void {
-  const { selection: current, history } = useApp.getState();
-  if (!sameView(current, selection)) {
-    useApp.setState({
-      history: { back: [...history.back, current].slice(-HISTORY_LIMIT), forward: [] },
-    });
-  }
-  show(selection);
-}
-
-/** Back (⌘[): the view shown before this one, skipping any that are gone. */
-export function goBack(): void {
-  step("back");
-}
-
-/** Forward (⌘]): the view Back left. */
-export function goForward(): void {
-  step("forward");
-}
-
-function step(way: "back" | "forward"): void {
-  const { selection, history } = useApp.getState();
-  const from = [...(way === "back" ? history.back : history.forward)];
-  let target = from.pop();
-  while (target && !stillThere(target)) target = from.pop();
-  // The view left behind is where the other way returns to.
-  const other = way === "back" ? history.forward : history.back;
-  const to = target ? [...other, selection].slice(-HISTORY_LIMIT) : other;
-  useApp.setState({
-    history: way === "back" ? { back: from, forward: to } : { back: to, forward: from },
-  });
-  if (target) show(target);
-}
-
-function show(selection: Selection): void {
   useApp.setState({ selection });
   const { board } = useBoard.getState();
   if (selection.type !== "conversation") {

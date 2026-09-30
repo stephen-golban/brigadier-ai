@@ -62,7 +62,7 @@ export function TopBar({
       data-tauri-drag-region
       className={cn(
         // In the titlebar strip, above the page surface. With the sidebar panel closed it
-        // starts clear of Back, Forward and the sidebar toggle, which stay where they are.
+        // starts clear of the sidebar toggle, which stays where it is.
         "h-titlebar ease-sidebar flex shrink-0 items-center gap-1 px-3 transition-[padding] duration-300 motion-reduce:transition-none",
         state === "collapsed" && "ps-titlebar-clear",
       )}

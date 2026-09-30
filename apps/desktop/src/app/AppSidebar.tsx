@@ -1,7 +1,5 @@
 import {
   Archive,
-  ArrowLeftLg,
-  ArrowRightLg,
   ComposeEditSquare,
   DotsHorizontal,
   Download,
@@ -18,7 +16,7 @@ import {
   Unpin,
   X,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { memo, useMemo, useState, type ComponentProps, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 
 import { DeleteDialog } from "@/app/dialogs/DeleteDialog";
 import { errorText } from "@/app/dialogs/fields";
@@ -64,8 +62,6 @@ import { cn } from "@/lib/utils";
 import {
   archive,
   closeSettings,
-  goBack,
-  goForward,
   openConversation,
   openSettings,
   renameConversation,
@@ -80,69 +76,23 @@ import { useApp } from "@/state/store";
 
 // ----- titlebar and rail -----------------------------------------------------------------
 
-/** A button of the titlebar's controls, its name (and shortcut) in a tooltip. */
-function TitlebarButton({
-  label,
-  shortcut,
-  children,
-  ...props
-}: ComponentProps<typeof Button> & { label: string; shortcut: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-md"
-          aria-label={label}
-          className="text-muted-foreground hover:text-foreground disabled:opacity-40"
-          {...props}
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">
-        {label}
-        <Kbd>{shortcut}</Kbd>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 /**
- * Back, Forward and the sidebar toggle, at a fixed spot in the titlebar: right after the
- * traffic lights on macOS, at its start elsewhere. They stay put while the panel opens and
- * closes.
+ * The sidebar toggle, at a fixed spot in the titlebar on the traffic lights' line: just after
+ * them on macOS, at the titlebar's start in full screen (where they are gone) and elsewhere.
+ * It stays put while the panel opens and closes.
  */
-export function TitlebarControls() {
+export function TitlebarToggle() {
   const { open } = useSidebar();
-  const shortcuts = useShortcuts();
-  const canGoBack = useApp((s) => s.history.back.length > 0);
-  const canGoForward = useApp((s) => s.history.forward.length > 0);
+  const { sidebar } = useShortcuts();
   return (
-    <div className="h-titlebar start-titlebar-start absolute top-0 z-20 flex items-center gap-1.5">
-      <TitlebarButton
-        label="Back"
-        shortcut={shortcuts.back}
-        disabled={!canGoBack}
-        onClick={() => goBack()}
-      >
-        <ArrowLeftLg className="rtl:-scale-x-100" />
-      </TitlebarButton>
-      <TitlebarButton
-        label="Forward"
-        shortcut={shortcuts.forward}
-        disabled={!canGoForward}
-        onClick={() => goForward()}
-      >
-        <ArrowRightLg className="rtl:-scale-x-100" />
-      </TitlebarButton>
+    <div className="h-titlebar start-titlebar-start absolute top-0 z-20 flex items-center">
       <Tooltip>
         <TooltipTrigger asChild>
           <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
         </TooltipTrigger>
         <TooltipContent side="bottom">
           {open ? "Hide sidebar" : "Show sidebar"}
-          <Kbd>{shortcuts.sidebar}</Kbd>
+          <Kbd>{sidebar}</Kbd>
         </TooltipContent>
       </Tooltip>
     </div>

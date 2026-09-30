@@ -180,8 +180,6 @@ export type AppState = {
   threads: Record<string, Thread>;
   pending: PendingMessage[];
   selection: Selection;
-  /** What Back returns to (newest last) and what Forward returns to (newest last). */
-  history: { back: Selection[]; forward: Selection[] };
   draft: DraftSetup;
   expandedProjects: Record<string, boolean>;
   windowVisible: boolean;
@@ -236,7 +234,6 @@ export const useApp = create<AppState>()(() => ({
   threads: {},
   pending: [],
   selection: { type: "draft", kind: "chat" },
-  history: { back: [], forward: [] },
   draft: emptyDraft(null),
   expandedProjects: {},
   windowVisible: true,

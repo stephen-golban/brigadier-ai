@@ -49,9 +49,8 @@
  *               page-corner page-corner-{top,bottom}-{start,end}  a page surface corner kept
  *                                             round over the columns
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
- *               start-titlebar-start, w-titlebar-controls  where Back, Forward and the sidebar
- *                                             toggle sit in the titlebar, and their width
- *               ps-titlebar-clear             the top bar's inset clearing them while the
+ *               start-titlebar-start          where the sidebar toggle sits in the titlebar
+ *               ps-titlebar-clear             the top bar's inset clearing it while the
  *                                             sidebar panel is closed
  *               w-agents                      a session's agents panel
  *               max-h-user-message            a long user message, clipped (about 15 lines)
@@ -198,13 +197,12 @@
   /* Window chrome: top bars, room for the macOS traffic lights. */
   --spacing-titlebar: 2.75rem;
   --spacing-traffic-lights: 4.75rem;
-  /* Back, Forward and the sidebar toggle stay in the titlebar where it starts (right after
-     the traffic lights on macOS, see below); with the panel closed, the top bar beside the
-     rail starts this far in, clear of them. */
+  /* The sidebar toggle stays in the titlebar where it starts (just after the traffic lights
+     on macOS, see below); with the panel closed, the top bar beside the rail starts this far
+     in, clear of it. */
   --spacing-titlebar-start: calc(var(--spacing) * 2);
-  --spacing-titlebar-controls: calc(var(--spacing-icon-button-md) * 3 + var(--spacing) * 3);
   --spacing-titlebar-clear: calc(
-    var(--spacing-titlebar-start) + var(--spacing-titlebar-controls) + var(--spacing) * 2 -
+    var(--spacing-titlebar-start) + var(--spacing-icon-button-md) + var(--spacing) * 2 -
       var(--spacing-rail)
   );
   --spacing-agents: 26rem;
@@ -440,8 +438,12 @@
   --sidebar-ring: oklch(0.556 0.004 var(--tint));
 }
 
-:root[data-platform="macos"] {
-  --spacing-titlebar-start: var(--spacing-traffic-lights);
+/* On macOS the toggle's centre sits 26px past the traffic lights; in full screen they are
+   gone and it moves to the titlebar's start. */
+:root[data-platform="macos"]:not([data-fullscreen]) {
+  --spacing-titlebar-start: calc(
+    var(--spacing-traffic-lights) + 1.625rem - var(--spacing-icon-button-md) / 2
+  );
 }
 
 :root[data-density="compact"] {
