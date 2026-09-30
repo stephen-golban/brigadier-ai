@@ -494,7 +494,16 @@ function AreaOverrides({
   );
 }
 
-/** One area override: its areas, its list (with its own live preview), and removing it. */
+/** Whether an area override applies; switched off, its list is kept for switching back. */
+const OVERRIDE_STATES: Choice<"on" | "off">[] = [
+  { value: "on", label: "On" },
+  { value: "off", label: "Off" },
+];
+
+/**
+ * One area override: its areas, whether it applies, its list (with its own live preview), and
+ * removing it.
+ */
 function AreaOverride({
   ranking,
   category,
@@ -533,26 +542,48 @@ function AreaOverride({
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
+        <div className="ms-auto">
+          <Segmented
+            label="Whether this area override applies"
+            value={ranking.manual ? "on" : "off"}
+            options={OVERRIDE_STATES}
+            disabled={action.busy}
+            onChange={(next) =>
+              action.run(() =>
+                changeRanking(ranking.id, (current) => ({ ...current, manual: next === "on" })),
+              )
+            }
+          />
+        </div>
         <Button
           type="button"
           size="icon-xs"
           variant="ghost"
           aria-label="Remove this area override"
-          className="text-muted-foreground ms-auto"
+          className="text-muted-foreground"
           disabled={action.busy}
           onClick={() => action.run(() => changeRanking(ranking.id, () => null))}
         >
           <Trash />
         </Button>
       </div>
-      <ManualList
-        ranking={ranking}
-        category={category}
-        places={places}
-        candidates={route?.candidates ?? []}
-        groups={groups}
-      />
-      <Outcome route={route} groups={groups} />
+      {ranking.manual ? (
+        <>
+          <ManualList
+            ranking={ranking}
+            category={category}
+            places={places}
+            candidates={route?.candidates ?? []}
+            groups={groups}
+          />
+          <Outcome route={route} groups={groups} />
+        </>
+      ) : (
+        <p className="text-muted-foreground px-4 py-3 text-xs">
+          Off: tasks touching {ranking.areas.length === 1 ? "this area" : "these areas"} follow the
+          row above. The list is kept for when you switch it back on.
+        </p>
+      )}
       {action.error && (
         <p role="alert" className="text-destructive px-4 pb-2 text-xs">
           {action.error}
