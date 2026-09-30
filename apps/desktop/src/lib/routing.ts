@@ -5,7 +5,6 @@ import type {
   Heat,
   LimitHit,
   ModelChoice,
-  ModelInfo,
   OverrideEffect,
   OverrideRule,
   OverrideTarget,
@@ -19,6 +18,8 @@ import type {
 } from "@/ipc/generated";
 import { formatTime } from "@/lib/format";
 import { modelName } from "@/lib/setup";
+
+export { isFable } from "@/lib/setup";
 
 /**
  * Routing in words: the names the Usage page, worker cards, the Routing page and the
@@ -67,18 +68,6 @@ export const RANKED_CATEGORIES: readonly TaskCategory[] = [
   "chat",
 ];
 
-/** A kind of work as a heading: "Implement". */
-export const KIND_NAMES: Record<TaskCategory, string> = {
-  scout: "Scout",
-  research: "Research",
-  implement: "Implement",
-  review: "Review",
-  merge: "Merge",
-  verify: "Verify",
-  chat: "Chat",
-  orchestrate: "Orchestrate",
-};
-
 /** What each kind of work is, under its heading. */
 export const KIND_HINTS: Record<TaskCategory, string> = {
   scout: "Looks around the repository and answers a question.",
@@ -91,7 +80,7 @@ export const KIND_HINTS: Record<TaskCategory, string> = {
   orchestrate: "Plans and delegates a session's work.",
 };
 
-/** A kind of work in plain words, as the Routing page's simple view names it: "Write code". */
+/** A kind of work in plain words, as the Routing page names it: "Write code". */
 export const PLAIN_KIND_NAMES: Record<TaskCategory, string> = {
   scout: "Explore the code",
   research: "Research",
@@ -143,15 +132,6 @@ export function tierBelow(tier: QualityTier, floor: QualityTier): boolean {
   return TIER_ORDER.indexOf(tier) < TIER_ORDER.indexOf(floor);
 }
 
-/** Whether a name has "fable" as a word, as routing reads model names. */
-function namesFable(name: string): boolean {
-  return name.split(/[^A-Za-z0-9.]+/).some((word) => word.toLowerCase() === "fable");
-}
-
-/** A Fable model: routing never uses one, so it is never offered for a ranking. */
-export function isFable(model: ModelInfo): boolean {
-  return namesFable(model.id) || namesFable(model.displayName) || (model.resolved !== null && namesFable(model.resolved));
-}
 
 /** A ranked place as the page names it: "Claude Opus 5.5", "Newest Claude opus", "Any Codex model". */
 export function placeName(target: OverrideTarget, groups: readonly ModelGroup[]): string {
