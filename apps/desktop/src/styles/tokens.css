@@ -30,6 +30,7 @@
  *               w-switch-width, h-switch-height, size-switch-thumb, translate-x-switch-travel
  *                                             an on/off switch
  *               min-w-settings-control        the room a Settings row keeps for its control
+ *               h-page-toolbar                the strip atop a Settings page
  *               max-h-action-list             a worker's expanded run of actions (9 rows)
  *               max-h-command-list            the composer's / menu (10 rows and a half, then scrolls)
  *               h-kbd, min-w-kbd              keyboard hints
@@ -183,6 +184,8 @@
   --spacing-switch-thumb: 1rem;
   /* How far the thumb moves to the on side (it rests 2px from either end). */
   --spacing-switch-travel: calc(var(--spacing-switch-width) - var(--spacing-switch-thumb) - 0.125rem);
+  /* The strip atop a Settings page, over its title. */
+  --spacing-page-toolbar: 2.875rem;
   /* A Settings row keeps at least this much room for its control. */
   --spacing-settings-control: min(10rem, 40cqw);
   /* Window chrome: top bars, room for the macOS traffic lights, the Inspector panel. */
@@ -464,6 +467,7 @@
   --spacing-switch-height: 1.125rem;
   --spacing-switch-thumb: 0.875rem;
   --spacing-settings-control: min(7.5rem, 40cqw);
+  --spacing-page-toolbar: 2.5rem;
   --spacing-status-bar: 1.375rem;
   --spacing-titlebar: 2.5rem;
   --spacing-inspector: 24rem;

@@ -38,16 +38,20 @@ export function SettingsPage({
   children: ReactNode;
 }) {
   return (
-    <div data-slot="settings-page" className="h-full overflow-y-auto [scrollbar-gutter:stable]">
-      <div className="max-w-settings mx-auto flex w-full flex-col px-5 pt-4 pb-12">
-        <header className="flex items-start gap-4 py-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <h1 className="text-page-title font-medium">{title}</h1>
-            {description && <p className="text-muted-foreground text-sm">{description}</p>}
-          </div>
-          {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
-        </header>
-        <div className="flex flex-col gap-10 pt-5">{children}</div>
+    <div data-slot="settings-page" className="flex h-full flex-col">
+      {/* The page's toolbar strip, for dragging the window. */}
+      <div data-tauri-drag-region className="h-page-toolbar shrink-0" />
+      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="max-w-settings mx-auto flex w-full flex-col px-5 pt-4 pb-12">
+          <header className="flex items-start gap-4 py-3">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <h1 className="text-page-title font-medium">{title}</h1>
+              {description && <p className="text-muted-foreground text-sm">{description}</p>}
+            </div>
+            {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+          </header>
+          <div className="flex flex-col gap-10 pt-5">{children}</div>
+        </div>
       </div>
     </div>
   );

@@ -47,7 +47,7 @@ export function NavSection({
   const id = useId();
   return (
     <section aria-labelledby={id} className="group/section flex flex-col">
-      <div className="flex min-h-6 items-center gap-1 ps-2 pe-1.5">
+      <div className="flex min-h-6 items-center gap-1 ps-2 pe-1.5 pb-1">
         {onOpenChange ? (
           <button
             id={id}

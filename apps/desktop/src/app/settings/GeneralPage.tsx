@@ -170,7 +170,7 @@ function HibernateRow() {
         step={1}
         value={text}
         aria-invalid={invalid || undefined}
-        className="border-input bg-popover h-control-md rounded-control text-label w-18 px-2.5 tabular-nums"
+        className="border-input bg-popover h-control-md rounded-control text-label w-18 [appearance:textfield] px-2.5 tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         onChange={(event) => setTyped(event.target.value)}
         onBlur={commit}
         onKeyDown={(event) => {

@@ -1,6 +1,6 @@
 import {
   Archive,
-  ChatCompose,
+  ComposeEditSquare,
   DotsHorizontal,
   Download,
   Folder,
@@ -361,7 +361,7 @@ export function AppSidebar() {
             className={navRow}
             onClick={() => select({ type: "draft", kind: "chat" })}
           >
-            <ChatCompose />
+            <ComposeEditSquare />
             <span className="truncate">New chat</span>
           </button>
         </li>
@@ -505,6 +505,10 @@ function RowActionsSlot({ children }: { children: ReactNode }) {
   );
 }
 
+/** Keeps a row's title clear of its actions while they show. */
+const roomForActions =
+  "group-hover/row:pe-14 group-focus-within/row:pe-14 group-has-data-[state=open]/row:pe-14";
+
 /** Hides a row's trailing status while its actions show. */
 const hideOnRowHover =
   "group-hover/row:invisible group-focus-within/row:invisible group-has-data-[state=open]/row:invisible";
@@ -562,7 +566,7 @@ const ProjectRow = memo(function ProjectRow({
             </Tooltip>
             <DropdownMenuContent side="bottom" align="start">
               <DropdownMenuItem onSelect={newSession}>
-                <ChatCompose />
+                <ComposeEditSquare />
                 New session
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => onSettings(project)}>
@@ -600,7 +604,7 @@ const ProjectRow = memo(function ProjectRow({
                 className={rowAction}
                 onClick={newSession}
               >
-                <ChatCompose />
+                <ComposeEditSquare />
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom">New session</TooltipContent>
@@ -711,7 +715,7 @@ const ConversationRow = memo(function ConversationRow({
             type="button"
             data-active={active}
             aria-current={active ? "page" : undefined}
-            className={cn(navRow, "pe-1.5", nested && "ps-8")}
+            className={cn(navRow, "pe-1.5", roomForActions, nested && "ps-8")}
             onClick={() => openConversation(conversation.id)}
           >
             <span className="mask-fade-end min-w-0 flex-1 overflow-hidden whitespace-nowrap">

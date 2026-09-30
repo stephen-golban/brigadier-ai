@@ -224,7 +224,7 @@ function SidebarResizeHandle() {
       onPointerMove={onPointerMove}
       onPointerUp={end}
       onPointerCancel={end}
-      className="group/resize w-resize-handle absolute inset-y-0 end-0 z-10 flex translate-x-1/2 cursor-col-resize justify-center rtl:-translate-x-1/2"
+      className="group/resize w-resize-handle top-titlebar absolute bottom-0 end-0 z-10 flex translate-x-1/2 cursor-col-resize justify-center rtl:-translate-x-1/2"
     >
       <span className="bg-input w-px opacity-0 transition-opacity duration-150 group-hover/resize:opacity-100 group-data-resizing/resize:opacity-100" />
     </div>
