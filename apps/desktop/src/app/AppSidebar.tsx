@@ -1,5 +1,7 @@
 import {
   Archive,
+  ArrowLeftLg,
+  ArrowRightLg,
   ComposeEditSquare,
   DotsHorizontal,
   Download,
@@ -63,6 +65,8 @@ import { cn } from "@/lib/utils";
 import {
   archive,
   closeSettings,
+  goBack,
+  goForward,
   openConversation,
   openSettings,
   renameConversation,
@@ -84,6 +88,8 @@ function useShortcuts() {
   return {
     mac,
     sidebar: mac ? "⌘B" : "Ctrl+B",
+    back: mac ? "⌘[" : "Alt+←",
+    forward: mac ? "⌘]" : "Alt+→",
     search: mac ? "⌘K" : "Ctrl+K",
     settings: mac ? "⌘," : "Ctrl+,",
     inspector: mac ? "⌥⌘I" : "Ctrl+Alt+I",
@@ -92,22 +98,69 @@ function useShortcuts() {
 
 // ----- titlebar and rail -----------------------------------------------------------------
 
-/**
- * The sidebar toggle, at a fixed spot in the titlebar: right after the traffic lights on
- * macOS, over the rail elsewhere. It stays put while the panel opens and closes.
- */
-export function TitlebarToggle() {
-  const { open } = useSidebar();
-  const { sidebar } = useShortcuts();
+/** A button of the titlebar's controls, its name (and shortcut) in a tooltip. */
+function TitlebarButton({
+  label,
+  shortcut,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { label: string; shortcut: string }) {
   return (
-    <div className="h-titlebar macos:start-traffic-lights macos:w-auto w-rail absolute top-0 start-0 z-20 flex items-center justify-center">
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-md"
+          aria-label={label}
+          className="text-muted-foreground hover:text-foreground disabled:opacity-40"
+          {...props}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {label}
+        <Kbd>{shortcut}</Kbd>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Back, Forward and the sidebar toggle, at a fixed spot in the titlebar: right after the
+ * traffic lights on macOS, at its start elsewhere. They stay put while the panel opens and
+ * closes.
+ */
+export function TitlebarControls() {
+  const { open } = useSidebar();
+  const shortcuts = useShortcuts();
+  const canGoBack = useApp((s) => s.history.back.length > 0);
+  const canGoForward = useApp((s) => s.history.forward.length > 0);
+  return (
+    <div className="h-titlebar start-titlebar-start absolute top-0 z-20 flex items-center gap-1.5">
+      <TitlebarButton
+        label="Back"
+        shortcut={shortcuts.back}
+        disabled={!canGoBack}
+        onClick={() => goBack()}
+      >
+        <ArrowLeftLg className="rtl:-scale-x-100" />
+      </TitlebarButton>
+      <TitlebarButton
+        label="Forward"
+        shortcut={shortcuts.forward}
+        disabled={!canGoForward}
+        onClick={() => goForward()}
+      >
+        <ArrowRightLg className="rtl:-scale-x-100" />
+      </TitlebarButton>
       <Tooltip>
         <TooltipTrigger asChild>
           <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
         </TooltipTrigger>
         <TooltipContent side="bottom">
           {open ? "Hide sidebar" : "Show sidebar"}
-          <Kbd>{sidebar}</Kbd>
+          <Kbd>{shortcuts.sidebar}</Kbd>
         </TooltipContent>
       </Tooltip>
     </div>

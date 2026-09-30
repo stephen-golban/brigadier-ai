@@ -47,8 +47,10 @@
  *               page-corner page-corner-{top,bottom}-{start,end}  a page surface corner kept
  *                                             round over the columns
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
- *               ps-titlebar-clear             the top bar's inset clearing the sidebar toggle
- *                                             while the panel is closed (macOS)
+ *               start-titlebar-start, w-titlebar-controls  where Back, Forward and the sidebar
+ *                                             toggle sit in the titlebar, and their width
+ *               ps-titlebar-clear             the top bar's inset clearing them while the
+ *                                             sidebar panel is closed
  *               h-status-bar                  the status bar along the bottom of the window
  *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
  *               w-agents                      a session's agents panel
@@ -194,10 +196,14 @@
   --spacing-titlebar: 2.75rem;
   --spacing-status-bar: 1.625rem;
   --spacing-traffic-lights: 4.75rem;
-  /* The sidebar toggle stays in the titlebar right after the traffic lights; with the panel
-     closed, the top bar beside the rail starts this far in, clear of it. */
+  /* Back, Forward and the sidebar toggle stay in the titlebar where it starts (right after
+     the traffic lights on macOS, see below); with the panel closed, the top bar beside the
+     rail starts this far in, clear of them. */
+  --spacing-titlebar-start: calc(var(--spacing) * 2);
+  --spacing-titlebar-controls: calc(var(--spacing-icon-button-md) * 3 + var(--spacing) * 3);
   --spacing-titlebar-clear: calc(
-    var(--spacing-traffic-lights) + var(--spacing-icon-button-md) + var(--spacing) * 2 - var(--spacing-rail)
+    var(--spacing-titlebar-start) + var(--spacing-titlebar-controls) + var(--spacing) * 2 -
+      var(--spacing-rail)
   );
   --spacing-inspector: 28rem;
   --spacing-inspector-wide: 42rem;
@@ -427,6 +433,10 @@
   --sidebar-accent-foreground: oklch(0.985 0.002 var(--tint));
   --sidebar-border: oklch(0.985 0.002 var(--tint) / 10%);
   --sidebar-ring: oklch(0.556 0.004 var(--tint));
+}
+
+:root[data-platform="macos"] {
+  --spacing-titlebar-start: var(--spacing-traffic-lights);
 }
 
 :root[data-density="compact"] {
