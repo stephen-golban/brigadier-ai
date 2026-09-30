@@ -29,6 +29,7 @@ import {
   CATEGORIES,
   CATEGORY_LABELS,
   EFFECT_LABELS,
+  isFable,
   newRuleId,
   PROVIDERS,
   ruleSentence,
@@ -207,7 +208,8 @@ function TargetPicker({
       <DropdownMenuContent align="start" className="w-xs">
         {PROVIDERS.map((provider, index) => {
           const group = groups.find((entry) => entry.provider === provider);
-          const models = (group?.models ?? []).filter((model) => !model.legacy);
+          // Routing never uses a Fable model, so no rule is about one.
+          const models = (group?.models ?? []).filter((model) => !model.legacy && !isFable(model));
           const words = families.get(provider) ?? [];
           return (
             <div key={provider}>

@@ -195,6 +195,8 @@ function factorNote(factor: Factor): string | null {
   if (label.includes("already runs")) return `busy ${delta}`;
   if (label.startsWith("trial")) return `trial ${delta}`;
   if (label.startsWith("strength for")) return `area ${delta}`;
+  if (label.startsWith("an older model")) return `older ${delta}`;
+  if (label.startsWith("a newer model")) return `not yet rated ${delta}`;
   return null;
 }
 

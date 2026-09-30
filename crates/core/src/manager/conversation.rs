@@ -2738,19 +2738,31 @@ impl SessionManager {
                 self.kick(conv);
                 return;
             }
+            let known_reset = conversation
+                .quota_wait
+                .as_ref()
+                .and_then(|wait| wait.resets_at_ms)
+                .filter(|at| *at > now_ms());
             match self.stand_in_choice(conv, &from).await {
                 Ok(next) => {
                     self.stop_waiting(conv).await;
                     // Its messages are in `pending` already.
                     self.stand_in(conv, &from, next, None, Vec::new()).await;
                 }
-                Err(Some(waiting)) => self.keep_conversation_waiting(conv, waiting).await,
+                Err(Some(mut waiting)) => {
+                    // A reset still ahead (its own model's, from its limit) frees it too.
+                    waiting.resets_at_ms = match (waiting.resets_at_ms, known_reset) {
+                        (Some(named), Some(known)) => Some(named.min(known)),
+                        (named, known) => named.or(known),
+                    };
+                    self.keep_conversation_waiting(conv, waiting).await;
+                }
                 // No reset or routing change would help now; it still waits for its own model.
                 Err(None) => {
                     let waiting = match conversation.quota_wait {
                         Some(wait) => brigadier_router::Waiting {
                             reason: wait.reason,
-                            resets_at_ms: None,
+                            resets_at_ms: known_reset,
                             rule: wait.rule,
                             ranking: wait.ranking,
                         },
@@ -2759,7 +2771,7 @@ impl SessionManager {
                                 "{} can't run now",
                                 super::fallback::model_label(&from)
                             ),
-                            resets_at_ms: None,
+                            resets_at_ms: known_reset,
                             rule: None,
                             ranking: None,
                         },

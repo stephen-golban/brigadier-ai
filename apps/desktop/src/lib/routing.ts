@@ -5,6 +5,7 @@ import type {
   Heat,
   LimitHit,
   ModelChoice,
+  ModelInfo,
   OverrideEffect,
   OverrideRule,
   OverrideTarget,
@@ -106,6 +107,16 @@ const TIER_ORDER: readonly QualityTier[] = ["unrated", "light", "standard", "str
 /** Whether a tier is below another. */
 export function tierBelow(tier: QualityTier, floor: QualityTier): boolean {
   return TIER_ORDER.indexOf(tier) < TIER_ORDER.indexOf(floor);
+}
+
+/** Whether a name has "fable" as a word, as routing reads model names. */
+function namesFable(name: string): boolean {
+  return name.split(/[^A-Za-z0-9.]+/).some((word) => word.toLowerCase() === "fable");
+}
+
+/** A Fable model: routing never uses one, so it is never offered for a ranking. */
+export function isFable(model: ModelInfo): boolean {
+  return namesFable(model.id) || namesFable(model.displayName) || (model.resolved !== null && namesFable(model.resolved));
 }
 
 /** A ranked place as the page names it: "Claude Opus 5.5", "Newest Claude opus", "Any Codex model". */

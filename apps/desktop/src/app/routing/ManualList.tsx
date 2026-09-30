@@ -27,6 +27,7 @@ import type {
 import {
   CATEGORY_LABELS,
   DEFAULT_FLOORS,
+  isFable,
   placeName,
   PROVIDERS,
   sameTarget,
@@ -298,7 +299,7 @@ function AddPlaceMenu({
       <DropdownMenuContent align="start" className="max-h-96 w-xs overflow-y-auto">
         {PROVIDERS.map((provider, index) => {
           const group = groups.find((entry) => entry.provider === provider);
-          const models = (group?.models ?? []).filter((model) => !model.legacy);
+          const models = (group?.models ?? []).filter((model) => !model.legacy && !isFable(model));
           const vendor: OverrideTarget = { type: "vendor", provider };
           return (
             <div key={provider}>
