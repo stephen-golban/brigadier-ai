@@ -54,7 +54,7 @@ import {
   PERMISSIONS_HELP_URL,
   resolveModel,
 } from "@/lib/setup";
-import { choiceName, formatResetAt, VENDOR_LABELS } from "@/lib/routing";
+import { choiceName, formatResetAt, VENDOR_LABELS, withResetTime } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 import { openSettings, updateSetup } from "@/state/actions";
 import { useApp } from "@/state/store";
@@ -396,13 +396,14 @@ function WaitingPill({ wait }: { wait: QuotaWait }) {
   const now = useNow(60_000);
   const until = wait.resetsAtMs !== null ? ` · ${formatResetAt(wait.resetsAtMs, now)}` : "";
   const text = `Waiting for quota${until}`;
+  const reason = withResetTime(wait.reason, wait.resetsAtMs, now);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
           data-slot="quota-wait-pill"
-          aria-label={`${text}. ${wait.reason} Open Routing settings.`}
+          aria-label={`${text}. ${reason} Open Routing settings.`}
           onClick={() => openSettings("routing")}
           className="h-pill px-pill rounded-capsule bg-warning/15 text-warning hover:bg-warning/25 focus-visible:ring-ring/50 inline-flex max-w-sm min-w-0 shrink items-center gap-1 text-xs transition-colors outline-none focus-visible:ring-1"
         >
@@ -413,7 +414,7 @@ function WaitingPill({ wait }: { wait: QuotaWait }) {
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs flex-col items-start gap-0.5">
         <span className="font-medium">{text}</span>
-        <span>{wait.reason}</span>
+        <span>{reason}</span>
         {wait.rule && <span>Your rule keeps it from other models: {wait.rule}</span>}
         {wait.ranking && <span>Kept for the models in {wait.ranking}.</span>}
         <span className="text-muted-foreground text-xs">

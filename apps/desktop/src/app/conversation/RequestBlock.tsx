@@ -97,10 +97,11 @@ function useElapsed(from: number, to: number | null, live: boolean): number {
   return Math.max(0, (live || to === null ? now : to) - from);
 }
 
-function headerLabel(state: BlockState, elapsed: number): string {
+function headerLabel(state: BlockState, elapsed: number, quota = false): string {
   const time = formatDuration(elapsed);
   switch (state) {
     case "working":
+      if (quota) return `Waiting for quota · ${time}`;
       return elapsed < 1000 ? "Working" : `Working for ${time}`;
     case "waiting":
       return `Waiting for you · ${time}`;
@@ -118,18 +119,21 @@ const HEADER_AFTER_MS = 2000;
 
 /**
  * The row over a request's work, with a rule under it: "Working for 12s" while live, "Worked
- * for 3m 4s ›" once its work folds.
+ * for 3m 4s ›" once its work folds, "Waiting for quota · 12s" while its messages wait for a
+ * model that can take them.
  */
 const WorkHeader: FC<{
   meta: BlockMeta;
   open: boolean;
   foldable: boolean;
+  /** Its messages wait for quota, and no worker of it runs meanwhile. */
+  quota: boolean;
   /** Called with the header, before the fold opens or closes. */
   onToggle: (header: HTMLElement) => void;
-}> = ({ meta, open, foldable, onToggle }) => {
+}> = ({ meta, open, foldable, quota, onToggle }) => {
   const elapsed = useElapsed(meta.startedAtMs, meta.endedAtMs, isLive(meta.state));
-  if (meta.state === "working" && !foldable && elapsed < HEADER_AFTER_MS) return null;
-  const label = headerLabel(meta.state, elapsed);
+  if (meta.state === "working" && !foldable && !quota && elapsed < HEADER_AFTER_MS) return null;
+  const label = headerLabel(meta.state, elapsed, quota);
   const text = (
     <span
       className={cn(
@@ -408,6 +412,7 @@ function turnPhase(
 export const RequestBlock: FC = () => {
   const meta = useAuiState((s) => s.message.metadata.custom["block"]) as BlockMeta | undefined;
   const fold = useFold();
+  const quotaWait = useViewConversation()?.quotaWait ?? null;
   const requestIds = meta?.requestIds;
   const workersActive = useBoard((s) =>
     Object.values(s.board?.tasks ?? {}).some(
@@ -455,7 +460,13 @@ export const RequestBlock: FC = () => {
     >
       <ModelChanged model={meta.texts[last]?.model ?? null} picked={meta.picked} />
       {header && (
-        <WorkHeader meta={meta} open={fold.open} foldable={foldable} onToggle={fold.toggle} />
+        <WorkHeader
+          meta={meta}
+          open={fold.open}
+          foldable={foldable}
+          quota={quotaWait !== null && meta.state === "working" && !workersActive}
+          onToggle={fold.toggle}
+        />
       )}
       {done ? (
         <>

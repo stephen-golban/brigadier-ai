@@ -14,6 +14,7 @@ import type {
   ProviderOverview,
   QualityTier,
   QuotaWindow,
+  Route,
   TaskCategory,
 } from "@/ipc/generated";
 import { formatTime } from "@/lib/format";
@@ -223,6 +224,32 @@ export function formatResetAt(ms: number, nowMs: number): string {
   if (days === 0) return formatTime(ms);
   if (days > 0 && days < 7) return weekdayTime.format(ms);
   return dateTime.format(ms);
+}
+
+/** The countdown routing writes into a limit's reason when it decides ("(resets in 2h 10m)"). */
+const RESETS_IN = / \(resets in [^)]*\)/;
+
+/**
+ * A stored routing reason, read later: its countdown was true only when routing decided, so it
+ * names the reset time instead ("(resets 21:10)"), or drops it when the reset isn't known.
+ */
+export function withResetTime(text: string, resetsAtMs: number | null, nowMs: number): string {
+  return text.replace(RESETS_IN, resetsAtMs !== null ? ` (resets ${formatResetAt(resetsAtMs, nowMs)})` : "");
+}
+
+/** Whether a stored reason carries a countdown, so its view needs a clock. */
+export function hasResetCountdown(text: string): boolean {
+  return RESETS_IN.test(text);
+}
+
+/**
+ * A route's reason with its reset as a time: the reset of the ranked place it names as passed
+ * over (the first one; the reason names no other), else `waitReset`, the reset a task waiting
+ * from the start waits for.
+ */
+export function routeReason(route: Route, nowMs: number, waitReset: number | null = null): string {
+  const skipped = route.explanation?.ranking?.skipped[0];
+  return withResetTime(route.reason, skipped?.resetsAtMs ?? waitReset, nowMs);
 }
 
 /** "hit its 5-hour limit (resets 21:10)", "hit its spend limit", "ran out of credits". */

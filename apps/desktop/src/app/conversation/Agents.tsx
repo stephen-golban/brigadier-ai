@@ -35,6 +35,7 @@ import {
 import { useNow } from "@/hooks/use-now";
 import type { Task, WorkerStepKind } from "@/ipc/generated";
 import { formatAgo } from "@/lib/format";
+import { withResetTime } from "@/lib/routing";
 import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
 import { pauseTask, resumeTask, stopTask } from "@/state/actions";
@@ -147,7 +148,7 @@ export const WorkerStepRow = memo(function WorkerStepRow({
  * A worker's live status under its name in the list: at work, its latest reply's first line,
  * or "Thinking" before it said anything; otherwise its state in a word or two.
  */
-function statusLine(task: Task, summary: WorkerSummary | undefined): string | null {
+function statusLine(task: Task, summary: WorkerSummary | undefined, now: number): string | null {
   switch (task.state) {
     case "queued":
       return "Queued";
@@ -158,7 +159,9 @@ function statusLine(task: Task, summary: WorkerSummary | undefined): string | nu
     case "blocked":
       return "Asked the orchestrator";
     case "paused":
-      return task.quotaWait ? `Waiting for quota: ${task.quotaWait.reason}` : "Paused";
+      return task.quotaWait
+        ? `Waiting for quota: ${withResetTime(task.quotaWait.reason, task.quotaWait.resetsAtMs, now)}`
+        : "Paused";
     case "reported":
       return "Reported";
     case "reviewing":
@@ -192,8 +195,9 @@ const AgentRow = memo(function AgentRow({ taskId }: { taskId: string }) {
   const summary = useBoard((s) => s.board?.summaries[taskId]);
   const name = useWorkerName(taskId);
   const { setPanel } = useContext(AgentsPanelContext);
+  const now = useNow(task?.quotaWait ? 60_000 : null);
   if (!task) return null;
-  const status = statusLine(task, summary);
+  const status = statusLine(task, summary, now);
   return (
     <li>
       <button

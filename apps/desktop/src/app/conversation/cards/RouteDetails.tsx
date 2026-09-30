@@ -10,13 +10,15 @@ import { formatCountdown, formatDateTime, formatTime } from "@/lib/format";
 import {
   choiceName,
   formatDelta,
-  formatResetAt,
   formatScore,
   handoffLine,
   handoffs,
+  hasResetCountdown,
   limitPhrase,
   placeName,
+  routeReason,
   TIER_LABELS,
+  withResetTime,
 } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
@@ -29,14 +31,16 @@ import { useApp } from "@/state/store";
 
 /** The routing reason in one muted line, the full text on hover. */
 export function RouteReason({ task, className }: { task: Task; className?: string }) {
+  const now = useNow(hasResetCountdown(task.route.reason) ? 60_000 : null);
   if (!task.route.reason) return null;
+  const reason = routeReason(task.route, now, task.quotaWait?.resetsAtMs ?? null);
   return (
     <span
       data-slot="route-reason"
-      title={task.route.reason}
+      title={reason}
       className={cn("text-muted-foreground block truncate text-xs", className)}
     >
-      {task.route.reason}
+      {reason}
     </span>
   );
 }
@@ -80,7 +84,7 @@ export function QuotaWaitLine({ wait }: { wait: QuotaWait }) {
       <span className="text-warning flex items-center gap-1">
         <Clock aria-hidden className="size-icon-xs shrink-0" />
         <span>
-          Waiting for quota: {wait.reason}
+          Waiting for quota: {withResetTime(wait.reason, wait.resetsAtMs, now)}
           {wait.resetsAtMs !== null && ` · ${formatCountdown(wait.resetsAtMs, now)} left`}
         </span>
       </span>
@@ -205,8 +209,7 @@ function RankingView({ ranking, groups }: { ranking: RankingUse; groups: readonl
                   : placeName(place.target, groups)}
               </span>
               <span className="text-muted-foreground min-w-0">
-                {place.why}
-                {place.resetsAtMs !== null && ` · resets ${formatResetAt(place.resetsAtMs, now)}`}
+                {place.why !== null && withResetTime(place.why, place.resetsAtMs, now)}
               </span>
             </li>
           ))}
@@ -258,8 +261,8 @@ export function AttemptsView({
                     : ""}
               </span>
             </span>
-            <span className="text-muted-foreground truncate" title={attempt.route.reason}>
-              {attempt.route.reason}
+            <span className="text-muted-foreground truncate" title={routeReason(attempt.route, now)}>
+              {routeReason(attempt.route, now)}
             </span>
             {end && <span className="text-warning">{end}</span>}
           </li>
@@ -282,6 +285,7 @@ export function RouteSections({
   inThread: boolean;
 }) {
   const { route } = task;
+  const now = useNow(hasResetCountdown(route.reason) ? 60_000 : null);
   return (
     <>
       <Section title="Why this model">
@@ -290,7 +294,7 @@ export function RouteSections({
             {PROVIDER_LABELS[route.choice.provider]} · {model}
           </p>
         )}
-        <p className="text-muted-foreground text-xs">{route.reason}</p>
+        <p className="text-muted-foreground text-xs">{routeReason(route, now, task.quotaWait?.resetsAtMs ?? null)}</p>
         <p className="text-muted-foreground text-xs">
           Quality floor: {TIER_LABELS[task.floor]}
           {task.areas.length > 0 && ` · touches ${task.areas.join(", ")}`}
