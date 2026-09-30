@@ -979,7 +979,9 @@ fn assess<'q>(
         && model
             .trial
             .is_some_and(|trial| trial.outcomes < crate::merge::TRIAL_OUTCOMES);
-    candidate.trial = on_trial && query.trial_slot && allows_trials(query.category);
+    // A model the user ranked runs as ranked: trials only reorder what routing scores.
+    candidate.trial =
+        on_trial && query.trial_slot && allows_trials(query.category) && candidate.listed.is_none();
 
     let block = if let Some(exclusion) = query.exclude.iter().find(|ex| {
         ex.provider == model.provider
