@@ -263,3 +263,53 @@ impl SessionManager {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINUTE: i64 = 60_000;
+
+    fn mark() -> CacheMark {
+        CacheMark {
+            native_id: "s".into(),
+            provider: ProviderKind::Claude,
+            at_ms: 0,
+            context: 100_000,
+            window: None,
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_is_due_from_five_sixths_of_the_lifetime_until_a_minute_before_it_ends() {
+        let hour = Duration::from_secs(3_600);
+        let mark = mark();
+        assert!(!mark.checkpoint_due(hour, 49 * MINUTE));
+        assert!(mark.checkpoint_due(hour, 50 * MINUTE));
+        assert!(mark.checkpoint_due(hour, 59 * MINUTE - 1));
+        assert!(!mark.checkpoint_due(hour, 59 * MINUTE));
+        // A short debug lifetime keeps a 24th of it as the margin.
+        let short = Duration::from_secs(240);
+        assert!(mark.checkpoint_due(short, 200_000));
+        assert!(mark.checkpoint_due(short, 229_999));
+        assert!(!mark.checkpoint_due(short, 230_000));
+    }
+
+    #[test]
+    fn the_cache_expires_one_lifetime_after_the_last_request_that_read_it() {
+        let hour = Duration::from_secs(3_600);
+        let mark = mark();
+        assert!(!mark.expired(hour, None, 60 * MINUTE - 1));
+        assert!(mark.expired(hour, None, 60 * MINUTE));
+        // A checkpoint's fork at 50 minutes keeps it warm until 110.
+        assert!(!mark.expired(hour, Some(50 * MINUTE), 109 * MINUTE));
+        assert!(mark.expired(hour, Some(50 * MINUTE), 110 * MINUTE));
+        // A fork older than the last request refreshes nothing.
+        let later = CacheMark {
+            at_ms: 30 * MINUTE,
+            ..mark
+        };
+        assert!(!later.expired(hour, Some(10 * MINUTE), 89 * MINUTE));
+        assert!(later.expired(hour, Some(10 * MINUTE), 90 * MINUTE));
+    }
+}
