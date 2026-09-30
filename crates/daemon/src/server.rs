@@ -1149,8 +1149,18 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             text: core.read_blob_text(hash).await?,
         },
         Request::UpdateSettings { settings } => {
+            let before = core.settings();
             let settings = core.update_settings(settings).await?;
             daemon.awake.apply().await;
+            // New rules or rankings may let work waiting for quota run now.
+            if before.routing_overrides != settings.routing_overrides
+                || before.routing_rankings != settings.routing_rankings
+            {
+                let sessions = daemon.sessions.clone();
+                daemon
+                    .supervisor
+                    .spawn(async move { sessions.retry_waiting_work().await });
+            }
             Response::UpdateSettings { settings }
         }
         Request::GetKeepAwake => Response::GetKeepAwake {

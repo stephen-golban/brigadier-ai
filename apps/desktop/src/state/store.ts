@@ -217,6 +217,7 @@ export const useApp = create<AppState>()(() => ({
     keepAwake: "agents",
     keepAwakeLidClosed: false,
     routingOverrides: [],
+    routingRankings: [],
   },
   threads: {},
   pending: [],
@@ -451,7 +452,8 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
       };
     case "conversationRenamed":
     case "conversationPinned":
-    case "conversationFallback": {
+    case "conversationFallback":
+    case "conversationWaiting": {
       const current = slice.conversations[event.id];
       if (!current) return slice;
       const next =
@@ -459,7 +461,9 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
           ? { ...current, title: event.title }
           : event.type === "conversationPinned"
             ? { ...current, pinnedAtMs: event.pinnedAtMs }
-            : { ...current, fallback: event.fallback };
+            : event.type === "conversationFallback"
+              ? { ...current, fallback: event.fallback }
+              : { ...current, quotaWait: event.wait };
       return {
         ...slice,
         conversations: { ...slice.conversations, [event.id]: next },

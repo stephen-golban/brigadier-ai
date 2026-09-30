@@ -6,7 +6,7 @@ use brigadier_providers::ProviderKind;
 use brigadier_router::{Area, Heat, TaskCategory};
 
 use super::SessionManager;
-use super::routing::Ask;
+use super::routing::{Ask, Trial};
 use crate::model::{
     ConversationId, ConversationTokens, ModelChoice, ProjectId, ProviderUsage, RoutePreview,
     RoutePreviewOutcome, RoutingActivity, TokenCount, UsageView, WindowHistory, WindowTokens,
@@ -211,17 +211,19 @@ impl SessionManager {
         activity
     }
 
-    /// What routing would choose for each task category now, for a task in `project` touching
-    /// `areas`. Starts nothing and takes no trial slot.
+    /// What routing would choose for each task category now, for the next task in `project`
+    /// touching `areas`: the same question a submitted task asks, the next trial slot
+    /// included. Starts nothing and takes no trial slot.
     pub async fn preview_routes(
         &self,
         project: Option<ProjectId>,
         areas: Vec<Area>,
     ) -> Vec<RoutePreview> {
+        let rankings = self.core.settings().routing_rankings;
         let mut previews = Vec::new();
         for category in TaskCategory::ALL {
-            let decision = self
-                .decide(&Ask {
+            let (preview, trial_slot) = self
+                .preview(&Ask {
                     category,
                     areas: &areas,
                     floor: brigadier_router::default_floor(category),
@@ -231,10 +233,17 @@ impl SessionManager {
                     avoid: None,
                     exclude: &[],
                     project_id: project.as_ref(),
-                    starting: false,
+                    trial: Trial::Peek,
                 })
                 .await;
-            let outcome = match decision {
+            let ranking_id = brigadier_router::ranking_for(
+                &rankings,
+                category,
+                &areas,
+                project.as_ref().map(|id| id.0.as_str()),
+            )
+            .map(|ranking| ranking.id.clone());
+            let outcome = match preview.decision {
                 brigadier_router::Decision::Run(routed) => {
                     let route = super::routing::route_from(routed);
                     RoutePreviewOutcome::Chosen {
@@ -247,12 +256,17 @@ impl SessionManager {
                     reason: waiting.reason,
                     resets_at_ms: waiting.resets_at_ms,
                     rule: waiting.rule,
+                    ranking: waiting.ranking,
                 },
             };
             previews.push(RoutePreview {
                 category,
                 areas: areas.clone(),
                 outcome,
+                candidates: preview.candidates,
+                ranking_id,
+                places: preview.places,
+                trial_slot,
             });
         }
         previews

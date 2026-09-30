@@ -2,4 +2,4 @@
 import type { Explanation } from "./Explanation";
 import type { ModelChoice } from "./ModelChoice";
 
-export type RoutePreviewOutcome = { "type": "chosen", choice: ModelChoice, reason: string, explanation: Explanation | null, } | { "type": "wait", reason: string, resetsAtMs: number | null, rule: string | null, };
+export type RoutePreviewOutcome = { "type": "chosen", choice: ModelChoice, reason: string, explanation: Explanation | null, } | { "type": "wait", reason: string, resetsAtMs: number | null, rule: string | null, ranking: string | null, };

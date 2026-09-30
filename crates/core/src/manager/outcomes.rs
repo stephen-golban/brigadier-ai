@@ -45,6 +45,10 @@ impl SessionManager {
             TaskState::Stopped => OutcomeResult::Stopped,
             _ => return,
         };
+        // A task that waited from the start and never began taught nothing.
+        if task.attempts.is_empty() && task.workspace.is_none() {
+            return;
+        }
         // The task's end closed its last attempt (see `dispose_task`), so a review or check
         // recorded later keeps its time.
         let attempt = task.attempts.last().cloned().unwrap_or_else(|| Attempt {

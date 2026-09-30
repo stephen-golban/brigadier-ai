@@ -134,6 +134,10 @@ pub struct QuotaWait {
     pub resets_at_ms: Option<i64>,
     /// The user rule that keeps it from other models, if one does (its text).
     pub rule: Option<String>,
+    /// The user's ranking that keeps it from other models (Only these), if one does (its
+    /// text).
+    #[serde(default)]
+    pub ranking: Option<String>,
     pub since_ms: i64,
 }
 

@@ -289,6 +289,7 @@ impl Core {
             forked_from: origin.forked_from,
             side_of: origin.side_of,
             fallback: None,
+            quota_wait: None,
         };
         events.insert(
             0,
@@ -1560,6 +1561,23 @@ impl Core {
             DomainEvent::ConversationFallback {
                 id: id.clone(),
                 fallback,
+            },
+        )])
+        .await?;
+        Ok(())
+    }
+
+    /// Records that a conversation's messages wait for quota (or no longer do).
+    pub(crate) async fn set_conversation_wait(
+        &self,
+        id: &ConversationId,
+        wait: Option<crate::work::QuotaWait>,
+    ) -> Result<()> {
+        self.record(vec![(
+            streams::CATALOG.into(),
+            DomainEvent::ConversationWaiting {
+                id: id.clone(),
+                wait,
             },
         )])
         .await?;

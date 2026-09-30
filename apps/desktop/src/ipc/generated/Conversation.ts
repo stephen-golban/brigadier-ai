@@ -5,6 +5,7 @@ import type { ForkOrigin } from "./ForkOrigin";
 import type { Lifecycle } from "./Lifecycle";
 import type { ModelFallback } from "./ModelFallback";
 import type { ProjectId } from "./ProjectId";
+import type { QuotaWait } from "./QuotaWait";
 import type { Setup } from "./Setup";
 
 /**
@@ -41,4 +42,9 @@ sideOf: ConversationId | null,
  * replaced because it hit a limit. Temporary: the saved choice in `setup`, the project's
  * remembered one and the global default are never changed by it.
  */
-fallback: ModelFallback | null, };
+fallback: ModelFallback | null, 
+/**
+ * Set while its model is at a limit and no model it may use can stand in: its messages
+ * wait, and go on their own when one can take them.
+ */
+quotaWait: QuotaWait | null, };

@@ -52,7 +52,7 @@ use crate::sessions::push_block;
 use crate::tools::Role;
 use crate::work::{
     AttachmentRef, Compaction, CompactionState, ContextInjection, InjectionKind, OrchestratorEntry,
-    OrchestratorStepKind, QueuedMessage, RequestState, RunState, Task, TaskId,
+    OrchestratorStepKind, QueuedMessage, QuotaWait, RequestState, RunState, Task, TaskId,
 };
 use crate::{Error, Result, now_ms};
 
@@ -185,6 +185,11 @@ struct ConvState {
     fresh: bool,
     /// The next orchestrator CLI session starts from this briefing.
     briefing: Option<BriefingPlan>,
+    /// Its model is at a limit and no model it may use can stand in: `pending` waits for one
+    /// (see [`SessionManager::wait_for_model`]).
+    waiting: bool,
+    /// Counts the quota-wait timers set; only the newest one retries.
+    wait_timer: u64,
 }
 
 /// Where a request the orchestrator sent a worker back in stands, while the user has seen no
@@ -796,6 +801,29 @@ impl SessionManager {
     /// Stops the running turn. The queue pauses so nothing is sent until the user resumes.
     pub async fn interrupt(&self, id: ConversationId) -> Result<()> {
         let conv = self.conv(&id)?;
+        // Messages waiting for quota: the user no longer wants them sent.
+        let stopped = {
+            let mut state = conv.state.lock().await;
+            if state.waiting {
+                let requests: HashSet<String> = state
+                    .pending
+                    .drain(..)
+                    .filter_map(|message| message.request_id)
+                    .collect();
+                for request in &requests {
+                    state
+                        .outcomes
+                        .insert(request.clone(), RequestState::Stopped);
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if stopped {
+            self.stop_waiting(&conv).await;
+            self.settle_requests(&id).await;
+        }
         let cli = conv.state.lock().await.cli.clone();
         let waiting = !self
             .core
@@ -1060,6 +1088,12 @@ impl SessionManager {
     }
 
     async fn next_turn(self: Arc<Self>, conv: Arc<ConvLive>) {
+        // Messages waiting for quota go once a model can take them (this looks again now: the
+        // user may have picked another model).
+        if conv.state.lock().await.waiting {
+            self.retry_conversation(&conv).await;
+            return;
+        }
         self.retire_changed_cli(&conv).await;
         self.end_stand_in(&conv).await;
         if conv.kind == ConversationKind::Session {
@@ -2315,7 +2349,7 @@ impl SessionManager {
         if conv.kind == ConversationKind::Session {
             self.consider_rebirth(conv, cli).await;
         }
-        let (limit_hit, carried, asked) = {
+        let (limit_hit, carried, asked, served) = {
             let mut state = conv.state.lock().await;
             state.busy = false;
             state.compacting = false;
@@ -2331,15 +2365,17 @@ impl SessionManager {
                 }),
                 _ => None,
             };
-            if let Some(request) = state.request.take()
+            let served = state.request.take();
+            if let Some(request) = &served
                 && let Some(ended) = ended
             {
-                state.outcomes.insert(request, ended);
+                state.outcomes.insert(request.clone(), ended);
             }
             (
                 state.limit_hit.take(),
                 std::mem::take(&mut state.in_turn),
                 std::mem::take(&mut state.asked),
+                served,
             )
         };
         // Follow-ups the turn left undecided wait in the queue for their own turn.
@@ -2352,13 +2388,23 @@ impl SessionManager {
             && status != TurnStatus::Completed
         {
             self.runtime.note_limit(cli.provider, limit.clone()).await;
-            if let Some(next) = self.stand_in_choice(conv, cli).await {
-                // Not from inside the CLI's own event pump: closing the CLI waits for it.
-                let (manager, conv, cli) = (self.arc(), conv.clone(), cli.clone());
-                self.spawn(async move {
-                    manager.stand_in(&conv, &cli, next, limit, carried).await;
-                });
-                return;
+            match self.stand_in_choice(conv, &cli.model).await {
+                Ok(next) => {
+                    // Not from inside the CLI's own event pump: closing the CLI waits for it.
+                    let (manager, conv, from) = (self.arc(), conv.clone(), cli.model.clone());
+                    let until = limit.resets_at_ms;
+                    self.spawn(async move {
+                        manager.stand_in(&conv, &from, next, until, carried).await;
+                    });
+                    return;
+                }
+                Err(Some(waiting)) => {
+                    self.wait_for_model(conv, waiting, carried, served).await;
+                    self.set_run(&conv.id, RunState::Idle, None).await;
+                    self.settle_requests(&conv.id).await;
+                    return;
+                }
+                Err(None) => {}
             }
         }
         self.set_run(&conv.id, RunState::Idle, None).await;
@@ -2447,11 +2493,14 @@ impl SessionManager {
     /// router's choice for its kind of conversation, less that model (its provider too when
     /// the limit is provider-wide), if one is usable, and, for an orchestrator on Codex, can
     /// be limited to talking only.
+    ///
+    /// Without one: the reason to wait, when a reset or the user's rules and rankings could
+    /// change that (else nothing: the turn fails as before).
     async fn stand_in_choice(
         &self,
         conv: &ConvLive,
-        cli: &Arc<Cli>,
-    ) -> Option<brigadier_router::Routed> {
+        from: &ModelChoice,
+    ) -> std::result::Result<brigadier_router::Routed, Option<brigadier_router::Waiting>> {
         let category = match conv.kind {
             ConversationKind::Session => brigadier_router::TaskCategory::Orchestrate,
             ConversationKind::Chat => brigadier_router::TaskCategory::Chat,
@@ -2462,8 +2511,8 @@ impl SessionManager {
             .ok()
             .and_then(|conversation| conversation.project_id);
         let exclude = [brigadier_router::Exclusion {
-            provider: cli.provider,
-            model: cli.model.model.clone(),
+            provider: from.provider,
+            model: from.model.clone(),
         }];
         let decision = self
             .decide(&super::routing::Ask {
@@ -2476,19 +2525,25 @@ impl SessionManager {
                 avoid: None,
                 exclude: &exclude,
                 project_id: project.as_ref(),
-                starting: false,
+                trial: super::routing::Trial::Never,
             })
             .await;
-        let brigadier_router::Decision::Run(next) = decision else {
-            return None;
+        let next = match decision {
+            brigadier_router::Decision::Run(next) => next,
+            brigadier_router::Decision::Wait(waiting) => {
+                let waits = waiting.resets_at_ms.is_some()
+                    || waiting.rule.is_some()
+                    || waiting.ranking.is_some();
+                return Err(waits.then_some(waiting));
+            }
         };
         if conv.kind == ConversationKind::Session
             && next.provider == ProviderKind::Codex
             && brigadier_providers::codex::orchestrator_lockdown().is_err()
         {
-            return None;
+            return Err(None);
         }
-        Some(next)
+        Ok(next)
     }
 
     /// A conversation's model hit its usage limit: it continues on `next`, which starts over
@@ -2499,9 +2554,9 @@ impl SessionManager {
     async fn stand_in(
         &self,
         conv: &Arc<ConvLive>,
-        cli: &Arc<Cli>,
+        from: &ModelChoice,
         next: brigadier_router::Routed,
-        limit: LimitHit,
+        until_ms: Option<i64>,
         carried: Vec<Message>,
     ) {
         let choice = ModelChoice {
@@ -2516,11 +2571,11 @@ impl SessionManager {
                 .clone()
                 .map(|fallback| fallback.replaces)
                 .or_else(|| setup_choice(&conversation))
-                .unwrap_or_else(|| cli.model.clone()),
-            Err(_) => cli.model.clone(),
+                .unwrap_or_else(|| from.clone()),
+            Err(_) => from.clone(),
         };
         let stand_in = format!("{} {}", next.provider.label(), next.model);
-        let reason = format!("{} hit its usage limit", cli.provider.label());
+        let reason = format!("{} hit its usage limit", from.provider.label());
         self.notice(
             &conv.id,
             brigadier_providers::NoticeLevel::Info,
@@ -2533,7 +2588,7 @@ impl SessionManager {
             replaces,
             reason,
             since_ms: now_ms(),
-            until_ms: limit.resets_at_ms,
+            until_ms,
         };
         if let Err(err) = self.core.set_fallback(&conv.id, Some(fallback)).await {
             tracing::warn!(conversation = %conv.id, error = %err, "could not record the stand-in model");
@@ -2548,6 +2603,223 @@ impl SessionManager {
             state.pending = pending;
         }
         self.kick(conv);
+    }
+
+    /// A conversation's model hit its limit and no model it may use can stand in: its messages
+    /// (`carried`, the failed turn's own) wait in `pending` and go on their own once a model
+    /// can take them: at the reset, when the user changes their routing, or when a provider's
+    /// state changes ([`Self::retry_conversation`]).
+    async fn wait_for_model(
+        &self,
+        conv: &Arc<ConvLive>,
+        waiting: brigadier_router::Waiting,
+        carried: Vec<Message>,
+        served: Option<String>,
+    ) {
+        let first = {
+            let mut state = conv.state.lock().await;
+            let mut pending = carried;
+            pending.append(&mut state.pending);
+            state.pending = pending;
+            // The request isn't over: its messages wait.
+            if let Some(request) = &served {
+                state.outcomes.remove(request);
+            }
+            !std::mem::replace(&mut state.waiting, true)
+        };
+        if first {
+            tracing::info!(conversation = %conv.id, reason = %waiting.reason, "messages wait for quota");
+            self.notice(
+                &conv.id,
+                brigadier_providers::NoticeLevel::Info,
+                &format!(
+                    "{}. Your message waits and goes on its own once a model you allow can take it.",
+                    waiting.reason.trim_end_matches('.')
+                ),
+            )
+            .await;
+        }
+        self.keep_conversation_waiting(conv, waiting).await;
+    }
+
+    /// Records what a waiting conversation waits for (when that changed) and sets the timer
+    /// that looks again.
+    async fn keep_conversation_waiting(
+        &self,
+        conv: &Arc<ConvLive>,
+        waiting: brigadier_router::Waiting,
+    ) {
+        let known = self
+            .core
+            .conversation(&conv.id)
+            .ok()
+            .and_then(|conversation| conversation.quota_wait);
+        let wait = QuotaWait {
+            reason: waiting.reason,
+            resets_at_ms: waiting.resets_at_ms,
+            rule: waiting.rule,
+            ranking: waiting.ranking,
+            since_ms: known.as_ref().map_or_else(now_ms, |known| known.since_ms),
+        };
+        let unchanged = known.as_ref().is_some_and(|known| {
+            known.reason == wait.reason
+                && known.resets_at_ms == wait.resets_at_ms
+                && known.rule == wait.rule
+                && known.ranking == wait.ranking
+        });
+        if !unchanged
+            && let Err(err) = self
+                .core
+                .set_conversation_wait(&conv.id, Some(wait.clone()))
+                .await
+        {
+            tracing::warn!(conversation = %conv.id, error = %err, "could not record the wait");
+        }
+        let timer = {
+            let mut state = conv.state.lock().await;
+            state.wait_timer += 1;
+            state.wait_timer
+        };
+        let delay = super::fallback::retry_delay(wait.resets_at_ms);
+        let (manager, conv) = (self.arc(), conv.clone());
+        self.spawn(async move {
+            tokio::time::sleep(delay).await;
+            if conv.state.lock().await.wait_timer == timer {
+                manager.retry_conversation(&conv).await;
+            }
+        });
+    }
+
+    /// Looks again whether a model can take a waiting conversation's messages: the model it
+    /// runs on once that one can run again (the user may have picked another meanwhile), else
+    /// a stand-in; otherwise it keeps waiting.
+    /// Boxed: its timer comes back here, and a recursive future must name its `Send` bound.
+    fn retry_conversation<'a>(
+        &'a self,
+        conv: &'a Arc<ConvLive>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if !conv.state.lock().await.waiting {
+                return;
+            }
+            let Ok(conversation) = self.core.conversation(&conv.id) else {
+                return;
+            };
+            let from = conversation
+                .fallback
+                .as_ref()
+                .map(|fallback| fallback.choice.clone())
+                .or_else(|| setup_choice(&conversation));
+            let Some(from) = from else {
+                // Nothing to wait for: the next turn picks its model as usual.
+                self.stop_waiting(conv).await;
+                self.kick(conv);
+                return;
+            };
+            if self.choice_available(&from).await {
+                self.stop_waiting(conv).await;
+                self.kick(conv);
+                return;
+            }
+            match self.stand_in_choice(conv, &from).await {
+                Ok(next) => {
+                    self.stop_waiting(conv).await;
+                    // Its messages are in `pending` already.
+                    self.stand_in(conv, &from, next, None, Vec::new()).await;
+                }
+                Err(Some(waiting)) => self.keep_conversation_waiting(conv, waiting).await,
+                // No reset or routing change would help now; it still waits for its own model.
+                Err(None) => {
+                    let waiting = match conversation.quota_wait {
+                        Some(wait) => brigadier_router::Waiting {
+                            reason: wait.reason,
+                            resets_at_ms: None,
+                            rule: wait.rule,
+                            ranking: wait.ranking,
+                        },
+                        None => brigadier_router::Waiting {
+                            reason: format!(
+                                "{} can't run now",
+                                super::fallback::model_label(&from)
+                            ),
+                            resets_at_ms: None,
+                            rule: None,
+                            ranking: None,
+                        },
+                    };
+                    self.keep_conversation_waiting(conv, waiting).await;
+                }
+            }
+        })
+    }
+
+    /// The conversation no longer waits for quota.
+    async fn stop_waiting(&self, conv: &Arc<ConvLive>) {
+        {
+            let mut state = conv.state.lock().await;
+            state.waiting = false;
+            // Any timer still set has nothing to do.
+            state.wait_timer += 1;
+        }
+        let recorded = self
+            .core
+            .conversation(&conv.id)
+            .is_ok_and(|conversation| conversation.quota_wait.is_some());
+        if recorded && let Err(err) = self.core.set_conversation_wait(&conv.id, None).await {
+            tracing::warn!(conversation = %conv.id, error = %err, "could not end the wait");
+        }
+    }
+
+    /// Looks again at every conversation whose messages wait for quota.
+    pub(super) async fn retry_waiting_conversations(&self) {
+        let convs: Vec<Arc<ConvLive>> = self.convs_lock().values().cloned().collect();
+        for conv in convs {
+            if conv.state.lock().await.waiting {
+                self.retry_conversation(&conv).await;
+            }
+        }
+    }
+
+    /// After a restart: a conversation whose messages waited for quota keeps waiting with
+    /// them (the user messages after its last reply), its timer set again.
+    pub(super) async fn keep_conversation_wait(&self, conversation: &crate::model::Conversation) {
+        let Some(wait) = conversation.quota_wait.clone() else {
+            return;
+        };
+        let Ok(conv) = self.conv(&conversation.id) else {
+            return;
+        };
+        let branch = match self.core.head(&conversation.id).await {
+            Ok(Some(head)) => self
+                .core
+                .branch(&conversation.id, &head)
+                .await
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut unanswered: Vec<Message> = branch
+            .into_iter()
+            .rev()
+            .take_while(|message| message.role != MessageRole::Assistant)
+            .filter(|message| message.role == MessageRole::User)
+            .collect();
+        unanswered.reverse();
+        if unanswered.is_empty() {
+            self.stop_waiting(&conv).await;
+            return;
+        }
+        {
+            let mut state = conv.state.lock().await;
+            state.pending = unanswered;
+            state.waiting = true;
+        }
+        let waiting = brigadier_router::Waiting {
+            reason: wait.reason,
+            resets_at_ms: wait.resets_at_ms,
+            rule: wait.rule,
+            ranking: wait.ranking,
+        };
+        self.keep_conversation_waiting(&conv, waiting).await;
     }
 
     /// Between turns: once the chosen model can run again (its provider usable and its own

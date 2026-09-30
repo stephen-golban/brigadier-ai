@@ -53,11 +53,32 @@
 //! for the floor check, with a +4 bonus. After its trial, a researched model is scored like any
 //! other; an unknown one waits for research to place it (it stays unrated, below every floor).
 //!
-//! # Overrides
+//! # Rules
 //!
 //! `never`, `prefer` and `only` rules ([`OverrideRule`]) apply by project, category and area.
-//! They beat scores, balancing and pins, and hold during fallback: when every model an `only`
-//! rule allows is unavailable, the task waits, naming the rule and the limit.
+//! `never` and `only` filter; `prefer` beats scores, balancing and pins where routing scores.
+//! They hold during fallback: when every model an `only` rule allows is unavailable, the task
+//! waits, naming the rule and the limit.
+//!
+//! # Manual rankings
+//!
+//! Per kind of work the user may rank models by hand ([`Ranking`]), everywhere or in one
+//! project, with area overrides; the most specific applies ([`ranking_for`]). A Manual ranking
+//! is tried top-down instead of scoring: a model place takes that model, a family place its
+//! newest model that can run (the CLI lists newest first), a vendor place its best-scored one.
+//! In order of strength:
+//! 1. The hard rules (no Fable, efforts at most `high`, a login, no confirmed limit, not the
+//!    model that just failed, the task's needs, a binding pin's vendor, cross-vendor review).
+//! 2. `never` and `only` rules.
+//! 3. The floor: a ranked model skips the category's default floor (the Routing page warns);
+//!    a floor the orchestrator raised for a task still holds. A ranked model not rated yet
+//!    runs without a trial.
+//! 4. The ranking: its first place that can run. It beats `prefer` rules, pins that don't
+//!    bind (a pin naming a ranked model picks it), balancing, load, learned scores and trials.
+//!    Its effort comes first, then the pin's, then the category's.
+//! 5. When no place can run: with Only these the task waits for them (the earliest reset among
+//!    them); otherwise routing scores the other models, and the reason says the ranking had
+//!    none free. [`Explanation::ranking`] keeps every place passed over and why.
 //!
 //! # Quota heat and balancing
 //!
@@ -102,6 +123,7 @@ pub mod merge;
 mod outcome;
 mod overrides;
 mod quota;
+mod rankings;
 mod registry;
 mod table;
 
@@ -111,10 +133,10 @@ use ts_rs::TS;
 
 pub use areas::infer_areas;
 pub use decide::{
-    Decision, Exclusion, Needs, ProviderState, Query, Routed, Waiting, allows_trials, available,
-    decide, default_floor, rule_text, targets,
+    Decision, Exclusion, Needs, Preview, ProviderState, Query, Routed, Waiting, allows_trials,
+    available, decide, default_floor, preview, rule_text, targets,
 };
-pub use explain::{Alternative, Explanation, Factor};
+pub use explain::{Alternative, Explanation, Factor, RouteCandidate};
 pub use forecast::{
     active_limit, heat, provider_quota, quota_penalty, window_applies, window_state,
 };
@@ -124,6 +146,9 @@ pub use merge::{OutcomeCount, TRIAL_OUTCOMES, merge, outcome_counts};
 pub use outcome::{Learned, Outcome, OutcomeResult};
 pub use overrides::{OverrideEffect, OverrideRule, OverrideTarget};
 pub use quota::{Forecast, Heat, ProviderQuota, QuotaSample, WindowState};
+pub use rankings::{
+    RankedEntry, RankedPlace, Ranking, RankingUse, ranking_for, ranking_text, target_text,
+};
 pub use registry::{
     Capability, MergedModel, Modalities, Modality, ModelMatch, ModelStatus, QualityTier, Registry,
     RegistryInfo, RegistryModel, RegistrySource, ResearchNote, TrialState,

@@ -167,6 +167,7 @@ impl SessionManager {
         manager.recover().await;
         manager.open_brains().await;
         manager.start_hibernation_timer();
+        manager.retry_waiting_on_provider_checks();
         Ok(manager)
     }
 

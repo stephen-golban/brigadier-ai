@@ -5,14 +5,15 @@ use std::borrow::Cow;
 
 use brigadier_providers::{LimitKind, ProviderKind};
 
-use crate::explain::{Alternative, Explanation, Factor};
+use crate::explain::{Alternative, Explanation, Factor, RouteCandidate};
 use crate::forecast::{LIMITED_USED, active_limit, quota_penalty, window_applies};
 use crate::learn::{is_model, learned_for};
 use crate::load::clamp_effort;
 use crate::merge::from_entry;
 use crate::outcome::Learned;
 use crate::overrides::{OverrideEffect, OverrideRule, OverrideTarget};
-use crate::quota::ProviderQuota;
+use crate::quota::{Heat, ProviderQuota};
+use crate::rankings::{RankedPlace, Ranking, RankingUse, ranking_for, ranking_text, target_text};
 use crate::registry::{Capability, MergedModel, Modality, ModelStatus, QualityTier, Registry};
 use crate::{Area, Author, Pin, TaskCategory, name, table};
 
@@ -86,6 +87,9 @@ pub struct Query<'a> {
     /// The user's rules (global and per project); those for another project, category or area
     /// are skipped here.
     pub overrides: &'a [OverrideRule],
+    /// The user's manual rankings (global and per project); the one that applies is picked
+    /// here ([`ranking_for`]).
+    pub rankings: &'a [Ranking],
     pub project_id: Option<&'a str>,
     /// Workers each provider runs now.
     pub running: &'a [(ProviderKind, u32)],
@@ -128,12 +132,26 @@ pub struct Waiting {
     pub resets_at_ms: Option<i64>,
     /// The user rule that keeps it from other models, if one does (its text).
     pub rule: Option<String>,
+    /// The user's ranking that keeps it from other models (Only these), if one does (its
+    /// text).
+    pub ranking: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
     Run(Routed),
     Wait(Waiting),
+}
+
+/// What routing would do, with every model it weighed: the Routing page's live order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub decision: Decision,
+    /// The chosen model first, then the others in the order routing would try them, then
+    /// those that can't take the task.
+    pub candidates: Vec<RouteCandidate>,
+    /// The manual ranking in force, place by place; empty when routing scores.
+    pub places: Vec<RankedPlace>,
 }
 
 /// The quality floor a task of this category gets unless the orchestrator raises it.
@@ -227,6 +245,8 @@ struct Candidate<'q> {
     learned: Option<&'q Learned>,
     /// A preferred target of an applicable `prefer` rule (its text).
     preferred: Option<String>,
+    /// Its first place in the manual ranking in force (1-based).
+    listed: Option<u32>,
 }
 
 impl Candidate<'_> {
@@ -246,6 +266,12 @@ impl Candidate<'_> {
 /// user rule holds during fallback too (an `only` rule whose models are all unavailable makes the
 /// task wait, naming the rule).
 pub fn decide(query: &Query) -> Decision {
+    preview(query).decision
+}
+
+/// Routes one task as [`decide`] does, and returns every model weighed with it: the order
+/// routing would try them in, and the manual ranking in force place by place.
+pub fn preview(query: &Query) -> Preview {
     let rules: Vec<&OverrideRule> = query
         .overrides
         .iter()
@@ -256,10 +282,27 @@ pub fn decide(query: &Query) -> Decision {
         .copied()
         .filter(|rule| rule.effect == OverrideEffect::Only)
         .collect();
+    // A manual ranking with at least one place decides; an empty one leaves it to scores.
+    let ranking = ranking_for(
+        query.rankings,
+        query.category,
+        query.areas,
+        query.project_id,
+    )
+    .filter(|ranking| ranking.manual && !ranking.entries.is_empty());
     let mut candidates = candidates(query);
+    if let Some(ranking) = ranking {
+        for candidate in &mut candidates {
+            candidate.listed = ranking
+                .entries
+                .iter()
+                .position(|entry| targets(&entry.target, &candidate.model, query.registry))
+                .map(|index| index as u32 + 1);
+        }
+    }
     let held = held_vendor(query, &candidates);
     for candidate in &mut candidates {
-        assess(candidate, query, &rules, &only, held);
+        assess(candidate, query, &rules, &only, held, ranking);
     }
 
     // Reviews: another vendor when one can take it, else a different model of the same one.
@@ -309,10 +352,6 @@ pub fn decide(query: &Query) -> Decision {
         }
     }
 
-    if !candidates.iter().any(Candidate::eligible) {
-        return Decision::Wait(waiting(query, &candidates, &only, held));
-    }
-
     // Order: score, then the table's vendor order, then each CLI's own order.
     let order = table::row(query.category).order;
     let rank = |c: &Candidate| {
@@ -332,57 +371,174 @@ pub fn decide(query: &Query) -> Decision {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(rank(a).cmp(&rank(b)))
     });
+    let manual = ranking.map(|ranking| manual_pick(query, ranking, &candidates, &ranked));
+    let places = manual
+        .as_ref()
+        .map(|manual| manual.places.clone())
+        .unwrap_or_default();
 
-    // A pin, then a `prefer` rule, else the top score. Rules beat pins.
+    if ranked.is_empty() {
+        let waiting = waiting(query, &candidates, &only, held, ranking);
+        return Preview {
+            decision: Decision::Wait(waiting),
+            candidates: listing(query, &candidates, &ranked, None, ranking),
+            places,
+        };
+    }
+
     let mut chosen = ranked[0];
     let mut why: Option<String> = None;
     let mut pinned_pick = false;
     let mut rule_text: Option<String> = None;
-    if let Some(pin) = &query.pin {
-        if let Some(index) = pinned(query, pin, &candidates, &mut notes) {
+    // The place whose effort applies.
+    let mut place: Option<usize> = None;
+    match (ranking, manual.as_ref().and_then(|manual| manual.chosen)) {
+        // The ranking decides: its first place that can run, or the model a pin names when the
+        // list holds it.
+        (Some(ranking), Some((index, entry))) => {
+            let text = ranking_text(ranking);
             chosen = index;
-            why = Some("as requested".to_owned());
-            pinned_pick = true;
-        } else if (pin.model.is_none() || held.is_some())
-            && let Some(provider) = pin.provider.or(held)
-        {
-            match ranked
+            place = Some(entry);
+            if let Some(pin) = &query.pin {
+                match pinned(query, pin, &candidates, &mut notes) {
+                    Some(asked) => match candidates[asked].listed {
+                        Some(position) => {
+                            chosen = asked;
+                            place = Some(position as usize - 1);
+                            pinned_pick = true;
+                            why = Some(format!("as requested, #{position} in {text}"));
+                        }
+                        None => notes.push(format!(
+                            "{} was asked for, but {text} decides",
+                            candidates[asked].label()
+                        )),
+                    },
+                    None if pin.model.is_none() => {
+                        if let Some(provider) = pin.provider {
+                            let placed = manual.as_ref().and_then(|manual| {
+                                manual.places.iter().find(|place| {
+                                    place.why.is_none()
+                                        && target_provider(&place.target) == provider
+                                })
+                            });
+                            match placed.and_then(|found| {
+                                let model = found.model.as_deref()?;
+                                let index = candidates.iter().position(|c| {
+                                    c.model.provider == provider && c.model.id == model
+                                })?;
+                                Some((index, found.position))
+                            }) {
+                                Some((index, position)) => {
+                                    chosen = index;
+                                    place = Some(position as usize - 1);
+                                    pinned_pick = true;
+                                    why = Some(format!(
+                                        "{} as requested, #{position} in {text}",
+                                        name(provider)
+                                    ));
+                                }
+                                None => notes.push(format!(
+                                    "{} was asked for, but {text} has no {} model that can \
+                                     take it",
+                                    name(provider),
+                                    name(provider)
+                                )),
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+            let position = place.map_or(1, |entry| entry + 1);
+            if why.is_none() {
+                why = Some(format!("#{position} in {text}"));
+            }
+            if let Some(skipped) = manual
+                .as_ref()
+                .and_then(|manual| first_skipped(&manual.places, position as u32))
+            {
+                notes.push(skipped);
+            }
+            if let Some(note) = manual
+                .as_ref()
+                .and_then(|manual| manual.newest_note.clone())
+            {
+                notes.push(note);
+            }
+            if candidates[chosen].model.tier < default_floor(query.category) {
+                notes.push(format!(
+                    "below the {} floor for {}, ranked by you",
+                    tier_name(default_floor(query.category)),
+                    table::row(query.category).purpose
+                ));
+            }
+        }
+        // Scores decide (with a ranking none of whose models can run, after it).
+        (ranking, _) => {
+            if let Some(ranking) = ranking {
+                let skipped = manual
+                    .as_ref()
+                    .and_then(|manual| first_skipped(&manual.places, u32::MAX));
+                notes.push(match skipped {
+                    Some(skipped) => format!(
+                        "none of the models in {} can take it ({skipped})",
+                        ranking_text(ranking)
+                    ),
+                    None => format!(
+                        "none of the models in {} can take it",
+                        ranking_text(ranking)
+                    ),
+                });
+            }
+            // A pin, then a `prefer` rule, else the top score. Rules beat pins.
+            if let Some(pin) = &query.pin {
+                if let Some(index) = pinned(query, pin, &candidates, &mut notes) {
+                    chosen = index;
+                    why = Some("as requested".to_owned());
+                    pinned_pick = true;
+                } else if (pin.model.is_none() || held.is_some())
+                    && let Some(provider) = pin.provider.or(held)
+                {
+                    match ranked
+                        .iter()
+                        .copied()
+                        .find(|i| candidates[*i].model.provider == provider)
+                    {
+                        Some(index) => {
+                            chosen = index;
+                            why = Some(format!("{} as requested", name(provider)));
+                            pinned_pick = true;
+                        }
+                        None => notes.push(format!(
+                            "{} was asked for, but {}",
+                            name(provider),
+                            provider_block(&candidates, provider)
+                        )),
+                    }
+                }
+            }
+            if let Some(index) = ranked
                 .iter()
                 .copied()
-                .find(|i| candidates[*i].model.provider == provider)
+                .find(|i| candidates[*i].preferred.is_some())
             {
-                Some(index) => {
-                    chosen = index;
-                    why = Some(format!("{} as requested", name(provider)));
-                    pinned_pick = true;
+                if why.is_some() && index != chosen {
+                    notes.push(format!(
+                        "{} was asked for, but your rule prefers {}",
+                        candidates[chosen].label(),
+                        candidates[index].label()
+                    ));
                 }
-                None => notes.push(format!(
-                    "{} was asked for, but {}",
-                    name(provider),
-                    provider_block(&candidates, provider)
-                )),
+                chosen = index;
+                pinned_pick = false;
+                rule_text = candidates[index].preferred.clone();
+                why = rule_text.as_ref().map(|rule| format!("your rule: {rule}"));
+            } else if !only.is_empty() {
+                rule_text = Some(join_rules(&only));
             }
         }
     }
-    if let Some(index) = ranked
-        .iter()
-        .copied()
-        .find(|i| candidates[*i].preferred.is_some())
-    {
-        if why.is_some() && index != chosen {
-            notes.push(format!(
-                "{} was asked for, but your rule prefers {}",
-                candidates[chosen].label(),
-                candidates[index].label()
-            ));
-        }
-        chosen = index;
-        pinned_pick = false;
-        rule_text = candidates[index].preferred.clone();
-        why = rule_text.as_ref().map(|rule| format!("your rule: {rule}"));
-    } else if !only.is_empty() {
-        rule_text = Some(join_rules(&only));
-    }
+    let manual_pick = place.is_some();
 
     let pick = &candidates[chosen];
     if why.is_none() && pick.trial {
@@ -403,7 +559,7 @@ pub fn decide(query: &Query) -> Decision {
                 .then(rank(b).cmp(&rank(a)))
         })
         .unwrap_or(chosen);
-    // (Only when the score chose: a pin or a rule is not balancing.)
+    // (Only when the score chose: a pin, a rule or a ranking is not balancing.)
     let balancing = why.is_none()
         && candidates[unpenalized].model.provider != pick.model.provider
         && candidates[unpenalized].penalty > 0.0;
@@ -420,7 +576,9 @@ pub fn decide(query: &Query) -> Decision {
                 .then(rank(b).cmp(&rank(a)))
         })
         .unwrap_or(chosen);
-    let context = if balancing {
+    let context = if manual_pick {
+        None
+    } else if balancing {
         candidates[unpenalized].penalty_window.clone()
     } else if why.is_none() && candidates[unloaded].model.provider != pick.model.provider {
         candidates[unloaded].load_note.clone()
@@ -434,14 +592,32 @@ pub fn decide(query: &Query) -> Decision {
         .any(|i| (candidates[*i].score - pick.score).abs() <= TIE);
     let why = why.unwrap_or_else(|| score_why(query, pick, tie, rule_text.as_deref()));
 
-    let effort = effort(query, pick, &mut notes);
+    let ranked_effort = ranking
+        .zip(place)
+        .and_then(|(ranking, entry)| ranking.entries.get(entry))
+        .and_then(|entry| entry.effort.as_deref());
+    let effort = effort(query, pick, ranked_effort, &mut notes);
     let explanation = Explanation {
-        score: Some(round(pick.score)),
+        score: (!manual_pick).then(|| round(pick.score)),
         factors: pick.factors.clone(),
-        alternatives: alternatives(&candidates, &ranked, chosen, pinned_pick, rank),
+        alternatives: alternatives(&candidates, &ranked, chosen, pinned_pick, manual_pick, rank),
         rule: rule_text,
         trial: pick.trial,
         balancing,
+        ranking: ranking.map(|ranking| {
+            let position = place.map(|entry| entry as u32 + 1);
+            RankingUse {
+                text: ranking_text(ranking),
+                position,
+                places: ranking.entries.len() as u32,
+                only: ranking.only,
+                skipped: places
+                    .iter()
+                    .filter(|p| p.why.is_some() && position.is_none_or(|at| p.position < at))
+                    .cloned()
+                    .collect(),
+            }
+        }),
     };
     let mut reason = format!(
         "{} {}{} for {}: {why}",
@@ -474,16 +650,279 @@ pub fn decide(query: &Query) -> Decision {
     }
     reason.push('.');
 
-    Decision::Run(Routed {
-        provider: pick.model.provider,
-        model: pick.model.id.clone(),
-        effort,
-        reason,
-        explanation,
-        cross_vendor,
-        trial: pick.trial,
-        tier: pick.model.tier,
-    })
+    let listing = listing(query, &candidates, &ranked, Some(chosen), ranking);
+    let places = places
+        .into_iter()
+        .map(|mut found| {
+            found.chosen = place.is_some_and(|entry| entry as u32 + 1 == found.position);
+            found
+        })
+        .collect();
+    Preview {
+        decision: Decision::Run(Routed {
+            provider: pick.model.provider,
+            model: pick.model.id.clone(),
+            effort,
+            reason,
+            explanation,
+            cross_vendor,
+            trial: pick.trial,
+            tier: pick.model.tier,
+        }),
+        candidates: listing,
+        places,
+    }
+}
+
+// ----- manual rankings -----------------------------------------------------------------------
+
+/// What a manual ranking comes to: the first place that can run (the candidate and the
+/// place's index), and every place as routing found it.
+struct ManualPick {
+    chosen: Option<(usize, usize)>,
+    places: Vec<RankedPlace>,
+    /// A family place ran an older model because its newest can't run now.
+    newest_note: Option<String>,
+}
+
+/// Walks the ranking top-down. A model place takes that model; a family place its newest model
+/// that can run (the CLI lists newest first; older models kept beside a newer one last); a
+/// vendor place its best-scored model that can run.
+fn manual_pick(
+    query: &Query,
+    ranking: &Ranking,
+    candidates: &[Candidate],
+    ranked: &[usize],
+) -> ManualPick {
+    let mut chosen = None;
+    let mut places = Vec::new();
+    let mut newest_note = None;
+    for (index, entry) in ranking.entries.iter().enumerate() {
+        let position = index as u32 + 1;
+        let mut members: Vec<usize> = (0..candidates.len())
+            .filter(|i| targets(&entry.target, &candidates[*i].model, query.registry))
+            .collect();
+        let pick = match &entry.target {
+            OverrideTarget::Vendor { .. } => ranked.iter().copied().find(|i| members.contains(i)),
+            OverrideTarget::Family { .. } => {
+                // Stable: the CLI's own order among the current models, then the older ones.
+                members.sort_by_key(|i| candidates[*i].model.legacy);
+                members.iter().copied().find(|i| candidates[*i].eligible())
+            }
+            OverrideTarget::Model { .. } => {
+                members.iter().copied().find(|i| candidates[*i].eligible())
+            }
+        };
+        let place = match pick {
+            Some(found) => {
+                if chosen.is_none() {
+                    chosen = Some((found, index));
+                    if matches!(entry.target, OverrideTarget::Family { .. })
+                        && let Some(newest) = members.first().filter(|newest| **newest != found)
+                        && let Some(block) = &candidates[*newest].block
+                    {
+                        newest_note = Some(format!(
+                            "its newest, {}, {}",
+                            candidates[*newest].model.id,
+                            block.why()
+                        ));
+                    }
+                }
+                RankedPlace {
+                    position,
+                    target: entry.target.clone(),
+                    model: Some(candidates[found].model.id.clone()),
+                    chosen: false,
+                    why: None,
+                    resets_at_ms: None,
+                }
+            }
+            None => {
+                // The most telling reason among its models: the first one's (the newest, the
+                // named one), else why none is listed.
+                let first = match &entry.target {
+                    OverrideTarget::Vendor { .. } => members
+                        .iter()
+                        .copied()
+                        .filter(|i| !candidates[*i].model.legacy)
+                        .max_by(|a, b| {
+                            (candidates[*a].score + candidates[*a].penalty)
+                                .total_cmp(&(candidates[*b].score + candidates[*b].penalty))
+                        })
+                        .or_else(|| members.first().copied()),
+                    _ => members.first().copied(),
+                };
+                let (why, resets_at_ms) = match first.and_then(|i| candidates[i].block.as_ref()) {
+                    Some(Block::Limit { why, resets_at_ms }) => (why.clone(), *resets_at_ms),
+                    Some(block) => (block.why().to_owned(), None),
+                    None => (unlisted(query, &entry.target), None),
+                };
+                RankedPlace {
+                    position,
+                    target: entry.target.clone(),
+                    model: first.map(|i| candidates[i].model.id.clone()),
+                    chosen: false,
+                    why: Some(why),
+                    resets_at_ms,
+                }
+            }
+        };
+        places.push(place);
+    }
+    ManualPick {
+        chosen,
+        places,
+        newest_note,
+    }
+}
+
+/// Why a ranked place has no model at all: its provider can't be used, or its CLI doesn't list
+/// it now.
+fn unlisted(query: &Query, target: &OverrideTarget) -> String {
+    let provider = target_provider(target);
+    let vendor = name(provider);
+    match query.providers.iter().find(|s| s.provider == provider) {
+        None => format!("{vendor} is not set up"),
+        Some(state) if !state.logged_in => format!("{vendor} is not logged in"),
+        Some(_) => match target {
+            OverrideTarget::Vendor { .. } => format!("{vendor} lists no models now"),
+            OverrideTarget::Family { family, .. } => {
+                format!("{vendor} lists no {family} model now")
+            }
+            OverrideTarget::Model { .. } => format!("not in {vendor}'s model list now"),
+        },
+    }
+}
+
+pub(crate) fn target_provider(target: &OverrideTarget) -> ProviderKind {
+    match target {
+        OverrideTarget::Vendor { provider }
+        | OverrideTarget::Family { provider, .. }
+        | OverrideTarget::Model { provider, .. } => *provider,
+    }
+}
+
+/// The first place above `before` that was passed over, and why: "#1 Codex luna: Codex's
+/// 5-hour window is used up (resets in 2h 10m)".
+fn first_skipped(places: &[RankedPlace], before: u32) -> Option<String> {
+    let mut skipped = places
+        .iter()
+        .filter(|place| place.position < before && place.why.is_some());
+    let first = skipped.next()?;
+    let more = skipped.count();
+    let mut text = format!(
+        "#{} {}: {}",
+        first.position,
+        first.model.as_deref().map_or_else(
+            || target_text(&first.target),
+            |model| { format!("{} {model}", name(target_provider(&first.target))) }
+        ),
+        first.why.as_deref().unwrap_or_default()
+    );
+    if more > 0 {
+        text.push_str(&format!(
+            " (and {more} more place{} passed over)",
+            if more == 1 { "" } else { "s" }
+        ));
+    }
+    Some(text)
+}
+
+/// Every model weighed, for the Routing page: the chosen one, the others that can run in the
+/// order routing would try them (a manual ranking's places first), then those that can't, by
+/// what they would score. An older model the CLI keeps beside a newer one shows only when it
+/// can run or is ranked.
+fn listing(
+    query: &Query,
+    candidates: &[Candidate],
+    ranked: &[usize],
+    chosen: Option<usize>,
+    ranking: Option<&Ranking>,
+) -> Vec<RouteCandidate> {
+    let mut order: Vec<usize> = Vec::new();
+    order.extend(chosen);
+    let mut runnable: Vec<usize> = ranked
+        .iter()
+        .copied()
+        .filter(|i| Some(*i) != chosen)
+        .collect();
+    if ranking.is_some() {
+        // Stable: places in list order, the rest by score.
+        runnable.sort_by_key(|i| candidates[*i].listed.unwrap_or(u32::MAX));
+    }
+    order.extend(runnable);
+    let mut blocked: Vec<usize> = (0..candidates.len())
+        .filter(|i| !candidates[*i].eligible())
+        .filter(|i| !candidates[*i].model.legacy || candidates[*i].listed.is_some())
+        .collect();
+    blocked.sort_by(|a, b| {
+        let (a, b) = (&candidates[*a], &candidates[*b]);
+        a.listed
+            .unwrap_or(u32::MAX)
+            .cmp(&b.listed.unwrap_or(u32::MAX))
+            .then((b.score + b.penalty).total_cmp(&(a.score + a.penalty)))
+    });
+    order.extend(blocked);
+    order
+        .into_iter()
+        .map(|i| {
+            let c = &candidates[i];
+            let ranked_effort = ranking
+                .zip(c.listed)
+                .and_then(|(ranking, position)| ranking.entries.get(position as usize - 1))
+                .and_then(|entry| entry.effort.as_deref());
+            let effort = c
+                .eligible()
+                .then(|| effort(query, c, ranked_effort, &mut Vec::new()))
+                .flatten();
+            let on_trial = matches!(
+                c.model.status,
+                ModelStatus::Unknown | ModelStatus::Researched
+            ) && c
+                .model
+                .trial
+                .is_some_and(|trial| trial.outcomes < crate::merge::TRIAL_OUTCOMES);
+            RouteCandidate {
+                provider: c.model.provider,
+                model: c.model.id.clone(),
+                tier: c.model.tier,
+                score: c.eligible().then(|| round(c.score)),
+                factors: c.factors.clone(),
+                effort,
+                heat: heat_of(query, &c.model),
+                listed: c.listed,
+                chosen: Some(i) == chosen,
+                trial: c.trial,
+                new: on_trial,
+                blocked: c.block.as_ref().map(|block| block.why().to_owned()),
+                resets_at_ms: match &c.block {
+                    Some(Block::Limit { resets_at_ms, .. }) => *resets_at_ms,
+                    _ => None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// The hottest usage window that limits a model (a provider-wide limit counts as Limited).
+fn heat_of(query: &Query, model: &MergedModel) -> Option<Heat> {
+    let quota = query
+        .providers
+        .iter()
+        .find(|s| s.provider == model.provider)?
+        .quota
+        .as_ref()?;
+    if active_limit(quota.limit.as_ref(), query.now_ms).is_some() {
+        return Some(Heat::Limited);
+    }
+    quota
+        .windows
+        .iter()
+        .filter(|w| window_applies(&w.window, model, query.registry))
+        .filter(|w| !has_reset(w.window.resets_at_ms, query.now_ms))
+        .map(|w| w.heat)
+        .max()
+        .or(Some(Heat::Cool))
 }
 
 /// Every model routing may consider: the merged catalog (Fable and duplicate aliases of one
@@ -540,6 +979,7 @@ fn candidates<'q>(query: &'q Query) -> Vec<Candidate<'q>> {
             load_note: None,
             learned: None,
             preferred: None,
+            listed: None,
         })
         .collect()
 }
@@ -551,6 +991,7 @@ fn assess<'q>(
     rules: &[&OverrideRule],
     only: &[&OverrideRule],
     held: Option<ProviderKind>,
+    ranking: Option<&Ranking>,
 ) {
     let model = candidate.model.clone();
     let vendor = name(model.provider);
@@ -588,13 +1029,29 @@ fn assess<'q>(
         Some(Block::Needs(why))
     } else if let Some(held) = held.filter(|held| *held != model.provider) {
         Some(Block::Pinned(format!("{} was asked for", name(held))))
-    } else if on_trial && !candidate.trial {
+    } else if let Some(ranking) = ranking.filter(|r| r.only && candidate.listed.is_none()) {
+        Some(Block::Rule(format!(
+            "not in {} (only these models)",
+            ranking_text(ranking)
+        )))
+    } else if on_trial && !candidate.trial && candidate.listed.is_none() {
         let runs = model.trial.map_or(0, |trial| trial.outcomes);
         Some(Block::Floor(format!(
             "a new model on trial: it runs only on scouting, research and checks given a trial \
              slot ({runs} of {} runs so far)",
             crate::merge::TRIAL_OUTCOMES
         )))
+    } else if candidate.listed.is_some() {
+        // The user ranked it: the category's own floor is waived, a floor raised for this task
+        // holds.
+        if query.floor > default_floor(query.category) && model.tier < query.floor {
+            Some(Block::Floor(format!(
+                "below the {} quality floor asked for this task",
+                tier_name(query.floor)
+            )))
+        } else {
+            availability(query.providers, query.registry, query.now_ms, &model)
+        }
     } else if model.tier < query.floor && !candidate.trial {
         Some(Block::Floor(if model.tier == QualityTier::Unrated {
             "not rated yet (new models get trial runs on scouting, research and checks)".to_owned()
@@ -981,9 +1438,14 @@ fn provider_block(candidates: &[Candidate], provider: ProviderKind) -> String {
         )
 }
 
-/// The effort: the pin's, else the registry's for this category, fitted to the model and never
-/// above `high`.
-fn effort(query: &Query, pick: &Candidate, notes: &mut Vec<String>) -> Option<String> {
+/// The effort: the ranked place's, else the pin's, else the registry's for this category, fitted
+/// to the model and never above `high`.
+fn effort(
+    query: &Query,
+    pick: &Candidate,
+    ranked: Option<&str>,
+    notes: &mut Vec<String>,
+) -> Option<String> {
     let pinned = query.pin.as_ref().and_then(|pin| pin.effort.as_deref());
     let registry_effort = pick
         .model
@@ -992,13 +1454,14 @@ fn effort(query: &Query, pick: &Candidate, notes: &mut Vec<String>) -> Option<St
         .and_then(|key| query.registry.entry(key))
         .and_then(|entry| entry.default_effort.get(&query.category))
         .and_then(|effort| clamp_effort(effort));
-    let wanted = pinned
+    let wanted = ranked
+        .or(pinned)
         .or(registry_effort)
         .or_else(|| category_effort(query.category));
     let (effort, lowered) = table::fit_effort_in(Some(&pick.model.efforts), wanted);
-    if lowered && let Some(pinned) = pinned {
+    if lowered && let Some(asked) = ranked.or(pinned) {
         notes.push(format!(
-            "effort lowered from {pinned} to {}",
+            "effort lowered from {asked} to {}",
             effort.as_deref().unwrap_or("the default")
         ));
     }
@@ -1012,8 +1475,19 @@ fn waiting(
     candidates: &[Candidate],
     only: &[&OverrideRule],
     held: Option<ProviderKind>,
+    ranking: Option<&Ranking>,
 ) -> Waiting {
     let rule = (!only.is_empty()).then(|| join_rules(only));
+    let ranking = ranking
+        .filter(|ranking| ranking.only)
+        .map(|ranking| format!("{} (only these models)", ranking_text(ranking)));
+    // What keeps the task from other models, in a sentence.
+    let holder = match (&rule, &ranking) {
+        (Some(rule), Some(ranking)) => Some(format!("your rule ({rule}) with {ranking}")),
+        (Some(rule), None) => Some(format!("your rule ({rule})")),
+        (None, Some(ranking)) => Some(ranking.clone()),
+        (None, None) => None,
+    };
     let purpose = table::row(query.category).purpose;
     // Models kept out only by a limit: the task runs when the first of them resets.
     let limited: Vec<(&str, Option<i64>)> = candidates
@@ -1027,13 +1501,13 @@ fn waiting(
         .iter()
         .min_by_key(|(_, reset)| reset.unwrap_or(i64::MAX))
         .copied();
-    let reason = match (earliest, &rule) {
-        (Some((why, _)), Some(rule)) => {
-            format!("your rule ({rule}) allows only models at a limit: {why}")
+    let reason = match (earliest, &holder) {
+        (Some((why, _)), Some(holder)) => {
+            format!("{holder} allows only models at a limit: {why}")
         }
         (Some((why, _)), None) => why.to_owned(),
-        (None, Some(rule)) => {
-            format!("your rule ({rule}) allows no model that can take this {purpose} work")
+        (None, Some(holder)) => {
+            format!("{holder} allows no model that can take this {purpose} work")
         }
         (None, None) => {
             if let Some(held) = held {
@@ -1056,6 +1530,7 @@ fn waiting(
         reason: capitalize(&reason),
         resets_at_ms: earliest.and_then(|(_, reset)| reset),
         rule,
+        ranking,
     }
 }
 
@@ -1176,17 +1651,24 @@ fn alternatives(
     ranked: &[usize],
     chosen: usize,
     pinned: bool,
+    manual: bool,
     rank: impl Fn(&Candidate) -> usize,
 ) -> Vec<Alternative> {
     let pick = &candidates[chosen];
     let unpenalized = |c: &&Candidate| c.score + c.penalty;
     let mut order: Vec<&Candidate> = Vec::new();
-    let runners: Vec<&Candidate> = ranked
+    let mut runners: Vec<&Candidate> = ranked
         .iter()
         .copied()
         .filter(|i| *i != chosen)
         .map(|i| &candidates[i])
         .collect();
+    if manual {
+        // The places below the one that ran come next (the skipped ones are in the ranking's
+        // own account).
+        runners.sort_by_key(|c| c.listed.unwrap_or(u32::MAX));
+        order.extend(runners.iter().copied());
+    }
     let mut blocked: Vec<&Candidate> = candidates
         .iter()
         .filter(|c| !c.eligible() && !c.model.legacy)
@@ -1220,6 +1702,10 @@ fn alternatives(
         }
         let why_not = match &c.block {
             Some(block) => block.why().to_owned(),
+            None if manual => match c.listed {
+                Some(position) => format!("#{position} in your ranking"),
+                None => "not in your ranking".to_owned(),
+            },
             None if pick.preferred.is_some() && c.preferred.is_none() => {
                 "your rule prefers another model".to_owned()
             }
@@ -1307,7 +1793,7 @@ fn tier_name(tier: QualityTier) -> &'static str {
     }
 }
 
-fn areas_text(areas: &[Area]) -> String {
+pub(crate) fn areas_text(areas: &[Area]) -> String {
     areas
         .iter()
         .map(|area| match area {

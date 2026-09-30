@@ -131,6 +131,19 @@ impl SessionManager {
                     plan.steps[index].task_id = Some(task.id.clone());
                     self.store_plan(&plan).await?;
                 }
+                if let Some(wait) = &task.quota_wait {
+                    return Ok(format!(
+                        "Created task-{} ({:?}), but no model it may use can take it now: {}. It \
+                         starts on its own when one can (after a reset, or when the user changes \
+                         their routing); its report arrives later as a message. The user sees \
+                         it waiting, so don't announce it: if nothing else is needed now, reply \
+                         with exactly {} and nothing else.",
+                        task.number,
+                        task.kind,
+                        wait.reason,
+                        prompts::QUIET
+                    ));
+                }
                 Ok(format!(
                     "Started task-{} ({:?}) on {}: {}. Its report arrives later as a message; don't wait for it. \
                      The user sees the worker live, so don't announce it: if nothing else is \

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use brigadier_router::{
-    Area, Author, Decision, Exclusion, Learned, MergedModel, Needs, Pin, ProviderState,
+    Area, Author, Decision, Exclusion, Learned, MergedModel, Needs, Pin, Preview, ProviderState,
     QualityTier, Query, Registry, Routed, TaskCategory,
 };
 
@@ -30,8 +30,19 @@ pub(crate) struct Ask<'a> {
     pub avoid: Option<Author>,
     pub exclude: &'a [Exclusion],
     pub project_id: Option<&'a ProjectId>,
-    /// A task being started (it may take a trial slot); previews and fallbacks don't.
-    pub starting: bool,
+    /// Whether it may go to a model on trial.
+    pub trial: Trial,
+}
+
+/// A routing question's claim on the trial slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trial {
+    /// A task being started: it takes the next slot (the counter moves on).
+    Take,
+    /// A preview of the next task: it looks at the next slot without taking it.
+    Peek,
+    /// A fallback or a stand-in: no trial.
+    Never,
 }
 
 /// What routing knows now, beyond the question.
@@ -139,13 +150,23 @@ impl SessionManager {
 
     /// Asks the router.
     pub(crate) async fn decide(&self, ask: &Ask<'_>) -> Decision {
+        self.preview(ask).await.0.decision
+    }
+
+    /// Asks the router, keeping every model it weighed (the Routing page's live order), and
+    /// says whether the question held a trial slot.
+    pub(crate) async fn preview(&self, ask: &Ask<'_>) -> (Preview, bool) {
         let now = crate::now_ms();
         let inputs = self.routing_inputs(ask.project_id, now).await;
-        let overrides = self.core.settings().routing_overrides;
+        let settings = self.core.settings();
         let running = self.running_workers();
-        let trial_slot = ask.starting && self.trial_slot(ask.category).await;
+        let trial_slot = match ask.trial {
+            Trial::Take => self.trial_slot(ask.category, true).await,
+            Trial::Peek => self.trial_slot(ask.category, false).await,
+            Trial::Never => false,
+        };
         let project_id = ask.project_id.map(|id| id.0.as_str());
-        let decision = brigadier_router::decide(&Query {
+        let mut preview = brigadier_router::preview(&Query {
             category: ask.category,
             areas: ask.areas,
             floor: ask.floor,
@@ -154,7 +175,8 @@ impl SessionManager {
             hold_pin: ask.hold_pin,
             avoid: ask.avoid.clone(),
             exclude: ask.exclude,
-            overrides: &overrides,
+            overrides: &settings.routing_overrides,
+            rankings: &settings.routing_rankings,
             project_id,
             running: &running,
             trial_slot,
@@ -164,15 +186,16 @@ impl SessionManager {
             learned: &inputs.learned,
             now_ms: now,
         });
-        match decision {
-            Decision::Run(routed) => Decision::Run(cheap_for_development(routed, &inputs.models)),
-            wait => wait,
+        if let Decision::Run(routed) = preview.decision {
+            preview.decision = Decision::Run(cheap_for_development(routed, &inputs.models));
         }
+        (preview, trial_slot)
     }
 
     /// Whether this low-risk task may go to a model on trial: one in [`TRIAL_EVERY`], counted
-    /// across launches.
-    async fn trial_slot(&self, category: TaskCategory) -> bool {
+    /// across launches. `take`: the task takes the slot (the count moves on); otherwise this
+    /// only looks at what the next task would get.
+    async fn trial_slot(&self, category: TaskCategory, take: bool) -> bool {
         if !brigadier_router::allows_trials(category) {
             return false;
         }
@@ -186,7 +209,7 @@ impl SessionManager {
             .flatten()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
-        if let Err(err) = store.set_meta(TRIAL_COUNTER, (count + 1).to_string()).await {
+        if take && let Err(err) = store.set_meta(TRIAL_COUNTER, (count + 1).to_string()).await {
             tracing::debug!(error = %err, "could not count the trial slot");
         }
         count % TRIAL_EVERY == 0

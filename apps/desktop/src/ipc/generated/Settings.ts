@@ -4,6 +4,7 @@ import type { KeepAwake } from "./KeepAwake";
 import type { ModelChoice } from "./ModelChoice";
 import type { OverrideRule } from "./OverrideRule";
 import type { PermissionLevel } from "./PermissionLevel";
+import type { Ranking } from "./Ranking";
 
 /**
  * User settings persisted by the core.
@@ -55,4 +56,9 @@ keepAwakeLidClosed: boolean,
  * The user's routing rules, global and per project. They always win over the router's
  * scores and quota balancing.
  */
-routingOverrides: Array<OverrideRule>, };
+routingOverrides: Array<OverrideRule>, 
+/**
+ * The user's manual rankings per kind of work (global and per project, with area
+ * overrides): where one is Manual, routing tries its models top-down instead of scoring.
+ */
+routingRankings: Array<Ranking>, };

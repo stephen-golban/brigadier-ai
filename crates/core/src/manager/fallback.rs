@@ -45,6 +45,8 @@ const PROGRESS_EVENTS: u32 = 2_000;
 const WAIT_RETRY: Duration = Duration::from_secs(30 * 60);
 /// A reset is past this long before the task is routed again.
 const AFTER_RESET: Duration = Duration::from_secs(45);
+/// Provider checks this close together make one retry of the work waiting for quota.
+const PROVIDER_CHECK_SETTLE: Duration = Duration::from_secs(2);
 /// Hand-offs for errors (not limits) per task, before the task fails as it always did.
 const ERROR_HANDOFFS: usize = 3;
 
@@ -85,13 +87,6 @@ pub(crate) fn verdict(error: &ProviderError) -> ErrorVerdict {
         ErrorKind::Overloaded | ErrorKind::Server | ErrorKind::Network => ErrorVerdict::Transient,
         _ => ErrorVerdict::Keep,
     }
-}
-
-/// Why a task waits: nothing it may use is available now.
-struct Waiting {
-    reason: String,
-    resets_at_ms: Option<i64>,
-    rule: Option<String>,
 }
 
 impl SessionManager {
@@ -181,6 +176,8 @@ impl SessionManager {
                     return;
                 }
             };
+            // A task that waited from the start begins as a new task does.
+            let fresh = task.attempts.is_empty() && task.workspace.is_none();
             let started = self
                 .update_task(&task.conversation_id, &task.id, |task| {
                     start_attempt(task, route.clone());
@@ -196,6 +193,17 @@ impl SessionManager {
                     return;
                 }
             };
+            if fresh {
+                tracing::info!(task = %task.id, "a waiting task starts");
+                let subject = match &task.subject {
+                    Some(id) => self.task_by_id(&task.conversation_id, id).await.ok(),
+                    None => None,
+                };
+                if let Err(err) = self.start_worker(live, task.clone(), subject).await {
+                    self.worker_failed(&task, &err.to_string()).await;
+                }
+                return;
+            }
             let launched = async {
                 let first = self.write_task_handoff(&task).await?;
                 let subject = match &task.subject {
@@ -233,7 +241,7 @@ impl SessionManager {
     /// it, or waits), less the models that stopped on an error (a limit leaves its
     /// provider or bucket unavailable by itself). A context window too small asks for a bigger
     /// one.
-    async fn reroute(&self, task: &Task) -> std::result::Result<Route, Waiting> {
+    async fn reroute(&self, task: &Task) -> std::result::Result<Route, brigadier_router::Waiting> {
         let avoid = match &task.subject {
             Some(id) if task.kind == crate::work::TaskKind::Review => self
                 .task_by_id(&task.conversation_id, id)
@@ -292,59 +300,101 @@ impl SessionManager {
                 floor: task.floor,
                 needs,
                 pin: task.pin.clone(),
-                hold_pin: true,
+                // A pin binds once a model has worked on the task.
+                hold_pin: !task.attempts.is_empty(),
                 avoid,
                 exclude: &exclude,
                 project_id: project.as_ref(),
-                starting: false,
+                trial: super::routing::Trial::Never,
             })
             .await;
         match decision {
             brigadier_router::Decision::Run(routed) => Ok(super::routing::route_from(routed)),
-            brigadier_router::Decision::Wait(waiting) => Err(Waiting {
-                reason: waiting.reason,
-                resets_at_ms: waiting.resets_at_ms,
-                rule: waiting.rule,
-            }),
+            brigadier_router::Decision::Wait(waiting) => Err(waiting),
         }
     }
 
     /// Pauses `task` until quota lets it continue, and schedules the next try.
-    async fn wait_for_quota(&self, live: &Arc<TaskLive>, task: &Task, waiting: Waiting) {
+    async fn wait_for_quota(
+        &self,
+        live: &Arc<TaskLive>,
+        task: &Task,
+        waiting: brigadier_router::Waiting,
+    ) {
         let wait = QuotaWait {
             reason: waiting.reason.clone(),
             resets_at_ms: waiting.resets_at_ms,
             rule: waiting.rule.clone(),
+            ranking: waiting.ranking.clone(),
             since_ms: task
                 .quota_wait
                 .as_ref()
                 .map_or_else(now_ms, |known| known.since_ms),
         };
-        let paused = self
-            .update_task(&task.conversation_id, &task.id, |task| {
-                task.state = TaskState::Paused;
-                task.blocked_reason = Some(format!("Waiting for quota: {}", wait.reason));
-                task.quota_wait = Some(wait.clone());
-            })
-            .await;
-        if let Err(err) = paused {
-            tracing::warn!(task = %task.id, error = %err, "could not pause the task for quota");
-            return;
+        // Waiting as before for the same reason: nothing to record again.
+        let unchanged = task.state == TaskState::Paused
+            && task.quota_wait.as_ref().is_some_and(|known| {
+                known.reason == wait.reason
+                    && known.resets_at_ms == wait.resets_at_ms
+                    && known.rule == wait.rule
+                    && known.ranking == wait.ranking
+            });
+        if !unchanged {
+            let paused = self
+                .update_task(&task.conversation_id, &task.id, |task| {
+                    task.state = TaskState::Paused;
+                    task.blocked_reason = Some(format!("Waiting for quota: {}", wait.reason));
+                    task.quota_wait = Some(wait.clone());
+                })
+                .await;
+            if let Err(err) = paused {
+                tracing::warn!(task = %task.id, error = %err, "could not pause the task for quota");
+                return;
+            }
         }
         tracing::info!(task = %task.id, reason = %wait.reason, "task waits for quota");
-        let delay = match waiting.resets_at_ms {
-            Some(at) => {
-                Duration::from_millis(u64::try_from(at - now_ms()).unwrap_or(0)) + AFTER_RESET
-            }
-            None => WAIT_RETRY,
-        }
-        .min(WAIT_RETRY);
+        let delay = retry_delay(waiting.resets_at_ms);
+        // Only the newest timer retries: an earlier one (before a rule change or a provider
+        // check tried again) has nothing left to do.
+        let timer = live.next_wait_timer();
         let manager = self.arc();
         let live = live.clone();
         self.spawn(async move {
             tokio::time::sleep(delay).await;
-            manager.retry_waiting(&live).await;
+            if live.is_wait_timer(timer) {
+                manager.retry_waiting(&live).await;
+            }
         });
+    }
+
+    /// Whenever a provider's state is recorded (a login, a limit, a fresh usage read), work
+    /// waiting for quota looks again. Checks that come close together count once.
+    pub(super) fn retry_waiting_on_provider_checks(&self) {
+        let mut checks = self.runtime.provider_checks();
+        let manager = self.me.clone();
+        self.spawn(async move {
+            while checks.changed().await.is_ok() {
+                tokio::time::sleep(PROVIDER_CHECK_SETTLE).await;
+                checks.borrow_and_update();
+                let Some(manager) = manager.upgrade() else {
+                    return;
+                };
+                if manager.admit().is_err() {
+                    return;
+                }
+                manager.retry_waiting_work().await;
+            }
+        });
+    }
+
+    /// Routes everything that waits for quota again, now: after the user changed their rules
+    /// or rankings, or a provider's state changed (a login, a fresh usage read).
+    pub async fn retry_waiting_work(&self) {
+        let tasks: Vec<Arc<TaskLive>> = self.tasks_lock().values().cloned().collect();
+        for live in tasks {
+            self.retry_waiting(&live).await;
+        }
+        self.retry_waiting_conversations().await;
     }
 
     /// After a restart: a task that waited for quota keeps waiting, with its timer set again.
@@ -353,10 +403,11 @@ impl SessionManager {
             return;
         };
         let live = self.task_live(task);
-        let waiting = Waiting {
+        let waiting = brigadier_router::Waiting {
             reason: wait.reason,
             resets_at_ms: wait.resets_at_ms,
             rule: wait.rule,
+            ranking: wait.ranking,
         };
         self.wait_for_quota(&live, task, waiting).await;
     }
@@ -588,10 +639,21 @@ fn progress_line(event: &ProviderEvent) -> Option<String> {
     })
 }
 
-/// Closes the running attempt of `task` (or its first, never recorded one) with `end`.
+/// How long work waiting for quota sleeps before it is routed again: until just after the
+/// reset that could free it, and at most [`WAIT_RETRY`].
+pub(super) fn retry_delay(resets_at_ms: Option<i64>) -> Duration {
+    match resets_at_ms {
+        Some(at) => Duration::from_millis(u64::try_from(at - now_ms()).unwrap_or(0)) + AFTER_RESET,
+        None => WAIT_RETRY,
+    }
+    .min(WAIT_RETRY)
+}
+
+/// Closes the running attempt of `task` (or its first, never recorded one) with `end`. A task
+/// that waited from the start and never began has none.
 pub(crate) fn end_attempt(task: &mut Task, end: Option<AttemptEnd>) {
     let now = now_ms();
-    if task.attempts.is_empty() {
+    if task.attempts.is_empty() && task.workspace.is_some() {
         task.attempts.push(Attempt {
             route: task.route.clone(),
             started_at_ms: task.created_at_ms,

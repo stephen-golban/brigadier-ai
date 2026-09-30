@@ -44,14 +44,16 @@ use super::usage::TokenOwner;
 use super::{
     EventSource, SessionManager, blocking, fallback, git_error, instructions, prompts, secrets,
 };
-use crate::model::{ConversationId, DomainEvent, Environment, PermissionLevel, Setup, streams};
+use crate::model::{
+    ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
+};
 use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
     ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, InjectionKind,
-    QuestionKind, RepoAccess, Report, Task, TaskId, TaskKind, TaskState, TaskWorkspace,
-    WorkerAccess,
+    QuestionKind, QuotaWait, RepoAccess, Report, Route, Task, TaskId, TaskKind, TaskState,
+    TaskWorkspace, WorkerAccess,
 };
 use crate::{Error, Result, now_ms};
 
@@ -122,6 +124,8 @@ pub(crate) struct TaskLive {
     /// Held while the task is routed again and its next model started, so a quota timer and
     /// a Resume (or two hand-offs) never start two models on it.
     pub(crate) reroute: tokio::sync::Mutex<()>,
+    /// Counts the quota-wait timers set for the task; only the newest one retries.
+    wait_timer: std::sync::atomic::AtomicU64,
 }
 
 impl TaskLive {
@@ -165,7 +169,20 @@ impl TaskLive {
             state: tokio::sync::Mutex::new(TaskLiveState::default()),
             settle: tokio::sync::Mutex::new(()),
             reroute: tokio::sync::Mutex::new(()),
+            wait_timer: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// A new quota-wait timer: the ones set before it no longer retry.
+    pub(crate) fn next_wait_timer(&self) -> u64 {
+        self.wait_timer
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
+    }
+
+    /// Whether `timer` is still the newest quota-wait timer.
+    pub(crate) fn is_wait_timer(&self, timer: u64) -> bool {
+        self.wait_timer.load(std::sync::atomic::Ordering::Acquire) == timer
     }
 
     /// The provider of the worker's CLI while it works (a Brain job yields to it).
@@ -386,8 +403,8 @@ impl SessionManager {
         let category = category(kind);
         let areas = areas.unwrap_or_else(|| brigadier_router::infer_areas(&spec));
         let floor = floor.unwrap_or_else(|| brigadier_router::default_floor(category));
-        let decision = self
-            .decide(&super::routing::Ask {
+        let (preview, _) = self
+            .preview(&super::routing::Ask {
                 category,
                 areas: &areas,
                 floor,
@@ -397,25 +414,52 @@ impl SessionManager {
                 avoid,
                 exclude: &[],
                 project_id: conversation.project_id.as_ref(),
-                starting: true,
+                trial: super::routing::Trial::Take,
             })
             .await;
-        let route = match decision {
-            brigadier_router::Decision::Run(routed) => super::routing::route_from(routed),
-            // Nothing it may use is available: the orchestrator hears why and can wait or ask.
+        let now = now_ms();
+        let (route, wait) = match preview.decision {
+            brigadier_router::Decision::Run(routed) => (super::routing::route_from(routed), None),
+            // Nothing it may use is available. When a reset or the user's rules and rankings
+            // can change that, the task waits like one that ran into a limit, and starts on
+            // its own; otherwise the orchestrator hears why and can wait or ask.
             brigadier_router::Decision::Wait(waiting) => {
-                return Err(Error::Invalid(format!(
-                    "no model can take this task now: {}",
-                    waiting.reason
-                )));
+                let waits = waiting.resets_at_ms.is_some()
+                    || waiting.rule.is_some()
+                    || waiting.ranking.is_some();
+                // The model it waits for (the first a reset or a rule change would free).
+                let Some(first) = preview.candidates.first().filter(|_| waits) else {
+                    return Err(Error::Invalid(format!(
+                        "no model can take this task now: {}",
+                        waiting.reason
+                    )));
+                };
+                let route = Route {
+                    choice: ModelChoice {
+                        provider: first.provider,
+                        model: Some(first.model.clone()),
+                        effort: None,
+                        fast: None,
+                    },
+                    reason: format!("Waits: {}", waiting.reason),
+                    explanation: None,
+                };
+                let wait = QuotaWait {
+                    reason: waiting.reason,
+                    resets_at_ms: waiting.resets_at_ms,
+                    rule: waiting.rule,
+                    ranking: waiting.ranking,
+                    since_ms: now,
+                };
+                (route, Some(wait))
             }
         };
+        let waits = wait.is_some();
         let number = self.core.next_task_number(conversation_id).await?;
         let request_id = match &subject {
             Some(subject) => subject.request_id.clone(),
             None => self.request_for(conversation_id, None).await,
         };
-        let now = now_ms();
         let task = Task {
             id: TaskId::generate(),
             conversation_id: conversation_id.clone(),
@@ -425,19 +469,31 @@ impl SessionManager {
             kind,
             spec,
             access: access_for(kind, *permission),
-            attempts: vec![Attempt {
-                route: route.clone(),
-                started_at_ms: now,
-                ended_at_ms: None,
-                end: None,
-            }],
+            // A waiting task's first model is recorded when it starts.
+            attempts: if waits {
+                Vec::new()
+            } else {
+                vec![Attempt {
+                    route: route.clone(),
+                    started_at_ms: now,
+                    ended_at_ms: None,
+                    end: None,
+                }]
+            },
             route,
             floor,
             areas,
             pin,
             needs,
-            state: TaskState::Queued,
-            quota_wait: None,
+            state: if waits {
+                TaskState::Paused
+            } else {
+                TaskState::Queued
+            },
+            blocked_reason: wait
+                .as_ref()
+                .map(|wait| format!("Waiting for quota: {}", wait.reason)),
+            quota_wait: wait,
             subject: subject.as_ref().map(|task| task.id.clone()),
             plan: None,
             attachments,
@@ -446,7 +502,6 @@ impl SessionManager {
             candidate: None,
             review: None,
             landed: None,
-            blocked_reason: None,
             error: None,
             kept: None,
             outputs: Vec::new(),
@@ -463,6 +518,11 @@ impl SessionManager {
         self.core
             .record_conversation(conversation_id, events)
             .await?;
+        if waits {
+            // Its timer is set as for any task waiting for quota.
+            self.keep_waiting(&task).await;
+            return Ok(task);
+        }
         let live = self.task_live(&task);
         let manager = self.arc();
         let started = task.clone();
@@ -474,7 +534,7 @@ impl SessionManager {
         Ok(task)
     }
 
-    async fn start_worker(
+    pub(crate) async fn start_worker(
         &self,
         live: &Arc<TaskLive>,
         task: Task,

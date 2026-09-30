@@ -4,6 +4,10 @@ use brigadier_providers::ProviderKind;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::quota::Heat;
+use crate::rankings::RankingUse;
+use crate::registry::QualityTier;
+
 /// One part of a model's score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -43,4 +47,35 @@ pub struct Explanation {
     pub trial: bool,
     /// Quota balancing moved the work away from a hot provider.
     pub balancing: bool,
+    /// The user's manual ranking decided the choice, or had none of its models available.
+    #[serde(default)]
+    pub ranking: Option<RankingUse>,
+}
+
+/// One model routing weighed, for the Routing page's live order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteCandidate {
+    pub provider: ProviderKind,
+    pub model: String,
+    pub tier: QualityTier,
+    /// Its score, when it may take the task (under a manual ranking, what scoring gives it).
+    pub score: Option<f64>,
+    pub factors: Vec<Factor>,
+    /// The effort it would run at, when it may take the task.
+    pub effort: Option<String>,
+    /// The hottest usage window that limits it, when its provider's usage is known.
+    pub heat: Option<Heat>,
+    /// Its place in the manual ranking in force (1-based).
+    pub listed: Option<u32>,
+    /// Routing would give it the task.
+    pub chosen: bool,
+    /// It would run as a trial of a new model.
+    pub trial: bool,
+    /// A new model not rated here yet (it runs only as a trial until it has outcomes).
+    pub new: bool,
+    /// Why it can't take the task now.
+    pub blocked: Option<String>,
+    /// When the limit keeping it out resets, if a limit does.
+    pub resets_at_ms: Option<i64>,
 }

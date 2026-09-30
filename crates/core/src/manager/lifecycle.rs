@@ -74,6 +74,10 @@ impl SessionManager {
     pub(super) async fn recover(&self) {
         self.runtime.ledger().sweep().await;
         for conversation in self.core.catalog().conversations {
+            // Messages that waited for quota keep waiting.
+            if conversation.quota_wait.is_some() {
+                self.keep_conversation_wait(&conversation).await;
+            }
             let Ok(tasks) = self.core.tasks(&conversation.id).await else {
                 continue;
             };

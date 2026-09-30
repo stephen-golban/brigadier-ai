@@ -106,6 +106,9 @@ pub struct Runtime {
     registry: Arc<RegistryHolder>,
     /// Cancelled when the daemon shuts down (ends the quota poller).
     quit: CancellationToken,
+    /// Counts the provider overviews recorded: work waiting for quota looks again when it
+    /// moves (a login, a limit, a fresh usage read).
+    checked: tokio::sync::watch::Sender<u64>,
 }
 
 impl Runtime {
@@ -161,6 +164,7 @@ impl Runtime {
             routing,
             registry,
             quit: CancellationToken::new(),
+            checked: tokio::sync::watch::Sender::new(0),
             claude,
             codex,
             ledger,
@@ -184,6 +188,12 @@ impl Runtime {
         let poller = runtime.clone();
         runtime.spawn(async move { poller.poll_quota().await });
         Ok(runtime)
+    }
+
+    /// Moves each time a provider's overview is recorded (its login, limits or usage may have
+    /// changed).
+    pub fn provider_checks(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.checked.subscribe()
     }
 
     /// The quota monitor: every provider's windows as last reported, and their history.
@@ -642,6 +652,7 @@ impl Runtime {
         if let Err(err) = result {
             tracing::warn!(error = %err, "could not record a provider check");
         }
+        self.checked.send_modify(|count| *count += 1);
     }
 
     // ----- raw sessions ----------------------------------------------------------------

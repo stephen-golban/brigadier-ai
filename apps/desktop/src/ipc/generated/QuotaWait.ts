@@ -16,4 +16,9 @@ resetsAtMs: number | null,
 /**
  * The user rule that keeps it from other models, if one does (its text).
  */
-rule: string | null, sinceMs: number, };
+rule: string | null, 
+/**
+ * The user's ranking that keeps it from other models (Only these), if one does (its
+ * text).
+ */
+ranking: string | null, sinceMs: number, };

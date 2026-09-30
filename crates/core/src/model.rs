@@ -6,8 +6,8 @@ use brigadier_providers::{
     Access, Artifact, ModelCatalog, ProviderEvent, ProviderKind, ProviderStatus, QuotaSnapshot,
 };
 use brigadier_router::{
-    Area, Explanation, Learned, MergedModel, OverrideRule, ProviderQuota, QuotaSample,
-    RegistryInfo, TaskCategory,
+    Area, Explanation, Learned, MergedModel, OverrideRule, ProviderQuota, QuotaSample, RankedPlace,
+    Ranking, RegistryInfo, RouteCandidate, TaskCategory,
 };
 
 use crate::knowledge::{BrainJob, MemoryChange, RebirthThresholds};
@@ -367,6 +367,10 @@ pub struct Conversation {
     /// remembered one and the global default are never changed by it.
     #[serde(default)]
     pub fallback: Option<ModelFallback>,
+    /// Set while its model is at a limit and no model it may use can stand in: its messages
+    /// wait, and go on their own when one can take them.
+    #[serde(default)]
+    pub quota_wait: Option<crate::work::QuotaWait>,
 }
 
 /// A conversation's model standing in for the chosen one while that one is at a limit.
@@ -513,6 +517,9 @@ pub struct Settings {
     /// The user's routing rules, global and per project. They always win over the router's
     /// scores and quota balancing.
     pub routing_overrides: Vec<OverrideRule>,
+    /// The user's manual rankings per kind of work (global and per project, with area
+    /// overrides): where one is Manual, routing tries its models top-down instead of scoring.
+    pub routing_rankings: Vec<Ranking>,
 }
 
 impl Default for Settings {
@@ -530,6 +537,7 @@ impl Default for Settings {
             keep_awake: KeepAwake::default(),
             keep_awake_lid_closed: false,
             routing_overrides: Vec::new(),
+            routing_rankings: Vec::new(),
         }
     }
 }
@@ -935,14 +943,24 @@ pub struct UsageView {
     pub at_ms: i64,
 }
 
-/// What routing would choose for one category right now (the Inspector's routing preview).
-/// Nothing is started.
+/// What routing would choose for one category right now, for the next task submitted (the
+/// Routing page and the Inspector's routing preview). Nothing is started and no trial slot is
+/// taken.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutePreview {
     pub category: TaskCategory,
     pub areas: Vec<Area>,
     pub outcome: RoutePreviewOutcome,
+    /// Every model weighed: the chosen one first, then the order routing would try the others
+    /// in, then those that can't take the task now.
+    pub candidates: Vec<RouteCandidate>,
+    /// The ranking that applies here (Manual or Automatic), if the user has one.
+    pub ranking_id: Option<String>,
+    /// The manual ranking in force, place by place; empty when routing scores.
+    pub places: Vec<RankedPlace>,
+    /// The next task of this kind holds a trial slot (a new model may try it).
+    pub trial_slot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -962,6 +980,7 @@ pub enum RoutePreviewOutcome {
         reason: String,
         resets_at_ms: Option<i64>,
         rule: Option<String>,
+        ranking: Option<String>,
     },
 }
 
@@ -1043,6 +1062,10 @@ pub enum DomainEvent {
     ConversationFallback {
         id: ConversationId,
         fallback: Option<ModelFallback>,
+    },
+    ConversationWaiting {
+        id: ConversationId,
+        wait: Option<crate::work::QuotaWait>,
     },
     MessageAppended {
         message: Message,
@@ -1220,6 +1243,7 @@ impl DomainEvent {
             Self::ConversationRenamed { .. } => "conversation.renamed",
             Self::ConversationPinned { .. } => "conversation.pinned",
             Self::ConversationFallback { .. } => "conversation.fallback",
+            Self::ConversationWaiting { .. } => "conversation.waiting",
             Self::MessageAppended { .. } => "message.appended",
             Self::SettingsChanged { .. } => "settings.changed",
             Self::RawSessionCreated { .. } => "raw.created",
