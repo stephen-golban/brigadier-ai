@@ -31,7 +31,14 @@ function openResult({ page, row }: SettingsSearchResult) {
 export function SettingsNav() {
   const current = useApp((s) => (s.selection.type === "settings" ? s.selection.page : null));
   const [query, setQuery] = useState("");
+  // The result Enter opens; the arrow keys move it.
+  const [active, setActive] = useState(0);
   const results = query.trim() ? searchSettings(query) : null;
+
+  const search = (value: string) => {
+    setQuery(value);
+    setActive(0);
+  };
 
   return (
     <>
@@ -47,14 +54,21 @@ export function SettingsNav() {
             spellCheck={false}
             autoComplete="off"
             className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none [&::-webkit-search-cancel-button]:hidden"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => search(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape" && query) {
                 // Esc clears the search first, before it leaves Settings.
                 event.stopPropagation();
-                setQuery("");
+                search("");
               }
-              if (event.key === "Enter" && results?.[0]) openResult(results[0]);
+              if (!results?.length) return;
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                const step = event.key === "ArrowDown" ? 1 : -1;
+                setActive((index) => (index + step + results.length) % results.length);
+              }
+              const chosen = results[active];
+              if (event.key === "Enter" && chosen) openResult(chosen);
             }}
           />
           {query && (
@@ -62,7 +76,7 @@ export function SettingsNav() {
               type="button"
               aria-label="Clear search"
               className="text-muted-foreground hover:text-foreground flex shrink-0 items-center"
-              onClick={() => setQuery("")}
+              onClick={() => search("")}
             >
               <XCircleFilled className="size-icon-md" />
             </button>
@@ -76,13 +90,15 @@ export function SettingsNav() {
             <p className="text-muted-foreground px-2 py-1 text-sm">No settings match.</p>
           ) : (
             <NavList>
-              {results.map((result) => {
+              {results.map((result, index) => {
                 const Icon = result.page.icon;
                 return (
                   <li key={`${result.page.id}:${result.row?.label ?? ""}`}>
                     <button
                       type="button"
+                      data-active={index === active}
                       className={cn(navRow, "h-auto items-start py-2.5")}
+                      onMouseEnter={() => setActive(index)}
                       onClick={() => openResult(result)}
                     >
                       <Icon aria-hidden className="text-muted-foreground mt-0.5" />
