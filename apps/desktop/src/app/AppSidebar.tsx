@@ -1,11 +1,11 @@
 import {
-  Analytics,
   Archive,
   ChatCompose,
   DotsHorizontal,
   Download,
   Folder,
   FolderOpen,
+  Home,
   MagnifyingGlassSearch,
   Pencil,
   Pin,
@@ -16,54 +16,53 @@ import {
   Terminal,
   Trash,
   Unpin,
+  Usage,
   X,
 } from "@openai/apps-sdk-ui/components/Icon";
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 
 import { DeleteDialog } from "@/app/dialogs/DeleteDialog";
 import { errorText } from "@/app/dialogs/fields";
 import { ProjectDialog } from "@/app/dialogs/ProjectDialog";
 import { RemoveProjectDialog } from "@/app/dialogs/RemoveProjectDialog";
 import { NameDialog } from "@/app/NameDialog";
-import { SearchDialog } from "@/app/SearchDialog";
+import { openSearch } from "@/app/SearchDialog";
+import {
+  navRow,
+  NavEmpty,
+  NavFold,
+  NavHeader,
+  NavList,
+  NavSection,
+  rowAction,
+} from "@/app/sidebar/nav";
+import { BrigadierGlyph } from "@/components/glyphs/brand-glyph";
 import { Spinner } from "@/components/glyphs/spinner";
 import { Button } from "@/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupAction,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuAction,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
-} from "@/components/ui/sidebar";
+import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { openFolder } from "@/ipc/client";
 import type { Conversation, Project } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
   archive,
+  closeSettings,
   openConversation,
   openSettings,
   renameConversation,
@@ -75,7 +74,148 @@ import {
 import { useRowActivity } from "@/state/activity";
 import { openAddProject } from "@/state/addProject";
 import { exportProjectConventions } from "@/state/brain";
+import { reopenOnboarding } from "@/state/onboarding";
 import { useApp } from "@/state/store";
+
+// ----- shortcuts -------------------------------------------------------------------------
+
+function useShortcuts() {
+  const mac = useApp((s) => s.info?.platform === "macos");
+  return {
+    mac,
+    sidebar: mac ? "⌘B" : "Ctrl+B",
+    search: mac ? "⌘K" : "Ctrl+K",
+    settings: mac ? "⌘," : "Ctrl+,",
+    inspector: mac ? "⌥⌘I" : "Ctrl+Alt+I",
+  };
+}
+
+// ----- titlebar and rail -----------------------------------------------------------------
+
+/**
+ * The sidebar toggle, at a fixed spot in the titlebar: right after the traffic lights on
+ * macOS, over the rail elsewhere. It stays put while the panel opens and closes.
+ */
+export function TitlebarToggle() {
+  const { open } = useSidebar();
+  const { sidebar } = useShortcuts();
+  return (
+    <div className="h-titlebar macos:start-traffic-lights macos:w-auto w-rail absolute top-0 start-0 z-20 flex items-center justify-center">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {open ? "Hide sidebar" : "Show sidebar"}
+          <Kbd>{sidebar}</Kbd>
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+/** A button on the rail: an icon, its name in a tooltip, a pill behind it while selected. */
+function RailButton({
+  label,
+  selected = false,
+  children,
+  ...props
+}: ComponentProps<"button"> & { label: string; selected?: boolean }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          aria-current={selected ? "page" : undefined}
+          className={cn(
+            "size-rail-button rounded-nav focus-visible:ring-ring/50 relative flex shrink-0 items-center justify-center outline-none transition-colors duration-150 focus-visible:ring-2 [&_svg]:relative [&_svg]:size-icon-lg",
+            "before:rounded-nav before:bg-foreground/8 before:absolute before:inset-0 before:opacity-0 before:transition-opacity before:duration-150 hover:before:opacity-100 data-[state=open]:before:opacity-100",
+            selected ? "text-foreground before:opacity-100" : "text-muted-foreground hover:text-foreground",
+          )}
+          {...props}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** The share of the tightest usage window still left, when an agent has reported one. */
+function useUsageLeft(): number | null {
+  return useApp((s) => {
+    let left: number | null = null;
+    for (const overview of s.providers.view?.providers ?? []) {
+      for (const window of overview.quota?.windows ?? []) {
+        const remaining = Math.round(100 - Math.min(100, Math.max(0, window.usedPercent)));
+        left = left === null ? remaining : Math.min(left, remaining);
+      }
+    }
+    return left;
+  });
+}
+
+/**
+ * The navigation rail along the window's start, on the window chrome: Home (chats and
+ * projects) at the top, and at the bottom Brigadier's menu (Usage, the Inspector, Settings,
+ * setup).
+ */
+export function AppRail() {
+  const inSettings = useApp((s) => s.selection.type === "settings");
+  const inspectorOpen = useApp((s) => s.inspector.open);
+  const usageLeft = useUsageLeft();
+  const shortcuts = useShortcuts();
+  return (
+    <nav
+      aria-label="App navigation"
+      className="w-rail pt-titlebar flex h-full shrink-0 flex-col items-center gap-2 px-2 pb-1"
+    >
+      <div data-tauri-drag-region className="flex w-full flex-col items-center gap-2 pt-2">
+        <RailButton label="Home" selected={!inSettings} onClick={() => closeSettings()}>
+          <Home />
+        </RailButton>
+      </div>
+      <div data-tauri-drag-region className="min-h-0 w-full flex-1" />
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <RailButton label="Brigadier" selected={false}>
+            <BrigadierGlyph aria-hidden />
+          </RailButton>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="top" align="start" className="min-w-56">
+          <DropdownMenuItem onSelect={() => openSettings("usage")}>
+            <Usage />
+            Usage
+            {usageLeft !== null && (
+              <span className="text-muted-foreground ms-auto ps-2 text-xs tabular-nums">
+                {usageLeft}% left
+              </span>
+            )}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setInspectorOpen(!inspectorOpen)}>
+            <Terminal />
+            {inspectorOpen ? "Hide Inspector" : "Inspector"}
+            <DropdownMenuShortcut>{shortcuts.inspector}</DropdownMenuShortcut>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => openSettings()}>
+            <Settings />
+            Settings
+            <DropdownMenuShortcut>{shortcuts.settings}</DropdownMenuShortcut>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => reopenOnboarding()}>
+            <SettingsCog />
+            Run setup again
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </nav>
+  );
+}
+
+// ----- the Home panel --------------------------------------------------------------------
 
 type DialogState =
   | { type: "projectSettings"; project: Project }
@@ -100,7 +240,7 @@ function useSections(): Sections {
   const projects = useApp((s) => s.projects);
   const conversations = useApp((s) => s.conversations);
   return useMemo(() => {
-    // Archived conversations live in the Archived view only.
+    // Archived conversations live in Settings → Archived chats only.
     // Side chats are temporary, shown only beside their conversation.
     const all = Object.values(conversations).filter(
       (conversation) => conversation.lifecycle !== "archived" && !conversation.sideOf,
@@ -130,57 +270,54 @@ function useSections(): Sections {
   }, [projects, conversations]);
 }
 
-function useActiveId(): string | null {
-  return useApp((s) =>
-    s.selection.type === "conversation" ? s.selection.id : null,
-  );
+type SectionId = "pinned" | "projects" | "chats";
+const SECTIONS_KEY = "brigadier.sidebarSections";
+
+function cachedFolded(): SectionId[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is SectionId => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
+/** Which sections are folded away, remembered across launches. */
+function useFoldedSections() {
+  const [folded, setFolded] = useState(cachedFolded);
+  const setOpen = (id: SectionId, open: boolean) => {
+    const next = open ? folded.filter((entry) => entry !== id) : [...folded, id];
+    setFolded(next);
+    try {
+      localStorage.setItem(SECTIONS_KEY, JSON.stringify(next));
+    } catch {
+      // Storage can be unavailable; the sections then open again on the next launch.
+    }
+  };
+  return {
+    isOpen: (id: SectionId) => !folded.includes(id),
+    setOpen,
+  };
+}
+
+/**
+ * The sidebar panel on Home: its header (title and search), New chat, then Pinned (when there
+ * are any), Projects with their sessions, and Chats. Each section folds away from its title.
+ */
 export function AppSidebar() {
   const { pinned, chats, projects, sessions } = useSections();
-  const activeId = useActiveId();
+  const activeId = useApp((s) => (s.selection.type === "conversation" ? s.selection.id : null));
   const draftProjectId = useApp((s) =>
-    s.selection.type === "draft" && s.selection.kind === "session"
-      ? s.selection.projectId
-      : null,
+    s.selection.type === "draft" && s.selection.kind === "session" ? s.selection.projectId : null,
   );
-  const isChatDraft = useApp(
-    (s) => s.selection.type === "draft" && s.selection.kind === "chat",
-  );
-  const settingsPage = useApp((s) => (s.selection.type === "settings" ? s.selection.page : null));
-  const isArchived = settingsPage === "archived";
-  const isUsage = settingsPage === "usage";
-  const archivedCount = useApp(
-    (s) =>
-      Object.values(s.conversations).filter(
-        (conversation) => conversation.lifecycle === "archived",
-      ).length,
-  );
+  const isChatDraft = useApp((s) => s.selection.type === "draft" && s.selection.kind === "chat");
   const catalogLoaded = useApp((s) => s.catalogLoaded);
-  const searchShortcut = useApp((s) =>
-    s.info?.platform === "macos" ? "⌘K" : "Ctrl K",
-  );
-  const inspectorShortcut = useApp((s) =>
-    s.info?.platform === "macos" ? "⌥⌘I" : "Ctrl Alt I",
-  );
-  const inspectorOpen = useApp((s) => s.inspector.open);
+  const shortcuts = useShortcuts();
+  const sections = useFoldedSections();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [deleting, setDeleting] = useState<Conversation | null>(null);
   const [removing, setRemoving] = useState<Project | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Cmd/Ctrl+K opens search from anywhere.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        setSearchOpen(true);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
 
   const actions = useMemo<RowActions>(
     () => ({
@@ -190,116 +327,55 @@ export function AppSidebar() {
     }),
     [],
   );
-  const onProjectSettings = (project: Project) =>
-    setDialog({ type: "projectSettings", project });
+  const onProjectSettings = (project: Project) => setDialog({ type: "projectSettings", project });
 
   return (
-    <Sidebar>
-      <div data-tauri-drag-region className="h-titlebar macos:block hidden shrink-0" />
-      <SidebarHeader className="macos:pt-0">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={isChatDraft}
-              onClick={() => select({ type: "draft", kind: "chat" })}
-            >
-              <ChatCompose />
-              <span>New chat</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setSearchOpen(true)}>
-              <MagnifyingGlassSearch />
-              <span className="flex-1">Search</span>
-              <Kbd className="ms-auto">{searchShortcut}</Kbd>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton isActive={isUsage} onClick={() => openSettings("usage")}>
-              <Analytics />
-              <span>Usage</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={isArchived}
-              onClick={() => openSettings("archived")}
-            >
-              <Archive />
-              <span className="flex-1">Archived</span>
-              {archivedCount > 0 && (
-                <span className="text-sidebar-foreground/60 ms-auto text-xs tabular-nums">
-                  {archivedCount}
-                </span>
-              )}
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-
-      <SidebarContent>
-        {pinned.length > 0 && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Pinned</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {pinned.map((conversation) => (
-                  <ConversationRow
-                    key={conversation.id}
-                    conversation={conversation}
-                    active={conversation.id === activeId}
-                    actions={actions}
-                  />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        <SidebarGroup>
-          <SidebarGroupLabel>Projects</SidebarGroupLabel>
-          <SidebarGroupAction
-            title="Add project"
-            aria-label="Add project"
-            onClick={() => openAddProject()}
+    <>
+      <NavHeader
+        title="Brigadier"
+        actions={
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-md"
+                aria-label="Search"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => openSearch()}
+              >
+                <MagnifyingGlassSearch />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              Search
+              <Kbd>{shortcuts.search}</Kbd>
+            </TooltipContent>
+          </Tooltip>
+        }
+      />
+      <NavList className="mb-2 px-2">
+        <li>
+          <button
+            type="button"
+            data-active={isChatDraft}
+            className={navRow}
+            onClick={() => select({ type: "draft", kind: "chat" })}
           >
-            <Plus />
-          </SidebarGroupAction>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {projects.map((project) => (
-                <ProjectRow
-                  key={project.id}
-                  project={project}
-                  sessions={sessions[project.id] ?? NO_SESSIONS}
-                  activeId={activeId}
-                  drafting={draftProjectId === project.id}
-                  actions={actions}
-                  onSettings={onProjectSettings}
-                  onRemove={setRemoving}
-                />
-              ))}
-            </SidebarMenu>
-            {catalogLoaded && projects.length === 0 && (
-              <EmptyHint>
-                Projects group sessions on a repository.{" "}
-                <button
-                  type="button"
-                  className="text-sidebar-foreground underline-offset-4 hover:underline"
-                  onClick={() => openAddProject()}
-                >
-                  Add a project
-                </button>
-              </EmptyHint>
-            )}
-          </SidebarGroupContent>
-        </SidebarGroup>
+            <ChatCompose />
+            <span className="truncate">New chat</span>
+          </button>
+        </li>
+      </NavList>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Chats</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {chats.map((conversation) => (
+      <div className="scroll-edge-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pt-1 pb-2">
+        {pinned.length > 0 && (
+          <NavSection
+            title="Pinned"
+            open={sections.isOpen("pinned")}
+            onOpenChange={(open) => sections.setOpen("pinned", open)}
+          >
+            <NavList>
+              {pinned.map((conversation) => (
                 <ConversationRow
                   key={conversation.id}
                   conversation={conversation}
@@ -307,65 +383,96 @@ export function AppSidebar() {
                   actions={actions}
                 />
               ))}
-            </SidebarMenu>
-            {catalogLoaded && chats.length === 0 && (
-              <EmptyHint>Chats you start appear here.</EmptyHint>
-            )}
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-
-      <SidebarFooter>
-        {error && (
-          <div
-            role="alert"
-            className="border-destructive/40 bg-destructive/10 text-destructive rounded-control flex items-start gap-2 border px-2 py-1.5 text-xs"
-          >
-            <p className="min-w-0 flex-1 wrap-break-word">{error}</p>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label="Dismiss"
-              onClick={() => setError(null)}
-            >
-              <X />
-            </Button>
-          </div>
+            </NavList>
+          </NavSection>
         )}
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => openSettings()}>
-              <Settings />
-              <span>Settings</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={inspectorOpen}
-              onClick={() => setInspectorOpen(!inspectorOpen)}
-            >
-              <Terminal />
-              <span className="flex-1">Inspector</span>
-              <Kbd className="ms-auto">{inspectorShortcut}</Kbd>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
 
-      <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
+        <NavSection
+          title="Projects"
+          open={sections.isOpen("projects")}
+          onOpenChange={(open) => sections.setOpen("projects", open)}
+          actions={
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Add project"
+                  className={cn(rowAction, "size-icon-button-sm")}
+                  onClick={() => openAddProject()}
+                >
+                  <Plus />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Add project</TooltipContent>
+            </Tooltip>
+          }
+        >
+          <NavList>
+            {projects.map((project) => (
+              <ProjectRow
+                key={project.id}
+                project={project}
+                sessions={sessions[project.id] ?? NO_SESSIONS}
+                activeId={activeId}
+                drafting={draftProjectId === project.id}
+                actions={actions}
+                onSettings={onProjectSettings}
+                onRemove={setRemoving}
+              />
+            ))}
+            {catalogLoaded && projects.length === 0 && (
+              <li className="text-muted-foreground px-2 py-1 text-sm">
+                Projects group sessions on a repository.{" "}
+                <button
+                  type="button"
+                  className="text-foreground/85 underline-offset-4 hover:underline"
+                  onClick={() => openAddProject()}
+                >
+                  Add a project
+                </button>
+              </li>
+            )}
+          </NavList>
+        </NavSection>
+
+        <NavSection
+          title="Chats"
+          open={sections.isOpen("chats")}
+          onOpenChange={(open) => sections.setOpen("chats", open)}
+        >
+          <NavList>
+            {chats.map((conversation) => (
+              <ConversationRow
+                key={conversation.id}
+                conversation={conversation}
+                active={conversation.id === activeId}
+                actions={actions}
+              />
+            ))}
+            {catalogLoaded && chats.length === 0 && <NavEmpty>Chats you start appear here.</NavEmpty>}
+          </NavList>
+        </NavSection>
+      </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="border-destructive/40 bg-destructive/10 text-destructive rounded-control m-2 flex items-start gap-2 border px-2 py-1.5 text-xs"
+        >
+          <p className="min-w-0 flex-1 wrap-break-word">{error}</p>
+          <Button variant="ghost" size="icon-xs" aria-label="Dismiss" onClick={() => setError(null)}>
+            <X />
+          </Button>
+        </div>
+      )}
+
       <ProjectDialog
         open={dialog?.type === "projectSettings"}
         onOpenChange={(open) => !open && setDialog(null)}
         project={dialog?.type === "projectSettings" ? dialog.project : null}
       />
-      <DeleteDialog
-        conversation={deleting}
-        onOpenChange={(open) => !open && setDeleting(null)}
-      />
-      <RemoveProjectDialog
-        project={removing}
-        onOpenChange={(open) => !open && setRemoving(null)}
-      />
+      <DeleteDialog conversation={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
+      <RemoveProjectDialog project={removing} onOpenChange={(open) => !open && setRemoving(null)} />
       <NameDialog
         open={dialog?.type === "rename"}
         onOpenChange={(open) => !open && setDialog(null)}
@@ -383,17 +490,24 @@ export function AppSidebar() {
           }
         }}
       />
-    </Sidebar>
+    </>
   );
 }
 
 const NO_SESSIONS: Conversation[] = [];
 
-function EmptyHint({ children }: { children: ReactNode }) {
+/** A row's hover actions, over its end; the row's status gives way to them. */
+function RowActionsSlot({ children }: { children: ReactNode }) {
   return (
-    <p className="text-sidebar-foreground/60 px-2 py-1 text-xs">{children}</p>
+    <div className="pointer-events-none absolute inset-y-0 end-1.5 flex items-center gap-2 opacity-0 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100 has-data-[state=open]:pointer-events-auto has-data-[state=open]:opacity-100">
+      {children}
+    </div>
   );
 }
+
+/** Hides a row's trailing status while its actions show. */
+const hideOnRowHover =
+  "group-hover/row:invisible group-focus-within/row:invisible group-has-data-[state=open]/row:invisible";
 
 const ProjectRow = memo(function ProjectRow({
   project,
@@ -420,85 +534,94 @@ const ProjectRow = memo(function ProjectRow({
     select({ type: "draft", kind: "session", projectId: project.id });
   };
   return (
-    <Collapsible
-      asChild
-      open={expanded}
-      onOpenChange={(open) => setProjectExpanded(project.id, open)}
-    >
-      <SidebarMenuItem>
-        <CollapsibleTrigger asChild>
-          <SidebarMenuButton isActive={drafting} className="pe-14">
-            {expanded ? <FolderOpen /> : <Folder />}
-            <span>{project.name}</span>
-          </SidebarMenuButton>
-        </CollapsibleTrigger>
-        <SidebarMenuAction
-          showOnHover
-          className="end-7"
-          title={`New session in ${project.name}`}
-          aria-label={`New session in ${project.name}`}
-          onClick={newSession}
+    <li className="flex flex-col">
+      <div className="group/row relative">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          data-active={drafting}
+          className={cn(navRow, "pe-16")}
+          onClick={() => setProjectExpanded(project.id, !expanded)}
         >
-          <Plus />
-        </SidebarMenuAction>
-        <DropdownMenu modal={false}>
-          <DropdownMenuTrigger asChild>
-            <SidebarMenuAction showOnHover aria-label={`Options for ${project.name}`}>
-              <DotsHorizontal />
-            </SidebarMenuAction>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="right" align="start">
-            <DropdownMenuItem onSelect={newSession}>
-              <Plus />
-              New session
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onSettings(project)}>
-              <SettingsCog />
-              Project settings…
-            </DropdownMenuItem>
-            {repo && (
-              <DropdownMenuItem
-                onSelect={() =>
-                  void openFolder(repo).catch((error: unknown) => actions.onError(errorText(error)))
-                }
+          {expanded ? <FolderOpen /> : <Folder />}
+          <span className="mask-fade-end min-w-0 flex-1 overflow-hidden whitespace-nowrap">
+            {project.name}
+          </span>
+        </button>
+        <RowActionsSlot>
+          <DropdownMenu modal={false}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" aria-label={`Actions for ${project.name}`} className={rowAction}>
+                    <DotsHorizontal />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Project actions</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent side="bottom" align="start">
+              <DropdownMenuItem onSelect={newSession}>
+                <ChatCompose />
+                New session
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onSettings(project)}>
+                <SettingsCog />
+                Project settings…
+              </DropdownMenuItem>
+              {repo && (
+                <DropdownMenuItem
+                  onSelect={() =>
+                    void openFolder(repo).catch((error: unknown) => actions.onError(errorText(error)))
+                  }
+                >
+                  <FolderOpen />
+                  {mac ? "Reveal in Finder" : "Open in File Manager"}
+                </DropdownMenuItem>
+              )}
+              {repo && (
+                <DropdownMenuItem onSelect={() => void exportProjectConventions(project.id, repo)}>
+                  <Download />
+                  Export conventions to AGENTS.md…
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => onRemove(project)}>
+                <Trash />
+                Remove project…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`New session in ${project.name}`}
+                className={rowAction}
+                onClick={newSession}
               >
-                <FolderOpen />
-                {mac ? "Reveal in Finder" : "Open in File Manager"}
-              </DropdownMenuItem>
-            )}
-            {repo && (
-              <DropdownMenuItem onSelect={() => void exportProjectConventions(project.id, repo)}>
-                <Download />
-                Export conventions to AGENTS.md…
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => onRemove(project)}>
-              <Trash />
-              Remove project…
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <CollapsibleContent>
-          <SidebarMenuSub>
-            {sessions.map((conversation) => (
-              <ConversationRow
-                key={conversation.id}
-                conversation={conversation}
-                active={conversation.id === activeId}
-                actions={actions}
-                nested
-              />
-            ))}
-            {sessions.length === 0 && (
-              <li className="text-sidebar-foreground/60 px-2 py-1 text-xs">
-                No sessions yet.
-              </li>
-            )}
-          </SidebarMenuSub>
-        </CollapsibleContent>
-      </SidebarMenuItem>
-    </Collapsible>
+                <ChatCompose />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">New session</TooltipContent>
+          </Tooltip>
+        </RowActionsSlot>
+      </div>
+      <NavFold open={expanded}>
+        <NavList className="pt-px pb-2">
+          {sessions.map((conversation) => (
+            <ConversationRow
+              key={conversation.id}
+              conversation={conversation}
+              active={conversation.id === activeId}
+              actions={actions}
+              nested
+            />
+          ))}
+          {sessions.length === 0 && <NavEmpty className="ps-8">No sessions yet</NavEmpty>}
+        </NavList>
+      </NavFold>
+    </li>
   );
 });
 
@@ -507,20 +630,17 @@ const ProjectRow = memo(function ProjectRow({
  * pill while it waits for the user, else a spinner while it runs. The row's actions take its
  * place on hover.
  */
-function RowStatus({ conversationId, nested }: { conversationId: string; nested: boolean }) {
+function RowStatus({ conversationId }: { conversationId: string }) {
   const { running, awaiting } = useRowActivity(conversationId);
   if (!running && !awaiting) return null;
-  const hide = nested
-    ? "group-hover/menu-sub-item:invisible group-focus-within/menu-sub-item:invisible"
-    : "group-hover/menu-item:invisible group-focus-within/menu-item:invisible";
   if (awaiting) {
     return (
       <span
         data-slot="row-status"
         data-status={awaiting}
         className={cn(
-          "bg-success/15 text-success rounded-capsule h-pill px-pill ms-auto flex shrink-0 items-center text-2xs whitespace-nowrap",
-          hide,
+          "bg-success/15 text-success rounded-capsule h-pill px-pill flex shrink-0 items-center text-2xs whitespace-nowrap",
+          hideOnRowHover,
         )}
       >
         {awaiting === "approval" ? "Awaiting approval" : "Needs input"}
@@ -533,14 +653,14 @@ function RowStatus({ conversationId, nested }: { conversationId: string; nested:
       data-status="running"
       aria-label="Running"
       className={cn(
-        "text-sidebar-foreground/60 size-icon-sm ms-auto shrink-0 animate-spin motion-reduce:animate-none",
-        hide,
+        "text-muted-foreground size-icon-sm shrink-0 animate-spin motion-reduce:animate-none",
+        hideOnRowHover,
       )}
     />
   );
 }
 
-/** A small moon after the title of a conversation that went idle and stopped its CLIs. */
+/** A small moon at the end of a conversation that went idle and stopped its CLIs. */
 function HibernatedMark() {
   return (
     <Tooltip>
@@ -548,7 +668,7 @@ function HibernatedMark() {
         <span
           data-slot="hibernated-badge"
           aria-label="Hibernated"
-          className="text-sidebar-foreground/60 ms-auto flex shrink-0 items-center"
+          className={cn("text-muted-foreground flex shrink-0 items-center", hideOnRowHover)}
         >
           <Sleep className="size-icon-sm" />
         </span>
@@ -558,6 +678,10 @@ function HibernatedMark() {
   );
 }
 
+/**
+ * A chat or session: its title, its state at the end, and on hover Pin and Archive. A
+ * right-click opens its menu (Pin, Rename…, Archive, Delete…).
+ */
 const ConversationRow = memo(function ConversationRow({
   conversation,
   active,
@@ -571,82 +695,80 @@ const ConversationRow = memo(function ConversationRow({
 }) {
   const pinned = conversation.pinnedAtMs !== null;
   const hibernated = conversation.lifecycle === "hibernated";
-  const menu = (
-    <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <SidebarMenuAction
-          showOnHover={!nested}
-          aria-label={`Options for ${conversation.title}`}
-          className={cn(
-            nested &&
-              "opacity-0 group-focus-within/menu-sub-item:opacity-100 group-hover/menu-sub-item:opacity-100 data-[state=open]:opacity-100",
-          )}
-        >
-          <DotsHorizontal />
-        </SidebarMenuAction>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent side="right" align="start">
-        <DropdownMenuItem
-          onSelect={() =>
-            void setPinned(conversation.id, !pinned).catch((error: unknown) =>
-              actions.onError(errorText(error)),
-            )
-          }
-        >
-          {pinned ? <Unpin /> : <Pin />}
-          {pinned ? "Unpin" : "Pin"}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => actions.onRename(conversation)}>
-          <Pencil />
-          Rename
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() =>
-            void archive(conversation.id).catch((error: unknown) =>
-              actions.onError(errorText(error)),
-            )
-          }
-        >
-          <Archive />
-          Archive
-        </DropdownMenuItem>
-        <DropdownMenuItem variant="destructive" onSelect={() => actions.onDelete(conversation)}>
-          <Trash />
-          Delete…
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-
-  if (nested) {
-    return (
-      <SidebarMenuSubItem>
-        <SidebarMenuSubButton
-          isActive={active}
-          className="pe-7"
-          onClick={() => openConversation(conversation.id)}
-        >
-          <span className="min-w-0 truncate">{conversation.title}</span>
-          {hibernated && <HibernatedMark />}
-          <RowStatus conversationId={conversation.id} nested />
-        </SidebarMenuSubButton>
-        {menu}
-      </SidebarMenuSubItem>
+  const noun = conversation.kind === "chat" ? "chat" : "session";
+  const togglePin = () =>
+    void setPinned(conversation.id, !pinned).catch((error: unknown) =>
+      actions.onError(errorText(error)),
     );
-  }
+  const archiveIt = () =>
+    void archive(conversation.id).catch((error: unknown) => actions.onError(errorText(error)));
+
   return (
-    <SidebarMenuItem>
-      <SidebarMenuButton
-        isActive={active}
-        className="pe-7"
-        onClick={() => openConversation(conversation.id)}
-      >
-        <span className="min-w-0 truncate">{conversation.title}</span>
-        {hibernated && <HibernatedMark />}
-        <RowStatus conversationId={conversation.id} nested={false} />
-      </SidebarMenuButton>
-      {menu}
-    </SidebarMenuItem>
+    <li className="group/row relative">
+      <ContextMenu modal={false}>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            data-active={active}
+            aria-current={active ? "page" : undefined}
+            className={cn(navRow, "pe-1.5", nested && "ps-8")}
+            onClick={() => openConversation(conversation.id)}
+          >
+            <span className="mask-fade-end min-w-0 flex-1 overflow-hidden whitespace-nowrap">
+              {conversation.title}
+            </span>
+            {hibernated && <HibernatedMark />}
+            <RowStatus conversationId={conversation.id} />
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={togglePin}>
+            {pinned ? <Unpin /> : <Pin />}
+            {pinned ? `Unpin ${noun}` : `Pin ${noun}`}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => actions.onRename(conversation)}>
+            <Pencil />
+            Rename {noun}…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={archiveIt}>
+            <Archive />
+            Archive {noun}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem variant="destructive" onSelect={() => actions.onDelete(conversation)}>
+            <Trash />
+            Delete {noun}…
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <RowActionsSlot>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={`${pinned ? "Unpin" : "Pin"} ${conversation.title}`}
+              className={rowAction}
+              onClick={togglePin}
+            >
+              {pinned ? <Unpin /> : <Pin />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{pinned ? `Unpin ${noun}` : `Pin ${noun}`}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={`Archive ${conversation.title}`}
+              className={rowAction}
+              onClick={archiveIt}
+            >
+              <Archive />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Archive {noun}</TooltipContent>
+        </Tooltip>
+      </RowActionsSlot>
+    </li>
   );
 });

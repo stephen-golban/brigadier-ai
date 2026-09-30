@@ -394,8 +394,8 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
       ref={ref}
       aria-label="Side panel"
       className={cn(
-        "border-border bg-background animate-in fade-in slide-in-from-right-2 relative flex h-full min-w-0 flex-col duration-200 motion-reduce:animate-none",
-        fullscreen ? "flex-1" : "shrink-0 border-s",
+        "animate-in fade-in slide-in-from-right-2 relative flex h-full min-w-0 flex-col duration-200 motion-reduce:animate-none",
+        fullscreen ? "flex-1" : "column-divider shrink-0",
         // The panel opens at about half the workspace.
         !fullscreen && width === null && "min-w-agents w-1/2",
       )}
@@ -406,7 +406,7 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
         data-tauri-drag-region
         className={cn(
           "h-titlebar flex shrink-0 items-center gap-1 px-2",
-          fullscreen && sidebar === "collapsed" && "macos:ps-traffic-lights",
+          fullscreen && sidebar === "collapsed" && "macos:ps-titlebar-clear",
         )}
       >
         <div role="tablist" className="flex min-w-0 items-center gap-1">

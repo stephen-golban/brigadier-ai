@@ -1,5 +1,6 @@
 import { Chat, Folder, Terminal } from "@openai/apps-sdk-ui/components/Icon";
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { create } from "zustand";
 
 import {
   Dialog,
@@ -166,4 +167,27 @@ function SearchBody({ onDone }: { onDone: () => void }) {
       </div>
     </div>
   );
+}
+
+const useSearchUi = create<{ open: boolean }>(() => ({ open: false }));
+
+/** Opens search (⌘K does too). */
+export function openSearch(): void {
+  useSearchUi.setState({ open: true });
+}
+
+/** Search over projects and conversations, from anywhere: ⌘K (Ctrl+K) opens it. */
+export function GlobalSearch() {
+  const open = useSearchUi((s) => s.open);
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        openSearch();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+  return <SearchDialog open={open} onOpenChange={(next) => useSearchUi.setState({ open: next })} />;
 }

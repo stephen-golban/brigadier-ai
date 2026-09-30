@@ -24,6 +24,9 @@
  *               h-pill, px-pill               badges and status pills
  *               h-row, h-row-sm               list rows (event rows, menus)
  *               h-nav-row                     sidebar and Settings navigation rows
+ *               size-rail-button, h-nav-header, h-nav-search  the rail's buttons, the sidebar
+ *                                             panel's header, the Settings search field
+ *               w-resize-handle               the sidebar panel's grab area
  *               w-switch-width, h-switch-height, size-switch-thumb, translate-x-switch-travel
  *                                             an on/off switch
  *               min-w-settings-control        the room a Settings row keeps for its control
@@ -41,6 +44,8 @@
  *                                             rail: default width and how far it resizes
  *               p-surface-inset               the page surface's gap to the window's end and bottom
  *               h-titlebar, ps-traffic-lights top bars; inset clearing the macOS traffic lights
+ *               ps-titlebar-clear             the top bar's inset clearing the sidebar toggle
+ *                                             while the panel is closed (macOS)
  *               h-status-bar                  the status bar along the bottom of the window
  *               w-inspector, w-inspector-wide the Inspector panel (wide for raw sessions)
  *               w-agents                      a session's agents panel
@@ -58,6 +63,7 @@
  *               plus rounded-{xs,sm,md,lg,xl,2xl}
  *   Type        text-{2xs,xs,sm,base,lg,xl,2xl} (UI roles, each with its line height), text-hero,
  *               text-page-title (a Settings page's title), text-label (a Settings row's label),
+ *               text-nav-title (the sidebar panel's title),
  *               text-code (code blocks), text-code-inline (inline code, em-relative)
  *   Tracking    tracking-hero, tracking-section, tracking-eyebrow (small uppercase labels)
  *   Fonts       font-sans, font-display, font-mono (system stacks, no downloads)
@@ -155,6 +161,19 @@
   --spacing-sidebar-min: 11.75rem;
   --spacing-sidebar-max: 29.25rem;
   --spacing-nav-row: 1.875rem;
+  /* The rail's buttons; the sidebar panel's header (its title and actions); the Settings
+     search field. */
+  --spacing-rail-button: 2.25rem;
+  --spacing-nav-header: 3.25rem;
+  --spacing-nav-search: 2.25rem;
+  /* The sidebar's list fades out this far under its header, and this far above its end, while
+     there is more to scroll that way. */
+  --spacing-scroll-fade-top: 0.5rem;
+  --spacing-scroll-fade-bottom: 2.5rem;
+  /* The grab area straddling the sidebar panel's edge. */
+  --spacing-resize-handle: 1rem;
+  /* A window narrower than this closes the sidebar panel by itself. */
+  --spacing-narrow-window: 60rem;
   /* The page surface (sidebar panel, content, Inspector) keeps this gap to the window's end
      and bottom. */
   --spacing-surface-inset: 0.25rem;
@@ -170,6 +189,11 @@
   --spacing-titlebar: 2.75rem;
   --spacing-status-bar: 1.625rem;
   --spacing-traffic-lights: 4.75rem;
+  /* The sidebar toggle stays in the titlebar right after the traffic lights; with the panel
+     closed, the top bar beside the rail starts this far in, clear of it. */
+  --spacing-titlebar-clear: calc(
+    var(--spacing-traffic-lights) + var(--spacing-icon-button-md) + var(--spacing) * 2 - var(--spacing-rail)
+  );
   --spacing-inspector: 28rem;
   --spacing-inspector-wide: 42rem;
   --spacing-agents: 26rem;
@@ -231,6 +255,9 @@
   --text-page-title--line-height: 2.125rem;
   --text-label: 0.8125rem;
   --text-label--line-height: 1.125rem;
+  /* The sidebar panel's title ("Brigadier", "Settings"). */
+  --text-nav-title: 1.125rem;
+  --text-nav-title--line-height: 1.5rem;
   /* The new chat's "What should we build?" hero text. */
   --text-hero: 1.875rem;
   --text-hero--line-height: 2.25rem;
@@ -430,6 +457,9 @@
   --spacing-sidebar-min: 10.5rem;
   --spacing-sidebar-max: 26rem;
   --spacing-nav-row: 1.625rem;
+  --spacing-rail-button: 2rem;
+  --spacing-nav-header: 2.75rem;
+  --spacing-nav-search: 1.875rem;
   --spacing-switch-width: 1.75rem;
   --spacing-switch-height: 1.125rem;
   --spacing-switch-thumb: 0.875rem;
@@ -481,6 +511,8 @@
   --text-page-title--line-height: 1.875rem;
   --text-label: 0.75rem;
   --text-label--line-height: 1rem;
+  --text-nav-title: 1rem;
+  --text-nav-title--line-height: 1.375rem;
   --text-code: 0.75rem;
   --text-code--line-height: 1.125rem;
 }

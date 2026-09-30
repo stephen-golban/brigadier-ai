@@ -54,7 +54,7 @@ function refreshUsage(): void {
  */
 export function StatusBar() {
   return (
-    <footer className="bg-sidebar text-muted-foreground h-status-bar flex shrink-0 items-center gap-4 overflow-hidden border-t px-2 text-xs whitespace-nowrap select-none">
+    <footer className="text-muted-foreground h-status-bar flex shrink-0 items-center gap-4 overflow-hidden px-2 text-xs whitespace-nowrap select-none">
       <Usage />
       <div className="ms-auto flex shrink-0 items-center gap-3">
         <KeepAwakeMenu />

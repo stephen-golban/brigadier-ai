@@ -44,7 +44,7 @@ export function Inspector() {
     <aside
       aria-label="Inspector"
       className={cn(
-        "bg-sidebar flex h-full shrink-0 flex-col border-s",
+        "column-divider flex h-full shrink-0 flex-col",
         tab === "providers" || tab === "brain" || tab === "routing"
           ? "w-inspector-wide"
           : "w-inspector",
@@ -57,7 +57,7 @@ export function Inspector() {
       >
         <div
           data-tauri-drag-region
-          className="h-titlebar flex shrink-0 items-center gap-2 border-b px-2"
+          className="h-titlebar flex shrink-0 items-center gap-2 px-2"
         >
           <TabsList
             ref={tabs}

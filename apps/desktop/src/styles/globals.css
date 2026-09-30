@@ -125,6 +125,102 @@
   }
 }
 
+/* The sidebar panel's width: where the user dragged it (--sidebar-width, set by the sidebar)
+   or the default, kept within its range and leaving the content beside it room. */
+@utility sidebar-panel-width {
+  width: clamp(
+    var(--spacing-sidebar-min),
+    var(--sidebar-width, var(--spacing-sidebar)),
+    max(var(--spacing-sidebar-min), min(var(--spacing-sidebar-max), 100vw - var(--spacing-rail) - 20rem))
+  );
+}
+
+/* A hairline on a column's end, between the sidebar panel and the content. */
+@utility border-e-hairline {
+  border-inline-end: 0.5px solid var(--color-divider);
+}
+
+/* A hairline down a column's start below the titlebar strip: the content beside the sidebar
+   panel. */
+@utility body-divider {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    top: var(--spacing-titlebar);
+    bottom: 0;
+    width: 0.5px;
+    background: var(--color-divider);
+    pointer-events: none;
+    z-index: 1;
+  }
+}
+
+/* A column's start edge: a short divider in the titlebar strip beside its header, and a
+   hairline down its body on the page surface. */
+@utility column-divider {
+  position: relative;
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    width: 0.5px;
+    background: var(--color-divider);
+    pointer-events: none;
+  }
+  &::before {
+    top: calc((var(--spacing-titlebar) - 1.25rem) / 2);
+    height: 1.25rem;
+  }
+  &::after {
+    top: var(--spacing-titlebar);
+    bottom: 0;
+  }
+}
+
+/* A list that fades out under its header and above its end while there is more to scroll that
+   way, following its own scroll position. */
+@property --scroll-fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --scroll-fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes scroll-edge-fade {
+  0% {
+    --scroll-fade-top: 0px;
+    --scroll-fade-bottom: var(--spacing-scroll-fade-bottom);
+  }
+  8%,
+  92% {
+    --scroll-fade-top: var(--spacing-scroll-fade-top);
+    --scroll-fade-bottom: var(--spacing-scroll-fade-bottom);
+  }
+  100% {
+    --scroll-fade-top: var(--spacing-scroll-fade-top);
+    --scroll-fade-bottom: 0px;
+  }
+}
+@utility scroll-edge-fade {
+  @supports (animation-timeline: scroll()) {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black var(--scroll-fade-top),
+      black calc(100% - var(--scroll-fade-bottom)),
+      transparent
+    );
+    animation: scroll-edge-fade linear both;
+    animation-timeline: scroll(self y);
+  }
+}
+
 /* A row that scrolls sideways without showing a scrollbar (the composer's utility bar). */
 @utility hide-scrollbar {
   scrollbar-width: none;

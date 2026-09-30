@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { Badge } from "@/components/ui/badge";
-import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
+import { useSidebar } from "@/components/ui/sidebar";
 import type { Lifecycle } from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
@@ -37,9 +37,6 @@ function useTitle(): {
           session: false,
         };
       }
-      if (selection.type === "settings") {
-        return { project: null, title: "Settings", lifecycle: null, session: false };
-      }
       return { project: null, title: "New chat", lifecycle: null, session: false };
     }),
   );
@@ -64,11 +61,12 @@ export function TopBar({
     <header
       data-tauri-drag-region
       className={cn(
-        "h-titlebar flex shrink-0 items-center gap-1 border-b px-3",
-        state === "collapsed" && "macos:ps-traffic-lights",
+        // In the titlebar strip, above the page surface. With the sidebar panel closed it
+        // starts clear of the sidebar toggle, which stays after the traffic lights.
+        "h-titlebar ease-sidebar flex shrink-0 items-center gap-1 px-3 transition-[padding] duration-300 motion-reduce:transition-none",
+        state === "collapsed" && "macos:ps-titlebar-clear",
       )}
     >
-      <SidebarTrigger className="text-muted-foreground me-1" />
       <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
         {session && (
           <Folder
@@ -94,7 +92,7 @@ export function TopBar({
           </Badge>
         )}
         {lifecycle === "archived" && (
-          <Badge variant="outline" className="ms-1" title="Archived: restore it from the sidebar's Archived view to continue.">
+          <Badge variant="outline" className="ms-1" title="Archived: restore it from Settings → Archived chats to continue.">
             Archived
           </Badge>
         )}
