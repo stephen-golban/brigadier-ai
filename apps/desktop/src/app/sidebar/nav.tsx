@@ -54,7 +54,7 @@ export function NavSection({
             type="button"
             aria-expanded={open}
             onClick={() => onOpenChange(!open)}
-            className="text-muted-foreground focus-visible:ring-ring/50 flex min-w-0 items-center gap-1 rounded-xs text-sm font-medium opacity-75 outline-none focus-visible:ring-2"
+            className="text-foreground/50 focus-visible:ring-ring/50 flex min-w-0 items-center gap-1 rounded-xs text-sm font-medium opacity-75 outline-none focus-visible:ring-2"
           >
             <span className="truncate">{title}</span>
             <ChevronDown
@@ -68,7 +68,7 @@ export function NavSection({
             />
           </button>
         ) : (
-          <h2 id={id} className="text-muted-foreground truncate text-sm font-medium opacity-75">
+          <h2 id={id} className="text-foreground/50 truncate text-sm font-medium opacity-75">
             {title}
           </h2>
         )}
@@ -106,7 +106,7 @@ export function NavList({ children, className }: { children: ReactNode; classNam
 /** A muted line in a list with nothing to show ("No sessions yet"). */
 export function NavEmpty({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <li className={cn("text-muted-foreground/70 h-nav-row flex items-center px-2 text-sm", className)}>
+    <li className={cn("text-foreground/35 h-nav-row flex items-center px-2 text-sm", className)}>
       {children}
     </li>
   );
