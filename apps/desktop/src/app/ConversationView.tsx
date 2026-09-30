@@ -30,6 +30,7 @@ import { ProjectCombobox } from "@/app/conversation/RailPickers";
 import {
   SidePanel,
   PanelButtons,
+  PanelButtonsRoom,
   SidePanelContext,
   useSidePanel,
 } from "@/app/conversation/SidePanel";
@@ -749,7 +750,7 @@ export function ConversationView({
                     <div
                       ref={embedded ? undefined : sidePanel.workspace}
                       data-embedded-view={embedded || undefined}
-                      className="flex h-full min-h-0"
+                      className="relative flex h-full min-h-0"
                     >
                       <div className={cn("flex h-full min-w-0 flex-1 flex-col", fullscreen && "hidden")}>
                         {!embedded && (
@@ -758,7 +759,7 @@ export function ConversationView({
                               <ChatActions conversation={conversation} onRename={() => setRenaming(true)} />
                             )}
                             {conversation && summary && <PinnedSummaryToggle conversation={conversation} />}
-                            {!sidePanel.visible && <PanelButtons />}
+                            <PanelButtonsRoom besidePanel />
                           </TopBar>
                         )}
                         {error && (
@@ -792,6 +793,7 @@ export function ConversationView({
                         </SummaryPane>
                       </div>
                       {!embedded && <SidePanel conversationId={conversationId} />}
+                      {!embedded && <PanelButtons />}
                     </div>
                   </OpenFileContext.Provider>
                   {conversation && (

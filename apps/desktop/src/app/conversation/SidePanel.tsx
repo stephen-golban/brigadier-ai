@@ -226,6 +226,11 @@ export type SidePanelApi = {
   closeTab: (tab: SideTab) => void;
   showNewTab: () => void;
   setFullscreen: (fullscreen: boolean) => void;
+  /** Where the panel's open and close motion is (see `useReveal`). */
+  reveal: Reveal;
+  /** How wide the titlebar's panel buttons are, for the bars they sit over to leave room. */
+  buttonsWidth: number;
+  setButtonsWidth: (width: number) => void;
 };
 
 export const SidePanelContext = createContext<SidePanelApi>({
@@ -246,6 +251,9 @@ export const SidePanelContext = createContext<SidePanelApi>({
   closeTab: () => {},
   showNewTab: () => {},
   setFullscreen: () => {},
+  reveal: { mounted: false, out: false, moving: false },
+  buttonsWidth: 0,
+  setButtonsWidth: () => {},
 });
 
 /** The room around `element`, followed as it and the window resize. */
@@ -298,6 +306,7 @@ export function useSidePanel(
   const [worker, setWorker] = useState<string | null>(null);
   const [file, setFile] = useState<FileTarget | null>(null);
   const [share, setShare] = useState(savedShare);
+  const [buttonsWidth, setButtonsWidth] = useState(0);
   const mac = useApp((s) => s.info?.platform === "macos");
   const { open: sidebarOpen } = useSidebar();
   const { room, workspace } = useRoom();
@@ -307,6 +316,7 @@ export function useSidePanel(
     fitsNow.current = fits;
   }, [fits]);
   const visible = state.open && (fits || state.fullscreen);
+  const reveal = useReveal(visible);
   const width = panelWidth(share, room);
   const limits = useMemo(() => widthLimits(room.workspace), [room.workspace]);
   const available = useMemo<SideTab[]>(
@@ -372,7 +382,9 @@ export function useSidePanel(
   }, [conversationId]);
   // Tab shortcuts while this conversation is open, and the panel's own: ⌥⌘B shows or hides
   // it, ⌘⇧F switches full view (Ctrl for ⌘ off macOS).
+  // A side chat's own view has no panel, so it leaves the keys to the conversation around it.
   useEffect(() => {
+    if (kind === "sideChat") return;
     const onKeyDown = (event: KeyboardEvent) => {
       const command = mac ? event.metaKey : event.ctrlKey;
       if (command && event.altKey && !event.shiftKey && event.code === "KeyB") {
@@ -397,7 +409,7 @@ export function useSidePanel(
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [mac, available, openTab, toggle]);
+  }, [kind, mac, available, openTab, toggle]);
 
   const panel = useMemo<SidePanelApi>(
     () => ({
@@ -428,6 +440,9 @@ export function useSidePanel(
       closeTab,
       showNewTab: () => setState((current) => ({ ...show(current), active: "new" })),
       setFullscreen: (fullscreen) => setState((current) => ({ ...current, fullscreen })),
+      reveal,
+      buttonsWidth,
+      setButtonsWidth,
     }),
     [
       state,
@@ -444,6 +459,8 @@ export function useSidePanel(
       openTab,
       closeTab,
       show,
+      reveal,
+      buttonsWidth,
     ],
   );
 
@@ -542,16 +559,31 @@ function Splitter() {
 
 /**
  * The titlebar's end while a conversation is open: the tool buttons, full view while the
- * panel shows, and the toggle.
+ * panel shows, and the toggle. Drawn once over the view's top end, so they stay put while the
+ * panel opens and closes; the top bar and the panel's header leave room for them
+ * (`PanelButtonsRoom`).
  */
 export const PanelButtons: FC = () => {
-  const { state, visible, fits, available, toggle, toggleTab, setFullscreen } =
+  const { state, visible, fits, available, toggle, toggleTab, setFullscreen, setButtonsWidth } =
     useContext(SidePanelContext);
   const mac = useApp((s) => s.info?.platform === "macos");
   const keys = (value: string | null) => (value ? shortcutLabel(value, mac) : undefined);
+  const group = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = group.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setButtonsWidth(element.offsetWidth));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [setButtonsWidth]);
   return (
     <TitlebarTips>
-      <div data-slot="panel-buttons" className="flex shrink-0 items-center gap-1.5">
+      <div
+        ref={group}
+        data-slot="panel-buttons"
+        data-tauri-drag-region
+        className="h-titlebar absolute end-1 top-0 z-20 flex items-center gap-1.5"
+      >
         {TOOLS.filter((tab) => available.includes(tab)).map((tab) => (
           <TitlebarButton
             key={tab}
@@ -585,6 +617,28 @@ export const PanelButtons: FC = () => {
     </TitlebarTips>
   );
 };
+
+/**
+ * The room a bar leaves at its end for the panel buttons drawn over it. The thread's top bar
+ * (`besidePanel`) gives it up as the panel opens and takes it back as it closes, on the
+ * panel's spring, so the bar's own buttons never pass under them.
+ */
+export function PanelButtonsRoom({ besidePanel = false }: { besidePanel?: boolean }) {
+  const { buttonsWidth, reveal } = useContext(SidePanelContext);
+  const width = besidePanel && reveal.out ? 0 : buttonsWidth;
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        "shrink-0",
+        besidePanel &&
+          reveal.moving &&
+          "ease-panel transition-[width] duration-500 motion-reduce:transition-none",
+      )}
+      style={{ width: `${width}px` }}
+    />
+  );
+}
 
 function TabChip({
   tab,
@@ -681,9 +735,12 @@ function SourceTab() {
   );
 }
 
-/** Whether the panel is mounted, and whether it is out at its width, following `visible`:
- * it mounts closed and opens a frame later, and stays mounted until it has closed. */
-function useReveal(visible: boolean): { mounted: boolean; out: boolean; moving: boolean } {
+/** Whether the panel is mounted, whether it is out at its width, and whether it is moving. */
+type Reveal = { mounted: boolean; out: boolean; moving: boolean };
+
+/** The panel's reveal, following `visible`: it mounts closed and opens a frame later, and
+ * stays mounted until it has closed. */
+function useReveal(visible: boolean): Reveal {
   const [seen, setSeen] = useState(visible);
   const [mounted, setMounted] = useState(visible);
   const [out, setOut] = useState(visible);
@@ -717,17 +774,23 @@ function useReveal(visible: boolean): { mounted: boolean; out: boolean; moving: 
 
 /** The side panel of a conversation, while it shows (and while it opens and closes). */
 export function SidePanel({ conversationId }: { conversationId: string | null }) {
-  const { state, visible, width, closeTab, openTab, showNewTab } = useContext(SidePanelContext);
+  const { state, visible, width, closeTab, openTab, showNewTab, reveal } =
+    useContext(SidePanelContext);
   const { state: sidebar } = useSidebar();
-  const { mounted, out, moving } = useReveal(visible);
+  const { mounted, out, moving } = reveal;
   const strip = useRef<HTMLDivElement>(null);
-  // Keep the active tab in view in a strip that scrolls.
+  // Keep the active tab in view in a strip that scrolls; only the strip moves (scrolling the
+  // tab into view would move the panel under it too while it opens).
   const active = state.active;
   useEffect(() => {
     if (!mounted) return;
-    strip.current
-      ?.querySelector(`[data-tab="${active}"]`)
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const list = strip.current;
+    const tab = list?.querySelector<HTMLElement>(`[data-tab="${active}"]`);
+    if (!list || !tab) return;
+    const box = list.getBoundingClientRect();
+    const rect = tab.getBoundingClientRect();
+    if (rect.left < box.left) list.scrollLeft -= box.left - rect.left;
+    else if (rect.right > box.right) list.scrollLeft += rect.right - box.right;
   }, [active, mounted]);
   if (!mounted) return null;
   const full = state.fullscreen && visible;
@@ -736,9 +799,10 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
     <div className={cn("relative flex h-full", full ? "min-w-0 flex-1" : "shrink-0")}>
       <div
         data-slot="side-panel-clip"
-        inert={!out}
+        // Live from the moment it opens, so a tab's field can take focus as it mounts.
+        inert={!visible}
         className={cn(
-          "flex h-full justify-end overflow-hidden",
+          "flex h-full justify-end overflow-clip",
           full ? "flex-1" : "shadow-side-panel",
           moving && !full && "ease-panel transition-[width] duration-500 motion-reduce:transition-none",
         )}
@@ -792,7 +856,7 @@ export function SidePanel({ conversationId }: { conversationId: string | null })
               </TitlebarButton>
             </TitlebarTips>
             <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
-            <PanelButtons />
+            <PanelButtonsRoom />
           </header>
           <div className="flex min-h-0 flex-1 flex-col">
             {state.active === "workers" && conversationId ? (
