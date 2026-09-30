@@ -251,6 +251,10 @@ export function Segmented<T extends string>({
   );
 }
 
+/** The look of a button that opens a menu of choices (a select, the model pickers). */
+export const selectTrigger =
+  "border-divider bg-foreground/3 hover:bg-foreground/6 data-[state=open]:bg-foreground/6 focus-visible:ring-ring/50 rounded-nav text-label h-7 max-w-full min-w-0 items-center border px-3 transition-colors outline-none focus-visible:ring-2 disabled:opacity-50";
+
 /** One of several choices in a menu, shown as a button with the chosen one's label. */
 export function SettingsSelect<T extends string>({
   label,
@@ -275,7 +279,7 @@ export function SettingsSelect<T extends string>({
           id={id}
           type="button"
           aria-label={label}
-          className="border-divider bg-foreground/3 hover:bg-foreground/6 data-[state=open]:bg-foreground/6 focus-visible:ring-ring/50 rounded-nav text-label flex h-7 max-w-full min-w-0 items-center gap-1 border px-3 transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
+          className={cn(selectTrigger, "flex gap-1")}
         >
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate">{chosen?.label}</span>
           <ChevronDown aria-hidden className="text-muted-foreground size-icon-sm shrink-0" />

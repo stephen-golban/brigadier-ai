@@ -6,6 +6,7 @@ import {
   SettingsRow,
   SettingsSection,
   SettingsSelect,
+  selectTrigger,
   SwitchSetting,
 } from "@/app/settings/parts";
 import {
@@ -23,6 +24,7 @@ import {
   PERMISSION_LEVELS,
   useModelGroups,
 } from "@/lib/setup";
+import { cn } from "@/lib/utils";
 import { setSetting } from "@/state/settings";
 import { useApp } from "@/state/store";
 
@@ -132,7 +134,7 @@ function DefaultModelRow({
         value={value ?? fallback}
         defaultChoice={fallback}
         onChange={change}
-        className={value ? "text-foreground" : undefined}
+        className={cn(selectTrigger, value && "text-foreground")}
       />
     </SettingsRow>
   );
