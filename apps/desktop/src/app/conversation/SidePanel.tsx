@@ -507,6 +507,8 @@ function Splitter() {
         const rtl = getComputedStyle(event.currentTarget).direction === "rtl";
         const wanted = start.current.width + (start.current.x - event.clientX) * (rtl ? -1 : 1);
         if (wanted < limits.min / 2) {
+          // Dragged shut: it opens again at the width it had before the drag.
+          resize(start.current.width);
           end(event);
           hide();
           return;
@@ -688,28 +690,23 @@ function useReveal(visible: boolean): { mounted: boolean; out: boolean; moving: 
   const [moving, setMoving] = useState(false);
   if (seen !== visible) {
     setSeen(visible);
-    if (visible) {
-      setMounted(true);
-    } else {
-      setMoving(true);
-      setOut(false);
-    }
+    if (visible) setMounted(true);
+    else setMoving(true);
   }
   useEffect(() => {
-    let frame = 0;
-    if (visible) {
-      // Two frames: the first lays it out closed, the second opens it.
+    // Two frames: the first lays it out where it is with its transition on, the second moves
+    // it (a width changed in the same frame as its transition is turned on doesn't animate).
+    let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => {
-          setMoving(true);
-          setOut(true);
-        });
+        setMoving(true);
+        setOut(visible);
       });
-    }
+    });
+    // Settled once the motion has run, counting the frames before it starts.
     const settled = window.setTimeout(() => {
       setMoving(false);
       if (!visible) setMounted(false);
-    }, MOTION_MS);
+    }, MOTION_MS + 100);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settled);
