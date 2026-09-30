@@ -1,5 +1,5 @@
 import * as React from "react";
-import { SidebarLeft } from "@openai/apps-sdk-ui/components/Icon";
+import { SidebarFloatingLeft } from "@openai/apps-sdk-ui/components/Icon";
 
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -249,7 +249,7 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       }}
       {...props}
     >
-      <SidebarLeft />
+      <SidebarFloatingLeft />
     </Button>
   );
 }
