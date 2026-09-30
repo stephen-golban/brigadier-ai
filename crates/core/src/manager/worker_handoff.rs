@@ -25,7 +25,7 @@ use super::SessionManager;
 use super::conversation::Cli;
 use super::workers::TaskLive;
 use crate::model::{DomainEvent, TaskId, streams};
-use crate::work::Task;
+use crate::work::{Task, TaskState};
 use crate::{Error, Result, knowledge};
 
 /// Worker events read per page for the transcript.
@@ -157,6 +157,25 @@ impl SessionManager {
         pending: Option<String>,
     ) -> Result<()> {
         let _handing = live.reroute.lock().await;
+        // Another hand-over came first (a message arrived while the turn that asked for a
+        // note was ending, or the other way round): its fresh session must not be closed
+        // mid-turn. It has the old session's last messages, the note among them; a pending
+        // message goes to it.
+        if live.runs_fresh(self.worker_handoff_at()).await {
+            tracing::info!(task = %task.id, "the worker already continues in a fresh session");
+            if let Some(pending) = pending {
+                live.deliver(TurnInput::text(pending)).await?;
+            }
+            return Ok(());
+        }
+        // Handed over while paused, and now a message came: it starts the fresh session
+        // prepared then, as a message starts a paused worker.
+        if let Some(mut first) = live.take_held_handover().await {
+            if let Some(pending) = pending {
+                let _ = write!(first.text, "\n\nWaiting for you now:\n{pending}");
+            }
+            return self.start_fresh(live, task, first).await;
+        }
         let tokens = match live.context().await {
             Some(tokens) => Some(tokens),
             None => self.last_worker_context(&task.id).await,
@@ -190,6 +209,7 @@ impl SessionManager {
             })
             .await?;
         }
+        let waits = pending.is_some();
         let text = handover_text(
             &task,
             &dir,
@@ -214,10 +234,6 @@ impl SessionManager {
         )
         .await;
         tracing::info!(task = %task.id, ?tokens, with_note = note.is_some(), "worker handed over to a fresh session");
-        let subject = match &task.subject {
-            Some(id) => self.task_by_id(&task.conversation_id, id).await.ok(),
-            None => None,
-        };
         let workspace = task
             .workspace
             .as_ref()
@@ -225,14 +241,34 @@ impl SessionManager {
         let files = self
             .worker_files(&task, &PathBuf::from(&workspace.scratch))
             .await;
-        // Stopped meanwhile (the user's stop button): nothing starts again.
-        if self
-            .task_by_id(&task.conversation_id, &task.id)
-            .await
-            .is_ok_and(|task| task.state.is_final())
-        {
+        let first = TurnInput { text, files };
+        match self.task_by_id(&task.conversation_id, &task.id).await {
+            // Stopped meanwhile (the user's stop button): nothing starts again.
+            Ok(now) if now.state.is_final() => Ok(()),
+            // Paused meanwhile, and no message waits: the fresh session starts on resume.
+            Ok(now) if now.state == TaskState::Paused && !waits => {
+                live.hold_handover(first).await;
+                Ok(())
+            }
+            _ => self.start_fresh(live, &task, first).await,
+        }
+    }
+
+    /// Starts the fresh session a hand-over prepared, with its first message.
+    pub(crate) async fn start_fresh(
+        &self,
+        live: &Arc<TaskLive>,
+        task: &Task,
+        first: TurnInput,
+    ) -> Result<()> {
+        let task = self.task_by_id(&task.conversation_id, &task.id).await?;
+        if task.state.is_final() {
             return Ok(());
         }
+        let subject = match &task.subject {
+            Some(id) => self.task_by_id(&task.conversation_id, id).await.ok(),
+            None => None,
+        };
         live.allow_revival().await;
         live.clear_transient().await;
         self.launch_worker(
@@ -240,7 +276,7 @@ impl SessionManager {
             &task,
             subject.as_ref(),
             brigadier_providers::Origin::New,
-            TurnInput { text, files },
+            first,
         )
         .await
     }

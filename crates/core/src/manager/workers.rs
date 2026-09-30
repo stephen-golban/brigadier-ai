@@ -116,6 +116,8 @@ struct TaskLiveState {
     /// The worker was asked to end this turn with a handoff note (PLAN.md §7): a fresh session
     /// takes over when the turn ends.
     handoff_asked: bool,
+    /// A fresh session's first message, held while the task is paused: resuming starts it.
+    held_handover: Option<TurnInput>,
 }
 
 /// A task's live worker.
@@ -182,6 +184,44 @@ impl TaskLive {
     /// The worker's latest context size, while this daemon has seen one.
     pub(crate) async fn context(&self) -> Option<i64> {
         self.state.lock().await.context
+    }
+
+    /// Holds a fresh session's first message until the paused task is resumed.
+    pub(crate) async fn hold_handover(&self, first: TurnInput) {
+        self.state.lock().await.held_handover = Some(first);
+    }
+
+    /// The first message of a fresh session held while the task was paused, if any.
+    pub(crate) async fn take_held_handover(&self) -> Option<TurnInput> {
+        self.state.lock().await.held_handover.take()
+    }
+
+    /// A CLI session runs whose context is unknown yet or under `handoff_at`: a fresh one
+    /// that another hand-over started.
+    pub(crate) async fn runs_fresh(&self, handoff_at: Option<i64>) -> bool {
+        let state = self.state.lock().await;
+        state.cli.is_some()
+            && state
+                .context
+                .is_none_or(|tokens| handoff_at.is_some_and(|at| tokens < at))
+    }
+
+    /// Gives the running CLI session `input`: a steer mid-turn, else a new turn. False
+    /// without a session.
+    pub(crate) async fn deliver(&self, input: TurnInput) -> Result<bool> {
+        let mut state = self.state.lock().await;
+        let Some(cli) = state.cli.clone() else {
+            return Ok(false);
+        };
+        if state.busy {
+            cli.session.steer(input).await
+        } else {
+            state.busy = true;
+            state.nudged = false;
+            cli.session.send(input).await
+        }
+        .map_err(|err| Error::Provider(err.to_string()))?;
+        Ok(true)
     }
 
     /// The worker's CLI session, while one runs.
@@ -795,6 +835,8 @@ impl SessionManager {
             state.nudged = false;
             state.stopping = false;
             state.handoff_asked = false;
+            // Any start supersedes a fresh session held for a paused task.
+            state.held_handover = None;
             if !resumed {
                 state.context = None;
             }
@@ -2226,6 +2268,14 @@ impl SessionManager {
             let manager = self.arc();
             self.spawn(async move { manager.hand_off(&live, end).await });
             return Ok(());
+        }
+        {
+            // Paused while it was being handed to a fresh session: that session starts now
+            // (under the hand-over lock, so a message meanwhile finds it running).
+            let _handing = live.reroute.lock().await;
+            if let Some(first) = live.take_held_handover().await {
+                return self.start_fresh(&live, &task, first).await;
+            }
         }
         let cli = {
             let mut state = live.state.lock().await;
