@@ -10,7 +10,7 @@
 //!   rule, so it gets no work until the user allows it; its agent's first list is taken as
 //!   known, so turning this on (or signing in) changes nothing for the models already there.
 
-use brigadier_providers::ProviderKind;
+use brigadier_providers::{ModelInfo, ProviderKind};
 use brigadier_router::{
     MergedModel, OverrideEffect, OverrideRule, OverrideTarget, ProviderState, TaskCategory,
 };
@@ -42,21 +42,51 @@ pub fn model_available(settings: &Settings, provider: ProviderKind, id: &str) ->
             .any(|model| model.provider == provider && model.id == id)
 }
 
+/// The listed model an id names, as the pickers read it: the model with that id, else the
+/// alias that resolves to it (`claude-opus-5-5` names `opus`); no id, or `default`, names the
+/// model marked default.
+fn listed<'a>(catalog: &'a [ModelInfo], id: Option<&str>) -> Option<&'a ModelInfo> {
+    let named = id.and_then(|id| {
+        catalog.iter().find(|model| model.id == id).or_else(|| {
+            catalog
+                .iter()
+                .find(|model| model.resolved.as_deref() == Some(id))
+        })
+    });
+    named.or_else(|| {
+        matches!(id, None | Some("default"))
+            .then(|| catalog.iter().find(|model| model.is_default))
+            .flatten()
+    })
+}
+
 /// Whether a new conversation may start on `choice` (or switch to it), with why not in plain
-/// words. A choice without a model (the CLI's own default) asks only about its agent.
-pub fn check_choice(settings: &Settings, choice: &ModelChoice) -> Result<(), String> {
+/// words. `catalog` is its agent's model list: a concrete id or an alias is judged as the
+/// listed model it names, and a choice without a model as the agent's default one.
+pub fn check_choice(
+    settings: &Settings,
+    choice: &ModelChoice,
+    catalog: &[ModelInfo],
+) -> Result<(), String> {
     let agent = choice.provider.label();
     if !provider_on(settings, choice.provider) {
         return Err(format!(
             "{agent} is switched off. Turn it on in Settings › Providers."
         ));
     }
-    match choice.model.as_deref() {
-        Some(id) if !model_available(settings, choice.provider, id) => Err(format!(
-            "{id} isn't available. Turn it on in Settings › Providers."
-        )),
-        _ => Ok(()),
+    let id = choice.model.as_deref();
+    let model = listed(catalog, id);
+    let hidden = |id: &str| !model_available(settings, choice.provider, id);
+    if id.is_some_and(hidden) || model.is_some_and(|model| hidden(&model.id)) {
+        let name = model.map_or_else(
+            || id.unwrap_or("Its default model").to_owned(),
+            |model| model.display_name.clone(),
+        );
+        return Err(format!(
+            "{name} isn't available. Turn it on in Settings › Providers."
+        ));
     }
+    Ok(())
 }
 
 /// How the id of a [`worker_rule`] Brigadier added for a model it just saw starts: the Routing
@@ -130,6 +160,42 @@ pub fn note_models(
     (next != *settings).then_some(next)
 }
 
+/// Settings a client sent, written over `current`: a model the core recorded as known since
+/// the client read its copy stays known, with the rule keeping it from worker tasks, so a
+/// change made on a page open from before can't give that model work.
+pub fn rebase(current: &Settings, mut incoming: Settings) -> Settings {
+    for model in &current.known_models {
+        if incoming.known_models.contains(model) {
+            continue;
+        }
+        incoming.known_models.push(model.clone());
+        for rule in current
+            .routing_overrides
+            .iter()
+            .filter(|rule| is_worker_rule(rule, model.provider, &model.id))
+        {
+            if !incoming
+                .routing_overrides
+                .iter()
+                .any(|kept| kept.id == rule.id)
+            {
+                incoming.routing_overrides.push(rule.clone());
+            }
+        }
+    }
+    incoming.settings_version = incoming.settings_version.max(current.settings_version);
+    incoming
+}
+
+/// Whether a settings change may let work waiting for quota run now: new rules or rankings,
+/// or an agent or model turned back on.
+pub fn wakes_waiting_work(before: &Settings, after: &Settings) -> bool {
+    before.routing_overrides != after.routing_overrides
+        || before.routing_rankings != after.routing_rankings
+        || before.disabled_providers != after.disabled_providers
+        || before.hidden_models != after.hidden_models
+}
+
 /// Saved settings brought up to [`SETTINGS_VERSION`], or `None` when they already are.
 ///
 /// Version 1: an agent switched off before used to be a `never` rule for the whole agent,
@@ -159,26 +225,34 @@ pub fn migrate(settings: &Settings) -> Option<Settings> {
     Some(next)
 }
 
-/// What routing may consider: the models of agents switched on that aren't made unavailable,
-/// and an agent switched off as if signed out (so its registry models aren't offered either).
+/// What routing may consider: the models of agents switched on that aren't made unavailable.
+/// An agent switched off, or one whose listed models are all unavailable, counts as signed
+/// out: routing would otherwise take its missing list as not read yet and offer its registry
+/// models instead.
 pub fn routable(
     settings: &Settings,
     models: &[MergedModel],
     providers: &[ProviderState],
 ) -> (Vec<MergedModel>, Vec<ProviderState>) {
-    let models = models
+    let kept: Vec<MergedModel> = models
         .iter()
         .filter(|model| model_available(settings, model.provider, &model.id))
         .cloned()
         .collect();
     let providers = providers
         .iter()
-        .map(|state| ProviderState {
-            logged_in: state.logged_in && provider_on(settings, state.provider),
-            ..state.clone()
+        .map(|state| {
+            let listed = models.iter().any(|model| model.provider == state.provider);
+            let left = kept.iter().any(|model| model.provider == state.provider);
+            ProviderState {
+                logged_in: state.logged_in
+                    && provider_on(settings, state.provider)
+                    && (left || !listed),
+                ..state.clone()
+            }
         })
         .collect();
-    (models, providers)
+    (kept, providers)
 }
 
 #[cfg(test)]
@@ -281,12 +355,158 @@ mod tests {
             effort: None,
             fast: None,
         };
-        assert!(check_choice(&settings, &choice(ProviderKind::Claude, Some("opus"))).is_ok());
-        assert!(check_choice(&settings, &choice(ProviderKind::Claude, None)).is_ok());
-        let hidden = check_choice(&settings, &choice(ProviderKind::Claude, Some("haiku")));
+        let check = |provider, model| check_choice(&settings, &choice(provider, model), &[]);
+        assert!(check(ProviderKind::Claude, Some("opus")).is_ok());
+        assert!(check(ProviderKind::Claude, None).is_ok());
+        let hidden = check(ProviderKind::Claude, Some("haiku"));
         assert!(hidden.is_err_and(|why| why.contains("haiku")));
-        let off = check_choice(&settings, &choice(ProviderKind::Codex, None));
+        let off = check(ProviderKind::Codex, None);
         assert!(off.is_err_and(|why| why.contains("Codex is switched off")));
+    }
+
+    fn listed_model(id: &str, resolved: &str, is_default: bool) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            display_name: format!("Model {id}"),
+            description: String::new(),
+            resolved: Some(resolved.into()),
+            efforts: Vec::new(),
+            default_effort: None,
+            is_default,
+            input_modalities: Vec::new(),
+            fast: None,
+            legacy: false,
+        }
+    }
+
+    #[test]
+    fn a_choice_is_judged_as_the_listed_model_it_names() {
+        let settings = Settings {
+            hidden_models: vec![ModelRef {
+                provider: ProviderKind::Claude,
+                id: "opus".into(),
+            }],
+            ..Settings::default()
+        };
+        let catalog = [
+            listed_model("opus", "claude-opus-5-5", true),
+            listed_model("sonnet", "claude-sonnet-5-5", false),
+        ];
+        let check = |model: Option<&str>| {
+            check_choice(
+                &settings,
+                &ModelChoice {
+                    provider: ProviderKind::Claude,
+                    model: model.map(str::to_owned),
+                    effort: None,
+                    fast: None,
+                },
+                &catalog,
+            )
+        };
+        // The concrete id, `default` and no model at all all name the hidden `opus`.
+        let resolved = check(Some("claude-opus-5-5"));
+        assert!(resolved.is_err_and(|why| why.contains("Model opus")));
+        assert!(check(Some("default")).is_err());
+        assert!(check(None).is_err());
+        assert!(check(Some("claude-sonnet-5-5")).is_ok());
+        assert!(check(Some("sonnet")).is_ok());
+    }
+
+    #[test]
+    fn an_agent_with_every_listed_model_unavailable_gets_no_work() {
+        let settings = Settings {
+            hidden_models: vec![ModelRef {
+                provider: ProviderKind::Claude,
+                id: "opus".into(),
+            }],
+            ..Settings::default()
+        };
+        let listed = [listed_model("opus", "claude-opus-5-5", true)];
+        let merged = brigadier_router::merge(
+            &brigadier_router::Registry::bundled(),
+            &[(ProviderKind::Claude, &listed)],
+            &[],
+            &[],
+        );
+        let states = [ProviderKind::Claude, ProviderKind::Codex].map(|provider| ProviderState {
+            provider,
+            logged_in: true,
+            quota: None,
+        });
+        let (models, providers) = routable(&settings, &merged, &states);
+        assert!(models.is_empty());
+        // Signed out as routing sees it, so its registry models aren't offered instead.
+        assert!(!providers[0].logged_in);
+        // Codex's list isn't read yet: that is routing's to judge, as before.
+        assert!(providers[1].logged_in);
+    }
+
+    #[test]
+    fn a_client_write_keeps_models_seen_meanwhile() {
+        let read = note_models(
+            &Settings::default(),
+            ProviderKind::Claude,
+            &ids(&["opus"]),
+            1,
+        )
+        .expect("the models are new");
+        // The core sees `fresh` while a page still holds `read`, then the page writes.
+        let current = note_models(&read, ProviderKind::Claude, &ids(&["opus", "fresh"]), 2)
+            .expect("fresh is new");
+        let sent = Settings {
+            disabled_providers: vec![ProviderKind::Codex],
+            ..read.clone()
+        };
+        let written = rebase(&current, sent);
+        assert_eq!(written.disabled_providers, vec![ProviderKind::Codex]);
+        assert_eq!(written.known_models, current.known_models);
+        assert_eq!(written.routing_overrides, current.routing_overrides);
+        // A page that saw `fresh` and allowed it keeps it allowed.
+        let allowed = Settings {
+            routing_overrides: Vec::new(),
+            ..current.clone()
+        };
+        assert!(rebase(&current, allowed).routing_overrides.is_empty());
+    }
+
+    #[test]
+    fn turning_an_agent_or_model_back_on_wakes_waiting_work() {
+        let off = Settings {
+            disabled_providers: vec![ProviderKind::Codex],
+            hidden_models: vec![ModelRef {
+                provider: ProviderKind::Claude,
+                id: "haiku".into(),
+            }],
+            ..Settings::default()
+        };
+        let agent_on = Settings {
+            disabled_providers: Vec::new(),
+            ..off.clone()
+        };
+        let model_on = Settings {
+            hidden_models: Vec::new(),
+            ..off.clone()
+        };
+        assert!(wakes_waiting_work(&off, &agent_on));
+        assert!(wakes_waiting_work(&off, &model_on));
+        let worker_allowed = note_models(
+            &note_models(&off, ProviderKind::Claude, &ids(&["opus"]), 1).expect("new"),
+            ProviderKind::Claude,
+            &ids(&["opus", "fresh"]),
+            2,
+        )
+        .expect("fresh is new");
+        let allowed = Settings {
+            routing_overrides: Vec::new(),
+            ..worker_allowed.clone()
+        };
+        assert!(wakes_waiting_work(&worker_allowed, &allowed));
+        let unrelated = Settings {
+            keep_awake_lid_closed: !off.keep_awake_lid_closed,
+            ..off.clone()
+        };
+        assert!(!wakes_waiting_work(&off, &unrelated));
     }
 
     #[test]

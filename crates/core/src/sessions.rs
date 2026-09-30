@@ -340,15 +340,6 @@ impl Core {
                 ));
             }
         }
-        // Switching to a model the user made unavailable isn't allowed; staying on one is.
-        let same_model = conversation.setup.as_ref().is_some_and(|current| {
-            let (now, next) = (current.choice(), setup.choice());
-            now.provider == next.provider && now.model == next.model
-        });
-        if !same_model {
-            crate::routing::availability::check_choice(&self.settings(), setup.choice())
-                .map_err(Error::Invalid)?;
-        }
         let mut events = vec![(
             streams::CATALOG.into(),
             DomainEvent::ConversationSetUp {
@@ -1504,8 +1495,11 @@ impl Core {
         Ok(())
     }
 
+    /// Writes settings a client sent: the models recorded as known since it read its copy
+    /// stay known ([`crate::routing::availability::rebase`]).
     pub async fn update_settings(&self, settings: Settings) -> Result<Settings> {
         let _writes = self.settings_writes.lock().await;
+        let settings = crate::routing::availability::rebase(&self.settings(), settings);
         self.write_settings(settings).await
     }
 

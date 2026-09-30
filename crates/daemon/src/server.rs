@@ -706,7 +706,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             conversation: Box::new(sessions.fork(conversation_id, message_id, place).await?),
         },
         Request::UpdateSetup { id, setup } => Response::UpdateSetup {
-            conversation: Box::new(core.set_setup(id, setup).await?),
+            conversation: Box::new(sessions.set_setup(id, setup).await?),
         },
         Request::GetConversation { id, limit } => Response::GetConversation {
             view: Box::new(core.conversation_view(id, limit).await?),
@@ -1154,11 +1154,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
             daemon.awake.apply().await;
             // New rules or rankings, or an agent or model turned back on, may let work waiting
             // for quota run now.
-            if before.routing_overrides != settings.routing_overrides
-                || before.routing_rankings != settings.routing_rankings
-                || before.disabled_providers != settings.disabled_providers
-                || before.hidden_models != settings.hidden_models
-            {
+            if brigadier_core::routing::availability::wakes_waiting_work(&before, &settings) {
                 let sessions = daemon.sessions.clone();
                 daemon
                     .supervisor

@@ -64,7 +64,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::model::{
     Conversation, ConversationId, ConversationKind, DomainEvent, Environment, EnvironmentRequest,
-    ProjectId, Rating, RepoInfo, Setup, SetupRequest,
+    ModelChoice, ProjectId, Rating, RepoInfo, Setup, SetupRequest,
 };
 use crate::runtime::{Runtime, Spawner};
 use crate::sessions::Origin;
@@ -360,8 +360,7 @@ impl SessionManager {
             None => None,
         };
         if let Some(choice) = orchestrator {
-            crate::routing::availability::check_choice(&self.core.settings(), choice)
-                .map_err(Error::Invalid)?;
+            self.check_choice(choice)?;
         }
         if let Some(SetupRequest::Session {
             repo,
@@ -461,6 +460,33 @@ impl SessionManager {
             let _ = (source, cli);
             vec![event]
         }
+    }
+
+    /// Whether a new conversation may start on `choice`, or one switch to it: its agent is on
+    /// and the model it names is available ([`crate::routing::availability::check_choice`]).
+    fn check_choice(&self, choice: &ModelChoice) -> Result<()> {
+        let catalog = self
+            .runtime
+            .overview(choice.provider)
+            .and_then(|overview| overview.models)
+            .map(|catalog| catalog.models)
+            .unwrap_or_default();
+        crate::routing::availability::check_choice(&self.core.settings(), choice, &catalog)
+            .map_err(Error::Invalid)
+    }
+
+    /// Changes a conversation's setup ([`Core::set_setup`]). Switching to a model the user
+    /// made unavailable isn't allowed; staying on one is.
+    pub async fn set_setup(&self, id: ConversationId, setup: Setup) -> Result<Conversation> {
+        let current = self.core.conversation(&id)?.setup;
+        let same_model = current.as_ref().is_some_and(|current| {
+            let (now, next) = (current.choice(), setup.choice());
+            now.provider == next.provider && now.model == next.model
+        });
+        if !same_model {
+            self.check_choice(setup.choice())?;
+        }
+        self.core.set_setup(id, setup).await
     }
 
     /// Switched on, logged in and not refusing work (see [`Self::provider_ready`]).

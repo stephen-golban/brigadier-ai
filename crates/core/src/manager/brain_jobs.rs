@@ -332,7 +332,7 @@ impl SessionManager {
         let scratch = self.owned_dir("scratch", "");
         ProviderKind::ALL
             .into_iter()
-            .filter(|kind| self.provider_usable(*kind))
+            .filter(|kind| self.provider_usable(*kind) && self.cheapest(*kind).is_ok())
             .filter(|kind| *kind != ProviderKind::Codex || codex::can_deny_reads(true, &scratch))
             .filter_map(|kind| {
                 let quota = self
@@ -388,7 +388,7 @@ impl SessionManager {
         let (Some(index), Some(root)) = (brain.index.clone(), brain.root.clone()) else {
             return Err(Error::Invalid("this project has no repository".into()));
         };
-        let (model, effort) = self.cheapest(provider);
+        let (model, effort) = self.cheapest(provider)?;
         let commit = {
             let (git, root) = (self.git.clone(), root.clone());
             blocking(move || {
@@ -939,7 +939,10 @@ impl SessionManager {
                     .get(&kind)
                     .copied()
                     .unwrap_or(now);
-            if idle_for < ENRICH_IDLE_MS || !self.provider_usable(kind) {
+            if idle_for < ENRICH_IDLE_MS
+                || !self.provider_usable(kind)
+                || self.cheapest(kind).is_err()
+            {
                 return None;
             }
             let quota = self.runtime.overview(kind)?.quota?;

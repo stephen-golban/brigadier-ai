@@ -160,6 +160,7 @@ impl SessionManager {
     fn spare_for_research(&self, kind: ProviderKind, now: i64) -> bool {
         if self.provider_idle_ms(kind, now) < super::brain_jobs::ENRICH_IDLE_MS
             || !self.provider_usable(kind)
+            || self.cheapest(kind).is_err()
         {
             return false;
         }
@@ -190,7 +191,7 @@ impl SessionManager {
         let owner = format!("research:{id}");
         let scratch = self.owned_dir("scratch", &format!("research-{id}"));
         self.prepare_owned_dir(&owner, &scratch).await?;
-        let (cheap, effort) = self.cheapest(runs_on);
+        let (cheap, effort) = self.cheapest(runs_on)?;
         let spec = SessionSpec {
             cwd: scratch.clone(),
             model: Some(cheap.clone()),

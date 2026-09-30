@@ -103,6 +103,11 @@ impl SessionManager {
             ));
         }
 
+        // A fork is a new conversation: its model must be available, as when starting one.
+        if let Some(setup) = &conversation.setup {
+            self.check_choice(setup.choice())?;
+        }
+
         let id = ConversationId::generate();
         let setup = match conversation.setup.clone() {
             Some(Setup::Session {

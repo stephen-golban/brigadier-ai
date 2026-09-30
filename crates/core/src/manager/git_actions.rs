@@ -168,7 +168,7 @@ impl SessionManager {
         provider: ProviderKind,
         patch: &str,
     ) -> Result<String> {
-        let (model, effort) = self.cheapest(provider);
+        let (model, effort) = self.cheapest(provider)?;
         let run = uuid::Uuid::now_v7().to_string();
         let owner = format!("gen:{run}");
         let dir = self.owned_dir("scratch", &run);
@@ -242,12 +242,12 @@ impl SessionManager {
     }
 
     /// The provider's cheapest model for a one-off chore, at low effort where it has efforts.
-    pub(super) fn cheapest(&self, provider: ProviderKind) -> (String, Option<String>) {
+    /// Only a model the user left available: when its list has none, the chore isn't done.
+    pub(super) fn cheapest(&self, provider: ProviderKind) -> Result<(String, Option<String>)> {
         let family = match provider {
             ProviderKind::Claude => "haiku",
             ProviderKind::Codex => "luna",
         };
-        // A model the user made unavailable isn't used: then the first one that is.
         let settings = self.core.settings();
         let available =
             |id: &str| crate::routing::availability::model_available(&settings, provider, id);
@@ -257,17 +257,28 @@ impl SessionManager {
             .and_then(|overview| overview.models)
             .map(|catalog| catalog.models)
             .unwrap_or_default();
-        let model = models
-            .iter()
-            .find(|model| model.id.contains(family) && available(&model.id))
-            .or_else(|| {
-                models
-                    .iter()
-                    .find(|model| !model.legacy && available(&model.id))
-            })
-            .map_or_else(|| family.to_owned(), |model| model.id.clone());
+        // Before its list is read, the family's alias stands in for it.
+        let model = if models.is_empty() {
+            available(family).then(|| family.to_owned())
+        } else {
+            models
+                .iter()
+                .find(|model| model.id.contains(family) && available(&model.id))
+                .or_else(|| {
+                    models
+                        .iter()
+                        .find(|model| !model.legacy && available(&model.id))
+                })
+                .map(|model| model.id.clone())
+        };
+        let model = model.ok_or_else(|| {
+            Error::Invalid(format!(
+                "{} has no model available. Turn one on in Settings › Providers.",
+                provider.label()
+            ))
+        })?;
         let effort = (provider == ProviderKind::Codex).then(|| "low".to_owned());
-        (model, effort)
+        Ok((model, effort))
     }
 }
 
