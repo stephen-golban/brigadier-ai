@@ -89,8 +89,8 @@ directory gets its own daemon.
 ## Uninstall
 
 Use **Uninstall Brigadier…** when the app is still installed: it is in the
-menu bar (Brigadier ▸ Uninstall Brigadier…) and at the bottom of Settings →
-Storage → Manage storage…. If the app has already been deleted, run the
+menu bar (Brigadier ▸ Uninstall Brigadier…), in Settings → Storage, and at the
+bottom of Settings → Storage → Manage storage…. If the app has already been deleted, run the
 standalone script from this repository:
 
 ```sh
@@ -353,7 +353,7 @@ nothing outside the project.
   changes, they are marked stale and answered as "may be outdated".
 - **Skeleton pass and enrichment.** After a project's first scan the cheapest model maps its
   modules, stack, conventions and build/run/verify recipe, read-only and sandboxed. With
-  Settings → "Use spare quota to deepen the Brain" (on by default), quota that would expire
+  Settings → Personalization → "Use spare quota to deepen the Brain" (on by default), quota that would expire
   unused (a usage window resetting within the hour with 40% left, the provider idle for 10
   minutes) refreshes stale nodes and fills gaps; it stops as soon as your own work starts.
 - **Rebirth.** The orchestrator never compacts its context. Past about 150k tokens its session
@@ -364,7 +364,7 @@ nothing outside the project.
   work (the handoff note and the swap) apart from the wait for the next turn.
 - **Personal Brain.** Preferences that hold in every project, from the orchestrator or from a
   Chat (`save_memory`, shown as Memory chips), are given to new orchestrators and Chats.
-  Settings lists them. A project's conventions can be exported to a marked section of its
+  Settings → Personalization lists them. A project's conventions can be exported to a marked section of its
   `AGENTS.md`.
 
 Files: `brains/<project>/brain.sqlite` and `index.sqlite`, `brains/personal.sqlite`, and the
@@ -396,7 +396,7 @@ factors in its details).
 - **Quota.** The daemon reads Claude's and Codex's usage windows (every 5 minutes while work
   runs, every 30 when idle, and live from the sessions), keeps a week of samples, and projects
   each window to its reset. New work shifts away from a provider whose window runs hot. The
-  Usage page (sidebar, or the status bar's chip) shows the windows, their estimates, Brigadier's
+  Usage page (Settings → Usage, the rail's menu, or the status bar's chip) shows the windows, their estimates, Brigadier's
   own tokens, hand-offs and waits, and the models with what routing learned.
 - **Fallback.** A worker whose provider hits a limit (or that keeps failing) hands its task to
   the best eligible model in the same worktree, with the spec, a progress log and the current
