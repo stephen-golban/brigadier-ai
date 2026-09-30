@@ -34,6 +34,8 @@ const EVENTS_PAGE: u32 = 2_000;
 const TAIL_MESSAGES: usize = 6;
 /// … each up to this many bytes (the rest is in transcript.md).
 const TAIL_MESSAGE_BYTES: usize = 8_000;
+/// How the notice of a hand-over starts; hand-overs are counted by it.
+const HANDED_OVER: &str = "Continued in a fresh session of the same model";
 
 /// The steer that asks a worker to end its turn with a handoff note.
 fn wrap_up_prompt(tokens: i64) -> String {
@@ -62,7 +64,8 @@ impl SessionManager {
     /// A worker reported its context size: past the hand-off size mid-turn, it is asked to wrap
     /// up with a handoff note.
     pub(crate) async fn worker_context(&self, live: &Arc<TaskLive>, cli: &Arc<Cli>, tokens: i64) {
-        if !live.note_context(tokens, self.worker_handoff_at()).await {
+        let start = live.note_context(tokens).await;
+        if !self.worker_handoff_due(live, tokens, Some(start)).await || !live.ask_handoff().await {
             return;
         }
         tracing::info!(task = %live.id, tokens, "asking the worker to wrap up for a hand-off");
@@ -91,22 +94,51 @@ impl SessionManager {
         });
     }
 
-    /// The worker's context is past the hand-off size (after a restart, from its recorded
-    /// events).
-    pub(crate) async fn worker_over_handoff(&self, live: &Arc<TaskLive>, id: &TaskId) -> bool {
+    /// Whether the worker's session, at `tokens` and started at `start`, is handed over now
+    /// (see [`knowledge::worker_handoff_due`]).
+    pub(crate) async fn worker_handoff_due(
+        &self,
+        live: &Arc<TaskLive>,
+        tokens: i64,
+        start: Option<i64>,
+    ) -> bool {
         let Some(at) = self.worker_handoff_at() else {
             return false;
         };
-        let context = match live.context().await {
-            Some(tokens) => Some(tokens),
-            None => self.last_worker_context(id).await,
+        if !knowledge::worker_handoff_due(tokens, start, at, 0) {
+            return false;
+        }
+        let handovers = match live.handovers() {
+            Some(count) => count,
+            None => {
+                let count = self.count_handovers(live).await;
+                live.set_handovers(Some(count));
+                count
+            }
         };
-        context.is_some_and(|tokens| tokens >= at)
+        let due = knowledge::worker_handoff_due(tokens, start, at, handovers);
+        if !due {
+            tracing::debug!(task = %live.id, tokens, handovers, "no more hand-overs this attempt");
+        }
+        due
     }
 
-    /// The last context size the worker's latest CLI session reported.
-    async fn last_worker_context(&self, id: &TaskId) -> Option<i64> {
-        let page = self
+    /// The worker's context is past the hand-off size (after a restart, from its recorded
+    /// events).
+    pub(crate) async fn worker_over_handoff(&self, live: &Arc<TaskLive>, id: &TaskId) -> bool {
+        let (tokens, start) = match live.context().await {
+            (Some(tokens), start) => (Some(tokens), start),
+            (None, _) => self.last_worker_context(id).await,
+        };
+        match tokens {
+            Some(tokens) => self.worker_handoff_due(live, tokens, start).await,
+            None => false,
+        }
+    }
+
+    /// The last context size the worker's latest CLI session reported, and its first.
+    pub(crate) async fn last_worker_context(&self, id: &TaskId) -> (Option<i64>, Option<i64>) {
+        let Ok(page) = self
             .core
             .store()
             .read_stream(
@@ -118,41 +150,85 @@ impl SessionManager {
                 },
             )
             .await
-            .ok()?;
-        for stored in page {
-            match serde_json::from_str::<DomainEvent>(stored.payload.get()) {
-                Ok(DomainEvent::WorkerEvent {
-                    event: ProviderEvent::ContextSize { used_tokens, .. },
-                    ..
-                }) => return Some(used_tokens),
-                Ok(DomainEvent::WorkerEvent {
-                    event: ProviderEvent::SessionStarted { .. },
-                    ..
-                }) => return None,
-                _ => {}
+        else {
+            return (None, None);
+        };
+        let events: Vec<ProviderEvent> = page
+            .iter()
+            .filter_map(
+                |stored| match serde_json::from_str::<DomainEvent>(stored.payload.get()) {
+                    Ok(DomainEvent::WorkerEvent { event, .. }) => Some(event),
+                    _ => None,
+                },
+            )
+            .collect();
+        session_sizes(&events)
+    }
+
+    /// Hand-overs the task's current attempt made, from its recorded events.
+    async fn count_handovers(&self, live: &Arc<TaskLive>) -> u32 {
+        let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await else {
+            return 0;
+        };
+        let since = task
+            .attempts
+            .last()
+            .map_or(0, |attempt| attempt.started_at_ms);
+        let mut events: Vec<(i64, ProviderEvent)> = Vec::new();
+        let mut before = None;
+        loop {
+            let page = self
+                .core
+                .store()
+                .read_stream(
+                    streams::task(&live.id),
+                    StreamPage {
+                        before,
+                        kinds: vec!["worker.event".into()],
+                        limit: EVENTS_PAGE,
+                    },
+                )
+                .await
+                .unwrap_or_default();
+            let Some(oldest) = page.last() else {
+                break;
+            };
+            before = Some(oldest.stream_seq);
+            let full = page.len() == EVENTS_PAGE as usize;
+            events.extend(page.iter().filter_map(|stored| {
+                match serde_json::from_str::<DomainEvent>(stored.payload.get()) {
+                    Ok(DomainEvent::WorkerEvent { event, .. }) => Some((stored.at_ms, event)),
+                    _ => None,
+                }
+            }));
+            if !full || oldest.at_ms < since {
+                break;
             }
         }
-        None
+        handovers_since(&events, since)
     }
 
     /// Continues `task` in a fresh session of the same model: closes its CLI (between turns),
     /// writes the hand-off files, and starts the new session with `note`, the last messages and
-    /// `pending` (a message still to act on). Boxed: the worker it starts can come back here,
+    /// `pending` (a message still to act on). `from` is the CLI session the hand-over was
+    /// decided for ([`TaskLive::generation`]). Boxed: the worker it starts can come back here,
     /// and a recursive future must name its `Send` bound.
     pub(crate) fn hand_over_worker<'a>(
         &'a self,
         live: &'a Arc<TaskLive>,
         task: &'a Task,
+        from: u64,
         note: Option<String>,
         pending: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.hand_over(live, task, note, pending))
+        Box::pin(self.hand_over(live, task, from, note, pending))
     }
 
     async fn hand_over(
         &self,
         live: &Arc<TaskLive>,
         task: &Task,
+        from: u64,
         note: Option<String>,
         pending: Option<String>,
     ) -> Result<()> {
@@ -161,7 +237,7 @@ impl SessionManager {
         // note was ending, or the other way round): its fresh session must not be closed
         // mid-turn. It has the old session's last messages, the note among them; a pending
         // message goes to it.
-        if live.runs_fresh(self.worker_handoff_at()).await {
+        if live.generation().await != from {
             tracing::info!(task = %task.id, "the worker already continues in a fresh session");
             if let Some(pending) = pending {
                 live.deliver(TurnInput::text(pending)).await?;
@@ -177,8 +253,8 @@ impl SessionManager {
             return self.start_fresh(live, task, first).await;
         }
         let tokens = match live.context().await {
-            Some(tokens) => Some(tokens),
-            None => self.last_worker_context(&task.id).await,
+            (Some(tokens), _) => Some(tokens),
+            (None, _) => self.last_worker_context(&task.id).await.0,
         };
         live.close_cli().await;
         let task = self.task_by_id(&task.conversation_id, &task.id).await?;
@@ -226,13 +302,11 @@ impl SessionManager {
             &task.id,
             ProviderEvent::Notice {
                 level: NoticeLevel::Info,
-                message: format!(
-                    "Continued in a fresh session of the same model{size}; the hand-off is in {}.",
-                    dir.display()
-                ),
+                message: format!("{HANDED_OVER}{size}; the hand-off is in {}.", dir.display()),
             },
         )
         .await;
+        live.set_handovers(live.handovers().map(|count| count + 1));
         tracing::info!(task = %task.id, ?tokens, with_note = note.is_some(), "worker handed over to a fresh session");
         let workspace = task
             .workspace
@@ -465,4 +539,135 @@ fn handover_text(
         let _ = write!(text, "\n\nWaiting for you now:\n{pending}");
     }
     text
+}
+
+/// The hand-overs among `events` (each with when it was recorded) since `since_ms`.
+fn handovers_since(events: &[(i64, ProviderEvent)], since_ms: i64) -> u32 {
+    let count = events
+        .iter()
+        .filter(|(at_ms, event)| *at_ms >= since_ms && is_handover(event))
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// Whether `event` is the notice of a hand-over.
+fn is_handover(event: &ProviderEvent) -> bool {
+    matches!(event, ProviderEvent::Notice { message, .. } if message.starts_with(HANDED_OVER))
+}
+
+/// The last context size of the latest CLI session in `events` (newest first), and its first:
+/// the session may have been resumed, which starts it again under the same id. Without any
+/// session start in `events` (a long session), only the last size is known.
+fn session_sizes(events: &[ProviderEvent]) -> (Option<i64>, Option<i64>) {
+    let (mut last, mut first) = (None, None);
+    // The sizes since the previous session start seen (newest first, so the later ones).
+    let (mut run_last, mut run_first) = (None, None);
+    let mut session: Option<&str> = None;
+    for event in events {
+        match event {
+            ProviderEvent::ContextSize { used_tokens, .. } => {
+                run_last.get_or_insert(*used_tokens);
+                run_first = Some(*used_tokens);
+            }
+            ProviderEvent::SessionStarted { native_id, .. } => {
+                if session.is_some_and(|id| id != native_id.as_str()) {
+                    return (last, first);
+                }
+                session = Some(native_id);
+                last = last.or(run_last.take());
+                first = run_first.take().or(first);
+            }
+            _ => {}
+        }
+    }
+    if session.is_none() {
+        return (run_last, None);
+    }
+    (last, first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brigadier_providers::NoticeLevel;
+
+    fn started(id: &str) -> ProviderEvent {
+        ProviderEvent::SessionStarted {
+            native_id: id.into(),
+            model: None,
+            cwd: None,
+            cli_version: None,
+        }
+    }
+
+    fn size(tokens: i64) -> ProviderEvent {
+        ProviderEvent::ContextSize {
+            used_tokens: tokens,
+            window_tokens: None,
+        }
+    }
+
+    #[test]
+    fn sizes_come_from_the_latest_session_across_resumes() {
+        // Oldest first: a session, a fresh one after a hand-over, the fresh one resumed.
+        let mut events = vec![
+            started("a"),
+            size(10_000),
+            size(170_000),
+            started("b"),
+            size(28_000),
+            size(60_000),
+            started("b"),
+            size(61_000),
+        ];
+        events.reverse();
+        assert_eq!(session_sizes(&events), (Some(61_000), Some(28_000)));
+    }
+
+    #[test]
+    fn a_session_without_sizes_has_none() {
+        let mut events = vec![started("a"), size(10_000), started("b")];
+        events.reverse();
+        assert_eq!(session_sizes(&events), (None, None));
+    }
+
+    #[test]
+    fn a_long_session_has_only_its_last_size() {
+        let mut events = vec![size(90_000), size(95_000)];
+        events.reverse();
+        assert_eq!(session_sizes(&events), (Some(95_000), None));
+    }
+
+    fn notice(message: String) -> ProviderEvent {
+        ProviderEvent::Notice {
+            level: NoticeLevel::Info,
+            message,
+        }
+    }
+
+    #[test]
+    fn the_cap_holds_after_a_restart() {
+        // The attempt started at 1_000: one hand-over before it (an earlier attempt), five
+        // in it. A restarted daemon counts them again from the events and hands over no more.
+        let handed = |at: i64| (at, notice(format!("{HANDED_OVER}; the hand-off is in /x.")));
+        let mut events = vec![handed(500), (900, size(30_000))];
+        events.extend((1..=5).map(|n| handed(1_000 + n)));
+        events.push((2_000, notice("Context at about 40k tokens".into())));
+        let count = handovers_since(&events, 1_000);
+        assert_eq!(count, knowledge::WORKER_HANDOFFS_MAX);
+        assert!(!knowledge::worker_handoff_due(
+            900_000,
+            Some(30_000),
+            160_000,
+            count
+        ));
+    }
+
+    #[test]
+    fn only_hand_over_notices_count() {
+        assert!(is_handover(&notice(format!(
+            "{HANDED_OVER} at about 40k tokens; the hand-off is in /x."
+        ))));
+        assert!(!is_handover(&notice("Context at about 40k tokens".into())));
+    }
 }

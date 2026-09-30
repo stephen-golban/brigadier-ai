@@ -113,6 +113,8 @@ impl SessionManager {
             return;
         }
         live.close_cli().await;
+        // A new attempt: its hand-overs are counted afresh.
+        live.set_handovers(None);
         let from = task.route.choice.clone();
         if let AttemptEnd::Limit { limit } = &end {
             self.runtime.note_limit(from.provider, limit.clone()).await;

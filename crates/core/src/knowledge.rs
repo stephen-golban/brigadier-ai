@@ -216,6 +216,18 @@ pub fn worker_handoff_tokens(setting: u32) -> i64 {
     i64::from(setting).max(WORKER_HANDOFF_MIN_TOKENS)
 }
 
+/// Hand-overs one attempt of a task may make: past this, its session keeps growing (the CLI
+/// compacts it) rather than handing over again and again.
+pub const WORKER_HANDOFFS_MAX: u32 = 5;
+
+/// Whether a worker session at `tokens` is handed over, given the hand-off size `at`, the
+/// session's first context size `start` (a fresh session already carries its hand-off) and the
+/// hand-overs its attempt made so far. A session must grow by at least half the hand-off size
+/// since it started, so one that starts near the size is not handed over again at once.
+pub fn worker_handoff_due(tokens: i64, start: Option<i64>, at: i64, handovers: u32) -> bool {
+    handovers < WORKER_HANDOFFS_MAX && tokens >= at.max(start.unwrap_or(0) + at / 2)
+}
+
 /// A project's Brain at a glance (or the Personal Brain's), for the Inspector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -274,5 +286,41 @@ pub fn rebirth_thresholds(provider: ProviderKind, window: Option<i64>) -> Rebirt
         prepare_tokens,
         swap_tokens,
         window_tokens: window,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_first_session_hands_over_at_the_size() {
+        assert!(!worker_handoff_due(159_999, Some(15_000), 160_000, 0));
+        assert!(worker_handoff_due(160_000, Some(15_000), 160_000, 0));
+        assert!(worker_handoff_due(160_000, None, 160_000, 0));
+    }
+
+    #[test]
+    fn a_fresh_session_near_the_size_needs_headroom() {
+        // Started at 28k with the size at 25k: not at once, only after growing by half of it.
+        assert!(!worker_handoff_due(28_000, Some(28_000), 25_000, 1));
+        assert!(!worker_handoff_due(40_000, Some(28_000), 25_000, 1));
+        assert!(worker_handoff_due(40_500, Some(28_000), 25_000, 1));
+    }
+
+    #[test]
+    fn hand_overs_stop_at_the_cap() {
+        assert!(worker_handoff_due(
+            500_000,
+            Some(20_000),
+            160_000,
+            WORKER_HANDOFFS_MAX - 1
+        ));
+        assert!(!worker_handoff_due(
+            500_000,
+            Some(20_000),
+            160_000,
+            WORKER_HANDOFFS_MAX
+        ));
     }
 }

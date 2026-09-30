@@ -113,6 +113,12 @@ struct TaskLiveState {
     transient: u32,
     /// The worker's latest context size, in tokens.
     context: Option<i64>,
+    /// The CLI session's first context size, in tokens (a fresh session starts with its
+    /// hand-off).
+    session_start: Option<i64>,
+    /// Counts the CLI sessions started for the task, so a hand-over decided for one session
+    /// never closes the next.
+    generation: u64,
     /// The worker was asked to end this turn with a handoff note (PLAN.md §7): a fresh session
     /// takes over when the turn ends.
     handoff_asked: bool,
@@ -133,6 +139,8 @@ pub(crate) struct TaskLive {
     pub(crate) reroute: tokio::sync::Mutex<()>,
     /// Counts the quota-wait timers set for the task; only the newest one retries.
     wait_timer: std::sync::atomic::AtomicU64,
+    /// Hand-overs the current attempt made, once counted from its recorded events.
+    handovers: std::sync::Mutex<Option<u32>>,
 }
 
 impl TaskLive {
@@ -163,14 +171,18 @@ impl TaskLive {
         self.state.lock().await.transient = 0;
     }
 
-    /// Notes the worker's context size. Answers whether to ask the worker, now, to end its
-    /// turn with a handoff note: once per turn, only while a turn runs that no hand-on or
-    /// question waits in.
-    pub(crate) async fn note_context(&self, tokens: i64, handoff_at: Option<i64>) -> bool {
+    /// Notes the worker's context size; answers the CLI session's first one.
+    pub(crate) async fn note_context(&self, tokens: i64) -> i64 {
         let mut state = self.state.lock().await;
         state.context = Some(tokens);
-        let ask = handoff_at.is_some_and(|at| tokens >= at)
-            && state.busy
+        *state.session_start.get_or_insert(tokens)
+    }
+
+    /// Whether to ask the worker, now, to end its turn with a handoff note: once per turn,
+    /// only while a turn runs that no hand-on or question waits in.
+    pub(crate) async fn ask_handoff(&self) -> bool {
+        let mut state = self.state.lock().await;
+        let ask = state.busy
             && !state.handoff_asked
             && !state.stopping
             && state.cutoff.is_none()
@@ -181,9 +193,26 @@ impl TaskLive {
         ask
     }
 
-    /// The worker's latest context size, while this daemon has seen one.
-    pub(crate) async fn context(&self) -> Option<i64> {
-        self.state.lock().await.context
+    /// The worker's latest context size and its CLI session's first one, while this daemon
+    /// has seen them.
+    pub(crate) async fn context(&self) -> (Option<i64>, Option<i64>) {
+        let state = self.state.lock().await;
+        (state.context, state.session_start)
+    }
+
+    /// The CLI session now running (or last run) for the task.
+    pub(crate) async fn generation(&self) -> u64 {
+        self.state.lock().await.generation
+    }
+
+    /// Hand-overs the current attempt made, if counted yet.
+    pub(crate) fn handovers(&self) -> Option<u32> {
+        *self.handovers.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Sets the current attempt's hand-over count (`None`: count it again from the events).
+    pub(crate) fn set_handovers(&self, count: Option<u32>) {
+        *self.handovers.lock().unwrap_or_else(|e| e.into_inner()) = count;
     }
 
     /// Holds a fresh session's first message until the paused task is resumed.
@@ -194,16 +223,6 @@ impl TaskLive {
     /// The first message of a fresh session held while the task was paused, if any.
     pub(crate) async fn take_held_handover(&self) -> Option<TurnInput> {
         self.state.lock().await.held_handover.take()
-    }
-
-    /// A CLI session runs whose context is unknown yet or under `handoff_at`: a fresh one
-    /// that another hand-over started.
-    pub(crate) async fn runs_fresh(&self, handoff_at: Option<i64>) -> bool {
-        let state = self.state.lock().await;
-        state.cli.is_some()
-            && state
-                .context
-                .is_none_or(|tokens| handoff_at.is_some_and(|at| tokens < at))
     }
 
     /// Gives the running CLI session `input`: a steer mid-turn, else a new turn. False
@@ -238,6 +257,7 @@ impl TaskLive {
             settle: tokio::sync::Mutex::new(()),
             reroute: tokio::sync::Mutex::new(()),
             wait_timer: std::sync::atomic::AtomicU64::new(0),
+            handovers: std::sync::Mutex::new(None),
         }
     }
 
@@ -266,12 +286,18 @@ impl TaskLive {
     /// Ends the worker's CLI session (interrupting first; Codex keeps running its current
     /// command after an interrupt, so the session is closed, which ends its process tree).
     pub async fn close_cli(&self) {
-        let cli = {
-            let mut state = self.state.lock().await;
-            state.stopping = true;
-            state.question = None;
-            state.cli.take()
-        };
+        let cli = Self::detach_cli(&mut *self.state.lock().await);
+        Self::end_cli(cli).await;
+    }
+
+    /// Takes the worker's CLI session out of `state`, to be ended with [`Self::end_cli`].
+    fn detach_cli(state: &mut TaskLiveState) -> Option<Arc<Cli>> {
+        state.stopping = true;
+        state.question = None;
+        state.cli.take()
+    }
+
+    async fn end_cli(cli: Option<Arc<Cli>>) {
         if let Some(cli) = cli {
             let _ = tokio::time::timeout(Duration::from_secs(2), cli.session.interrupt()).await;
             cli.session.close().await;
@@ -667,6 +693,12 @@ impl SessionManager {
         // A resumed Codex thread's token totals include the turns counted before.
         let resumed = matches!(origin, Origin::Resume { .. });
         let continues = task.route.choice.provider == ProviderKind::Codex && resumed;
+        // A session resumed after a restart: where it started is in its recorded events.
+        let seeded_start = if resumed && live.context().await.1.is_none() {
+            self.last_worker_context(&task.id).await.1
+        } else {
+            None
+        };
         let recorded = task
             .workspace
             .clone()
@@ -837,8 +869,12 @@ impl SessionManager {
             state.handoff_asked = false;
             // Any start supersedes a fresh session held for a paused task.
             state.held_handover = None;
+            state.generation += 1;
             if !resumed {
                 state.context = None;
+                state.session_start = None;
+            } else if state.session_start.is_none() {
+                state.session_start = seeded_start;
             }
         }
         #[cfg(debug_assertions)]
@@ -876,8 +912,10 @@ impl SessionManager {
                 }
             })
             .await?;
+        let from = live.generation().await;
         if self.worker_over_handoff(live, &task.id).await {
-            self.hand_over_worker(live, &task, None, Some(text)).await?;
+            self.hand_over_worker(live, &task, from, None, Some(text))
+                .await?;
         } else {
             self.launch_worker(
                 live,
@@ -1482,7 +1520,7 @@ impl SessionManager {
         cli: &Arc<Cli>,
         status: TurnStatus,
     ) {
-        let (nudge, handoff_asked) = {
+        let (nudge, handoff_asked, from) = {
             let mut state = live.state.lock().await;
             state.busy = false;
             let handoff_asked = std::mem::take(&mut state.handoff_asked);
@@ -1491,7 +1529,7 @@ impl SessionManager {
             }
             let nudge = !state.nudged;
             state.nudged = true;
-            (nudge, handoff_asked)
+            (nudge, handoff_asked, state.generation)
         };
         let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await else {
             return;
@@ -1531,7 +1569,10 @@ impl SessionManager {
             let manager = self.arc();
             let live = live.clone();
             self.spawn(async move {
-                if let Err(err) = manager.hand_over_worker(&live, &task, note, None).await {
+                if let Err(err) = manager
+                    .hand_over_worker(&live, &task, from, note, None)
+                    .await
+                {
                     let reason = format!("The task could not continue in a fresh session: {err}");
                     manager.worker_failed(&task, &reason).await;
                 }
@@ -2020,15 +2061,20 @@ impl SessionManager {
         }
         let hand_over = !state.busy
             && state.cli.is_some()
-            && self
-                .worker_handoff_at()
-                .zip(state.context)
-                .is_some_and(|(at, tokens)| tokens >= at);
+            && match state.context {
+                Some(tokens) => {
+                    self.worker_handoff_due(&live, tokens, state.session_start)
+                        .await
+                }
+                None => false,
+            };
         if hand_over {
             // Between turns, with a context past the hand-off size: the message starts a fresh
-            // session rather than one more large turn (PLAN.md §7).
+            // session rather than one more large turn (PLAN.md §7). Taken under the lock, so
+            // no session started meanwhile is closed.
+            let cli = TaskLive::detach_cli(&mut state);
             drop(state);
-            live.close_cli().await;
+            TaskLive::end_cli(cli).await;
             state = live.state.lock().await;
         }
         let Some(cli) = state.cli.clone() else {
