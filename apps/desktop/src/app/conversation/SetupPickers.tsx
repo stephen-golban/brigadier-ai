@@ -1,5 +1,6 @@
 import {
   Check,
+  Clock,
   Folder,
   Globe,
   HandRaised,
@@ -42,6 +43,7 @@ import type {
   ModelFallback,
   PermissionLevel,
   Project,
+  QuotaWait,
 } from "@/ipc/generated";
 import { openUrl } from "@/ipc/client";
 import {
@@ -321,6 +323,7 @@ export function ConversationModelPicker({
       {conversation.fallback && (
         <StandInPill fallback={conversation.fallback} groups={groups} />
       )}
+      {conversation.quotaWait && <WaitingPill wait={conversation.quotaWait} />}
       <ModelSelector
         groups={groups}
         value={current}
@@ -379,6 +382,42 @@ function StandInPill({
         <span className="text-muted-foreground text-xs">
           Your choice, {choiceName(groups, fallback.replaces)}, takes over again
           {fallback.untilMs !== null ? ` at ${formatResetAt(fallback.untilMs, now)}` : " when its limit resets"}.
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Messages waiting for quota: the model is at its limit and no model the user allows can stand
+ * in. "Waiting for quota · 21:10", why on hover. They go on their own; Stop drops them.
+ */
+function WaitingPill({ wait }: { wait: QuotaWait }) {
+  const now = useNow(60_000);
+  const until = wait.resetsAtMs !== null ? ` · ${formatResetAt(wait.resetsAtMs, now)}` : "";
+  const text = `Waiting for quota${until}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          data-slot="quota-wait-pill"
+          aria-label={`${text}. ${wait.reason} Open Routing settings.`}
+          onClick={() => openSettings("routing")}
+          className="h-pill px-pill rounded-capsule bg-warning/15 text-warning hover:bg-warning/25 focus-visible:ring-ring/50 inline-flex max-w-sm min-w-0 shrink items-center gap-1 text-xs transition-colors outline-none focus-visible:ring-1"
+        >
+          <Clock aria-hidden className="size-icon-xs shrink-0" />
+          {/* A narrow composer keeps the icon; the rest is on hover. */}
+          <span className="@lg/composer:inline hidden truncate">{text}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs flex-col items-start gap-0.5">
+        <span className="font-medium">{text}</span>
+        <span>{wait.reason}</span>
+        {wait.rule && <span>Your rule keeps it from other models: {wait.rule}</span>}
+        {wait.ranking && <span>Kept for the models in {wait.ranking}.</span>}
+        <span className="text-muted-foreground text-xs">
+          Your messages go on their own once a model can take them; Stop drops them.
         </span>
       </TooltipContent>
     </Tooltip>

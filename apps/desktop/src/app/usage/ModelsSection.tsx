@@ -43,7 +43,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
-import { addOverride, setUsageProject, useUsage } from "@/state/usage";
+import { addOverride } from "@/state/routing";
+import { setUsageProject, useUsage } from "@/state/usage";
 
 /** Categories a model is scored for, as the grid's short heads. */
 const CATEGORY_HEADS: Record<TaskCategory, string> = {

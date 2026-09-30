@@ -19,7 +19,7 @@ import { formatTime } from "@/lib/format";
 import { modelName } from "@/lib/setup";
 
 /**
- * Routing in words: the names the Usage page, worker cards, Settings → Routing and the
+ * Routing in words: the names the Usage page, worker cards, the Routing page and the
  * Inspector's preview share, and the sentences they build (hand-offs, rules, reset times).
  */
 
@@ -53,6 +53,72 @@ export const CATEGORY_LABELS: Record<TaskCategory, string> = {
   chat: "chat",
   orchestrate: "orchestration",
 };
+
+/** The kinds of work the Routing page ranks (the orchestrator keeps its own picker). */
+export const RANKED_CATEGORIES: readonly TaskCategory[] = [
+  "scout",
+  "research",
+  "implement",
+  "review",
+  "merge",
+  "verify",
+  "chat",
+];
+
+/** A kind of work as a heading: "Implement". */
+export const KIND_NAMES: Record<TaskCategory, string> = {
+  scout: "Scout",
+  research: "Research",
+  implement: "Implement",
+  review: "Review",
+  merge: "Merge",
+  verify: "Verify",
+  chat: "Chat",
+  orchestrate: "Orchestrate",
+};
+
+/** What each kind of work is, under its heading. */
+export const KIND_HINTS: Record<TaskCategory, string> = {
+  scout: "Looks around the repository and answers a question.",
+  research: "Reads docs and the web.",
+  implement: "Changes code; lands as one commit.",
+  review: "Reviews another task's change or a plan.",
+  merge: "Resolves conflicts between a task and its target branch.",
+  verify: "Runs the project's checks.",
+  chat: "Takes over a Chat whose model hits its limit.",
+  orchestrate: "Plans and delegates a session's work.",
+};
+
+/** The least capable tier each kind of work runs on unless the orchestrator asks for more. */
+export const DEFAULT_FLOORS: Record<TaskCategory, QualityTier> = {
+  scout: "light",
+  research: "standard",
+  implement: "strong",
+  review: "strong",
+  merge: "strong",
+  verify: "light",
+  chat: "light",
+  orchestrate: "strong",
+};
+
+const TIER_ORDER: readonly QualityTier[] = ["unrated", "light", "standard", "strong", "frontier"];
+
+/** Whether a tier is below another. */
+export function tierBelow(tier: QualityTier, floor: QualityTier): boolean {
+  return TIER_ORDER.indexOf(tier) < TIER_ORDER.indexOf(floor);
+}
+
+/** A ranked place as the page names it: "Claude Opus 5.5", "Newest Claude opus", "Any Codex model". */
+export function placeName(target: OverrideTarget, groups: readonly ModelGroup[]): string {
+  switch (target.type) {
+    case "vendor":
+      return `Any ${VENDOR_LABELS[target.provider]} model`;
+    case "family":
+      return `Newest ${VENDOR_LABELS[target.provider]} ${target.family}`;
+    case "model":
+      return choiceName(groups, { provider: target.provider, model: target.id, effort: null });
+  }
+}
 
 export const AREAS: readonly Area[] = ["frontend", "backend", "infra", "docs", "tests"];
 

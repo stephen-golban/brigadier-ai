@@ -276,6 +276,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 - **Live discovery merge:** new models appear automatically. Unknown models are researched (release notes, benchmarks) and tried out on low-risk tasks.
 - **Outcome learning:** Brigadier tracks results per model and task category on each project (review pass rate, rework rounds, verification results, time, quota used) and adjusts scores.
 - **User overrides:** rules such as "never use X for frontend". Overrides always win.
+- **Routing page:** per kind of work, Automatic (the live ranking and why) or Manual (the user's ordered models and efforts, tried top-down; "Only these" waits for them instead of falling to others), everywhere or per project, with area overrides. `never`/`only` rules and Brigadier's hard rules still apply to a Manual list; it waives only the default quality floor, and beats `prefer` rules, pins that don't bind, balancing and trials.
 - **Routing explanation** on every worker card ("why this model").
 - **Quota monitor:** Claude's 5-hour and weekly windows, and Codex's primary and secondary windows. Rolling usage estimates, with **proactive balancing** that shifts work to other providers when a window runs hot.
 - **Fallback:**
@@ -386,7 +387,7 @@ Each phase lists its **goal**, **deliverables**, **key design**, and **done when
 - **Task-graph panel**, which replaces a kanban board.
 - **Native notifications:** approval needed, worker blocked, session done, limit hit.
 - **Automations:** scheduled or recurring sessions that run under Approve for me.
-- **Settings:** density (Compact / Normal), default orchestrator model and effort, default permission level, test toggle, secrets list, routing overrides, plugins, skills, local models, enrichment toggle.
+- **Settings:** density (Compact / Normal), default orchestrator model and effort, default permission level, test toggle, secrets list, routing (rules and manual rankings, on the Routing page), plugins, skills, local models, enrichment toggle.
 - The Inspector stays available as a developer view.
 
 **Done when:** A full day of real work on Brigadier happens in the app without falling back to a terminal, at the performance budgets.

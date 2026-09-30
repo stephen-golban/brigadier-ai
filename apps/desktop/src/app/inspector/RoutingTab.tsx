@@ -175,6 +175,9 @@ function PreviewRow({ route, groups }: { route: RoutePreview; groups: readonly M
       {outcome.type === "wait" && outcome.rule && (
         <p className="text-muted-foreground ms-30">Your rule: {outcome.rule}</p>
       )}
+      {outcome.type === "wait" && outcome.ranking && (
+        <p className="text-muted-foreground ms-30">Kept for the models in {outcome.ranking}</p>
+      )}
       {outcome.type === "chosen" && outcome.explanation && (
         <Collapsible className="ms-30">
           <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group flex items-center gap-1">
