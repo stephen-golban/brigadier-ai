@@ -6,7 +6,9 @@
 //!   5 hours or less, the last day for longer ones (a window of unknown length counts as short).
 //!   Samples are taken as a step function (the monitor stores a value when it changes), so the
 //!   value at the start of the look-back is the last sample before it. A drop of more than a
-//!   point is a reset and that interval is skipped; smaller drops count as no use. Recent
+//!   point is a reset and that interval is skipped; smaller drops count as no use, and only a
+//!   rise past the highest value since the last reset counts as use (Claude's two reports can
+//!   round the same use a point apart, so the reading can flicker 14, 15, 14, 15). Recent
 //!   intervals weigh more (time constant: a third of the look-back).
 //! - **Forecast:** `projected_at_reset = used + rate × time left`, and "runs out at" when that
 //!   passes 100. Absent until the samples span 10 minutes (short windows) or an hour.
@@ -228,13 +230,20 @@ fn forecast(
 
     let tau = lookback as f64 / 3.0;
     let mut rate: Option<f64> = None;
+    // The highest reading since the last reset: a flicker back up to it is not new use.
+    let mut peak = first.used_percent;
     for pair in points.windows(2) {
         let dt = (pair[1].at_ms - pair[0].at_ms) as f64;
-        let used = pair[1].used_percent - pair[0].used_percent;
-        if dt <= 0.0 || used < -RESET_DROP {
+        if pair[1].used_percent - pair[0].used_percent < -RESET_DROP {
+            peak = pair[1].used_percent;
             continue;
         }
-        let this = used.max(0.0) / (dt / HOUR_MS);
+        if dt <= 0.0 {
+            continue;
+        }
+        let used = (pair[1].used_percent - peak).max(0.0);
+        peak = peak.max(pair[1].used_percent);
+        let this = used / (dt / HOUR_MS);
         let alpha = 1.0 - (-dt / tau).exp();
         rate = Some(rate.map_or(this, |rate| rate + alpha * (this - rate)));
     }
@@ -254,4 +263,84 @@ fn forecast(
         runs_out_at_ms,
         samples: u32::try_from(points.len()).unwrap_or(u32::MAX),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn weekly(used_percent: f64) -> QuotaWindow {
+        QuotaWindow {
+            id: "seven_day".into(),
+            label: "Weekly".into(),
+            used_percent,
+            resets_at_ms: Some(1_791_370_800_000),
+            window_minutes: Some(10_080),
+            bucket: None,
+            model: None,
+        }
+    }
+
+    fn samples(points: &[(i64, f64)]) -> Vec<QuotaSample> {
+        points
+            .iter()
+            .map(|&(at_ms, used_percent)| QuotaSample {
+                at_ms,
+                used_percent,
+            })
+            .collect()
+    }
+
+    /// A real weekly window from 30 September: reset to 14% in the evening, then read back and
+    /// forth between 14 and 15 as Claude's two reports rounded it differently. Only one point
+    /// was used in that half hour, with six and a half days to go: not hot.
+    #[test]
+    fn a_reading_flickering_by_a_point_is_not_use() {
+        let history = samples(&[
+            (1_790_718_686_931, 47.0),
+            (1_790_720_487_202, 47.0),
+            (1_790_755_665_080, 52.0),
+            (1_790_793_828_688, 14.0),
+            (1_790_800_053_934, 14.0),
+            (1_790_800_787_975, 13.0),
+            (1_790_800_893_187, 14.000_000_000_000_002),
+            (1_790_802_154_694, 15.0),
+            (1_790_802_218_185, 14.000_000_000_000_002),
+            (1_790_802_456_611, 15.0),
+            (1_790_802_532_777, 14.000_000_000_000_002),
+            (1_790_802_631_427, 15.0),
+        ]);
+        let now = 1_790_802_631_427;
+        let state = window_state(&weekly(15.0), &history, now, false, now);
+        let forecast = state.forecast.expect("a day of samples gives a forecast");
+        assert!(
+            forecast.projected_at_reset < HOT_PROJECTED,
+            "projected {}",
+            forecast.projected_at_reset
+        );
+        assert!(state.heat < Heat::Hot, "heat {:?}", state.heat);
+    }
+
+    /// Steady use still counts in full, and a reset still starts the count again.
+    #[test]
+    fn a_steady_rise_counts_across_a_reset() {
+        let hour = 3_600_000;
+        let start = 1_790_700_000_000;
+        let history = samples(&[
+            (start, 80.0),
+            (start + hour, 2.0),
+            (start + 2 * hour, 4.0),
+            (start + 3 * hour, 6.0),
+        ]);
+        let now = start + 3 * hour;
+        let state = window_state(&weekly(6.0), &history, now, false, now);
+        let forecast = state
+            .forecast
+            .expect("three hours of samples give a forecast");
+        assert!(
+            (forecast.rate_per_hour - 2.0).abs() < 1e-9,
+            "rate {}",
+            forecast.rate_per_hour
+        );
+    }
 }
