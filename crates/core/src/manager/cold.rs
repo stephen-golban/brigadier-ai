@@ -27,7 +27,8 @@ use crate::work::OrchestratorEntry;
 /// lifetime: of the idle gaps that reached 50 minutes in measured sessions, 83% went past the
 /// hour.
 const CHECKPOINT_AT: f64 = 5.0 / 6.0;
-/// A checkpoint's fork must start this long before the cache expires, to read it warm.
+/// A checkpoint's fork must start this long before the cache expires, to read it warm (a
+/// 24th of a short debug lifetime).
 const CHECKPOINT_MARGIN: Duration = Duration::from_secs(60);
 /// Orchestrator log entries looked at to recover the last model request.
 const RECOVER_SCAN: u32 = 500;
@@ -49,7 +50,8 @@ impl CacheMark {
     fn checkpoint_due(&self, lifetime: Duration, now: i64) -> bool {
         let idle = now - self.at_ms;
         let from = (lifetime.as_millis() as f64 * CHECKPOINT_AT) as i64;
-        let until = lifetime.saturating_sub(CHECKPOINT_MARGIN).as_millis() as i64;
+        let margin = CHECKPOINT_MARGIN.min(lifetime / 24);
+        let until = lifetime.saturating_sub(margin).as_millis() as i64;
         idle >= from && idle < until
     }
 

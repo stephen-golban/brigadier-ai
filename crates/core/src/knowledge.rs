@@ -182,9 +182,18 @@ pub fn cache_lifetime(provider: ProviderKind) -> Option<std::time::Duration> {
 /// written, plus its checkpoint): the orchestrator just resumes.
 const COLD_REBIRTH_MIN_TOKENS: i64 = 60_000;
 
-/// The least context at which an orchestrator on `provider` is reborn for an expired cache
-/// (lower with the debug build's `BRIGADIER_REBIRTH_TOKENS`, like the size thresholds).
+/// The least context at which an orchestrator on `provider` is reborn for an expired cache:
+/// below the size threshold, of course. A debug build takes `BRIGADIER_COLD_REBIRTH_TOKENS`,
+/// so a cold rebirth can be tried on a short conversation.
 pub fn cold_rebirth_min_tokens(provider: ProviderKind, window: Option<i64>) -> i64 {
+    if cfg!(debug_assertions)
+        && let Some(tokens) = std::env::var("BRIGADIER_COLD_REBIRTH_TOKENS")
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .filter(|tokens| *tokens > 0)
+    {
+        return tokens;
+    }
     COLD_REBIRTH_MIN_TOKENS.min(rebirth_thresholds(provider, window).prepare_tokens)
 }
 
