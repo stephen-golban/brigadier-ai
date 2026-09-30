@@ -86,9 +86,15 @@ export function ManualList({
   return (
     <div data-slot="manual-ranking" className="flex flex-col gap-2 px-4 py-3">
       {entries.length === 0 ? (
-        <p className="text-muted-foreground text-xs">
-          No models yet: add the ones routing should try, best first.
-        </p>
+        ranking.only ? (
+          <p className="text-warning text-xs">
+            No models, and work waits for these: nothing of this kind can run until you add one.
+          </p>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            No models yet: add the ones routing should try, best first.
+          </p>
+        )
       ) : (
         <ol ref={listRef} aria-label={`Your ${CATEGORY_LABELS[category]} ranking`} className="flex flex-col">
           {shown.map((entry, index) => {

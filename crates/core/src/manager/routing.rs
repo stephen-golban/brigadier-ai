@@ -41,6 +41,8 @@ pub(crate) enum Trial {
     Take,
     /// A preview of the next task: it looks at the next slot without taking it.
     Peek,
+    /// A task that took a slot when created and waited to start: it still holds it.
+    Held,
     /// A fallback or a stand-in: no trial.
     Never,
 }
@@ -163,6 +165,7 @@ impl SessionManager {
         let trial_slot = match ask.trial {
             Trial::Take => self.trial_slot(ask.category, true).await,
             Trial::Peek => self.trial_slot(ask.category, false).await,
+            Trial::Held => true,
             Trial::Never => false,
         };
         let project_id = ask.project_id.map(|id| id.0.as_str());

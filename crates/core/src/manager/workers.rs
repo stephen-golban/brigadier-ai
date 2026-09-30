@@ -403,7 +403,7 @@ impl SessionManager {
         let category = category(kind);
         let areas = areas.unwrap_or_else(|| brigadier_router::infer_areas(&spec));
         let floor = floor.unwrap_or_else(|| brigadier_router::default_floor(category));
-        let (preview, _) = self
+        let (preview, trial_slot) = self
             .preview(&super::routing::Ask {
                 category,
                 areas: &areas,
@@ -450,6 +450,7 @@ impl SessionManager {
                     rule: waiting.rule,
                     ranking: waiting.ranking,
                     since_ms: now,
+                    messages: Vec::new(),
                 };
                 (route, Some(wait))
             }
@@ -508,6 +509,7 @@ impl SessionManager {
             request_id,
             messages: Vec::new(),
             rework_rounds: 0,
+            trial_slot: waits && trial_slot,
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -563,15 +565,21 @@ impl SessionManager {
             })
             .await?;
         let files = self.worker_files(&task, &workspace.scratch).await;
+        // Instructions the orchestrator sent while the task waited to start go with it.
+        let mut text = String::from("Start the task.");
+        if !task.messages.is_empty() {
+            text.push_str("\n\nLater instructions from the orchestrator, oldest first:\n");
+            for message in &task.messages {
+                text.push_str("\n- ");
+                text.push_str(&message.replace('\n', "\n  "));
+            }
+        }
         self.launch_worker(
             live,
             &task,
             subject.as_ref(),
             Origin::New,
-            TurnInput {
-                text: "Start the task.".into(),
-                files,
-            },
+            TurnInput { text, files },
         )
         .await
     }

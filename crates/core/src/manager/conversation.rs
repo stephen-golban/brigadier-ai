@@ -190,6 +190,8 @@ struct ConvState {
     waiting: bool,
     /// Counts the quota-wait timers set; only the newest one retries.
     wait_timer: u64,
+    /// The model the waiting messages were for (it hit its limit).
+    waited_model: Option<ModelChoice>,
 }
 
 /// Where a request the orchestrator sent a worker back in stands, while the user has seen no
@@ -213,6 +215,9 @@ pub(crate) struct ConvLive {
     pub id: ConversationId,
     pub kind: ConversationKind,
     state: tokio::sync::Mutex<ConvState>,
+    /// Held while waiting messages are routed again, so a timer and a routing change never
+    /// both start a model for them.
+    retry: tokio::sync::Mutex<()>,
 }
 
 impl ConvLive {
@@ -230,6 +235,7 @@ impl ConvLive {
                 last_activity_ms: now_ms(),
                 ..ConvState::default()
             }),
+            retry: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -1396,16 +1402,7 @@ impl SessionManager {
             (Some(Setup::Chat { .. }) | None, ConversationKind::Chat) => {
                 let model = match &conversation.setup {
                     Some(Setup::Chat { model }) => model.clone(),
-                    _ => self
-                        .core
-                        .settings()
-                        .default_chat_model
-                        .unwrap_or(ModelChoice {
-                            provider: ProviderKind::Claude,
-                            model: None,
-                            effort: None,
-                            fast: None,
-                        }),
+                    _ => self.default_chat_choice(),
                 };
                 // A Chat may save what it learns about the user to the Personal Brain.
                 let memories = self.memory_lines(super::brain_jobs::MEMORY_BYTES).await;
@@ -2398,13 +2395,16 @@ impl SessionManager {
                     });
                     return;
                 }
-                Err(Some(waiting)) => {
-                    self.wait_for_model(conv, waiting, carried, served).await;
-                    self.set_run(&conv.id, RunState::Idle, None).await;
-                    self.settle_requests(&conv.id).await;
-                    return;
+                Err(waiting) => {
+                    // Its own model's reset frees the messages too.
+                    if let Some(waiting) = with_own_reset(waiting, &cli.model, &limit) {
+                        self.wait_for_model(conv, &cli.model, waiting, carried, served)
+                            .await;
+                        self.set_run(&conv.id, RunState::Idle, None).await;
+                        self.settle_requests(&conv.id).await;
+                        return;
+                    }
                 }
-                Err(None) => {}
             }
         }
         self.set_run(&conv.id, RunState::Idle, None).await;
@@ -2612,12 +2612,14 @@ impl SessionManager {
     async fn wait_for_model(
         &self,
         conv: &Arc<ConvLive>,
+        from: &ModelChoice,
         waiting: brigadier_router::Waiting,
         carried: Vec<Message>,
         served: Option<String>,
     ) {
         let first = {
             let mut state = conv.state.lock().await;
+            state.waited_model = Some(from.clone());
             let mut pending = carried;
             pending.append(&mut state.pending);
             state.pending = pending;
@@ -2654,19 +2656,23 @@ impl SessionManager {
             .conversation(&conv.id)
             .ok()
             .and_then(|conversation| conversation.quota_wait);
+        let messages = conv
+            .state
+            .lock()
+            .await
+            .pending
+            .iter()
+            .map(|message| message.id.clone())
+            .collect();
         let wait = QuotaWait {
             reason: waiting.reason,
             resets_at_ms: waiting.resets_at_ms,
             rule: waiting.rule,
             ranking: waiting.ranking,
             since_ms: known.as_ref().map_or_else(now_ms, |known| known.since_ms),
+            messages,
         };
-        let unchanged = known.as_ref().is_some_and(|known| {
-            known.reason == wait.reason
-                && known.resets_at_ms == wait.resets_at_ms
-                && known.rule == wait.rule
-                && known.ranking == wait.ranking
-        });
+        let unchanged = known.as_ref() == Some(&wait);
         if !unchanged
             && let Err(err) = self
                 .core
@@ -2699,23 +2705,34 @@ impl SessionManager {
         conv: &'a Arc<ConvLive>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            if !conv.state.lock().await.waiting {
-                return;
-            }
+            // One retry at a time: a second one would close the model the first just started.
+            let _retrying = conv.retry.lock().await;
+            let waited = {
+                let state = conv.state.lock().await;
+                if !state.waiting {
+                    return;
+                }
+                state.waited_model.clone()
+            };
+            // An archived (or deleted) conversation's messages never go.
+            let attached = self
+                .convs_lock()
+                .get(&conv.id)
+                .is_some_and(|live| Arc::ptr_eq(live, conv));
             let Ok(conversation) = self.core.conversation(&conv.id) else {
                 return;
             };
+            if !attached || conversation.lifecycle == Lifecycle::Archived {
+                return;
+            }
+            // A Chat without a model of its own waits for the one it ran on (the default).
             let from = conversation
                 .fallback
                 .as_ref()
                 .map(|fallback| fallback.choice.clone())
-                .or_else(|| setup_choice(&conversation));
-            let Some(from) = from else {
-                // Nothing to wait for: the next turn picks its model as usual.
-                self.stop_waiting(conv).await;
-                self.kick(conv);
-                return;
-            };
+                .or_else(|| setup_choice(&conversation))
+                .or(waited)
+                .unwrap_or_else(|| self.default_chat_choice());
             if self.choice_available(&from).await {
                 self.stop_waiting(conv).await;
                 self.kick(conv);
@@ -2753,11 +2770,25 @@ impl SessionManager {
         })
     }
 
+    /// The model a Chat without one of its own runs on: the app's default for Chats.
+    fn default_chat_choice(&self) -> ModelChoice {
+        self.core
+            .settings()
+            .default_chat_model
+            .unwrap_or(ModelChoice {
+                provider: ProviderKind::Claude,
+                model: None,
+                effort: None,
+                fast: None,
+            })
+    }
+
     /// The conversation no longer waits for quota.
     async fn stop_waiting(&self, conv: &Arc<ConvLive>) {
         {
             let mut state = conv.state.lock().await;
             state.waiting = false;
+            state.waited_model = None;
             // Any timer still set has nothing to do.
             state.wait_timer += 1;
         }
@@ -2768,6 +2799,13 @@ impl SessionManager {
         if recorded && let Err(err) = self.core.set_conversation_wait(&conv.id, None).await {
             tracing::warn!(conversation = %conv.id, error = %err, "could not end the wait");
         }
+    }
+
+    /// The conversation's waiting messages are dropped: it is archived.
+    pub(super) async fn drop_waiting(&self, conv: &Arc<ConvLive>) {
+        let _retrying = conv.retry.lock().await;
+        conv.state.lock().await.pending.clear();
+        self.stop_waiting(conv).await;
     }
 
     /// Looks again at every conversation whose messages wait for quota.
@@ -2781,7 +2819,8 @@ impl SessionManager {
     }
 
     /// After a restart: a conversation whose messages waited for quota keeps waiting with
-    /// them (the user messages after its last reply), its timer set again.
+    /// them (those it recorded; from before it recorded them, the user messages after its
+    /// last reply), its timer set again.
     pub(super) async fn keep_conversation_wait(&self, conversation: &crate::model::Conversation) {
         let Some(wait) = conversation.quota_wait.clone() else {
             return;
@@ -2797,13 +2836,21 @@ impl SessionManager {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        let mut unanswered: Vec<Message> = branch
-            .into_iter()
-            .rev()
-            .take_while(|message| message.role != MessageRole::Assistant)
-            .filter(|message| message.role == MessageRole::User)
-            .collect();
-        unanswered.reverse();
+        let unanswered: Vec<Message> = if wait.messages.is_empty() {
+            let mut trailing: Vec<Message> = branch
+                .into_iter()
+                .rev()
+                .take_while(|message| message.role != MessageRole::Assistant)
+                .filter(|message| message.role == MessageRole::User)
+                .collect();
+            trailing.reverse();
+            trailing
+        } else {
+            branch
+                .into_iter()
+                .filter(|message| wait.messages.contains(&message.id))
+                .collect()
+        };
         if unanswered.is_empty() {
             self.stop_waiting(&conv).await;
             return;
@@ -3456,6 +3503,33 @@ fn web_step(tool: &str, input: Option<&str>) -> Option<OrchestratorStepKind> {
         }),
         "WebFetch" => field("url").map(|url| OrchestratorStepKind::ReadPage { url }),
         _ => None,
+    }
+}
+
+/// What a conversation whose model hit `limit` waits for, when no model can stand in: what
+/// the router named, freed by that model's own reset as well when that comes sooner; or that
+/// reset alone. Nothing when neither is known (the turn fails as before).
+fn with_own_reset(
+    waiting: Option<brigadier_router::Waiting>,
+    from: &ModelChoice,
+    limit: &LimitHit,
+) -> Option<brigadier_router::Waiting> {
+    match waiting {
+        Some(mut waiting) => {
+            waiting.resets_at_ms = match (waiting.resets_at_ms, limit.resets_at_ms) {
+                (Some(named), Some(own)) => Some(named.min(own)),
+                (named, own) => named.or(own),
+            };
+            Some(waiting)
+        }
+        None => limit
+            .resets_at_ms
+            .map(|resets_at_ms| brigadier_router::Waiting {
+                reason: format!("{} hit its usage limit", from.provider.label()),
+                resets_at_ms: Some(resets_at_ms),
+                rule: None,
+                ranking: None,
+            }),
     }
 }
 

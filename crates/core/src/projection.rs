@@ -57,7 +57,7 @@ impl Projection {
             }
             DomainEvent::ConversationCreated { conversation } => {
                 self.conversations
-                    .insert(conversation.id.clone(), conversation.clone());
+                    .insert(conversation.id.clone(), (**conversation).clone());
             }
             DomainEvent::ConversationRenamed { id, title } => {
                 if let Some(conversation) = self.conversations.get_mut(id) {

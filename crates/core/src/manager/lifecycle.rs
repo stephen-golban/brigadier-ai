@@ -74,8 +74,8 @@ impl SessionManager {
     pub(super) async fn recover(&self) {
         self.runtime.ledger().sweep().await;
         for conversation in self.core.catalog().conversations {
-            // Messages that waited for quota keep waiting.
-            if conversation.quota_wait.is_some() {
+            // Messages that waited for quota keep waiting (an archived conversation's never go).
+            if conversation.quota_wait.is_some() && conversation.lifecycle != Lifecycle::Archived {
                 self.keep_conversation_wait(&conversation).await;
             }
             let Ok(tasks) = self.core.tasks(&conversation.id).await else {
@@ -262,6 +262,8 @@ impl SessionManager {
         let id = &conversation.id;
         let conv = self.convs_lock().remove(id);
         if let Some(conv) = conv {
+            // Messages waiting for quota never go.
+            self.drop_waiting(&conv).await;
             conv.close_cli().await;
         }
         if let Ok(tasks) = self.core.tasks(id).await {

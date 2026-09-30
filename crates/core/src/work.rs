@@ -139,6 +139,11 @@ pub struct QuotaWait {
     #[serde(default)]
     pub ranking: Option<String>,
     pub since_ms: i64,
+    /// A conversation's waiting user messages (their ids), to wait with again after a
+    /// restart. A task's wait has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub messages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -401,6 +406,10 @@ pub struct Task {
     /// message from the orchestrator).
     #[serde(default)]
     pub rework_rounds: u32,
+    /// It took a trial slot when created and waits to start: it keeps the slot until then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(skip)]
+    pub trial_slot: bool,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

@@ -183,6 +183,7 @@ impl SessionManager {
                     start_attempt(task, route.clone());
                     task.state = TaskState::Running;
                     task.quota_wait = None;
+                    task.trial_slot = false;
                     task.blocked_reason = None;
                 })
                 .await;
@@ -305,7 +306,12 @@ impl SessionManager {
                 avoid,
                 exclude: &exclude,
                 project_id: project.as_ref(),
-                trial: super::routing::Trial::Never,
+                // A task that never started keeps the trial slot it was created with.
+                trial: if task.attempts.is_empty() && task.trial_slot {
+                    super::routing::Trial::Held
+                } else {
+                    super::routing::Trial::Never
+                },
             })
             .await;
         match decision {
@@ -330,6 +336,7 @@ impl SessionManager {
                 .quota_wait
                 .as_ref()
                 .map_or_else(now_ms, |known| known.since_ms),
+            messages: Vec::new(),
         };
         // Waiting as before for the same reason: nothing to record again.
         let unchanged = task.state == TaskState::Paused

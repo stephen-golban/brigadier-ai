@@ -296,7 +296,7 @@ impl Core {
             (
                 streams::CATALOG.into(),
                 DomainEvent::ConversationCreated {
-                    conversation: conversation.clone(),
+                    conversation: Box::new(conversation.clone()),
                 },
             ),
         );

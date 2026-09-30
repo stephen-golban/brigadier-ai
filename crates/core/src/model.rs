@@ -1047,7 +1047,7 @@ pub enum DomainEvent {
         project: Project,
     },
     ConversationCreated {
-        conversation: Conversation,
+        conversation: Box<Conversation>,
     },
     ConversationRenamed {
         id: ConversationId,

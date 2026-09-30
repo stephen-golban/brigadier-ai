@@ -282,14 +282,15 @@ pub fn preview(query: &Query) -> Preview {
         .copied()
         .filter(|rule| rule.effect == OverrideEffect::Only)
         .collect();
-    // A manual ranking with at least one place decides; an empty one leaves it to scores.
+    // A manual ranking with at least one place decides; an empty one leaves it to scores,
+    // unless it allows only its models: then nothing may run.
     let ranking = ranking_for(
         query.rankings,
         query.category,
         query.areas,
         query.project_id,
     )
-    .filter(|ranking| ranking.manual && !ranking.entries.is_empty());
+    .filter(|ranking| ranking.manual && (!ranking.entries.is_empty() || ranking.only));
     let mut candidates = candidates(query);
     if let Some(ranking) = ranking {
         for candidate in &mut candidates {
@@ -378,7 +379,7 @@ pub fn preview(query: &Query) -> Preview {
         .unwrap_or_default();
 
     if ranked.is_empty() {
-        let waiting = waiting(query, &candidates, &only, held, ranking);
+        let waiting = waiting(query, &candidates, &rules, &only, held, ranking);
         return Preview {
             decision: Decision::Wait(waiting),
             candidates: listing(query, &candidates, &ranked, None, ranking),
@@ -413,37 +414,13 @@ pub fn preview(query: &Query) -> Preview {
                             candidates[asked].label()
                         )),
                     },
+                    // A vendor asked for doesn't reorder the list: the ranking decides.
                     None if pin.model.is_none() => {
                         if let Some(provider) = pin.provider {
-                            let placed = manual.as_ref().and_then(|manual| {
-                                manual.places.iter().find(|place| {
-                                    place.why.is_none()
-                                        && target_provider(&place.target) == provider
-                                })
-                            });
-                            match placed.and_then(|found| {
-                                let model = found.model.as_deref()?;
-                                let index = candidates.iter().position(|c| {
-                                    c.model.provider == provider && c.model.id == model
-                                })?;
-                                Some((index, found.position))
-                            }) {
-                                Some((index, position)) => {
-                                    chosen = index;
-                                    place = Some(position as usize - 1);
-                                    pinned_pick = true;
-                                    why = Some(format!(
-                                        "{} as requested, #{position} in {text}",
-                                        name(provider)
-                                    ));
-                                }
-                                None => notes.push(format!(
-                                    "{} was asked for, but {text} has no {} model that can \
-                                     take it",
-                                    name(provider),
-                                    name(provider)
-                                )),
-                            }
+                            notes.push(format!(
+                                "{} was asked for, but {text} decides",
+                                name(provider)
+                            ));
                         }
                     }
                     None => {}
@@ -1473,14 +1450,42 @@ fn effort(
 fn waiting(
     query: &Query,
     candidates: &[Candidate],
+    rules: &[&OverrideRule],
     only: &[&OverrideRule],
     held: Option<ProviderKind>,
     ranking: Option<&Ranking>,
 ) -> Waiting {
-    let rule = (!only.is_empty()).then(|| join_rules(only));
     let ranking = ranking
         .filter(|ranking| ranking.only)
         .map(|ranking| format!("{} (only these models)", ranking_text(ranking)));
+    // Without an `only` rule or ranking, `never` rules that removed models good enough for
+    // the task keep it from them: changing those rules lets it run.
+    let never: Vec<&OverrideRule> = if only.is_empty() && ranking.is_none() {
+        rules
+            .iter()
+            .copied()
+            .filter(|rule| rule.effect == OverrideEffect::Never)
+            .filter(|rule| {
+                candidates.iter().any(|c| {
+                    matches!(c.block, Some(Block::Rule(_)))
+                        && c.model.tier >= query.floor
+                        && targets(&rule.target, &c.model, query.registry)
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let rule = if !only.is_empty() {
+        Some(join_rules(only))
+    } else {
+        (!never.is_empty()).then(|| join_rules(&never))
+    };
+    let (allows, allows_none) = if never.is_empty() {
+        ("allows only", "allows no model that")
+    } else {
+        ("leaves only", "leaves no model that")
+    };
     // What keeps the task from other models, in a sentence.
     let holder = match (&rule, &ranking) {
         (Some(rule), Some(ranking)) => Some(format!("your rule ({rule}) with {ranking}")),
@@ -1503,11 +1508,11 @@ fn waiting(
         .copied();
     let reason = match (earliest, &holder) {
         (Some((why, _)), Some(holder)) => {
-            format!("{holder} allows only models at a limit: {why}")
+            format!("{holder} {allows} models at a limit: {why}")
         }
         (Some((why, _)), None) => why.to_owned(),
         (None, Some(holder)) => {
-            format!("{holder} allows no model that can take this {purpose} work")
+            format!("{holder} {allows_none} can take this {purpose} work")
         }
         (None, None) => {
             if let Some(held) = held {
