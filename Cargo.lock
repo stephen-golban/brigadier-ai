@@ -469,6 +469,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+ "window-vibrancy",
  "wry",
 ]
 

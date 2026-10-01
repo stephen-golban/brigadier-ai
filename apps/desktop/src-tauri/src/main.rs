@@ -350,13 +350,38 @@ fn startup_backdrop(app: &tauri::AppHandle) -> Option<tauri::utils::config::Wind
         .and_then(|window| window.window_effects.clone())
 }
 
+/// Takes the startup backdrop off `window`. Tauri's `set_effects(None)` clears it only on
+/// Windows, so on macOS the blur views it added are removed here: all of them, so none is left
+/// behind the app.
+fn clear_backdrop(window: &tauri::Window) {
+    #[cfg(target_os = "macos")]
+    let result = {
+        let handle = window.clone();
+        window.run_on_main_thread(move || {
+            loop {
+                match window_vibrancy::clear_vibrancy(&handle) {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "could not clear the startup backdrop");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    #[cfg(not(target_os = "macos"))]
+    let result = window.set_effects(None);
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "could not clear the startup backdrop");
+    }
+}
+
 /// The startup screen has gone and the app covers the window: its backdrop goes too.
 #[tauri::command]
-fn startup_finished(app: tauri::AppHandle, window: tauri::WebviewWindow) {
-    if startup_backdrop(&app).is_some()
-        && let Err(err) = window.set_effects(None)
-    {
-        tracing::warn!(error = %err, "could not clear the startup backdrop");
+fn startup_finished(app: tauri::AppHandle, window: tauri::Window) {
+    if startup_backdrop(&app).is_some() {
+        clear_backdrop(&window);
     }
 }
 
@@ -476,11 +501,14 @@ fn main() {
             {
                 // A new page in the app's webview knows none of the Browser tabs' pages: drop them.
                 let _ = webview.app_handle().run_on_main_thread(browser::close_all);
-                // It starts on the startup screen again, which needs the backdrop behind it.
-                if let Some(backdrop) = startup_backdrop(webview.app_handle())
-                    && let Err(err) = webview.window().set_effects(backdrop)
-                {
-                    tracing::warn!(error = %err, "could not restore the startup backdrop");
+                // It starts on the startup screen again, which needs the backdrop behind it
+                // (once: applying it again adds another blur view on macOS).
+                if let Some(backdrop) = startup_backdrop(webview.app_handle()) {
+                    let window = webview.window();
+                    clear_backdrop(&window);
+                    if let Err(err) = window.set_effects(backdrop) {
+                        tracing::warn!(error = %err, "could not restore the startup backdrop");
+                    }
                 }
             }
         })
