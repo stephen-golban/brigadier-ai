@@ -67,6 +67,28 @@ impl SessionManager {
     /// or a request it was steered into, has a turn, a worker or a card going. A follow-up
     /// sent now may belong to that answer.
     pub(crate) async fn working_request(&self, conversation_id: &ConversationId) -> Option<String> {
+        self.newest_answer(conversation_id, |state| {
+            matches!(state, RequestState::Working | RequestState::Waiting)
+        })
+        .await
+    }
+
+    /// Whether the newest answer still works, not only waits on the user: queued messages
+    /// wait for it. One that only waits on the user lets them through, since the user may be
+    /// answering it, or moving on meanwhile.
+    pub(crate) async fn answer_working(&self, conversation_id: &ConversationId) -> bool {
+        self.newest_answer(conversation_id, |state| *state == RequestState::Working)
+            .await
+            .is_some()
+    }
+
+    /// The newest request, while it or a request it was steered into is in a state `holds`
+    /// accepts.
+    async fn newest_answer(
+        &self,
+        conversation_id: &ConversationId,
+        holds: impl Fn(&RequestState) -> bool,
+    ) -> Option<String> {
         let board = self.core.board(conversation_id).await.ok()?;
         let latest = board.latest_request()?;
         let mut request = Some(latest);
@@ -75,7 +97,7 @@ impl SessionManager {
             let Some(of) = request else {
                 break;
             };
-            if matches!(of.state, RequestState::Working | RequestState::Waiting) {
+            if holds(&of.state) {
                 return Some(latest.id.clone());
             }
             request = of
@@ -151,7 +173,7 @@ impl SessionManager {
             && activity.carried.is_empty()
             && !board.queue.paused
             && board.queue.items.first().is_some_and(|item| !item.deciding);
-        if waiting && self.working_request(conversation_id).await.is_none() {
+        if waiting && !self.answer_working(conversation_id).await {
             self.kick(&conv);
         }
     }

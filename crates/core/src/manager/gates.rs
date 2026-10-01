@@ -284,8 +284,8 @@ impl SessionManager {
         let (git, a, b) = (self.git.clone(), a.to_owned(), b.to_owned());
         blocking(move || {
             let repo = git.open(&repo).map_err(git_error)?;
-            let a = repo.resolve(&format!("{a}^{{tree}}")).map_err(git_error)?;
-            let b = repo.resolve(&format!("{b}^{{tree}}")).map_err(git_error)?;
+            let a = repo.tree_of(&a).map_err(git_error)?;
+            let b = repo.tree_of(&b).map_err(git_error)?;
             Ok(a == b)
         })
         .await
@@ -607,14 +607,14 @@ impl SessionManager {
     pub(crate) async fn send_back_or_escalate(&self, task: &Task, findings: &str, unchanged: bool) {
         if task.landing.is_some() && task.fix_rounds < FIX_ROUNDS && !unchanged {
             let text = format!(
-                "[Brigadier] Independent checks of your change found problems, so nothing landed. Fix each one in this worktree, verify the fix for real, then call submit_report again with a complete report (all fields, as before).\n{findings}"
+                "Independent checks of your change found problems, so nothing landed. Fix each one in this worktree, verify the fix for real, then call submit_report again with a complete report (all fields, as before).\n{findings}"
             );
             let sent = match self
                 .update_task(&task.conversation_id, &task.id, |t| t.fix_rounds += 1)
                 .await
             {
                 Ok(task) => {
-                    self.message_worker(&task.conversation_id, &task, text)
+                    self.message_worker(&task.conversation_id, &task, text, "Brigadier")
                         .await
                 }
                 Err(err) => Err(err),
@@ -647,7 +647,7 @@ impl SessionManager {
             .await
             .unwrap_or_else(|_| task.clone());
         let tried = match (unchanged, task.fix_rounds) {
-            (true, _) => "Brigadier sent it back with these findings and its fix changed nothing. Decide: send it back with guidance (message_worker), stop it, or ask the user.".to_owned(),
+            (true, _) => "Its change is the same one these findings are about (a fix that changed nothing, or the same change accepted again), so it was not checked again. Decide: send it back with guidance (message_worker), stop it, or ask the user.".to_owned(),
             (false, 0) => format!(
                 "Send task-{} back with message_worker to fix this, then accept it again.",
                 task.number
@@ -658,7 +658,9 @@ impl SessionManager {
             ),
         };
         let why = match (unchanged, task.fix_rounds) {
-            (true, _) => "The worker's fix changed nothing.".to_owned(),
+            (true, _) => {
+                "Its change is the same one its checks found these problems in.".to_owned()
+            }
             (false, 0) => "Its checks found problems.".to_owned(),
             (false, rounds) => format!(
                 "The problems were still there after {rounds} fix round{}.",
@@ -819,6 +821,15 @@ pub(super) fn round_current(decided: &Task, now: &Task) -> bool {
         )
 }
 
+/// How the task's last checks ended, when they ended without landing (changes needed, or
+/// checks that could not finish) and nothing changed since: the worker was not sent back
+/// (which voids the candidate), so accepting it again checks the same change.
+pub(super) fn checks_stand(task: &Task) -> Option<GateOutcome> {
+    let outcome = task.gate.as_ref()?.outcome.clone()?;
+    (matches!(outcome, GateOutcome::Failed | GateOutcome::NoResult) && task.candidate.is_some())
+        .then_some(outcome)
+}
+
 /// Whether the task's candidate, as it is now, passed its gate: only that commit may land.
 pub(super) fn candidate_passed(task: &Task) -> bool {
     task.gate.as_ref().is_some_and(|gate| {
@@ -905,7 +916,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
         ));
     }
     spec.push_str(
-        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed, notRun (the project has checks but they could not run, after you tried), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
+        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed (a check ran and failed), notRun (the project has checks but they could not run, after you tried; a check stopped by a missing key, sign-in or service is notRun, not failed), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
     );
     spec
 }
@@ -918,10 +929,19 @@ enum Status {
     NotChecked,
 }
 
+/// A line without its list marker: "- ", "* ", "• ", "2. " or "2) ".
+fn without_marker(line: &str) -> &str {
+    let line = line.trim_start_matches(['-', '*', '•', ' ', '\t']);
+    let number = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    match number.strip_prefix(['.', ')']) {
+        Some(rest) if number.len() < line.len() => rest.trim_start(),
+        _ => line,
+    }
+}
+
 /// The status a "done when" line starts with ("[met] …"), and whether evidence follows.
 fn criterion_status(line: &str) -> Option<Status> {
-    let line = line.trim_start().to_lowercase();
-    let line = line.trim_start_matches(['-', '*', ' ']);
+    let line = without_marker(line).to_lowercase();
     if line.starts_with("[met]") {
         Some(Status::Met)
     } else if line.starts_with("[not met]") {
@@ -935,7 +955,7 @@ fn criterion_status(line: &str) -> Option<Status> {
 
 /// The text after a "done when" line's status.
 fn criterion_text(line: &str) -> &str {
-    let line = line.trim_start().trim_start_matches(['-', '*', ' ']);
+    let line = without_marker(line);
     line.find(']').map_or(line, |end| line[end + 1..].trim())
 }
 
@@ -983,11 +1003,11 @@ fn verify_result(report: &Report, listed: usize) -> GateResult {
             Some(Status::NotChecked) | None => unchecked.push(line.clone()),
         }
     }
+    // Every criterion shown met, at least as many as the worker listed.
+    let all_met = met > 0 && unchecked.is_empty() && report.done_when.len() >= listed;
+    let checks_failed = report.checks == Some(ChecksResult::Failed);
     // It was told to put each problem the worker must fix in open_questions.
-    if report.checks == Some(ChecksResult::Failed)
-        || !unmet.is_empty()
-        || !report.open_questions.is_empty()
-    {
+    if !unmet.is_empty() || !report.open_questions.is_empty() || (checks_failed && !all_met) {
         let mut findings = unmet;
         findings.extend(report.open_questions.iter().cloned());
         if findings.is_empty() {
@@ -995,7 +1015,14 @@ fn verify_result(report: &Report, listed: usize) -> GateResult {
         }
         return GateResult::Failed { findings };
     }
-    let reason = if met == 0 {
+    let reason = if checks_failed {
+        // A failing check tied to no criterion and nothing named to fix (an optional check
+        // that needs a key nobody set): nothing for the worker to fix, and not proof either.
+        Some(format!(
+            "A check failed, though every \"done when\" criterion is met and it named nothing to fix: {}",
+            report.summary
+        ))
+    } else if met == 0 {
         Some("It showed no \"done when\" criterion met with evidence.".to_owned())
     } else if !unchecked.is_empty() {
         Some(format!("Left unchecked: {}", unchecked.join("; ")))
@@ -1237,6 +1264,74 @@ mod tests {
     }
 
     #[test]
+    fn numbered_and_bulleted_criteria_are_read() {
+        for line in [
+            "2. [met] tests pass: 41 passed",
+            "2) [met] tests pass: 41 passed",
+            "- [met] tests pass: 41 passed",
+            "* [met] tests pass: 41 passed",
+            "• [met] tests pass: 41 passed",
+            "  10. [Met] tests pass: 41 passed",
+        ] {
+            assert_eq!(criterion_status(line), Some(Status::Met), "{line}");
+            assert_eq!(criterion_evidence(line), Some("41 passed"), "{line}");
+        }
+        assert_eq!(
+            criterion_status("1. [not met] lint passes: 2 errors"),
+            Some(Status::NotMet)
+        );
+        // A number that is not a list marker is not taken for one.
+        assert_eq!(criterion_status("2 [met] tests pass: ok"), None);
+        let numbered = report(
+            &[
+                "1. [met] lerp works: test/math.test.js:14",
+                "2. [not met] npm test passes: the exports test fails",
+            ],
+            Some(ChecksResult::Failed),
+        );
+        assert_eq!(
+            verify_result(&numbered, 0),
+            GateResult::Failed {
+                findings: vec!["2. [not met] npm test passes: the exports test fails".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_check_with_every_criterion_met_is_unverified_not_failed() {
+        let mut optional = report(
+            &[
+                "[met] isPrime(1) is true: test/primes.test.js:4 passes",
+                "[met] npm test passes: 12 passed, 0 failed",
+            ],
+            Some(ChecksResult::Failed),
+        );
+        optional.summary = "Integration could not start: CALC_API_TOKEN is missing.".into();
+        let GateResult::Unverified { reason } = verify_result(&optional, 2) else {
+            panic!("not unverified");
+        };
+        assert!(reason.contains("CALC_API_TOKEN"), "{reason}");
+        // Anything named to fix still fails it.
+        optional.open_questions = vec!["Remove debug.log".into()];
+        assert!(matches!(
+            verify_result(&optional, 2),
+            GateResult::Failed { .. }
+        ));
+        // So does a failed check while a criterion is left unchecked.
+        let unchecked = report(
+            &[
+                "[met] lint passes: 0 warnings",
+                "[not checked] tests pass: could not start",
+            ],
+            Some(ChecksResult::Failed),
+        );
+        assert!(matches!(
+            verify_result(&unchecked, 0),
+            GateResult::Failed { .. }
+        ));
+    }
+
+    #[test]
     fn a_review_without_a_verdict_gives_no_result() {
         let mut review = report(&[], None);
         assert!(matches!(
@@ -1475,5 +1570,41 @@ mod tests {
         // A candidate that is not the commit the round passed.
         let moved = gated(TaskState::Reviewing, 1, "c1", passed, "c3");
         assert!(!candidate_passed(&moved));
+    }
+
+    #[test]
+    fn checks_that_ended_on_an_unchanged_change_are_not_an_invitation_to_accept_it_again() {
+        let failed = gated(
+            TaskState::Reported,
+            3,
+            "c1",
+            Some(GateOutcome::Failed),
+            "c1",
+        );
+        assert_eq!(checks_stand(&failed), Some(GateOutcome::Failed));
+        let note = super::super::prompts::undecided_note(std::slice::from_ref(&failed));
+        assert!(note.contains("will not land it"), "{note}");
+        let unfinished = gated(
+            TaskState::Reported,
+            1,
+            "c1",
+            Some(GateOutcome::NoResult),
+            "c1",
+        );
+        assert_eq!(checks_stand(&unfinished), Some(GateOutcome::NoResult));
+        // Sent back since (its candidate is void), then reported again: a new decision.
+        let mut fixed = failed.clone();
+        fixed.candidate = None;
+        assert_eq!(checks_stand(&fixed), None);
+        let note = super::super::prompts::undecided_note(&[fixed]);
+        assert!(!note.contains("will not land"), "{note}");
+        let passed = gated(
+            TaskState::Reported,
+            1,
+            "c1",
+            Some(GateOutcome::Passed),
+            "c1",
+        );
+        assert_eq!(checks_stand(&passed), None);
     }
 }

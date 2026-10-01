@@ -762,10 +762,11 @@ impl SessionManager {
         )
     }
 
-    /// Sends a session's next queued message once no answer works: returns whether one is now
-    /// pending. Holds the driver's lock, so two callers never send two at once.
+    /// Sends a session's next queued message once no answer works (one that only waits on the
+    /// user doesn't hold it): returns whether one is now pending. Holds the driver's lock, so
+    /// two callers never send two at once.
     async fn send_queued(&self, conv: &Arc<ConvLive>) -> bool {
-        if self.working_request(&conv.id).await.is_some() {
+        if self.answer_working(&conv.id).await {
             return false;
         }
         let mut state = conv.state.lock().await;

@@ -177,13 +177,28 @@ pub fn allows_trials(category: TaskCategory) -> bool {
     )
 }
 
+/// A category's default effort, raised to its floor: a verifier that runs at low effort
+/// tends to call checks met that it never ran.
+fn at_least(category: TaskCategory, effort: &'static str) -> &'static str {
+    let floor = match category {
+        TaskCategory::Verify => "medium",
+        _ => return effort,
+    };
+    if table::rank(effort) < table::rank(floor) {
+        floor
+    } else {
+        effort
+    }
+}
+
 /// The effort a category runs at when the registry names none.
 fn category_effort(category: TaskCategory) -> Option<&'static str> {
     match category {
-        TaskCategory::Scout | TaskCategory::Verify => Some("low"),
-        TaskCategory::Research | TaskCategory::Implement | TaskCategory::Orchestrate => {
-            Some("medium")
-        }
+        TaskCategory::Scout => Some("low"),
+        TaskCategory::Research
+        | TaskCategory::Verify
+        | TaskCategory::Implement
+        | TaskCategory::Orchestrate => Some("medium"),
         TaskCategory::Review | TaskCategory::Merge => Some("high"),
         TaskCategory::Chat => None,
     }
@@ -1480,7 +1495,8 @@ fn effort(
         .as_deref()
         .and_then(|key| query.registry.entry(key))
         .and_then(|entry| entry.default_effort.get(&query.category))
-        .and_then(|effort| clamp_effort(effort));
+        .and_then(|effort| clamp_effort(effort))
+        .map(|effort| at_least(query.category, effort));
     let wanted = ranked
         .or(pinned)
         .or(registry_effort)
@@ -1886,4 +1902,17 @@ fn capitalize(text: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_verifier_runs_at_medium_effort_at_least() {
+        assert_eq!(category_effort(TaskCategory::Verify), Some("medium"));
+        assert_eq!(at_least(TaskCategory::Verify, "low"), "medium");
+        assert_eq!(at_least(TaskCategory::Verify, "high"), "high");
+        assert_eq!(at_least(TaskCategory::Scout, "low"), "low");
+    }
 }

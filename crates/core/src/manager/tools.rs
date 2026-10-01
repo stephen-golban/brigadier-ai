@@ -170,7 +170,9 @@ impl SessionManager {
                         .await?;
                     self.settle_requests(id).await;
                 }
-                let reply = self.message_worker(id, &task, args.text.clone()).await?;
+                let reply = self
+                    .message_worker(id, &task, args.text.clone(), "the orchestrator")
+                    .await?;
                 // The orchestrator steers it now: Brigadier no longer lands it on its own.
                 self.update_task(id, &task.id, |task| {
                     task.messages.push(args.text);

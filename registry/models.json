@@ -50,7 +50,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-09-22",
@@ -108,7 +108,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-09-28",
@@ -211,7 +211,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-07-24",
@@ -269,7 +269,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-06-30",
@@ -327,7 +327,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-05-28",
@@ -384,7 +384,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-04-16",
@@ -440,7 +440,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-02-05",
@@ -496,7 +496,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-02-17",
@@ -555,7 +555,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-09-03",
@@ -615,7 +615,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-09-29",
@@ -673,7 +673,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-09-22",
@@ -791,7 +791,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-07-09",
@@ -852,7 +852,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-07-09",
@@ -970,7 +970,7 @@
         "implement": "medium",
         "review": "high",
         "merge": "high",
-        "verify": "low",
+        "verify": "medium",
         "orchestrate": "medium"
       },
       "released": "2026-04-24",

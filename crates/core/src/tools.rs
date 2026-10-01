@@ -495,7 +495,7 @@ pub struct SubmitReport {
     pub summary: String,
     /// Repo-relative paths changed, created or deleted (every new file you want kept must be
     /// listed).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "paths")]
     pub changes: Vec<String>,
     /// Decisions made and why, one per line.
     #[serde(default, deserialize_with = "lines")]
@@ -548,7 +548,7 @@ fn lines<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::E
     }
     Ok(match Option::<Lines>::deserialize(deserializer)? {
         None => Vec::new(),
-        Some(Lines::List(items)) => items,
+        Some(Lines::List(items)) => items.into_iter().filter(|item| !empty_item(item)).collect(),
         Some(Lines::Text(text)) => text
             .lines()
             .map(|line| {
@@ -557,10 +557,32 @@ fn lines<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::E
                     .or_else(|| line.strip_prefix("* "))
                     .unwrap_or(line)
             })
-            .filter(|line| !line.is_empty())
+            .filter(|line| !empty_item(line))
             .map(str::to_owned)
             .collect(),
     })
+}
+
+/// The changed paths, without a placeholder that says there are none.
+fn paths<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| !empty_item(path))
+        .collect())
+}
+
+/// Whether a report line only says the list is empty ("None.", "N/A", "-"): some models fill
+/// every section, and a placeholder under needs_user must not read as something for the user.
+fn empty_item(item: &str) -> bool {
+    const PLACEHOLDERS: [&str; 6] = ["none", "n/a", "na", "nothing", "no", "none needed"];
+    let item = item
+        .trim()
+        .trim_matches(|c: char| {
+            c.is_whitespace() || c.is_ascii_punctuation() || matches!(c, '—' | '–')
+        })
+        .to_lowercase();
+    item.is_empty() || PLACEHOLDERS.contains(&item.as_str())
 }
 
 /// A tool call from a worker.
@@ -730,6 +752,34 @@ mod tests {
         );
         assert_eq!(report.risks, ["Assumes Node 22."]);
         assert_eq!(report.needs_user, ["Set STRIPE_KEY in .env"]);
+    }
+
+    #[test]
+    fn placeholder_lines_leave_a_report_list_empty() {
+        let report = report(serde_json::json!({
+            "summary": "Done.",
+            "changes": ["src/a.ts", "None."],
+            "decisions": "- None\n- N/A.",
+            "done_when": ["[met] tests pass: 41 passed", "none needed"],
+            "open_questions": ["None."],
+            "risks": "-\nNothing.\n(none)",
+            "needs_user": ["  no  ", "n/a"],
+        }));
+        assert_eq!(report.changes, ["src/a.ts"]);
+        assert!(report.decisions.is_empty());
+        assert_eq!(report.done_when, ["[met] tests pass: 41 passed"]);
+        assert!(report.open_questions.is_empty());
+        assert!(report.risks.is_empty());
+        assert!(report.needs_user.is_empty());
+        // A real item that starts like a placeholder stays.
+        let kept = self::report(serde_json::json!({
+            "summary": "Done.",
+            "needs_user": "None of the keys are set: add STRIPE_KEY to .env",
+        }));
+        assert_eq!(
+            kept.needs_user,
+            ["None of the keys are set: add STRIPE_KEY to .env"]
+        );
     }
 
     #[test]

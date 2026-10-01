@@ -2153,7 +2153,7 @@ impl SessionManager {
             return task;
         };
         let message = message.trim();
-        if task.kind == TaskKind::Review || !is_late_findings(&report.summary, message) {
+        if checks_a_change(&task) || !is_late_findings(&report.summary, message) {
             return task;
         }
         let text = self.redact_for(live, message).await;
@@ -2213,12 +2213,14 @@ impl SessionManager {
     }
 
     /// `message_worker`: answers a blocking question, steers a running worker, or sends a
-    /// reported worker back to work.
+    /// reported worker back to work. `from` names who speaks: the orchestrator, or Brigadier
+    /// itself (a gate's findings).
     pub(crate) async fn message_worker(
         &self,
         conversation_id: &ConversationId,
         task: &Task,
         text: String,
+        from: &str,
     ) -> Result<String> {
         let live = self.task_live(task);
         // A program the user installed (or removed) meanwhile, e.g. after the worker said it
@@ -2261,19 +2263,15 @@ impl SessionManager {
         }
         let Some(cli) = state.cli.clone() else {
             drop(state);
-            self.revive_worker(
-                &live,
-                task,
-                format!("Message from the orchestrator:\n{text}"),
-            )
-            .await?;
+            self.revive_worker(&live, task, format!("Message from {from}:\n{text}"))
+                .await?;
             return Ok(format!(
                 "task-{} is working on it; a new report will follow.",
                 task.number
             ));
         };
         let input = TurnInput {
-            text: format!("Message from the orchestrator:\n{text}"),
+            text: format!("Message from {from}:\n{text}"),
             files: Vec::new(),
         };
         // A worker still in the turn that reported is sent back all the same: its next
@@ -2618,6 +2616,8 @@ impl SessionManager {
                 t.blocked_reason = None;
                 // A task that ends while waiting for quota waits no more.
                 t.quota_wait = None;
+                // Nor does it land any more: landed, or ended without landing.
+                t.landing = None;
                 // Its last model's part is over.
                 fallback::end_attempt(t, None);
                 if kept.is_some() {
@@ -2881,6 +2881,14 @@ pub(crate) fn route_label(task: &Task) -> String {
     label
 }
 
+/// Whether a task checks another task's change (a gate member, or a review or verification
+/// of a subject): its result is its report alone, and what it writes after it goes nowhere.
+fn checks_a_change(task: &Task) -> bool {
+    task.kind == TaskKind::Review
+        || task.gate_link.is_some()
+        || (task.kind == TaskKind::Verify && task.subject.is_some())
+}
+
 /// Whether `message`, written after a report with `summary`, holds findings the report left
 /// out: any message the summary points at ("reproduced below"), else a long one.
 fn is_late_findings(summary: &str, message: &str) -> bool {
@@ -2916,5 +2924,46 @@ mod tests {
         let summary = "The app uses Zustand; its stores are in src/store/.";
         assert!(!is_late_findings(summary, "Report submitted."));
         assert!(is_late_findings(summary, &"Details. ".repeat(60)));
+    }
+
+    #[test]
+    fn what_a_checking_task_writes_after_its_report_goes_nowhere() {
+        let task = |kind: &str| -> Task {
+            serde_json::from_value(serde_json::json!({
+                "id": "t2",
+                "conversationId": "c1",
+                "number": 2,
+                "position": 0,
+                "title": "Verify task-1",
+                "kind": kind,
+                "spec": "Verify it.",
+                "access": { "repo": "read", "network": false, "unsandboxed": false },
+                "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+                "state": "reported",
+                "attachments": [],
+                "createdAtMs": 0,
+                "updatedAtMs": 0
+            }))
+            .expect("a task")
+        };
+        // A verifier of the gate.
+        let mut member = task("verify");
+        member.gate_link = Some(crate::work::GateLink {
+            owner: crate::work::GateOwner::Task {
+                task_id: TaskId("t1".into()),
+            },
+            round: 1,
+            role: crate::work::GateRole::Verify,
+        });
+        assert!(checks_a_change(&member));
+        // A verification the orchestrator delegated for another task's change.
+        let mut delegated = task("verify");
+        delegated.subject = Some(TaskId("t1".into()));
+        assert!(checks_a_change(&delegated));
+        assert!(checks_a_change(&task("review")));
+        // A verification of its own (run the suite, say what fails) is research: its
+        // findings may come after the report.
+        assert!(!checks_a_change(&task("verify")));
+        assert!(!checks_a_change(&task("scout")));
     }
 }

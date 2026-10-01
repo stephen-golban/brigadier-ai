@@ -290,9 +290,22 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
 /// The reported write tasks still waiting for the orchestrator's decision (see
 /// `SessionManager::undecided`).
 pub(crate) fn undecided_note(tasks: &[Task]) -> String {
+    use crate::work::GateOutcome;
     let list: Vec<String> = tasks
         .iter()
-        .map(|task| format!("task-{} \"{}\"", task.number, task.title))
+        .map(|task| {
+            // Checks that already ended on this very change: accepting it as it is repeats them.
+            let checked = match super::gates::checks_stand(task) {
+                Some(GateOutcome::Failed) => {
+                    " (its checks found problems and it has not changed since: send it back with guidance or stop it; accepting it as it is will not land it)"
+                }
+                Some(_) => {
+                    " (its checks could not finish: accept it again only if what stopped them was temporary)"
+                }
+                None => "",
+            };
+            format!("task-{} \"{}\"{checked}", task.number, task.title)
+        })
         .collect();
     format!(
         "[waiting for your decision: {}. Accept each with accept_task, send it back with message_worker, or stop it with stop_worker if its work should not land; until then it stays open.]",

@@ -123,6 +123,20 @@ impl Repo {
         )?)
     }
 
+    /// The tree a commit holds, rejecting option injection and non-commit objects. Two commits
+    /// with the same tree hold the same files.
+    pub fn tree_of(&self, rev: &str) -> Result<Oid> {
+        parse::oid(&self.cmd(
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{rev}^{{commit}}^{{tree}}"),
+            ],
+            true,
+        )?)
+    }
+
     pub(crate) fn validate_branch(&self, name: &str) -> Result<()> {
         if name.starts_with('-') || name.contains('\0') {
             return Err(Error::Invalid("invalid branch name".into()));
@@ -1397,4 +1411,57 @@ fn absolute(path: &Path) -> Result<PathBuf> {
         return Err(Error::Invalid("worktree path must not contain ..".into()));
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Git, Oid};
+    use std::{ffi::OsString, fs, path::PathBuf};
+
+    #[test]
+    fn commits_holding_the_same_files_have_the_same_tree() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let dir =
+            std::env::temp_dir().join(format!("brigadier-git-tree-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("a temp folder");
+        // The user's own git config (signing, hooks, identity) stays out of it.
+        let config = dir.join("gitconfig");
+        fs::write(&config, "").expect("an empty config");
+        let mut env: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(key, _)| !key.to_string_lossy().starts_with("GIT_"))
+            .collect();
+        env.push(("GIT_CONFIG_GLOBAL".into(), config.into_os_string()));
+        for (key, value) in [
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_AUTHOR_NAME", "Test"),
+            ("GIT_AUTHOR_EMAIL", "test@example.com"),
+            ("GIT_COMMITTER_NAME", "Test"),
+            ("GIT_COMMITTER_EMAIL", "test@example.com"),
+        ] {
+            env.push((key.into(), value.into()));
+        }
+        let git = Git::new(PathBuf::from("git"), env);
+        let root = dir.join("repo");
+        assert!(git.init(&root).expect("git init").is_none());
+        let repo = git.open(&root).expect("the repository");
+        fs::write(root.join("a.txt"), "a\n").expect("a file");
+        let first = repo.commit_changes("Add a", true).expect("a commit");
+        repo.cmd(
+            &["commit", "--quiet", "--allow-empty", "-m", "Again"],
+            false,
+        )
+        .expect("an empty commit");
+        let again = repo.resolve("HEAD").expect("HEAD");
+        fs::write(root.join("a.txt"), "b\n").expect("a change");
+        let changed = repo.commit_changes("Change a", true).expect("a commit");
+        let tree = |commit: &Oid| repo.tree_of(&commit.0).expect("its tree");
+        assert_ne!(first, again);
+        assert_eq!(tree(&first), tree(&again));
+        assert_ne!(tree(&first), tree(&changed));
+        // A tree is not a commit.
+        assert!(repo.tree_of(&tree(&first).0).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
