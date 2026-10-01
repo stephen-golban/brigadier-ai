@@ -4,147 +4,155 @@
 //! - macOS: `clonefile(2)` clones the whole tree on APFS. Nothing is written until either side
 //!   changes a file, and then only that file diverges.
 //! - Linux: `cp -a --reflink=always`, which fails rather than falling back to a full copy on file
-//!   systems that can't share blocks.
-//! - Elsewhere: a plain copy, only for folders under [`PLAIN_COPY_LIMIT`].
+//!   systems that can't share blocks. It is killed when it runs past its deadline.
+//! - Elsewhere: nothing is copied ([`SUPPORTED`] is false). There is no way there to publish a
+//!   copy without possibly replacing what is already in its place.
 //!
-//! [`rename_new`] publishes a finished copy without ever replacing what is already there.
+//! All of it happens in a [`Folder`]: one reached from a root without following any link, and
+//! held open, so a link swapped in above it can't send the copy (or its publishing) elsewhere.
 
+use std::ffi::OsStr;
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
+use std::time::Instant;
 
-/// The biggest folder copied byte by byte where the file system can't share blocks.
-pub const PLAIN_COPY_LIMIT: u64 = 1 << 30;
+/// Whether this platform can copy and publish folders at all.
+pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
-/// How a folder was copied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Method {
-    /// The copy shares storage with the original until either changes.
-    CopyOnWrite,
-    /// A full copy.
-    Plain,
+/// A folder inside a root, every folder from the root down to it a real one (not a link).
+#[derive(Debug)]
+pub struct Folder {
+    path: PathBuf,
+    #[cfg(unix)]
+    fd: std::os::fd::OwnedFd,
 }
 
-/// Copies the folder `src` to `dst`, which must not exist yet. Links are copied as links, never
-/// followed. On failure `dst` may be partly written: the caller removes it.
-pub fn clone_tree(src: &Path, dst: &Path) -> io::Result<Method> {
-    if dst.symlink_metadata().is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", dst.display()),
-        ));
-    }
-    platform_clone(src, dst)
-}
-
-#[cfg(target_os = "macos")]
-fn platform_clone(src: &Path, dst: &Path) -> io::Result<Method> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    // `CLONE_NOFOLLOW` from <sys/clonefile.h>: clone a link itself, not what it points at.
-    const CLONE_NOFOLLOW: u32 = 0x0001;
-    let from = CString::new(src.as_os_str().as_bytes())?;
-    let to = CString::new(dst.as_os_str().as_bytes())?;
-    // SAFETY: both arguments are NUL-terminated paths that live for the whole call.
-    #[allow(unsafe_code)]
-    let status = unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), CLONE_NOFOLLOW) };
-    if status == 0 {
-        Ok(Method::CopyOnWrite)
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn platform_clone(src: &Path, dst: &Path) -> io::Result<Method> {
-    let output = std::process::Command::new("cp")
-        .args(["-a", "--reflink=always", "--"])
-        .arg(src)
-        .arg(dst)
-        .stdin(std::process::Stdio::null())
-        .output()?;
-    if output.status.success() {
-        Ok(Method::CopyOnWrite)
-    } else {
-        Err(io::Error::other(format!(
-            "cp --reflink=always failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn platform_clone(src: &Path, dst: &Path) -> io::Result<Method> {
-    let size = tree_size(src, PLAIN_COPY_LIMIT)?;
-    if size >= PLAIN_COPY_LIMIT {
-        return Err(io::Error::other(format!(
-            "{} is 1 GB or more, too big to copy without copy-on-write",
-            src.display()
-        )));
-    }
-    plain_copy(src, dst)?;
-    Ok(Method::Plain)
-}
-
-/// The bytes of the files in `dir`, counting stops once past `limit`. Links are not followed.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn tree_size(dir: &Path, limit: u64) -> io::Result<u64> {
-    let mut total = 0u64;
-    let mut pending = vec![dir.to_owned()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                total += entry.metadata()?.len();
-                if total >= limit {
-                    return Ok(total);
+impl Folder {
+    /// Opens `root/rel`. `rel` must be plain folder names (no `..`, nothing absolute), and each
+    /// must be a real folder; with `create`, missing ones are made. `root` itself is trusted.
+    pub fn open(root: &Path, rel: &Path, create: bool) -> io::Result<Self> {
+        let mut names = Vec::new();
+        for part in rel.components() {
+            match part {
+                Component::Normal(name) => names.push(name),
+                Component::CurDir => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{} leaves {}", rel.display(), root.display()),
+                    ));
                 }
             }
         }
+        open_folder(root, &names, create)
     }
-    Ok(total)
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Copies `name` in `src` into this folder as `new`, which must not exist yet. Links are
+    /// copied as links, never followed. Fails once `deadline` passes. On failure `new` may be
+    /// partly written: the caller removes it.
+    pub fn clone_in(
+        &self,
+        src: &Folder,
+        name: &OsStr,
+        new: &OsStr,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "out of time"));
+        }
+        platform_clone(src, name, self, new, deadline)
+    }
+
+    /// Renames `from` to `to` in this folder, failing with `AlreadyExists` when `to` is there
+    /// (it is never replaced, even by an empty folder).
+    pub fn rename_new(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
+        platform_rename_new(self, from, to)
+    }
 }
 
-/// Copies a tree file by file. A link fails the copy: re-creating one needs rights Windows
-/// doesn't give every user.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn plain_copy(src: &Path, dst: &Path) -> io::Result<()> {
-    std::fs::create_dir(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let to = dst.join(entry.file_name());
-        if kind.is_symlink() {
-            return Err(io::Error::other(format!(
-                "{} is a link",
-                entry.path().display()
-            )));
-        } else if kind.is_dir() {
-            plain_copy(&entry.path(), &to)?;
-        } else {
-            std::fs::copy(entry.path(), &to)?;
+#[cfg(unix)]
+fn open_folder(root: &Path, names: &[&OsStr], create: bool) -> io::Result<Folder> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::{Mode, mkdirat};
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut fd = open(root, flags, Mode::empty()).map_err(io::Error::from)?;
+    let mut path = root.to_owned();
+    for name in names {
+        path.push(name);
+        let next = match openat(&fd, *name, flags, Mode::empty()) {
+            Err(nix::errno::Errno::ENOENT) if create => {
+                match mkdirat(&fd, *name, Mode::from_bits_truncate(0o777)) {
+                    Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+                    Err(err) => return Err(err.into()),
+                }
+                openat(&fd, *name, flags, Mode::empty())
+            }
+            other => other,
+        };
+        fd = next.map_err(|err| match err {
+            // A link where a folder should be.
+            nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => {
+                io::Error::other(format!("{} is a link or not a folder", path.display()))
+            }
+            err => err.into(),
+        })?;
+    }
+    Ok(Folder { path, fd })
+}
+
+#[cfg(not(unix))]
+fn open_folder(root: &Path, names: &[&OsStr], create: bool) -> io::Result<Folder> {
+    let mut path = root.to_owned();
+    for name in names {
+        path.push(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() && !meta.is_symlink() => {}
+            Ok(_) => {
+                return Err(io::Error::other(format!(
+                    "{} is a link or not a folder",
+                    path.display()
+                )));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound && create => {
+                std::fs::create_dir(&path)?;
+            }
+            Err(err) => return Err(err),
         }
     }
-    Ok(())
-}
-
-/// Renames `from` to `to`, failing with `AlreadyExists` when `to` is there (it is never
-/// replaced, even by an empty folder).
-pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    platform_rename_new(from, to)
+    Ok(Folder { path })
 }
 
 #[cfg(target_os = "macos")]
-fn platform_rename_new(from: &Path, to: &Path) -> io::Result<()> {
+fn platform_clone(
+    src: &Folder,
+    name: &OsStr,
+    dst: &Folder,
+    new: &OsStr,
+    _deadline: Instant,
+) -> io::Result<()> {
     use std::ffi::CString;
+    use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
-    let source = CString::new(from.as_os_str().as_bytes())?;
-    let target = CString::new(to.as_os_str().as_bytes())?;
-    // SAFETY: both arguments are NUL-terminated paths that live for the whole call.
+    // `CLONE_NOFOLLOW` from <sys/clonefile.h>: clone a link itself, not what it points at.
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+    let from = CString::new(name.as_bytes())?;
+    let to = CString::new(new.as_bytes())?;
+    // One call that can't be interrupted, but it only copies the tree's metadata.
+    // SAFETY: both descriptors are open and both names are NUL-terminated for the whole call.
     #[allow(unsafe_code)]
-    let status = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) };
+    let status = unsafe {
+        libc::clonefileat(
+            src.fd.as_raw_fd(),
+            from.as_ptr(),
+            dst.fd.as_raw_fd(),
+            to.as_ptr(),
+            CLONE_NOFOLLOW,
+        )
+    };
     if status == 0 {
         Ok(())
     } else {
@@ -152,30 +160,164 @@ fn platform_rename_new(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn platform_rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    use nix::fcntl::{AT_FDCWD, RenameFlags, renameat2};
-    renameat2(AT_FDCWD, from, AT_FDCWD, to, RenameFlags::RENAME_NOREPLACE).map_err(io::Error::from)
-}
+/// The most of `cp`'s error output kept.
+#[cfg(target_os = "linux")]
+const MAX_STDERR: usize = 4 << 10;
 
-/// Windows refuses to rename over an existing folder by itself; elsewhere the check narrows the
-/// window to nothing Brigadier itself would race with (the worktree is new and still private).
-#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
-fn platform_rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    if to.symlink_metadata().is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", to.display()),
-        ));
+#[cfg(target_os = "linux")]
+fn platform_clone(
+    src: &Folder,
+    name: &OsStr,
+    dst: &Folder,
+    new: &OsStr,
+    deadline: Instant,
+) -> io::Result<()> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let into = dst.fd.as_raw_fd();
+    let mut command = Command::new("cp");
+    command
+        .args(["-a", "--reflink=always", "--no-target-directory", "--"])
+        .arg(src.path().join(name))
+        .arg(new)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // `cp` starts in the destination folder itself and writes `new` relative to it, so a
+    // folder above it swapped for a link can't redirect the copy.
+    // SAFETY: `fchdir` is async-signal-safe, and `into` stays open until the child has exited.
+    #[allow(unsafe_code)]
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fchdir(into) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
     }
-    std::fs::rename(from, to)
+    let mut child = command.spawn()?;
+    let stderr = child.stderr.take();
+    // Read on the side (a full pipe would stall `cp`), keeping only the start.
+    let reader = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let Some(mut pipe) = stderr else {
+            return kept;
+        };
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    let room = MAX_STDERR.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..read.min(room)]);
+                }
+            }
+        }
+        kept
+    });
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let stderr = reader.join().unwrap_or_default();
+    match status {
+        None => Err(io::Error::new(io::ErrorKind::TimedOut, "out of time")),
+        Some(status) if status.success() => Ok(()),
+        Some(_) => Err(io::Error::other(format!(
+            "cp --reflink=always failed: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        ))),
+    }
 }
 
-#[cfg(test)]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn platform_clone(
+    _src: &Folder,
+    _name: &OsStr,
+    _dst: &Folder,
+    _new: &OsStr,
+    _deadline: Instant,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "copying folders isn't supported here",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_rename_new(folder: &Folder, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let source = CString::new(from.as_bytes())?;
+    let target = CString::new(to.as_bytes())?;
+    let fd = folder.fd.as_raw_fd();
+    // SAFETY: the descriptor is open and both names are NUL-terminated for the whole call.
+    #[allow(unsafe_code)]
+    let status =
+        unsafe { libc::renameatx_np(fd, source.as_ptr(), fd, target.as_ptr(), libc::RENAME_EXCL) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// `renameat2(2)` called directly, on every C library (musl has no wrapper for it).
+#[cfg(target_os = "linux")]
+fn platform_rename_new(folder: &Folder, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    // `RENAME_NOREPLACE` from <linux/fs.h>.
+    const RENAME_NOREPLACE: libc::c_uint = 1;
+    let source = CString::new(from.as_bytes())?;
+    let target = CString::new(to.as_bytes())?;
+    let fd = folder.fd.as_raw_fd();
+    // SAFETY: the descriptor is open and both names are NUL-terminated for the whole call.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            fd,
+            source.as_ptr(),
+            fd,
+            target.as_ptr(),
+            RENAME_NOREPLACE,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// No rename here refuses to replace what is in its place, so nothing is published.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn platform_rename_new(_folder: &Folder, _from: &OsStr, _to: &OsStr) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "renaming without replacing isn't supported here",
+    ))
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    fn temp(name: &str) -> std::path::PathBuf {
+    fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "brigadier-clone-{name}-{}-{}",
             std::process::id(),
@@ -185,29 +327,44 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        std::fs::canonicalize(dir).unwrap()
+    }
+
+    fn later() -> Instant {
+        Instant::now() + Duration::from_secs(60)
     }
 
     #[test]
     fn clones_a_tree_and_refuses_an_existing_destination() {
         let root = temp("tree");
-        let src = root.join("src");
-        std::fs::create_dir_all(src.join("a/b")).unwrap();
-        std::fs::write(src.join("a/b/file"), b"hello").unwrap();
-        let dst = root.join("dst");
+        std::fs::create_dir_all(root.join("src/a/b")).unwrap();
+        std::fs::write(root.join("src/a/b/file"), b"hello").unwrap();
+        let folder = Folder::open(&root, Path::new(""), false).unwrap();
         // Tests run on whatever file system the temp folder is on; one that can't share
         // blocks fails cleanly, which is all warming needs.
-        match clone_tree(&src, &dst) {
-            Ok(_) => {
+        match folder.clone_in(&folder, OsStr::new("src"), OsStr::new("dst"), later()) {
+            Ok(()) => {
+                let dst = root.join("dst");
                 assert_eq!(std::fs::read(dst.join("a/b/file")).unwrap(), b"hello");
                 std::fs::write(dst.join("a/b/file"), b"changed").unwrap();
-                assert_eq!(std::fs::read(src.join("a/b/file")).unwrap(), b"hello");
+                assert_eq!(std::fs::read(root.join("src/a/b/file")).unwrap(), b"hello");
             }
-            Err(_) => assert!(!dst.join("a/b/file").exists()),
+            Err(_) => assert!(!root.join("dst/a/b/file").exists()),
         }
         std::fs::create_dir_all(root.join("there")).unwrap();
-        let err = clone_tree(&src, &root.join("there")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(
+            folder
+                .clone_in(&folder, OsStr::new("src"), OsStr::new("there"), later())
+                .is_err()
+        );
+        assert!(!root.join("there/a").exists());
+        // Past its deadline nothing is copied.
+        let past = Instant::now();
+        let err = folder
+            .clone_in(&folder, OsStr::new("src"), OsStr::new("late"), past)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(!root.join("late").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -216,10 +373,40 @@ mod tests {
         let root = temp("rename");
         std::fs::create_dir_all(root.join("from/inner")).unwrap();
         std::fs::create_dir_all(root.join("to")).unwrap();
-        assert!(rename_new(&root.join("from"), &root.join("to")).is_err());
+        let folder = Folder::open(&root, Path::new(""), false).unwrap();
+        let err = folder
+            .rename_new(OsStr::new("from"), OsStr::new("to"))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(root.join("from/inner").is_dir());
-        rename_new(&root.join("from"), &root.join("fresh")).unwrap();
+        folder
+            .rename_new(OsStr::new("from"), OsStr::new("fresh"))
+            .unwrap();
         assert!(root.join("fresh/inner").is_dir());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn folders_are_reached_without_following_links() {
+        let root = temp("folders");
+        let outside = temp("outside");
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("a/link")).unwrap();
+        assert_eq!(
+            Folder::open(&root, Path::new("a/b"), false).unwrap().path(),
+            root.join("a/b")
+        );
+        // A link anywhere on the way is refused, even when creating.
+        assert!(Folder::open(&root, Path::new("a/link"), false).is_err());
+        assert!(Folder::open(&root, Path::new("a/link/new"), true).is_err());
+        assert!(!outside.join("new").exists());
+        assert!(Folder::open(&root, Path::new("a/../a"), false).is_err());
+        assert!(Folder::open(&root, Path::new("/tmp"), false).is_err());
+        // Missing folders are made one by one.
+        Folder::open(&root, Path::new("a/c/d"), true).unwrap();
+        assert!(root.join("a/c/d").is_dir());
+        assert!(Folder::open(&root, Path::new("a/e"), false).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
     }
 }

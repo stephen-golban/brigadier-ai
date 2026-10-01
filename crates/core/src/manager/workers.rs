@@ -1309,15 +1309,23 @@ impl SessionManager {
             repo.add_worktree(&path, spec).map_err(git_error)?;
             if warm {
                 let started = std::time::Instant::now();
-                let installing = warm::install_running(&*platform, repo.root());
-                let warmed = warm::warm_worktree(&repo, &[repo_path], &path, installing);
-                tracing::info!(
-                    task = %task_id,
-                    copied = ?warmed.copied,
-                    skipped = ?warmed.skipped,
-                    ms = started.elapsed().as_millis() as u64,
-                    "warmed the task's worktree"
-                );
+                match git.open(&path) {
+                    Ok(worktree) => {
+                        let installing = || warm::install_running(&*platform, repo.root());
+                        let warmed =
+                            warm::warm_worktree(&repo, &[repo_path], &worktree, &installing);
+                        tracing::info!(
+                            task = %task_id,
+                            copied = ?warmed.copied,
+                            skipped = ?warmed.skipped,
+                            ms = started.elapsed().as_millis() as u64,
+                            "warmed the task's worktree"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(task = %task_id, %err, "couldn't open the worktree to warm it");
+                    }
+                }
             }
             Ok(())
         })
