@@ -1,6 +1,7 @@
 import { subscribe } from "@/ipc/client";
 import type { BridgeEvent, EventEnvelope } from "@/ipc/generated";
 import { markApplied, noteFlush, setSamplingPaused } from "@/lib/perf";
+import { markStartup } from "@/lib/startup";
 import {
   loadCatalog,
   loadConversation,
@@ -59,6 +60,9 @@ async function resync() {
   await Promise.all(shown.map((id) => loadConversation(id)));
 }
 
+/** Whether the daemon has answered yet: startup marks the first time. */
+let connectedOnce = false;
+
 function onBridgeEvent(message: BridgeEvent) {
   switch (message.type) {
     case "event":
@@ -69,6 +73,10 @@ function onBridgeEvent(message: BridgeEvent) {
       }
       break;
     case "connected":
+      if (!connectedOnce) {
+        connectedOnce = true;
+        markStartup("connected");
+      }
       useApp.setState({
         connection: { status: "connected", daemon: message.daemon, reason: null },
       });

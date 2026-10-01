@@ -13,6 +13,11 @@ processStartMs: number,
  */
 smoke: boolean, 
 /**
+ * The data folder was new: no model lists were saved yet, so startup waits for the agent
+ * CLIs to report theirs. Judged against the first-launch budget instead of cold start.
+ */
+firstLaunch: boolean, 
+/**
  * Multiplier applied to timing budgets (1 locally, higher on shared CI runners).
  */
 budgetTolerance: number, };

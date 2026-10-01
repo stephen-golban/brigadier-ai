@@ -40,6 +40,7 @@ function evaluate(
   metrics: DaemonMetrics | null,
   perf: UiPerf,
   coldStartMs: number | null,
+  firstLaunch: boolean,
   tolerance: number,
 ): Evaluation {
   if (budget.phase !== null) {
@@ -63,9 +64,17 @@ function evaluate(
         ? judge(metrics.rssBytes / (1024 * 1024), formatMb(metrics.rssBytes))
         : judge(null, "");
     case "coldStart":
+    case "firstColdStart":
+      if (firstLaunch !== (budget.id === "firstColdStart")) {
+        return {
+          measured: "—",
+          status: "na",
+          detail: firstLaunch ? "n/a — this was a first launch" : "n/a — not a first launch",
+        };
+      }
       return coldStartMs === null
         ? judge(null, "")
-        : judge(coldStartMs, formatMs(coldStartMs), "process start → first interactive paint");
+        : judge(coldStartMs, formatMs(coldStartMs), "process start → app shown and usable");
     case "ingestToPaint":
       return perf.ingest.samples === 0
         ? judge(null, "")
@@ -142,6 +151,7 @@ export function PerformanceTab() {
   const budgets = useApp((s) => s.inspector.diagnostics?.budgets ?? null);
   const metrics = useApp((s) => s.inspector.metrics);
   const coldStartMs = useApp((s) => s.coldStartMs);
+  const firstLaunch = useApp((s) => s.info?.firstLaunch ?? false);
   const tolerance = useApp((s) => s.info?.budgetTolerance ?? 1);
   const perf = useUiPerf();
 
@@ -158,7 +168,7 @@ export function PerformanceTab() {
         </thead>
         <tbody>
           {(budgets ?? []).map((budget) => {
-            const result = evaluate(budget, metrics, perf, coldStartMs, tolerance);
+            const result = evaluate(budget, metrics, perf, coldStartMs, firstLaunch, tolerance);
             const status = STATUS[result.status];
             return (
               <tr key={budget.id} className="border-b align-top last:border-b-0">

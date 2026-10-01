@@ -199,24 +199,30 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          # Then three cold starts, each with a fresh data directory. On shared runners the
-          # window and webview creation before the page loads swings by seconds between
-          # identical launches, so cold start is judged by the median of the three against the
-          # same limit; every other check is judged on the first launch, as the app judged it.
-          for launch in 1 2 3; do
-            echo "::group::Judged launch $launch"
-            wait_for_idle
-            diagnostics "judged launch $launch"
-            if BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-smoke-$launch" \
-              BRIGADIER_SMOKE_REPORT="$RUNNER_TEMP/smoke-launch-$launch.json" smoke; then
-              echo "Judged launch $launch completed"
-            else
-              echo "Judged launch $launch exited nonzero; its report will still be judged"
-            fi
-            echo "::endgroup::"
+          # Then three pairs of launches: a first launch on a new data directory, then a second
+          # launch on the same directory, each judged against its own startup budget. On shared
+          # runners the window and webview creation before the page loads swings by seconds
+          # between identical launches, so each startup budget is judged by the median of its
+          # three launches against the same limit; every other check is judged on the first
+          # launch, as the app judged it.
+          launches=()
+          for pair in 1 2 3; do
+            for kind in first second; do
+              echo "::group::Judged launch $pair ($kind on its data directory)"
+              wait_for_idle
+              diagnostics "judged launch $pair $kind"
+              report="$RUNNER_TEMP/smoke-launch-$pair-$kind.json"
+              launches+=("$report")
+              if BRIGADIER_DATA_DIR="$RUNNER_TEMP/brigadier-smoke-$pair" \
+                BRIGADIER_SMOKE_REPORT="$report" smoke; then
+                echo "Judged launch $pair $kind completed"
+              else
+                echo "Judged launch $pair $kind exited nonzero; its report will still be judged"
+              fi
+              echo "::endgroup::"
+            done
           done
-          node apps/desktop/scripts/judge-smoke.mjs "$RUNNER_TEMP/smoke-report.json" \
-            "$RUNNER_TEMP"/smoke-launch-{1,2,3}.json
+          node apps/desktop/scripts/judge-smoke.mjs "$RUNNER_TEMP/smoke-report.json" "${launches[@]}"
 
       - name: Smoke report
         if: always()

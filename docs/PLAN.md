@@ -93,7 +93,8 @@ The user talks to exactly one **orchestrator**. The orchestrator never does work
 |---|---|
 | Core idle RSS | < 60 MB |
 | Core RSS with 20 active workers | < 300 MB, excluding the CLI processes themselves |
-| App cold start to interactive | < 1 s |
+| App start to interactive | < 1 s |
+| First launch to interactive (a new data folder, so it waits for the agent CLIs to list their models) | < 3 s |
 | Event ingest to UI paint | < 50 ms p95 |
 | UI with 20 streaming worker cards | 60 fps, no long tasks > 50 ms |
 | Async-runtime stalls | None > 10 ms (all blocking I/O off-runtime) |

@@ -106,6 +106,9 @@ pub struct AppInfo {
     pub process_start_ms: f64,
     /// Running the launch smoke check (`--smoke`).
     pub smoke: bool,
+    /// The data folder was new: no model lists were saved yet, so startup waits for the agent
+    /// CLIs to report theirs. Judged against the first-launch budget instead of cold start.
+    pub first_launch: bool,
     /// Multiplier applied to timing budgets (1 locally, higher on shared CI runners).
     pub budget_tolerance: f64,
 }

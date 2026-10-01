@@ -48,6 +48,14 @@ function showRetry(message: string): void {
   retry.addEventListener("click", () => location.reload());
 }
 
+/** Says under the mark what startup is waiting for. */
+export function setSplashStatus(text: string): void {
+  const status = document.getElementById("splash-status");
+  if (!status) return;
+  status.textContent = text;
+  status.dataset.shown = "";
+}
+
 /** React has mounted the app, so revealing it shows something. */
 export function markMounted(): void {
   mounted = true;

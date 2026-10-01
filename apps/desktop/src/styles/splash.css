@@ -77,6 +77,19 @@ html[data-splash="leaving"] #splash {
   gap: var(--splash-foot-gap);
 }
 
+/* What startup is waiting for (src/lib/agentsReady.ts), once it has waited a moment. */
+#splash-status {
+  opacity: 0;
+}
+
+#splash-status:empty {
+  display: none;
+}
+
+#splash-status[data-shown] {
+  animation: splash-in var(--splash-reveal) ease-out forwards;
+}
+
 /* Shown by itself once startup runs long, even if no script runs; at once when set. */
 #splash-note {
   opacity: 0;

@@ -423,6 +423,7 @@ async fn smoke_finish(
         &state.info.platform,
         state.info.budget_tolerance,
         cold_start_ms,
+        state.info.first_launch,
         &measurements,
         &diagnostics,
     );
@@ -456,11 +457,14 @@ fn main() {
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value >= 1.0)
         .unwrap_or(1.0);
+    // Before the daemon is launched, which creates the database.
+    let first_launch = !platform.paths().db_path.exists();
     let info = AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: platform.name().into(),
         process_start_ms,
         smoke,
+        first_launch,
         budget_tolerance,
     };
     // The daemon applies the same tolerance to its stall threshold.

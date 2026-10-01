@@ -139,17 +139,25 @@ BRIGADIER_DATA_DIR=$(mktemp -d) target/release/bundle/macos/Brigadier.app/Conten
 
 It prints a JSON report (also written to `BRIGADIER_SMOKE_REPORT` if set) and exits non-zero if
 a budget for an implemented feature is missed. `BRIGADIER_BUDGET_TOLERANCE` multiplies timing
-budgets only; CI uses 3 on shared runners, locally it is 1. The cold-start note breaks the time
-down into milestones (ms since process start: webview, script, connected, catalog, paint), and
-the frame-gap note says when the longest gap fell and which event flush cost the most.
+budgets only; CI uses 3 on shared runners, locally it is 1.
 
-In CI, after one warm-up launch that is never judged, the app is launched three times, each with
-a fresh data directory, and `apps/desktop/scripts/judge-smoke.mjs` judges them:
+Startup is judged against one of two budgets. A launch on a new data folder is a first launch:
+no model lists are saved yet, so the startup screen waits for the signed-in agent CLIs to report
+theirs (at most 3 s once the app has drawn), and it has 3 s. Any later launch has 1 s. Missing or
+signed-out CLIs never hold the startup screen. The startup note breaks the time down into
+milestones (ms since process start: webview, script, connected, catalog, paint, agents,
+revealed), and the frame-gap note says when the longest gap fell and which event flush cost the
+most.
 
-- cold start by the **median** of the three, against the same limit (1 s × tolerance);
+In CI, after warm-up launches that are never judged, the app is launched in three pairs: a first
+launch on a new data directory, then a second launch on the same directory.
+`apps/desktop/scripts/judge-smoke.mjs` judges them:
+
+- first launch by the **median** of the three first launches (3 s × tolerance), and cold start
+  by the median of the three second launches (1 s × tolerance);
 - every other check on the first launch, exactly as the app judged it.
 
-All three reports, with their milestones, are printed in the log and kept in the combined
+All six reports, with their milestones, are printed in the log and kept in the combined
 report artifact. This is because, on shared runners, most of a cold start passes before the page
 even loads, while the platform creates the window and webview. That part swings by seconds
 between identical launches, for example on the same code:

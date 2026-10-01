@@ -26,7 +26,6 @@ try {
   }
   useApp.setState({ info });
   await startBridge();
-  markStartup("connected");
 
   const root = document.getElementById("root");
   if (!root) throw new Error("Missing #root element");

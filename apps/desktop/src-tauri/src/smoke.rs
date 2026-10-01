@@ -25,6 +25,7 @@ pub fn evaluate(
     platform: &str,
     tolerance: f64,
     cold_start_ms: f64,
+    first_launch: bool,
     ui: &UiMeasurements,
     diagnostics: &Diagnostics,
 ) -> SmokeReport {
@@ -57,13 +58,24 @@ pub fn evaluate(
                     Some(ui.idle_rss_bytes as f64 / (1024.0 * 1024.0)),
                     "daemon RSS after startup, before the burst".to_owned(),
                 ),
-                BudgetId::ColdStart => (
-                    Some(cold_start_ms),
-                    format!(
-                        "process start to first interactive paint, daemon launch included; ms since process start: {}",
-                        ui.startup
-                    ),
-                ),
+                BudgetId::ColdStart | BudgetId::FirstColdStart => {
+                    if first_launch != (budget.id == BudgetId::FirstColdStart) {
+                        check.note = if first_launch {
+                            "n/a — a first launch (new data folder) is judged on its own budget"
+                        } else {
+                            "n/a — not a first launch (the data folder was already set up)"
+                        }
+                        .into();
+                        return check;
+                    }
+                    (
+                        Some(cold_start_ms),
+                        format!(
+                            "process start to the app shown and usable, daemon launch and agent checks included; ms since process start: {}",
+                            ui.startup
+                        ),
+                    )
+                }
                 BudgetId::IngestToPaint => (
                     (ui.probes_painted > 0).then_some(ui.ingest_to_paint.p95_ms),
                     format!(

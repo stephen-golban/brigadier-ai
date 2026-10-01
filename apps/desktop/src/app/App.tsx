@@ -14,6 +14,7 @@ import { runSmoke } from "@/app/smoke";
 import { SidebarPanel, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
 import { appReady, nowEpochMs } from "@/ipc/client";
+import { waitForAgents } from "@/lib/agentsReady";
 import { nextPaint, setFrameSampling } from "@/lib/perf";
 import { markMounted, revealApp } from "@/lib/splash";
 import { markStartup } from "@/lib/startup";
@@ -63,8 +64,8 @@ export function App() {
 
   useEffect(markMounted, []);
 
-  // Cold start ends when the app is usable: the loaded catalog painted and the startup screen
-  // gone.
+  // Cold start ends when the app is usable: the loaded catalog painted, the agent CLIs ready
+  // (or no longer waited for) and the startup screen gone.
   useEffect(() => {
     if (!catalogLoaded || readyReported) return;
     readyReported = true;
@@ -72,6 +73,10 @@ export function App() {
     void nextPaint()
       .then(() => {
         markStartup("paint");
+        return waitForAgents();
+      })
+      .then(() => {
+        markStartup("agents");
         return revealApp();
       })
       .then(() => {
