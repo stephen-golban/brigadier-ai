@@ -461,6 +461,7 @@ impl SessionManager {
         let members = self.member_tasks(&task, &gate).await;
         match gate.outcome {
             Some(GateOutcome::Passed) => {
+                self.landing_waits(&task, &gate, &members).await;
                 let landed = if gate.relanding {
                     self.land_task(&task).await
                 } else {
@@ -472,6 +473,7 @@ impl SessionManager {
                 }
             }
             Some(GateOutcome::Failed) => {
+                self.landing_waits(&task, &gate, &members).await;
                 let findings = findings_text(&gate, &members);
                 self.send_back_or_escalate(&task, &findings, false).await;
             }
@@ -508,24 +510,7 @@ impl SessionManager {
                         Err(NotOpened::Unchanged) => {}
                     }
                 }
-                // What only the user can do before the checks can run is listed for them.
-                let user_only: Vec<String> = gate
-                    .members
-                    .iter()
-                    .filter(|m| m.role == GateRole::Verify)
-                    .filter_map(|m| members.iter().find(|t| t.id == m.task_id))
-                    .filter_map(|t| t.report.as_ref())
-                    .flat_map(|report| report.needs_user.iter().cloned())
-                    .collect();
-                let listed = self
-                    .sync_waiting(
-                        &task,
-                        WaitingSource::Landing {
-                            task_id: task.id.clone(),
-                        },
-                        &user_only,
-                    )
-                    .await;
+                let (user_only, listed) = self.landing_waits(&task, &gate, &members).await;
                 let next = if listed > 0 {
                     format!(
                         "Only the user can unblock it; it is listed for them under Waiting on you:\n{}\nYou hear when they mark it done; then call accept_task for task-{} again to verify and land it.",
@@ -561,6 +546,7 @@ impl SessionManager {
                 .await;
             }
             Some(GateOutcome::NoResult) => {
+                self.landing_waits(&task, &gate, &members).await;
                 let reasons = no_result_reasons(&gate);
                 let _ = self
                     .update_task(&task.conversation_id, &task.id, |t| t.landing = None)
@@ -586,6 +572,42 @@ impl SessionManager {
             }
             Some(GateOutcome::Superseded) | None => {}
         }
+    }
+
+    /// What the round's verifiers say only the user can do before the checks can run is
+    /// listed for them, whatever the round's outcome; what an earlier round listed and they no
+    /// longer name is over. A round no verifier reported in says nothing about it. Returns the
+    /// lines, and how many are listed.
+    async fn landing_waits(
+        &self,
+        task: &Task,
+        gate: &Gate,
+        members: &[Task],
+    ) -> (Vec<String>, usize) {
+        let reports: Vec<&Report> = gate
+            .members
+            .iter()
+            .filter(|m| m.role == GateRole::Verify)
+            .filter_map(|m| members.iter().find(|t| t.id == m.task_id))
+            .filter_map(|t| t.report.as_ref())
+            .collect();
+        if reports.is_empty() {
+            return (Vec::new(), 0);
+        }
+        let user_only: Vec<String> = reports
+            .iter()
+            .flat_map(|report| report.needs_user.iter().cloned())
+            .collect();
+        let listed = self
+            .sync_waiting(
+                task,
+                WaitingSource::Landing {
+                    task_id: task.id.clone(),
+                },
+                &user_only,
+            )
+            .await;
+        (user_only, listed)
     }
 
     /// The tasks of a round's members.

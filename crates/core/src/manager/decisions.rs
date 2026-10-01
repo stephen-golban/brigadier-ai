@@ -10,9 +10,11 @@
 //! - **Waiting on you.** What only the user can do: a worker's `needs_user` lines, what a
 //!   change's checks need from the user first, what the orchestrator notes, and cards left
 //!   unanswered (the watchdog, with [`WaitingSource::Card`]). An item is listed once per
-//!   source and text, and keeps its request waiting while other work goes on. It is over when
-//!   the user clicks Done (the orchestrator hears it), or without them: when its card
-//!   settles, its task is stopped or reports again without it, or the change it held lands.
+//!   source and text, under the request its task works for now, and keeps that request
+//!   waiting while other work goes on. It is over when the user clicks Done (the orchestrator
+//!   hears it), or without them: when its card settles, its task is stopped or reports again
+//!   without it, the change it held lands or a later round of its checks no longer lists it,
+//!   or the user edits its request or asks for a new answer.
 
 use super::SessionManager;
 use super::conversation::Envelope;
@@ -21,7 +23,7 @@ use crate::model::{ConversationId, DomainEvent, PermissionLevel};
 use crate::sessions::one_line;
 use crate::work::{
     CardId, CardState, Decision, DecisionSource, InjectionKind, Plan, PlanState, ResolvedBy, Task,
-    TaskState, WaitingItem, WaitingSource,
+    TaskId, TaskState, WaitingItem, WaitingSource,
 };
 use crate::{Error, Result, now_ms};
 
@@ -110,8 +112,9 @@ impl SessionManager {
         }
     }
 
-    /// Lists something only the user can do, or rewords the open item with the same key.
-    /// Returns whether a new item was listed.
+    /// Lists something only the user can do, or rewords the open item with the same key (and
+    /// files it under `request_id`, a later request that repeats it). Returns whether a new
+    /// item was listed.
     pub(crate) async fn wait_on_user(
         &self,
         conversation_id: &ConversationId,
@@ -128,14 +131,20 @@ impl SessionManager {
             let board = self.core.board(conversation_id).await?;
             let key = waiting_key(&source, &what);
             let (item, added) = match board.waiting.values().find(|open| open.key == key) {
-                Some(open) if open.what == what => return Ok(false),
-                Some(open) => (
-                    WaitingItem {
-                        what,
-                        ..open.clone()
-                    },
-                    false,
-                ),
+                Some(open) => {
+                    let request_id = request_id.or_else(|| open.request_id.clone());
+                    if open.what == what && open.request_id == request_id {
+                        return Ok(false);
+                    }
+                    (
+                        WaitingItem {
+                            what,
+                            request_id,
+                            ..open.clone()
+                        },
+                        false,
+                    )
+                }
                 None => (
                     WaitingItem {
                         id: uuid::Uuid::now_v7().to_string(),
@@ -160,7 +169,9 @@ impl SessionManager {
     /// A task reported what only the user can do (its `needs_user`, `source`
     /// [`WaitingSource::Task`]) or what its change's checks need from them first
     /// ([`WaitingSource::Landing`]): each line is listed once, and the task's open items of
-    /// that source the new list no longer names are over. Returns how many lines are listed.
+    /// that source the new list no longer names are over. Nothing changes when the task moved
+    /// on meanwhile (stopped, reported again, a newer round of checks). Returns how many lines
+    /// are listed.
     pub(crate) async fn sync_waiting(
         &self,
         task: &Task,
@@ -175,6 +186,13 @@ impl SessionManager {
             let Ok(board) = self.core.board(&task.conversation_id).await else {
                 return 0;
             };
+            if !board
+                .tasks
+                .get(&task.id)
+                .is_some_and(|now| lists_still(&source, task, now))
+            {
+                return 0;
+            }
             let open: Vec<WaitingItem> = board
                 .waiting
                 .values()
@@ -214,17 +232,50 @@ impl SessionManager {
     /// A task ended: what its change's checks waited for is over, and what its reports listed
     /// is too when it was stopped.
     pub(crate) async fn task_ended_waiting(&self, task: &Task, state: TaskState) {
-        let over = |source: &WaitingSource| match source {
-            WaitingSource::Landing { task_id } => *task_id == task.id,
-            WaitingSource::Task { task_id } => *task_id == task.id && state == TaskState::Stopped,
-            _ => false,
-        };
         if self
-            .resolve_where(&task.conversation_id, |item| over(&item.source))
+            .resolve_where(&task.conversation_id, |item| {
+                ended_with(&item.source, &task.id, state)
+            })
             .await
         {
             self.settle_requests(&task.conversation_id).await;
         }
+    }
+
+    /// After a restart: a task's end and the end of what it waited for are separate writes,
+    /// as are a report and what it lists, so either may be missing. What ended tasks waited
+    /// for is over, and what the current report of a live task lists is listed (never again
+    /// what the user marked done).
+    pub(crate) async fn reconcile_waiting(&self, conversation_id: &ConversationId) {
+        let _held = self.waiting.lock().await;
+        let Ok(board) = self.core.board(conversation_id).await else {
+            return;
+        };
+        let (listed, gone) =
+            reconciled_waits(&board, now_ms(), || uuid::Uuid::now_v7().to_string());
+        let events: Vec<DomainEvent> = listed
+            .into_iter()
+            .map(|item| DomainEvent::WaitingOnYou { item })
+            .chain(gone.into_iter().map(|id| DomainEvent::WaitingResolved {
+                id,
+                by: ResolvedBy::Brigadier,
+            }))
+            .collect();
+        if events.is_empty() {
+            return;
+        }
+        if let Err(err) = self.core.record_conversation(conversation_id, events).await {
+            tracing::warn!(conversation = %conversation_id, error = %err, "could not bring what waits for the user up to date");
+        }
+    }
+
+    /// The user edited a request or asked for a new answer: what its abandoned answer waited
+    /// for is over. The caller settles the requests.
+    pub(crate) async fn rework_waiting(&self, conversation_id: &ConversationId, request: &str) {
+        self.resolve_where(conversation_id, |item| {
+            item.request_id.as_deref() == Some(request)
+        })
+        .await;
     }
 
     /// Items whose card was answered or expired are over. Returns whether any was, before
@@ -293,7 +344,7 @@ impl SessionManager {
                 .await?;
             (item, board)
         };
-        let number = |task_id: &crate::work::TaskId| board.tasks.get(task_id).map(|t| t.number);
+        let number = |task_id: &TaskId| board.tasks.get(task_id).map(|t| t.number);
         let next = match &item.source {
             WaitingSource::Task { task_id } => number(task_id)
                 .map(|n| format!(" (task-{n} listed it as something only the user can do)"))
@@ -354,6 +405,92 @@ pub(crate) fn waiting_key(source: &WaitingSource, text: &str) -> String {
     format!("{source}|{}", words.join(" "))
 }
 
+/// Whether an item of `source` is over once `task` is in `state`: what a change's checks
+/// waited for ends with the task, what its reports listed only when it was stopped.
+fn ended_with(source: &WaitingSource, task: &TaskId, state: TaskState) -> bool {
+    match source {
+        WaitingSource::Landing { task_id } => task_id == task && state.is_final(),
+        WaitingSource::Task { task_id } => task_id == task && state == TaskState::Stopped,
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator => false,
+    }
+}
+
+/// Whether what `synced` (the task when it reported, or when its round of checks ended)
+/// lists of `source` still speaks for the task as it is `now`: its items did not end with
+/// it, and it has no newer report or round of checks.
+fn lists_still(source: &WaitingSource, synced: &Task, now: &Task) -> bool {
+    if ended_with(source, &now.id, now.state) {
+        return false;
+    }
+    let submitted = |task: &Task| task.report.as_ref().map(|report| report.submitted_at_ms);
+    let round = |task: &Task| task.gate.as_ref().map(|gate| gate.round);
+    match source {
+        WaitingSource::Task { .. } => {
+            submitted(synced).is_some() && submitted(synced) == submitted(now)
+        }
+        WaitingSource::Landing { .. } => round(synced).is_some() && round(synced) == round(now),
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator => true,
+    }
+}
+
+/// What a restart makes of the open items: the items to list (what the current report of a
+/// live task lists that was never listed) and the ids of items that are over (those its task
+/// ended, and those its current report no longer names).
+fn reconciled_waits(
+    board: &Board,
+    now: i64,
+    mut new_id: impl FnMut() -> String,
+) -> (Vec<WaitingItem>, Vec<String>) {
+    let ended = |item: &WaitingItem| match &item.source {
+        WaitingSource::Task { task_id } | WaitingSource::Landing { task_id } => board
+            .tasks
+            .get(task_id)
+            .is_some_and(|task| ended_with(&item.source, task_id, task.state)),
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator => false,
+    };
+    let mut gone: Vec<String> = board
+        .waiting
+        .values()
+        .filter(|item| ended(item))
+        .map(|item| item.id.clone())
+        .collect();
+    let mut listed = Vec::new();
+    // A gate member's report goes to its gate, which lists what it needs (`Landing`).
+    let live = board
+        .tasks
+        .values()
+        .filter(|task| !task.state.is_final() && task.gate_link.is_none());
+    for task in live {
+        let Some(report) = &task.report else {
+            continue;
+        };
+        let source = WaitingSource::Task {
+            task_id: task.id.clone(),
+        };
+        let open: Vec<WaitingItem> = board
+            .waiting
+            .values()
+            .filter(|item| item.source == source)
+            .cloned()
+            .collect();
+        let lines: Vec<String> = distinct_lines(&report.needs_user)
+            .into_iter()
+            .filter(|line| {
+                let key = waiting_key(&source, line);
+                open.iter().any(|item| item.key == key) || !board.waits_listed.contains(&key)
+            })
+            .collect();
+        let request = task
+            .request_id
+            .clone()
+            .or_else(|| board.latest_request().map(|request| request.id.clone()));
+        let (more, over) = report_waits(&source, &open, &lines, request, now, &mut new_id);
+        listed.extend(more);
+        gone.extend(over);
+    }
+    (listed, gone)
+}
+
 /// A report's lines, trimmed and on one line each, without blanks or repeats of one item.
 fn distinct_lines(lines: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -366,7 +503,8 @@ fn distinct_lines(lines: &[String]) -> Vec<String> {
 }
 
 /// What a source's new list of lines makes of its open items: the items to list (new ones,
-/// and open ones reworded) and the ids of open items it no longer names.
+/// and open ones reworded or now filed under `request_id`, the request the task works for
+/// now) and the ids of open items it no longer names.
 fn report_waits(
     source: &WaitingSource,
     open: &[WaitingItem],
@@ -381,11 +519,16 @@ fn report_waits(
         let key = waiting_key(source, &what);
         named.insert(key.clone());
         match open.iter().find(|item| item.key == key) {
-            Some(item) if item.what == what => {}
-            Some(item) => listed.push(WaitingItem {
-                what,
-                ..item.clone()
-            }),
+            Some(item) => {
+                let request_id = request_id.clone().or_else(|| item.request_id.clone());
+                if item.what != what || item.request_id != request_id {
+                    listed.push(WaitingItem {
+                        what,
+                        request_id,
+                        ..item.clone()
+                    });
+                }
+            }
             None => listed.push(WaitingItem {
                 id: new_id(),
                 request_id: request_id.clone(),
@@ -407,7 +550,6 @@ fn report_waits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::work::TaskId;
 
     fn task_source() -> WaitingSource {
         WaitingSource::Task {
@@ -513,6 +655,256 @@ mod tests {
         assert_eq!(gone, [open[0].id.clone()]);
         let (_, gone) = report_waits(&source, &open, &[], None, 3, ids());
         assert_eq!(gone.len(), 2);
+    }
+
+    #[test]
+    fn a_repeat_under_a_later_request_moves_the_item_to_it() {
+        let source = task_source();
+        let (open, _) = report_waits(
+            &source,
+            &[],
+            &lines(&["Set STRIPE_KEY in .env"]),
+            Some("r1".into()),
+            1,
+            ids(),
+        );
+        // The same text, now that the task works for r2: the item is filed under r2.
+        let (listed, gone) = report_waits(
+            &source,
+            &open,
+            &lines(&["Set STRIPE_KEY in .env"]),
+            Some("r2".into()),
+            2,
+            ids(),
+        );
+        assert!(gone.is_empty());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, open[0].id);
+        assert_eq!(listed[0].request_id.as_deref(), Some("r2"));
+        // No request to file it under: it stays where it was.
+        let (listed, _) = report_waits(
+            &source,
+            &open,
+            &lines(&["Set STRIPE_KEY in .env"]),
+            None,
+            2,
+            ids(),
+        );
+        assert!(listed.is_empty());
+    }
+
+    /// Task `id` at `state`, with a report submitted at `reported` listing `needs_user`.
+    fn task(id: &str, state: TaskState, reported: Option<(i64, &[&str])>) -> Task {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add the flag",
+            "kind": "implement",
+            "spec": "Add the flag.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reported",
+            "requestId": "r1",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        task.state = state;
+        task.report = reported.map(|(at, needs_user)| {
+            serde_json::from_value(serde_json::json!({
+                "summary": "Done",
+                "changes": [],
+                "decisions": [],
+                "verification": [],
+                "doneWhen": [],
+                "openQuestions": [],
+                "risks": [],
+                "needsUser": needs_user,
+                "artifacts": [],
+                "submittedAtMs": at,
+            }))
+            .expect("a report")
+        });
+        task
+    }
+
+    fn round(mut task: Task, round: u32) -> Task {
+        task.gate = Some(crate::work::Gate {
+            round,
+            commit: Some("c1".into()),
+            members: Vec::new(),
+            outcome: None,
+            relanding: false,
+            retry: false,
+            findings: Vec::new(),
+        });
+        task
+    }
+
+    #[test]
+    fn a_report_lists_its_waits_only_while_it_is_the_tasks_latest() {
+        let source = task_source();
+        let reported = task("t1", TaskState::Reported, Some((5, &["Sign in to npm"])));
+        assert!(lists_still(&source, &reported, &reported));
+        // A read task done after its report: what it listed still waits for the user.
+        let done = task("t1", TaskState::Done, Some((5, &["Sign in to npm"])));
+        assert!(lists_still(&source, &reported, &done));
+        // Stopped meanwhile, or reported again: this report lists nothing any more.
+        let stopped = task("t1", TaskState::Stopped, Some((5, &["Sign in to npm"])));
+        assert!(!lists_still(&source, &reported, &stopped));
+        let again = task("t1", TaskState::Reported, Some((9, &[])));
+        assert!(!lists_still(&source, &reported, &again));
+        assert!(!lists_still(
+            &source,
+            &task("t1", TaskState::Reported, None),
+            &task("t1", TaskState::Reported, None)
+        ));
+    }
+
+    #[test]
+    fn a_round_lists_what_its_checks_need_only_while_it_is_the_latest() {
+        let source = WaitingSource::Landing {
+            task_id: TaskId("t1".into()),
+        };
+        let decided = round(task("t1", TaskState::Reviewing, Some((5, &[]))), 2);
+        assert!(lists_still(&source, &decided, &decided));
+        let newer = round(task("t1", TaskState::Reviewing, Some((5, &[]))), 3);
+        assert!(!lists_still(&source, &decided, &newer));
+        let landed = round(task("t1", TaskState::Landed, Some((5, &[]))), 2);
+        assert!(!lists_still(&source, &decided, &landed));
+        assert!(!lists_still(
+            &source,
+            &task("t1", TaskState::Reviewing, None),
+            &decided
+        ));
+    }
+
+    fn item(id: &str, source: WaitingSource, what: &str) -> WaitingItem {
+        WaitingItem {
+            id: id.into(),
+            request_id: Some("r1".into()),
+            key: waiting_key(&source, what),
+            source,
+            what: what.into(),
+            created_at_ms: 1,
+        }
+    }
+
+    fn listed(board: &mut Board, item: WaitingItem) {
+        board.apply(&DomainEvent::WaitingOnYou { item }, 1);
+    }
+
+    #[test]
+    fn a_restart_ends_what_ended_tasks_waited_for() {
+        let mut board = Board::default();
+        for task in [
+            task(
+                "stopped",
+                TaskState::Stopped,
+                Some((1, &["Sign in to npm"])),
+            ),
+            task("landed", TaskState::Landed, Some((1, &[]))),
+            task("read", TaskState::Done, Some((1, &["Push the branch"]))),
+        ] {
+            board.tasks.insert(task.id.clone(), task);
+        }
+        let of = |id: &str| TaskId(id.into());
+        listed(
+            &mut board,
+            item(
+                "w1",
+                WaitingSource::Task {
+                    task_id: of("stopped"),
+                },
+                "Sign in to npm",
+            ),
+        );
+        listed(
+            &mut board,
+            item(
+                "w2",
+                WaitingSource::Landing {
+                    task_id: of("landed"),
+                },
+                "Add the API key",
+            ),
+        );
+        listed(
+            &mut board,
+            item(
+                "w3",
+                WaitingSource::Task {
+                    task_id: of("read"),
+                },
+                "Push the branch",
+            ),
+        );
+        listed(
+            &mut board,
+            item("w4", WaitingSource::Orchestrator, "Create an account"),
+        );
+        let (more, mut gone) = reconciled_waits(&board, 2, ids());
+        gone.sort();
+        assert!(more.is_empty());
+        // A stopped task's report and a landed change's checks are over; what a finished
+        // read task listed, and the orchestrator's note, still wait for the user.
+        assert_eq!(gone, ["w1", "w2"]);
+    }
+
+    #[test]
+    fn a_restart_lists_what_a_live_report_could_not() {
+        let mut board = Board::default();
+        let reported = task(
+            "t1",
+            TaskState::Reported,
+            Some((1, &["Sign in to npm", "Push the branch", "Set STRIPE_KEY"])),
+        );
+        let mut member = task("t2", TaskState::Reported, Some((1, &["Add the API key"])));
+        member.gate_link = Some(crate::work::GateLink {
+            owner: crate::work::GateOwner::Task {
+                task_id: TaskId("t1".into()),
+            },
+            round: 1,
+            role: crate::work::GateRole::Verify,
+        });
+        for task in [reported, member] {
+            board.tasks.insert(task.id.clone(), task);
+        }
+        let source = task_source();
+        // Still open; listed once and marked done by the user; and one the current report
+        // no longer names.
+        listed(&mut board, item("w1", source.clone(), "Sign in to npm"));
+        listed(&mut board, item("w2", source.clone(), "Push the branch"));
+        board.apply(
+            &DomainEvent::WaitingResolved {
+                id: "w2".into(),
+                by: ResolvedBy::User,
+            },
+            2,
+        );
+        listed(&mut board, item("w3", source.clone(), "Restart the server"));
+        let (more, gone) = reconciled_waits(&board, 7, ids());
+        assert_eq!(gone, ["w3"]);
+        // Only the line never listed is new, under the task's request; nothing for the gate
+        // member, whose report goes to its gate.
+        assert_eq!(more.len(), 1);
+        assert_eq!(more[0].what, "Set STRIPE_KEY");
+        assert_eq!(more[0].source, source);
+        assert_eq!(more[0].request_id.as_deref(), Some("r1"));
+        assert_eq!(more[0].created_at_ms, 7);
+        // Once listed, a second restart changes nothing.
+        listed(&mut board, more[0].clone());
+        board.apply(
+            &DomainEvent::WaitingResolved {
+                id: "w3".into(),
+                by: ResolvedBy::Brigadier,
+            },
+            3,
+        );
+        assert_eq!(reconciled_waits(&board, 8, ids()), (Vec::new(), Vec::new()));
     }
 
     #[test]

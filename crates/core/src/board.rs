@@ -1,7 +1,7 @@
 //! A conversation's board: its tasks, cards, queue and run state, folded from the
 //! conversation's stream. Messages are not kept here; they are paged from the store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::knowledge::MemoryChange;
 use crate::model::ConversationId;
@@ -63,6 +63,9 @@ pub(crate) struct Board {
     pub(crate) decisions: Vec<Decision>,
     /// What only the user can do and is not done yet, by id.
     pub(crate) waiting: HashMap<String, WaitingItem>,
+    /// The key of every item ever listed, open or over: a restart lists only what a report
+    /// could not, never again what the user marked done.
+    pub(crate) waits_listed: HashSet<String>,
 }
 
 impl Board {
@@ -187,6 +190,7 @@ impl Board {
                 self.decisions.push(decision);
             }
             DomainEvent::WaitingOnYou { item } => {
+                self.waits_listed.insert(item.key.clone());
                 self.waiting.insert(item.id.clone(), item.clone());
             }
             DomainEvent::WaitingResolved { id, .. } => {

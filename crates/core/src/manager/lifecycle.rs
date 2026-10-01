@@ -155,6 +155,8 @@ impl SessionManager {
                 self.spawn(async move { manager.rerun_plan_reviews(&id).await });
             }
             self.expire_stale_cards(&conversation.id).await;
+            // What waits for the user matches the tasks and reports as they are now.
+            self.reconcile_waiting(&conversation.id).await;
             // Nothing runs any more: what was working is over or waits for the user.
             self.settle_requests(&conversation.id).await;
         }

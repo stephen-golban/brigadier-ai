@@ -276,6 +276,9 @@ impl SessionManager {
                 self.withdraw_question(question).await;
             }
         }
+        // What its answer so far waited for (a note, a finished worker's blocker) is over:
+        // the new answer lists what it needs.
+        self.rework_waiting(&conv.id, request).await;
         Ok(preview)
     }
 }

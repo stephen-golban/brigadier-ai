@@ -1032,7 +1032,8 @@ pub enum WaitingSource {
     /// or a later report of it no longer lists it.
     Task { task_id: TaskId },
     /// The checks of a task's change can't run until the user does it (its verifier's
-    /// `needs_user`): it is over when the task lands or ends.
+    /// `needs_user`): it is over when the task lands or ends, or a later round of its checks
+    /// no longer lists it.
     Landing { task_id: TaskId },
     /// The orchestrator noted it (`note_for_user`).
     Orchestrator,
