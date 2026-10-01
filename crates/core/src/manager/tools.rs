@@ -170,15 +170,11 @@ impl SessionManager {
                         .await?;
                     self.settle_requests(id).await;
                 }
-                let reply = self
+                let (reply, answered) = self
                     .message_worker(id, &task, args.text.clone(), "the orchestrator")
                     .await?;
-                // The orchestrator steers it now: Brigadier no longer lands it on its own.
-                self.update_task(id, &task.id, |task| {
-                    task.messages.push(args.text);
-                    task.landing = None;
-                })
-                .await?;
+                self.update_task(id, &task.id, |task| messaged(task, args.text, answered))
+                    .await?;
                 self.orchestrator_step(id, OrchestratorStepKind::Messaged { task_id: task.id })
                     .await;
                 Ok(reply)
@@ -286,7 +282,9 @@ impl SessionManager {
                 self.check_plan_mode(id)?;
                 let task = self.find_task(id, &args.task).await?;
                 let task_id = task.id.clone();
-                let reply = self.accept_task(id, task, args.commit_message).await?;
+                let reply = self
+                    .accept_task(id, task, args.commit_message, args.override_checks)
+                    .await?;
                 self.orchestrator_step(id, OrchestratorStepKind::Accepted { task_id })
                     .await;
                 Ok(reply)
@@ -872,4 +870,50 @@ fn task_areas(names: &[String]) -> Result<Option<Vec<brigadier_router::Area>>> {
         })
         .collect::<Result<Vec<_>>>()
         .map(Some)
+}
+
+/// What the orchestrator's message to a task's worker leaves on the task: the message (its
+/// checks read it), and, unless it answered the worker's own question, the end of Brigadier
+/// landing it on its own: a steer takes the task over.
+fn messaged(task: &mut Task, text: String, answered: bool) {
+    task.messages.push(text);
+    if !answered {
+        task.landing = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answering_a_question_keeps_brigadiers_fix_loop_and_a_steer_ends_it() {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add the flag",
+            "kind": "implement",
+            "spec": "Add the flag.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "blocked",
+            "attachments": [],
+            "landing": "Add the flag",
+            "fixRounds": 1,
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        messaged(&mut task, "Yes, src/index.js may change.".into(), true);
+        assert_eq!(task.landing.as_deref(), Some("Add the flag"));
+        assert_eq!(
+            task.messages,
+            vec!["Yes, src/index.js may change.".to_owned()]
+        );
+        messaged(&mut task, "Stop and use the old API instead.".into(), false);
+        assert_eq!(task.landing, None);
+        assert_eq!(task.messages.len(), 2);
+    }
 }

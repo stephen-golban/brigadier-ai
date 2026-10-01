@@ -739,6 +739,7 @@ mod tests {
             outcome: None,
             relanding: false,
             retry: false,
+            overridden: false,
             findings: Vec::new(),
         });
         task

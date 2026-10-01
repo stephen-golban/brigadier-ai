@@ -4,8 +4,9 @@
 //! that hands the connection to the daemon, which calls [`serve`] with the session's grant.
 //!
 //! - The grant's role decides the tool list, once, when the connection opens: an orchestrator
-//!   gets the orchestrator tools, a worker `ask_orchestrator` and `submit_report`. A gate grant
-//!   or an unknown grant is refused at `initialize`, so the CLI gets no tools at all.
+//!   gets the orchestrator tools, a worker `ask_orchestrator` (unless it checks a change or
+//!   plan in a gate) and `submit_report`. A gate grant or an unknown grant is refused at
+//!   `initialize`, so the CLI gets no tools at all.
 //! - Every `tools/call` goes through [`ToolHost::call`], which checks the grant again, so a
 //!   revoked grant stops working on an open connection too.
 //! - A call cancelled by the client, or cut off by the connection closing, drops the host's

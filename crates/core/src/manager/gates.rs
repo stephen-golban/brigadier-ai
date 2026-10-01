@@ -34,6 +34,8 @@ use crate::{Error, Result};
 
 /// Times Brigadier sends a task back with a gate's findings before the orchestrator decides.
 pub(crate) const FIX_ROUNDS: u32 = 2;
+/// What Brigadier tells a worker it sends back with its checks' findings, before them.
+pub(super) const SEND_BACK: &str = "Independent checks of your change found problems, so nothing landed. Fix each one in this worktree, verify the fix for real, then call submit_report again with a complete report (all fields, as before).";
 /// Gate rounds one task may go through (fixes, retries, replays) before Brigadier gives up.
 const MAX_ROUNDS: u32 = 8;
 /// A change this big (lines added and removed, or files) gets two reviewers.
@@ -132,7 +134,9 @@ impl SessionManager {
             Recheck::Full => self.panel_size(&task).await,
             Recheck::Verify => 0,
         };
-        let plan = plan_note(&task, self.wrote_plan(&task).await);
+        // A big change without a plan is noted once, on its first round: a fix the checks
+        // asked for may make it bigger, and the plan can't be added to the change anyway.
+        let plan = plan_note(&task, self.wrote_plan(&task).await, task.gate.is_none());
         let mut members: Vec<GateMember> = Vec::new();
         let mut started: Vec<Task> = Vec::new();
         let mut checking: Vec<Author> = Vec::new();
@@ -253,6 +257,7 @@ impl SessionManager {
                 outcome: None,
                 relanding,
                 retry: retrying,
+                overridden: false,
                 findings: Vec::new(),
             });
             if let Some(first) = first {
@@ -278,7 +283,7 @@ impl SessionManager {
     }
 
     /// Whether two commits of the task's repository hold the same files.
-    async fn same_tree(&self, task: &Task, a: &str, b: &str) -> bool {
+    pub(super) async fn same_tree(&self, task: &Task, a: &str, b: &str) -> bool {
         let Ok(repo) = self.task_repo(task) else {
             return false;
         };
@@ -629,9 +634,7 @@ impl SessionManager {
     /// nothing, or work the orchestrator took back) hands the decision to the orchestrator.
     pub(crate) async fn send_back_or_escalate(&self, task: &Task, findings: &str, unchanged: bool) {
         if task.landing.is_some() && task.fix_rounds < FIX_ROUNDS && !unchanged {
-            let text = format!(
-                "Independent checks of your change found problems, so nothing landed. Fix each one in this worktree, verify the fix for real, then call submit_report again with a complete report (all fields, as before).\n{findings}"
-            );
+            let text = format!("{SEND_BACK}\n{findings}");
             let sent = match self
                 .update_task(&task.conversation_id, &task.id, |t| t.fix_rounds += 1)
                 .await
@@ -644,6 +647,13 @@ impl SessionManager {
             };
             match sent {
                 Ok(_) => {
+                    // Later checks, and the orchestrator if the fixes end without landing,
+                    // read what the worker was asked to fix.
+                    let _ = self
+                        .update_task(&task.conversation_id, &task.id, |t| {
+                            t.fixes.push(findings.to_owned());
+                        })
+                        .await;
                     self.decided_for_task(
                         task,
                         format!(
@@ -661,16 +671,21 @@ impl SessionManager {
                 }
             }
         }
+        let mut addendum = None;
         let task = self
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.landing = None;
                 t.state = TaskState::Reported;
                 t.blocked_reason = None;
+                addendum = t.addendum.take();
             })
             .await
             .unwrap_or_else(|_| task.clone());
         let tried = match (unchanged, task.fix_rounds) {
-            (true, _) => "Its change is the same one these findings are about (a fix that changed nothing, or the same change accepted again), so it was not checked again. Decide: send it back with guidance (message_worker), stop it, or ask the user.".to_owned(),
+            (true, _) => format!(
+                "Its change is the same one these findings are about (a fix that changed nothing, or the same change accepted again), so it was not checked again. Decide: send it back with guidance (message_worker), stop it, or ask the user. Only if the user explicitly told you to land it despite these findings, call accept_task for task-{} with override: true.",
+                task.number
+            ),
             (false, 0) => format!(
                 "Send task-{} back with message_worker to fix this, then accept it again.",
                 task.number
@@ -699,6 +714,21 @@ impl SessionManager {
             format!("{why} {}", one_line_findings(findings)),
         )
         .await;
+        let mut text = format!(
+            "[checks task-{}] Changes needed; nothing landed.\n{findings}",
+            task.number
+        );
+        if unchanged {
+            text.push_str(&fixes_text(&task.fixes));
+        }
+        text.push_str(&format!("\n[/checks] {tried}"));
+        // What the worker wrote after its last report, held while Brigadier had the change.
+        if let Some(addendum) = addendum {
+            text.push_str(&format!(
+                "\n{}",
+                super::prompts::late_findings_envelope(&task, &addendum)
+            ));
+        }
         self.announcing(&task).await;
         self.deliver(
             &task.conversation_id,
@@ -706,10 +736,7 @@ impl SessionManager {
                 kind: InjectionKind::Report,
                 label: format!("checks of task-{}", task.number),
                 task_id: Some(task.id.clone()),
-                text: format!(
-                    "[checks task-{}] Changes needed; nothing landed.\n{findings}\n[/checks] {tried}",
-                    task.number
-                ),
+                text,
             },
         )
         .await;
@@ -888,10 +915,12 @@ pub(super) fn checks_stand(task: &Task) -> Option<GateOutcome> {
         .then_some(outcome)
 }
 
-/// Whether the task's candidate, as it is now, passed its gate: only that commit may land.
+/// Whether the task's candidate, as it is now, passed its gate (or the user had it land
+/// despite the gate's findings): only that commit may land.
 pub(super) fn candidate_passed(task: &Task) -> bool {
     task.gate.as_ref().is_some_and(|gate| {
-        gate.outcome == Some(GateOutcome::Passed)
+        (gate.outcome == Some(GateOutcome::Passed)
+            || (gate.overridden && gate.outcome == Some(GateOutcome::Failed)))
             && gate.commit.is_some()
             && gate.commit.as_deref() == task.candidate.as_ref().map(|c| c.commit.as_str())
     })
@@ -903,30 +932,51 @@ const PLANNED_FILES: usize = 3;
 const PLANNED_LINES: u32 = 150;
 
 /// What the gate checks about the worker's plan: the change against plan.md when there is
-/// one, and a big change without one.
-fn plan_note(task: &Task, wrote_plan: bool) -> Option<String> {
+/// one; a big change without one only on the change's first round (`first_round`), and only
+/// as a risk to name (the plan lives outside the commit, so no fix can add it).
+fn plan_note(task: &Task, wrote_plan: bool, first_round: bool) -> Option<String> {
     if wrote_plan {
         return Some("The worker wrote a plan first (plan.md, below): check the change against it. Each planned step should be done, and anything outside the plan needs a reason.".into());
+    }
+    if !first_round {
+        return None;
     }
     let stat = &task.candidate.as_ref()?.diff_stat;
     let lines = stat.insertions + stat.deletions;
     (task.kind == TaskKind::Implement && (stat.files.len() > PLANNED_FILES || lines > PLANNED_LINES))
         .then(|| {
             format!(
-                "This change is big ({} files, {lines} lines) and the worker wrote no plan.md, which it was asked to do for a change of more than {PLANNED_FILES} files or about {PLANNED_LINES} lines. Name that under risks in your report, and check its scope with extra care: every part must be needed by the task.",
+                "A risk to name, never a finding: this change is big ({} files, {lines} lines) and the worker wrote no plan.md, which it was asked to write first for a change of more than {PLANNED_FILES} files or about {PLANNED_LINES} lines. A plan lives in the worker's outputs folder, never in the commit, so no fix of the change can add one: never make it a [not met] line, an open question or a reason to request changes. Name it under risks in your report, and check the change's scope with extra care: every part must be needed by the task.",
                 stat.files.len()
             )
         })
 }
 
+/// What every member of a task's gate is told about what it judges.
+const JUDGE_THE_CHANGE: &str = "Judge the change itself (the code, tests and files in the commit), not the worker's report: a problem only with the report or its wording is never a finding, since the report does not land.";
+
+/// For a round after Brigadier sent the worker back with earlier checks' findings: they are
+/// listed below the task (see `SessionManager::review_brief`).
+fn fixes_note(task: &Task) -> Option<String> {
+    (!task.fixes.is_empty()).then(|| {
+        format!(
+            "Brigadier sent the worker back {} with earlier checks' findings (listed below with the task). Check that each one is fixed, and fixed right.",
+            times(task.fixes.len())
+        )
+    })
+}
+
 /// What a reviewer reads first.
 fn review_spec(task: &Task, commit: &str, unreported: &[String], plan: Option<&str>) -> String {
     let mut spec = format!(
-        "Review the candidate commit {} of task-{} (\"{}\"). Decide whether it may land: it must do what the task asked, correctly, without slop, stray files or unverified claims.",
+        "Review the candidate commit {} of task-{} (\"{}\"). Decide whether it may land: it must do what the task asked, correctly, without slop, stray files or unverified claims. {JUDGE_THE_CHANGE}",
         short(commit),
         task.number,
         task.title
     );
+    if let Some(fixes) = fixes_note(task) {
+        spec.push_str(&format!("\n{fixes}"));
+    }
     if !unreported.is_empty() {
         spec.push_str(&format!(
             "\nThe worker did not report these tracked changes; check they belong to the task: {}.",
@@ -942,17 +992,28 @@ fn review_spec(task: &Task, commit: &str, unreported: &[String], plan: Option<&s
 
 /// What a verifier reads first.
 fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&str>) -> String {
+    // Asked about later messages that don't exist, a verifier asks the orchestrator for them.
+    let criteria = if task.messages.is_empty() {
+        "the task's below (the orchestrator sent the worker nothing that changes it) and each one the worker listed in its report"
+    } else {
+        "the task's below, those in the orchestrator's later messages to the worker (below the task), and each one the worker listed in its report"
+    };
     let mut spec = format!(
         "Verify the candidate commit {} of task-{} (\"{}\") independently, before it may land. Your checkout is at that commit.
-1. Find every \"done when\" criterion: the task's below, those in the orchestrator's later messages to the worker, and each one the worker listed in its report. For each one, produce your own evidence: run the command and quote the decisive line, or read the code and say where. The worker's claims are not evidence.
+1. Find every \"done when\" criterion: {criteria}. For each one, produce your own evidence: run the command and quote the decisive line, or read the code and say where. The worker's claims are not evidence.
 2. Run the project's checks the way the project runs them (see its README, package scripts, Makefile and CI config): typecheck, lint, build, the existing tests, and a runtime smoke check where the project has one. Install missing dependencies in this checkout first.
 3. Check hygiene: files the commit should not hold (logs, scratch notes, debug output, secrets, generated junk), debug code left in, and changes the task didn't ask for.
 4. Change no tracked file and add no source file: build output goes only into the project's ignored folders. Brigadier compares your checkout with the commit after your report and discards a verification that changed it.
-5. Workers often decide too early that a check can't run. Never do that yourself: before you call a check not run, try it, then try another way (install what is missing, use the project's own scripts, read how CI runs it). Name each command you tried and quote its error.",
+5. Workers often decide too early that a check can't run. Never do that yourself: before you call a check not run, try it, then try another way (install what is missing, use the project's own scripts, read how CI runs it). Name each command you tried and quote its error.
+6. When a check fails, find out whether it fails the same way without this change: unpack the parent commit into your scratch folder (`mkdir <scratch>/parent && git archive HEAD~1 | tar -x -C <scratch>/parent`) and run it there, or read the code. A failure that is already there on the parent is not this change's: it is never [not met], an open question or a failed check for this change. Name it under risks.
+{JUDGE_THE_CHANGE}",
         short(commit),
         task.number,
         task.title
     );
+    if let Some(fixes) = fixes_note(task) {
+        spec.push_str(&format!("\n{fixes}"));
+    }
     let gave_up: Vec<&String> = task
         .report
         .iter()
@@ -974,7 +1035,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
         ));
     }
     spec.push_str(
-        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed (a check ran and failed), notRun (the project has checks but they could not run, after you tried; a check stopped by a missing key, sign-in or service is notRun, not failed), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
+        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed, apart from failures already on the parent), failed (a check ran and failed because of this change), notRun (the project has checks but they could not run, after you tried; a check stopped by a missing key, sign-in or service is notRun, not failed), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
     );
     spec
 }
@@ -1151,8 +1212,32 @@ fn findings_text(gate: &Gate, members: &[Task]) -> String {
     text.trim_start().to_owned()
 }
 
+/// What Brigadier already sent the worker back to fix (`Task::fixes`), round by round, for
+/// the orchestrator; empty when it sent nothing.
+fn fixes_text(fixes: &[String]) -> String {
+    if fixes.is_empty() {
+        return String::new();
+    }
+    let mut text = format!(
+        "\nBrigadier already sent the worker back {} with its checks' findings:",
+        times(fixes.len())
+    );
+    for (index, findings) in fixes.iter().enumerate() {
+        text.push_str(&format!("\nFix {}:\n{findings}", index + 1));
+    }
+    text
+}
+
+fn times(count: usize) -> String {
+    match count {
+        1 => "once".to_owned(),
+        2 => "twice".to_owned(),
+        count => format!("{count} times"),
+    }
+}
+
 /// A round's findings on one line, for "Decided for you".
-fn one_line_findings(findings: &str) -> String {
+pub(super) fn one_line_findings(findings: &str) -> String {
     findings
         .lines()
         .map(|line| line.trim().trim_start_matches("- "))
@@ -1544,6 +1629,7 @@ mod tests {
             outcome: None,
             relanding: false,
             retry: true,
+            overridden: false,
             findings: Vec::new(),
         };
         let model_of = |id: &TaskId| Some(author(&format!("model-of-{}", id.0)));
@@ -1592,6 +1678,7 @@ mod tests {
             outcome,
             relanding: false,
             retry: false,
+            overridden: false,
             findings: Vec::new(),
         });
         task.candidate = Some(crate::work::Candidate {
@@ -1664,5 +1751,114 @@ mod tests {
             "c1",
         );
         assert_eq!(checks_stand(&passed), None);
+    }
+
+    #[test]
+    fn a_change_the_user_said_to_land_anyway_may_land_as_it_is() {
+        let mut failed = gated(
+            TaskState::Reviewing,
+            2,
+            "c1",
+            Some(GateOutcome::Failed),
+            "c1",
+        );
+        assert!(!candidate_passed(&failed));
+        failed.gate.as_mut().expect("a gate").overridden = true;
+        assert!(candidate_passed(&failed));
+        // Only that change: a newer candidate is checked as usual.
+        let mut newer = failed.clone();
+        newer.candidate.as_mut().expect("a candidate").commit = "c2".into();
+        assert!(!candidate_passed(&newer));
+        // Checks that could not finish are no findings to override.
+        let mut unfinished = failed;
+        unfinished.gate.as_mut().expect("a gate").outcome = Some(GateOutcome::NoResult);
+        assert!(!candidate_passed(&unfinished));
+    }
+
+    fn big(task: &mut Task) {
+        let stat = &mut task.candidate.as_mut().expect("a candidate").diff_stat;
+        stat.files = (0..4)
+            .map(|n| crate::work::FileStat {
+                path: format!("src/{n}.js"),
+                insertions: 2,
+                deletions: 0,
+                binary: false,
+            })
+            .collect();
+        stat.insertions = 8;
+    }
+
+    #[test]
+    fn a_missing_plan_is_a_risk_on_the_first_round_only() {
+        let mut task = gated(TaskState::Reviewing, 1, "c1", None, "c1");
+        assert_eq!(plan_note(&task, false, true), None);
+        big(&mut task);
+        let note = plan_note(&task, false, true).expect("a note");
+        assert!(note.contains("never a finding"), "{note}");
+        assert!(note.contains("never make it a [not met] line"), "{note}");
+        // A fix round's checks (or any later round) never hear of it again.
+        assert_eq!(plan_note(&task, false, false), None);
+        // A plan the worker wrote is checked against on every round.
+        assert!(plan_note(&task, true, false).is_some_and(|note| note.contains("plan.md")));
+    }
+
+    #[test]
+    fn a_verifier_hears_of_later_messages_only_when_there_are_some() {
+        let mut task = gated(TaskState::Reviewing, 1, "c1", None, "c1");
+        let spec = verify_spec(&task, "c1", None, None);
+        assert!(!spec.contains("later messages"), "{spec}");
+        assert!(spec.contains("sent the worker nothing"), "{spec}");
+        task.messages = vec!["Also update the README.".into()];
+        let spec = verify_spec(&task, "c1", None, None);
+        assert!(spec.contains("the orchestrator's later messages"), "{spec}");
+    }
+
+    #[test]
+    fn checks_judge_the_change_with_what_the_worker_was_sent_back_to_fix() {
+        let mut task = gated(TaskState::Reviewing, 2, "c2", None, "c2");
+        for spec in [
+            review_spec(&task, "c2", &[], None),
+            verify_spec(&task, "c2", None, None),
+        ] {
+            assert!(spec.contains(JUDGE_THE_CHANGE), "{spec}");
+            assert!(!spec.contains("Brigadier sent the worker back"), "{spec}");
+        }
+        task.fixes = vec!["From the review (task-2):\n- Re-export avg2".into()];
+        for spec in [
+            review_spec(&task, "c2", &[], None),
+            verify_spec(&task, "c2", None, None),
+        ] {
+            assert!(
+                spec.contains("Brigadier sent the worker back once"),
+                "{spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_verifier_checks_a_failure_against_the_parent_commit() {
+        let task = gated(TaskState::Reviewing, 1, "c1", None, "c1");
+        let spec = verify_spec(&task, "c1", None, None);
+        assert!(spec.contains("git archive HEAD~1"), "{spec}");
+        assert!(spec.contains("already there on the parent"), "{spec}");
+        assert!(spec.contains("failed because of this change"), "{spec}");
+    }
+
+    #[test]
+    fn the_orchestrator_hears_what_brigadier_already_had_fixed() {
+        assert_eq!(fixes_text(&[]), "");
+        let text = fixes_text(&[
+            "From the review (task-2):\n- Re-export avg2".into(),
+            "From the verification (task-5):\n- [not met] npm test passes".into(),
+        ]);
+        assert!(text.contains("sent the worker back twice"), "{text}");
+        assert!(
+            text.contains("Fix 1:\nFrom the review (task-2):\n- Re-export avg2"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Fix 2:\nFrom the verification (task-5)"),
+            "{text}"
+        );
     }
 }

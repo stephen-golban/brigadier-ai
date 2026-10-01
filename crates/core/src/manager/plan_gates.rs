@@ -172,6 +172,7 @@ impl SessionManager {
                     outcome: None,
                     relanding: false,
                     retry: false,
+                    overridden: false,
                     findings,
                 });
                 let first = stored
@@ -1088,6 +1089,7 @@ mod tests {
             outcome,
             relanding: false,
             retry: false,
+            overridden: false,
             findings: Vec::new(),
         }
     }

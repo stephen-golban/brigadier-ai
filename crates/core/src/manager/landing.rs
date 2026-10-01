@@ -49,15 +49,83 @@ const PLAN_INLINE_BYTES: usize = 8_000;
 impl SessionManager {
     /// `accept_task`: starts the landing pipeline and returns at once. The commit message is
     /// kept: when the gate finds problems, Brigadier sends the worker back and lands its fix
-    /// with it, without the orchestrator.
+    /// with it, without the orchestrator. `overriding`: the user explicitly said to land it
+    /// despite its checks' findings (see [`Self::land_despite_checks`]).
     pub(crate) async fn accept_task(
         &self,
         conversation_id: &ConversationId,
         task: Task,
         message: String,
+        overriding: bool,
     ) -> Result<String> {
+        if overriding
+            && let Some(reply) = self
+                .land_despite_checks(conversation_id, &task, &message)
+                .await?
+        {
+            return Ok(reply);
+        }
         self.begin_landing(conversation_id, task, message, true)
             .await
+    }
+
+    /// Lands, on the user's word, the change whose last checks found problems, as it is and
+    /// without checking it again: the candidate those checks ran on (or one with the same
+    /// files, a fix that changed nothing), with the commit message it was built with. Under
+    /// "Ask for approval" the user still approves it on its card. `None` when the task has no
+    /// such change: it is checked as usual.
+    async fn land_despite_checks(
+        &self,
+        conversation_id: &ConversationId,
+        task: &Task,
+        message: &str,
+    ) -> Result<Option<String>> {
+        let message = message.trim().to_owned();
+        if message.is_empty() {
+            return Err(Error::Invalid("the commit message is empty".into()));
+        }
+        if task.state != TaskState::Reported
+            || super::gates::checks_stand(task) != Some(crate::work::GateOutcome::Failed)
+        {
+            return Ok(None);
+        }
+        let (Some(checked), Some(candidate)) = (
+            task.gate.as_ref().and_then(|gate| gate.commit.clone()),
+            task.candidate.clone(),
+        ) else {
+            return Ok(None);
+        };
+        if checked != candidate.commit && !self.same_tree(task, &checked, &candidate.commit).await {
+            return Ok(None);
+        }
+        let later = self.later_request_for(conversation_id, task).await;
+        let task = self
+            .update_task(conversation_id, &task.id, |t| {
+                t.state = TaskState::Reviewing;
+                t.blocked_reason = None;
+                t.landing = Some(message);
+                if let Some(gate) = t.gate.as_mut() {
+                    gate.overridden = true;
+                    // The same files the round found problems in.
+                    gate.commit = Some(candidate.commit.clone());
+                }
+                if later.is_some() {
+                    t.request_id = later;
+                }
+            })
+            .await?;
+        let number = task.number;
+        let manager = self.arc();
+        self.spawn(async move {
+            if let Err(err) = manager.approve_and_land(&task).await {
+                manager
+                    .landing_problem(&task, &err.to_string(), TaskState::Reported)
+                    .await;
+            }
+        });
+        Ok(Some(format!(
+            "Landing task-{number} as it is, on the user's word, despite its checks' findings (its commit keeps the message it was checked with); the outcome arrives as a message."
+        )))
     }
 
     /// Starts landing `task`; `fresh` when the orchestrator accepted it (its fix rounds start
@@ -326,20 +394,20 @@ impl SessionManager {
         Ok(())
     }
 
-    /// What a reviewer reads about the change: the task, the worker's report, the diff.
+    /// What a reviewer reads about the change: the task, what the worker was told since, the
+    /// worker's report, the diff.
     pub(crate) async fn review_brief(&self, subject: &Task) -> String {
-        let mut text = format!(
-            "\n\nThe task it implements (task-{}):\n{}",
-            subject.number, subject.spec
-        );
-        if !subject.messages.is_empty() {
-            text.push_str(
-                "\n\nWhat the orchestrator told the worker after that, oldest first (it changes the task where it differs):",
-            );
-            for message in &subject.messages {
-                text.push_str(&format!("\n---\n{message}"));
-            }
-        }
+        // What the worker wrote after its report may come in after its checks were opened.
+        let addendum = match &subject.addendum {
+            Some(addendum) => Some(addendum.clone()),
+            None => self
+                .task_by_id(&subject.conversation_id, &subject.id)
+                .await
+                .ok()
+                .filter(|now| now.candidate == subject.candidate)
+                .and_then(|now| now.addendum),
+        };
+        let mut text = brief_history(subject);
         if let Some(report) = &subject.report {
             text.push_str(&format!(
                 "\n\nThe worker's report:\n{}\n{}",
@@ -361,6 +429,11 @@ impl SessionManager {
                         text.push_str(&format!("\n- {line}"));
                     }
                 }
+            }
+            if let Some(addendum) = addendum {
+                text.push_str(&format!(
+                    "\n\nWhat the worker wrote after its report:\n{addendum}"
+                ));
             }
         }
         // A worker on a big change writes its plan first; the change is checked against it.
@@ -568,8 +641,7 @@ impl SessionManager {
                 Ok(CardAnswer::Decision(ApprovalDecision::Allow)) => {}
                 Ok(CardAnswer::Decision(ApprovalDecision::Deny { message })) => {
                     self.announcing(task).await;
-                    self.set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
-                        .await?;
+                    let addendum = self.hand_back(task, TaskState::Reported, None).await;
                     self.deliver(
                         &task.conversation_id,
                         Envelope {
@@ -577,7 +649,7 @@ impl SessionManager {
                             label: format!("landing task-{} declined", task.number),
                             task_id: Some(task.id.clone()),
                             text: format!(
-                                "[decision] The user declined landing task-{}{}. Nothing landed.",
+                                "[decision] The user declined landing task-{}{}. Nothing landed.{addendum}",
                                 task.number,
                                 if message.trim().is_empty() {
                                     String::new()
@@ -675,6 +747,18 @@ impl SessionManager {
                                 }
                             })
                             .await?;
+                        // A change the user had land despite its findings lands as it is
+                        // after a clean replay too.
+                        if clean_fast && task.gate.as_ref().is_some_and(|gate| gate.overridden) {
+                            let task = self
+                                .update_task(&task.conversation_id, &task.id, |t| {
+                                    if let Some(gate) = t.gate.as_mut() {
+                                        gate.commit = Some(commit.0.clone());
+                                    }
+                                })
+                                .await?;
+                            return Box::pin(self.land_task(&task)).await;
+                        }
                         // A new commit is verified again before it lands, and reviewed
                         // again too when the replay touched paths the target also changed
                         // (B11).
@@ -755,6 +839,34 @@ impl SessionManager {
                 tracing::warn!(task = %task.id, error = %err, "could not delete the landed task branch");
             }
         }
+        // Landed on the user's word, despite what its checks found.
+        if task.gate.as_ref().is_some_and(|gate| gate.overridden) {
+            let findings = super::gates::one_line_findings(&self.gate_findings(task).await);
+            self.decided_for_task(
+                task,
+                format!(
+                    "Landed task-{} \u{201c}{}\u{201d} on `{target}` on the user's word",
+                    task.number, task.title
+                ),
+                format!("Landed on the user's word despite: {findings}"),
+            )
+            .await;
+            self.deliver(
+                &task.conversation_id,
+                Envelope {
+                    kind: InjectionKind::Decision,
+                    label: format!("landed task-{}", task.number),
+                    task_id: Some(task.id.clone()),
+                    text: format!(
+                        "[landed task-{}] Commit {} is on `{target}`. It landed on the user's word despite its checks' findings: {findings}",
+                        task.number,
+                        short(new_tip),
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
         let review = task
             .review
             .as_ref()
@@ -805,15 +917,11 @@ impl SessionManager {
         .await;
     }
 
-    /// Something stopped a landing: the task goes to `state` and the orchestrator hears why.
+    /// Something stopped a landing: the task goes to `state` and the orchestrator hears why,
+    /// and decides what happens next.
     pub(super) async fn landing_problem(&self, task: &Task, reason: &str, state: TaskState) {
         self.announcing(task).await;
-        let _ = self
-            .update_task(&task.conversation_id, &task.id, |t| {
-                t.state = state;
-                t.blocked_reason = (state == TaskState::ReadyToLand).then(|| reason.to_owned());
-            })
-            .await;
+        let addendum = self.hand_back(task, state, Some(reason)).await;
         self.deliver(
             &task.conversation_id,
             Envelope {
@@ -821,12 +929,37 @@ impl SessionManager {
                 label: format!("landing task-{}", task.number),
                 task_id: Some(task.id.clone()),
                 text: format!(
-                    "[not landed task-{} \"{}\"] {reason}",
+                    "[not landed task-{} \"{}\"] {reason}{addendum}",
                     task.number, task.title
                 ),
             },
         )
         .await;
+    }
+
+    /// A landing ends without landing and the orchestrator decides next: the task goes to
+    /// `state` (`blocked` is why, for a task ready to land), Brigadier no longer lands it on
+    /// its own, and what its worker wrote after its report, held meanwhile, is returned as a
+    /// block for the orchestrator (empty when none was held).
+    async fn hand_back(&self, task: &Task, state: TaskState, blocked: Option<&str>) -> String {
+        let mut addendum = None;
+        let updated = self
+            .update_task(&task.conversation_id, &task.id, |t| {
+                t.state = state;
+                t.blocked_reason = blocked
+                    .filter(|_| state == TaskState::ReadyToLand)
+                    .map(str::to_owned);
+                t.landing = None;
+                addendum = t.addendum.take();
+            })
+            .await;
+        match (updated, addendum) {
+            (Ok(updated), Some(addendum)) => format!(
+                "\n{}",
+                super::prompts::late_findings_envelope(&updated, &addendum)
+            ),
+            _ => String::new(),
+        }
     }
 
     /// `finish_session`: merges the session branch into its base after the user's click.
@@ -1006,6 +1139,33 @@ enum Built {
     },
 }
 
+/// The task a change implements and what its worker was told since: the orchestrator's
+/// messages, and the findings Brigadier sent it back with.
+fn brief_history(subject: &Task) -> String {
+    let mut text = format!(
+        "\n\nThe task it implements (task-{}):\n{}",
+        subject.number, subject.spec
+    );
+    if !subject.messages.is_empty() {
+        text.push_str(
+            "\n\nWhat the orchestrator told the worker after that, oldest first (it changes the task where it differs):",
+        );
+        for message in &subject.messages {
+            text.push_str(&format!("\n---\n{message}"));
+        }
+    }
+    if !subject.fixes.is_empty() {
+        text.push_str(&format!(
+            "\n\nWhat earlier checks of its change found, which Brigadier sent the worker back to fix, oldest first. Each time it told the worker: \"{}\"",
+            super::gates::SEND_BACK
+        ));
+        for (index, findings) in subject.fixes.iter().enumerate() {
+            text.push_str(&format!("\n--- fix {}\n{findings}", index + 1));
+        }
+    }
+    text
+}
+
 pub(super) fn diff_stat_of(stat: &brigadier_git::DiffStat) -> DiffStat {
     DiffStat {
         files: stat
@@ -1066,4 +1226,46 @@ fn clip(text: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checks_of_a_fix_read_what_the_worker_was_sent_back_with() {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add avg2",
+            "kind": "implement",
+            "spec": "Add avg2 to src/math.js.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reviewing",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        let first = brief_history(&task);
+        assert!(first.contains("Add avg2 to src/math.js."), "{first}");
+        assert!(!first.contains("orchestrator told"), "{first}");
+        assert!(!first.contains("Brigadier sent"), "{first}");
+        task.messages = vec!["src/index.js may change too.".into()];
+        task.fixes = vec![
+            "From the review (task-2):\n- Re-export avg2 from src/index.js".into(),
+            "From the verification (task-5):\n- [not met] npm test passes".into(),
+        ];
+        let text = brief_history(&task);
+        assert!(text.contains("src/index.js may change too."), "{text}");
+        assert!(text.contains(super::super::gates::SEND_BACK), "{text}");
+        assert!(
+            text.contains("--- fix 1\nFrom the review (task-2):\n- Re-export avg2"),
+            "{text}"
+        );
+        assert!(text.contains("--- fix 2\nFrom the verification"), "{text}");
+    }
 }

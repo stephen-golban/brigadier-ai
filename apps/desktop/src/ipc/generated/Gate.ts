@@ -31,6 +31,11 @@ relanding: boolean,
  */
 retry: boolean, 
 /**
+ * The user had the change land despite the round's findings (`accept_task` with
+ * `override`): it lands as it is, without another round.
+ */
+overridden: boolean, 
+/**
  * A plan's round: its reviewers' issues as each result arrives, numbered F1, F2, … for
  * the revision to answer one by one.
  */

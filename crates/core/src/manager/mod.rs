@@ -563,6 +563,7 @@ impl ToolHost for SessionManager {
                     Role::Worker {
                         conversation_id,
                         task_id,
+                        ..
                     },
                     ToolCall::Worker(call),
                 ) => manager.worker_call(conversation_id, task_id, call).await,

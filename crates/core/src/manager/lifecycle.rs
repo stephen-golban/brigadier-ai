@@ -110,12 +110,14 @@ impl SessionManager {
                     }
                     // The landing was interrupted: accept it again.
                     TaskState::Reviewing | TaskState::AwaitingApproval if task.kind.writes() => {
-                        let _ = self
+                        let mut addendum = None;
+                        let updated = self
                             .update_task(&conversation.id, &task.id, |t| {
                                 t.state = TaskState::Reported;
                                 t.candidate = None;
                                 t.review = None;
                                 t.landing = None;
+                                addendum = t.addendum.take();
                                 if let Some(gate) = t.gate.as_mut()
                                     && gate.outcome.is_none()
                                 {
@@ -131,8 +133,18 @@ impl SessionManager {
                                 label: format!("landing task-{}", task.number),
                                 task_id: Some(task.id.clone()),
                                 text: format!(
-                                    "[not landed task-{} \"{}\"] Brigadier restarted before the landing finished; nothing landed. Call accept_task for task-{} again.",
-                                    task.number, task.title, task.number
+                                    "[not landed task-{} \"{}\"] Brigadier restarted before the landing finished; nothing landed. Call accept_task for task-{} again.{}",
+                                    task.number,
+                                    task.title,
+                                    task.number,
+                                    match (&updated, addendum) {
+                                        // Held while Brigadier had the change.
+                                        (Ok(updated), Some(addendum)) => format!(
+                                            "\n{}",
+                                            prompts::late_findings_envelope(updated, &addendum)
+                                        ),
+                                        _ => String::new(),
+                                    }
                                 ),
                             },
                         )
@@ -167,11 +179,13 @@ impl SessionManager {
     /// reported; the orchestrator gets its report, and decides.
     async fn recover_fix(&self, task: &Task) {
         let fixing = task.state != TaskState::Reported;
+        let mut addendum = None;
         let Ok(task) = self
             .update_task(&task.conversation_id, &task.id, |t| {
                 t.landing = None;
                 t.state = TaskState::Reported;
                 t.blocked_reason = None;
+                addendum = t.addendum.take();
             })
             .await
         else {
@@ -181,6 +195,13 @@ impl SessionManager {
             Some(report) => prompts::report_envelope(&task, report, &route_label(&task)),
             None => String::new(),
         };
+        // What the worker wrote after that report, held while Brigadier had the change.
+        if let Some(addendum) = addendum {
+            text.push_str(&format!(
+                "\n{}",
+                prompts::late_findings_envelope(&task, &addendum)
+            ));
+        }
         let next = format!(
             "Decide: accept_task for task-{n} to check and land it, message_worker to send it back, or stop_worker.",
             n = task.number

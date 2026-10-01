@@ -87,7 +87,7 @@ How to work:
 - Delegate with delegate_task. Write a complete spec: the worker sees nothing of this conversation. Say what to do, the relevant context, constraints, what "done" means and how to verify it (typecheck, lint, build, existing tests, a runtime check). Use scout tasks to look around the repository and research tasks to check current docs; don't guess about code you haven't had scouted.
 - Run independent tasks in parallel. Tools return at once; never wait or poll. Reports, worker questions and outcomes arrive later as messages from Brigadier, in blocks like [report task-3 …] … [/report]. Only these and the user's messages reach you.
 - A worker may ask you a blocking question ([question from task-N]); answer it with message_worker. message_worker also steers a running worker, or sends a reported worker back to fix something.
-- When a write task's report is good, accept it with accept_task and a proper commit message (a short imperative subject line, a blank line, then why). Brigadier then has the change reviewed by a model from another vendor and verified by a fresh worker against each "done when" criterion, then lands it. When they find problems, Brigadier sends the worker back to fix them itself. You hear only the outcome: landed, or a [checks task-N] note when it can't be fixed or verified, which says what to decide.
+- When a write task's report is good, accept it with accept_task and a proper commit message (a short imperative subject line, a blank line, then why). Brigadier then has the change reviewed by a model from another vendor and verified by a fresh worker against each "done when" criterion, then lands it. When they find problems, Brigadier sends the worker back to fix them itself. You hear only the outcome: landed, or a [checks task-N] note when it can't be fixed or verified, which says what to decide. Only when the user explicitly tells you to land a change despite its checks' findings, accept it again with override: true.
 - The user's session summary lists what Brigadier decided on their behalf and what only they can do (each worker's needs_user, checks that need them first). Add your own with note_for_user: a judgement call you made for them that they would want to know (kind decided, with why), or something only they can do (kind waiting), which stays listed until they mark it done; you hear when they do. Work that doesn't depend on it carries on meanwhile.
 - Use read_report and read_artifact only when you need details a report left out; they cost context.
 - Each worker has an outputs folder for files meant for you or the user (long findings, documents, generated images); they come back as artifacts, and the user saves them from the task card. Never tell a worker to write files to /tmp or anywhere else outside its worktree and scratch folder.
@@ -185,6 +185,12 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
     } else {
         "\n- Don't change files in the repository. Your scratch folder is yours for notes."
     };
+    // A gate member has no one to ask (see `Role::Worker`).
+    let alone = if task.gate_link.is_some() {
+        "You work alone on this check and cannot ask anyone: decide from what you were given and your own evidence alone. Where the task is unclear, take its most reasonable reading and name it under risks."
+    } else {
+        "You work alone on this task. If you are blocked by a question only the orchestrator can answer, call the ask_orchestrator tool (it waits for the answer). Don't ask about things you can find out yourself."
+    };
     let mut practices = String::new();
     if task.kind != TaskKind::Research {
         practices.push_str(WORKER_CODE_TOOLS);
@@ -200,7 +206,7 @@ Kind: {kind}
 {repo_note}
 
 Rules:
-- You work alone on this task. If you are blocked by a question only the orchestrator can answer, call the ask_orchestrator tool (it waits for the answer). Don't ask about things you can find out yourself.{write_rules}
+- {alone}{write_rules}
 - Pushing, publishing, deploying and other outward actions are not yours to do; if one seems needed, say so in the report.
 - If something only the user can do blocks part of the task (a credential, a sign-in, an account, a paid signup), list it under needs_user and finish everything else around it.
 - Files meant for the orchestrator or the user (full findings, logs worth keeping, documents, generated images) go in your outputs folder. Brigadier attaches them to your report and the user saves them from the task card. Never write files to /tmp or anywhere else outside your worktree and scratch folder, even if the task names such a place: nobody could read them, and they would be left behind. Save them in your outputs folder and say so in the report.
@@ -297,7 +303,7 @@ pub(crate) fn undecided_note(tasks: &[Task]) -> String {
             // Checks that already ended on this very change: accepting it as it is repeats them.
             let checked = match super::gates::checks_stand(task) {
                 Some(GateOutcome::Failed) => {
-                    " (its checks found problems and it has not changed since: send it back with guidance or stop it; accepting it as it is will not land it)"
+                    " (its checks found problems and it has not changed since: send it back with guidance or stop it; accepting it as it is will not land it, unless the user explicitly told you to land it despite the findings: then accept it with override: true)"
                 }
                 Some(_) => {
                     " (its checks could not finish: accept it again only if what stopped them was temporary)"
@@ -313,11 +319,12 @@ pub(crate) fn undecided_note(tasks: &[Task]) -> String {
     )
 }
 
-/// What a worker wrote after its report (see [`report_envelope`]): in full when it fits the
-/// report's size, else its first part and the artifact that holds it all.
-pub(crate) fn late_findings_envelope(task: &Task, artifact: &ArtifactRef, text: &str) -> String {
+/// What a worker wrote after its report, as the orchestrator and later checks read it: in
+/// full when it fits the report's size, else its first part and the artifact that holds it
+/// all.
+pub(crate) fn late_findings_text(artifact: &ArtifactRef, text: &str) -> String {
     let limit = super::workers::REPORT_MAX_BYTES;
-    let shown = if text.len() > limit {
+    if text.len() > limit {
         let mut end = limit;
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -330,11 +337,16 @@ pub(crate) fn late_findings_envelope(task: &Task, artifact: &ArtifactRef, text: 
         )
     } else {
         text.to_owned()
-    };
+    }
+}
+
+/// What a worker wrote after its report (see [`report_envelope`]), shown as
+/// [`late_findings_text`] gives it.
+pub(crate) fn late_findings_envelope(task: &Task, shown: &str) -> String {
     format!(
         "[report task-{} · addendum] The worker wrote this after its report, which left it out; \
-         it is kept with the report as {}:\n{shown}\n[/report]",
-        task.number, artifact.id
+         it is kept with the report:\n{shown}\n[/report]",
+        task.number
     )
 }
 
@@ -360,4 +372,29 @@ pub(crate) fn follow_up(
          else."
     ));
     block
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_worker_wrote_after_its_report_is_cut_to_a_reports_size() {
+        let artifact = ArtifactRef {
+            id: "blob1".into(),
+            title: "What the worker wrote after its report".into(),
+            kind: crate::work::ArtifactKind::Note,
+            mime: "text/markdown".into(),
+            bytes: 9_000,
+            file_name: None,
+        };
+        assert_eq!(late_findings_text(&artifact, "Short."), "Short.");
+        let long = "é".repeat(4_500);
+        let shown = late_findings_text(&artifact, &long);
+        assert!(shown.len() < long.len());
+        assert!(
+            shown.ends_with("[…cut; read_artifact blob1 reads all 9000 bytes]"),
+            "{shown}"
+        );
+    }
 }

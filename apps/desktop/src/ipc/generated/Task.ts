@@ -89,6 +89,12 @@ landing: string | null,
  */
 fixRounds: number, 
 /**
+ * A write task: the findings Brigadier sent it back with, one entry per fix round,
+ * oldest first. Later checks read them, and so does the orchestrator when the fixes end
+ * without landing.
+ */
+fixes: Array<string>, 
+/**
  * The landed commit.
  */
 landed: string | null, 

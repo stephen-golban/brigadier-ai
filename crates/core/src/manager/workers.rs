@@ -802,6 +802,8 @@ impl SessionManager {
             gate_link,
             landing: None,
             fix_rounds: 0,
+            fixes: Vec::new(),
+            addendum: None,
             landed: None,
             error: None,
             kept: None,
@@ -1004,6 +1006,7 @@ impl SessionManager {
             Role::Worker {
                 conversation_id: conversation_id.clone(),
                 task_id: task.id.clone(),
+                checks: task.gate_link.is_some(),
             },
         );
         let gate_grant = self.grants.issue(
@@ -2044,6 +2047,12 @@ impl SessionManager {
             .existing_task_live(task_id)
             .ok_or_else(|| Error::Invalid("the task has ended".into()))?;
         let task = self.task_by_id(conversation_id, task_id).await?;
+        // A gate member has no one to ask (see `Role::Worker`).
+        if task.gate_link.is_some() {
+            return Err(Error::Invalid(
+                "You check this work on your own: decide from what you were given and your own evidence. Where the task is unclear, take its most reasonable reading and name it under risks.".into(),
+            ));
+        }
         let question = self.redact_for(&live, &question).await;
         let (tx, rx) = oneshot::channel();
         live.state.lock().await.question = Some(tx);
@@ -2174,6 +2183,8 @@ impl SessionManager {
             task.outputs.clone_from(&outputs);
             task.state = TaskState::Reported;
             task.blocked_reason = None;
+            // What it wrote after its last report is about that report.
+            task.addendum = None;
             if task.kind.writes() && !relanding {
                 // The orchestrator decides about this report: Brigadier no longer lands it on
                 // its own.
@@ -2356,7 +2367,9 @@ impl SessionManager {
 
     /// What the worker wrote after its report, in the turn that reported: kept as an artifact
     /// of the report and sent to the orchestrator, when it is long enough to be findings or
-    /// the report points at it ("the findings are below"). Answers the task as it is now.
+    /// the report points at it ("the findings are below"). While Brigadier lands the task's
+    /// change on its own, it is held with the task instead: its checks read it, and the
+    /// orchestrator gets it only if the change does not land. Answers the task as it is now.
     async fn late_findings(&self, live: &Arc<TaskLive>, task: Task) -> Task {
         let message = live.state.lock().await.last_message.take();
         let (Some(message), Some(report)) = (message, task.report.as_ref()) else {
@@ -2384,7 +2397,11 @@ impl SessionManager {
             bytes: size,
             file_name: Some(format!("task-{}-after-report.md", task.number)),
         };
+        let shown = prompts::late_findings_text(&artifact, &text);
         let added = artifact.clone();
+        let held = shown.clone();
+        // Decided with the update, so a landing that ends meanwhile either finds it held
+        // (and passes it on) or makes it go to the orchestrator here.
         let updated = self
             .update_task(&task.conversation_id, &task.id, move |task| {
                 if let Some(report) = task.report.as_mut()
@@ -2392,17 +2409,23 @@ impl SessionManager {
                 {
                     report.artifacts.push(added);
                 }
+                if brigadier_lands(task) {
+                    task.addendum = Some(held);
+                }
             })
             .await;
         let Ok(updated) = updated else {
             return task;
         };
         tracing::info!(task = %task.id, bytes = size, "kept what the worker wrote after its report");
+        if updated.addendum.as_deref() == Some(shown.as_str()) {
+            return updated;
+        }
         let envelope = Envelope {
             kind: InjectionKind::Report,
             label: format!("report task-{} (addendum)", task.number),
             task_id: Some(task.id.clone()),
-            text: prompts::late_findings_envelope(&updated, &artifact, &text),
+            text: prompts::late_findings_envelope(&updated, &shown),
         };
         let request = self
             .request_for(&task.conversation_id, Some(&task.id))
@@ -2424,14 +2447,15 @@ impl SessionManager {
 
     /// `message_worker`: answers a blocking question, steers a running worker, or sends a
     /// reported worker back to work. `from` names who speaks: the orchestrator, or Brigadier
-    /// itself (a gate's findings).
+    /// itself (a gate's findings). Returns the reply, and whether the text answered a question
+    /// the worker was waiting on (`ask_orchestrator`).
     pub(crate) async fn message_worker(
         &self,
         conversation_id: &ConversationId,
         task: &Task,
         text: String,
         from: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         let live = self.task_live(task);
         // A program the user installed (or removed) meanwhile, e.g. after the worker said it
         // was missing.
@@ -2450,7 +2474,10 @@ impl SessionManager {
         let mut state = live.state.lock().await;
         if let Some(waiter) = state.question.take() {
             let _ = waiter.send(text);
-            return Ok(format!("Answered task-{}; it continues.", task.number));
+            return Ok((
+                format!("Answered task-{}; it continues.", task.number),
+                true,
+            ));
         }
         if task.state.is_final() {
             return Err(Error::Invalid(format!("task-{} has ended", task.number)));
@@ -2458,10 +2485,13 @@ impl SessionManager {
         // Its model was cut off at a limit: the message waits for the model that takes the task
         // over (its hand-off carries every message), rather than reviving the one cut off.
         if let Some(wait) = &task.quota_wait {
-            return Ok(format!(
-                "task-{} is waiting for quota ({}); the model that takes it over gets this \
-                 message with its hand-off.",
-                task.number, wait.reason
+            return Ok((
+                format!(
+                    "task-{} is waiting for quota ({}); the model that takes it over gets this \
+                     message with its hand-off.",
+                    task.number, wait.reason
+                ),
+                false,
             ));
         }
         let hand_over = !state.busy
@@ -2493,9 +2523,12 @@ impl SessionManager {
             drop(state);
             self.revive_worker(&live, task, format!("Message from {from}:\n{text}"))
                 .await?;
-            return Ok(format!(
-                "task-{} is working on it; a new report will follow.",
-                task.number
+            return Ok((
+                format!(
+                    "task-{} is working on it; a new report will follow.",
+                    task.number
+                ),
+                false,
             ));
         };
         let input = TurnInput {
@@ -2515,7 +2548,10 @@ impl SessionManager {
                 .await
                 .map_err(|err| Error::Provider(err.to_string()))?;
             if working {
-                return Ok(format!("Sent to task-{} (it is working).", task.number));
+                return Ok((
+                    format!("Sent to task-{} (it is working).", task.number),
+                    false,
+                ));
             }
         } else {
             state.begin_turn();
@@ -2527,9 +2563,12 @@ impl SessionManager {
         state.nudged = false;
         self.reopen_task(conversation_id, task).await?;
         drop(state);
-        Ok(format!(
-            "task-{} is working on it; a new report will follow.",
-            task.number
+        Ok((
+            format!(
+                "task-{} is working on it; a new report will follow.",
+                task.number
+            ),
+            false,
         ))
     }
 
@@ -3161,6 +3200,21 @@ fn checks_a_change(task: &Task) -> bool {
         || (task.kind == TaskKind::Verify && task.subject.is_some())
 }
 
+/// Whether Brigadier, not the orchestrator, has a write task's change in hand: it was
+/// accepted and is being checked, fixed after its checks, or landed.
+pub(super) fn brigadier_lands(task: &Task) -> bool {
+    task.kind.writes()
+        && (task.landing.is_some()
+            || (task
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.outcome.is_none())
+                && matches!(
+                    task.state,
+                    TaskState::Reviewing | TaskState::AwaitingApproval
+                )))
+}
+
 /// Whether `message`, written after a report with `summary`, holds findings the report left
 /// out: any message the summary points at ("reproduced below"), else a long one.
 fn is_late_findings(summary: &str, message: &str) -> bool {
@@ -3237,6 +3291,60 @@ mod tests {
         // findings may come after the report.
         assert!(!checks_a_change(&task("verify")));
         assert!(!checks_a_change(&task("scout")));
+    }
+
+    #[test]
+    fn what_a_worker_writes_after_its_report_is_held_while_brigadier_lands_its_change() {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add cube",
+            "kind": "implement",
+            "spec": "Add cube.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reported",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        // Its first report: the orchestrator decides about it, and reads what follows it.
+        assert!(!brigadier_lands(&task));
+        // Accepted: checked, sent back to fix and checked again by Brigadier alone.
+        task.landing = Some("Add cube".into());
+        for state in [
+            TaskState::Reported,
+            TaskState::Reviewing,
+            TaskState::Running,
+            TaskState::AwaitingApproval,
+        ] {
+            task.state = state;
+            assert!(brigadier_lands(&task), "{state:?}");
+        }
+        // Handed back to the orchestrator: the checks found what it decides about.
+        task.landing = None;
+        task.state = TaskState::Reported;
+        task.gate = Some(crate::work::Gate {
+            round: 1,
+            commit: Some("c1".into()),
+            members: Vec::new(),
+            outcome: Some(crate::work::GateOutcome::Failed),
+            relanding: false,
+            retry: false,
+            overridden: false,
+            findings: Vec::new(),
+        });
+        assert!(!brigadier_lands(&task));
+        // A round still open on its change.
+        task.state = TaskState::Reviewing;
+        task.gate.as_mut().expect("a gate").outcome = None;
+        assert!(brigadier_lands(&task));
+        // A read task's report is the orchestrator's alone.
+        task.kind = TaskKind::Scout;
+        assert!(!brigadier_lands(&task));
     }
 
     #[tokio::test]

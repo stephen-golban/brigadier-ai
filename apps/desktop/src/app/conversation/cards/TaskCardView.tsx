@@ -393,6 +393,7 @@ function GateSection({ gate, fixRounds }: { gate: Gate; fixRounds: number }) {
           round {gate.round}
           {gate.commit && ` · of ${short(gate.commit)}`}
           {fixRounds > 0 && ` · sent back ${fixRounds} time${fixRounds === 1 ? "" : "s"}`}
+          {gate.overridden && " · the user said to land it anyway"}
         </span>
       </p>
       <ul className="flex flex-col gap-1.5">

@@ -80,7 +80,9 @@ own. Returns at once; the decision arrives later as a message.";
 const ACCEPT_TASK: &str = "Land a finished `implement` or `merge` task as one commit on the \
 session's branch, with your commit message. Call it after reading the task's report. Brigadier \
 first has the change reviewed by another vendor and checks that it can land safely; what happens \
-arrives as a message.";
+arrives as a message. Set override only when the user explicitly told you to land it despite the \
+checks' findings: the change they found problems in then lands as it is, without being checked \
+again.";
 
 const FINISH_SESSION: &str = "New-worktree sessions only: when all the work has landed, ask \
 the user to merge the session branch into its base branch (one click on a card). Returns at \
@@ -132,15 +134,23 @@ keep every field short, and put long material (full findings, logs, command outp
 files in your outputs folder, listed under `artifacts`. List every file you changed, created or \
 deleted under `changes`: new files that are not listed are not kept.";
 
-/// The tools `role` may call, in a stable order. The gate role gets none.
+/// The tools `role` may call, in a stable order. The gate role gets none, and a worker that
+/// checks a change or plan no `ask_orchestrator`.
 pub fn tools_for(role: &Role) -> &'static [Tool] {
     static ORCHESTRATOR: OnceLock<Vec<Tool>> = OnceLock::new();
     static WORKER: OnceLock<Vec<Tool>> = OnceLock::new();
+    static CHECKER: OnceLock<Vec<Tool>> = OnceLock::new();
     static JOB: OnceLock<Vec<Tool>> = OnceLock::new();
     static CHAT: OnceLock<Vec<Tool>> = OnceLock::new();
     match role {
         Role::Orchestrator { .. } => ORCHESTRATOR.get_or_init(orchestrator_tools),
-        Role::Worker { .. } => WORKER.get_or_init(worker_tools),
+        Role::Worker { checks: false, .. } => WORKER.get_or_init(worker_tools),
+        Role::Worker { checks: true, .. } => CHECKER.get_or_init(|| {
+            worker_tools()
+                .into_iter()
+                .filter(|tool| tool.name != "ask_orchestrator")
+                .collect()
+        }),
         Role::BrainJob { .. } => JOB.get_or_init(job_tools),
         Role::Chat { .. } => CHAT.get_or_init(chat_tools),
         Role::Gate { .. } => &[],
@@ -295,9 +305,9 @@ pub fn parse_call(
             };
             Ok(ToolCall::Orchestrator(call))
         }
-        Role::Worker { .. } => {
+        Role::Worker { checks, .. } => {
             let call = match name {
-                "ask_orchestrator" => {
+                "ask_orchestrator" if !checks => {
                     WorkerCall::AskOrchestrator(args::<AskOrchestrator>(name, arguments)?)
                 }
                 "submit_report" => WorkerCall::SubmitReport(args::<SubmitReport>(name, arguments)?),
@@ -333,4 +343,41 @@ fn args<T: DeserializeOwned>(tool: &str, arguments: Value) -> Result<T, ParseErr
         tool: tool.to_owned(),
         reason: err.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worker(checks: bool) -> Role {
+        Role::Worker {
+            conversation_id: brigadier_core::model::ConversationId("c1".into()),
+            task_id: brigadier_core::model::TaskId("t1".into()),
+            checks,
+        }
+    }
+
+    #[test]
+    fn a_gate_member_cannot_ask_the_orchestrator() {
+        let names = |role: &Role| -> Vec<String> {
+            tools_for(role)
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect()
+        };
+        assert!(names(&worker(false)).contains(&"ask_orchestrator".to_owned()));
+        let checker = names(&worker(true));
+        assert!(!checker.contains(&"ask_orchestrator".to_owned()));
+        assert!(checker.contains(&"submit_report".to_owned()));
+        let question = || {
+            let mut arguments = JsonObject::new();
+            arguments.insert("question".into(), Value::String("Which file?".into()));
+            Some(arguments)
+        };
+        assert!(parse_call(&worker(false), "ask_orchestrator", question()).is_ok());
+        assert!(matches!(
+            parse_call(&worker(true), "ask_orchestrator", question()),
+            Err(ParseError::UnknownTool(_))
+        ));
+    }
 }

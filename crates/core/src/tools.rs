@@ -33,6 +33,9 @@ pub enum Role {
     Worker {
         conversation_id: ConversationId,
         task_id: TaskId,
+        /// It checks a change or plan in a gate: it decides from what it was given and its
+        /// own evidence alone, so it has no `ask_orchestrator`.
+        checks: bool,
     },
     /// The outward-command gate of a CLI session: it can only ask.
     Gate {
@@ -383,6 +386,10 @@ pub struct AcceptTask {
     pub task: String,
     /// The commit message: a short subject line, a blank line, then the body.
     pub commit_message: String,
+    /// Only when the user explicitly told you to land it despite the checks' findings: it
+    /// lands as it is, without being checked again.
+    #[serde(default, rename = "override")]
+    pub override_checks: bool,
 }
 
 /// `finish_session`: merge the session branch into its base (new-worktree sessions), behind the

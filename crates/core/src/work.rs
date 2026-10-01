@@ -373,6 +373,10 @@ pub struct Gate {
     /// A second verification after a verifier could not check the change.
     #[serde(default)]
     pub retry: bool,
+    /// The user had the change land despite the round's findings (`accept_task` with
+    /// `override`): it lands as it is, without another round.
+    #[serde(default)]
+    pub overridden: bool,
     /// A plan's round: its reviewers' issues as each result arrives, numbered F1, F2, … for
     /// the revision to answer one by one.
     #[serde(default)]
@@ -550,6 +554,17 @@ pub struct Task {
     /// A write task: times Brigadier sent it back with a gate's findings.
     #[serde(default)]
     pub fix_rounds: u32,
+    /// A write task: the findings Brigadier sent it back with, one entry per fix round,
+    /// oldest first. Later checks read them, and so does the orchestrator when the fixes end
+    /// without landing.
+    #[serde(default)]
+    pub fixes: Vec<String>,
+    /// A write task Brigadier lands on its own: what its worker wrote after its last report,
+    /// held back from the orchestrator. Its checks read it; the orchestrator gets it only if
+    /// the change does not land.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub addendum: Option<String>,
     /// The landed commit.
     pub landed: Option<String>,
     /// Why it is blocked, paused or cannot land yet.
