@@ -599,7 +599,9 @@ impl Brain {
     ///
     /// A changed decision, convention, contract or preference keeps its earlier text as a
     /// superseded node (history). A decision, convention or contract with the same content as
-    /// a current one (same scope, same words) confirms that one instead of adding a copy.
+    /// a current one (same scope, same words) confirms that one instead of adding a copy
+    /// when unkeyed. Distinct keyed identities stay separate so lookup and rewrites keep
+    /// resolving to the same node.
     pub fn record(&self, node: NewNode) -> Result<String> {
         check(&node)?;
         let embedding = self.embedding(&node);

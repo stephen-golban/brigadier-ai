@@ -251,7 +251,10 @@ fn rules_with_the_same_content_fold_but_not_across_symbols_or_sessions() {
         .unwrap();
     assert_eq!(
         brain
-            .record(decision("s1", "d:2", "use c++ for the engine!"))
+            .record(NewNode {
+                key: None,
+                ..decision("s1", "d:2", "use c++ for the engine!")
+            })
             .unwrap(),
         id,
         "the same words fold"
@@ -280,12 +283,7 @@ fn rules_with_the_same_content_fold_but_not_across_symbols_or_sessions() {
         .unwrap();
     assert_eq!(
         brain
-            .record(node(
-                NodeKind::Contract,
-                Some("contract:b"),
-                "tabs not spaces",
-                "always"
-            ))
+            .record(node(NodeKind::Contract, None, "tabs not spaces", "always"))
             .unwrap(),
         rule
     );
@@ -300,6 +298,108 @@ fn normalizing_keeps_what_changes_a_meaning() {
     assert_ne!(key("v1.2"), key("v12"));
     assert_ne!(key("a-b"), key("a b"));
     assert_eq!(key("ends-"), key("ends"));
+}
+
+#[test]
+fn equivalent_keyed_rules_keep_their_own_identity_and_history() {
+    let brain = TestBrain::new();
+    let first = brain
+        .record(node(
+            NodeKind::Convention,
+            Some("rule:first"),
+            "Tabs",
+            "Always",
+        ))
+        .unwrap();
+    let second = brain
+        .record(node(
+            NodeKind::Convention,
+            Some("rule:second"),
+            "Tabs",
+            "Always",
+        ))
+        .unwrap();
+    assert_ne!(
+        first, second,
+        "distinct keys cannot be folded without aliases"
+    );
+    assert_eq!(
+        brain
+            .node_by_key(NodeKind::Convention, "rule:second")
+            .unwrap()
+            .unwrap()
+            .id,
+        second
+    );
+    brain
+        .link(vec![NewEdge {
+            from: "key:rule:first".into(),
+            to: "key:rule:second".into(),
+            kind: EdgeKind::Relates,
+        }])
+        .unwrap();
+    assert!(
+        brain
+            .edges(std::slice::from_ref(&second))
+            .unwrap()
+            .contains(&Edge {
+                from: first.clone(),
+                to: second.clone(),
+                kind: EdgeKind::Relates
+            })
+    );
+    assert_eq!(
+        brain
+            .record(node(
+                NodeKind::Convention,
+                Some("rule:second"),
+                "Spaces",
+                "Always"
+            ))
+            .unwrap(),
+        second
+    );
+    let nodes = all(&brain);
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| !matches!(node.state, NodeState::Superseded { .. }))
+            .count(),
+        2
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.title == "Tabs" && superseded_by(node) == Some(second.as_str()))
+    );
+    assert_eq!(brain.node(&first).unwrap().unwrap().title, "Tabs");
+    // The open-time backfill must preserve keyed identities too.
+    brain
+        .write(|tx, changes| {
+            tx.execute(
+                "UPDATE nodes SET title = 'Tabs', fold_key = NULL WHERE state != 'superseded'",
+                [],
+            )?;
+            assert_eq!(write::settle_rules(tx, 5, changes)?, 0);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        brain
+            .node_by_key(NodeKind::Convention, "rule:first")
+            .unwrap()
+            .unwrap()
+            .id,
+        first
+    );
+    assert_eq!(
+        brain
+            .node_by_key(NodeKind::Convention, "rule:second")
+            .unwrap()
+            .unwrap()
+            .id,
+        second
+    );
 }
 
 #[test]
@@ -485,20 +585,10 @@ fn a_superseded_node_held_by_another_key_stays_history() {
 fn opening_folds_rules_recorded_twice_before() {
     let brain = TestBrain::new();
     let one = brain
-        .record(node(
-            NodeKind::Convention,
-            Some("convention:1"),
-            "Rule",
-            "x",
-        ))
+        .record(node(NodeKind::Convention, None, "Rule", "x"))
         .unwrap();
     let two = brain
-        .record(node(
-            NodeKind::Convention,
-            Some("convention:2"),
-            "Other",
-            "y",
-        ))
+        .record(node(NodeKind::Convention, None, "Other", "y"))
         .unwrap();
     // As an older Brain held them: the same rule twice, without same-content keys.
     let stale = one.clone();
@@ -878,7 +968,12 @@ fn refreshing_a_task_drops_only_what_it_alone_no_longer_says() {
         )
         .unwrap();
     // Another task of the same conversation made the same decision.
-    let shared = brain.record(decision("t2", "Use B")).unwrap();
+    let shared = brain
+        .record(NewNode {
+            key: None,
+            ..decision("t2", "Use B")
+        })
+        .unwrap();
     assert_eq!(shared, first[4]);
     assert_eq!(all(&brain).len(), 5);
 

@@ -113,6 +113,9 @@ fn existing(tx: &Transaction, node: &NewNode, fold: Option<&str>) -> Result<Opti
         if found.is_some() {
             return Ok(found);
         }
+        // A different keyed identity cannot be folded without an alias that survives
+        // rewrites and revival. Keep keyed nodes distinct; unkeyed rules may still fold.
+        return Ok(None);
     }
     let Some(fold) = fold else { return Ok(None) };
     Ok(tx
@@ -785,8 +788,9 @@ pub(crate) fn set_embeddings(
 }
 
 /// Gives decisions, conventions and contracts recorded before same-content keys existed their
-/// [`fold_key`], then folds current rules that say the same thing: the fresh one (else the
-/// newest) stays, the others become its history. Returns how many were folded.
+/// [`fold_key`], then folds unkeyed current rules that say the same thing. Prefer a keyed
+/// keeper, then the fresh one (else the newest). Distinct keyed identities stay current.
+/// Returns how many were folded.
 pub(crate) fn settle_rules(tx: &Transaction, now: i64, changes: &mut Vec<Change>) -> Result<u64> {
     let unkeyed: Vec<(String, String, Option<String>, String, String)> = tx
         .prepare_cached(
@@ -820,18 +824,21 @@ pub(crate) fn settle_rules(tx: &Transaction, now: i64, changes: &mut Vec<Change>
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut members = tx.prepare_cached(
-        "SELECT id FROM nodes WHERE fold_key = ?1 AND state != 'superseded' \
-         ORDER BY state = 'fresh' DESC, updated_ms DESC, rid DESC",
+        "SELECT id, key FROM nodes WHERE fold_key = ?1 AND state != 'superseded' \
+         ORDER BY key IS NOT NULL DESC, state = 'fresh' DESC, updated_ms DESC, rid DESC",
     )?;
     let mut folded = 0;
     for group in groups {
-        let ids: Vec<String> = members
-            .query_map([group], |row| row.get(0))?
+        let ids: Vec<(String, Option<String>)> = members
+            .query_map([group], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
-        let Some((keeper, rest)) = ids.split_first() else {
+        let Some(((keeper, _), rest)) = ids.split_first() else {
             continue;
         };
-        for id in rest {
+        for (id, key) in rest {
+            if key.is_some() {
+                continue;
+            }
             supersede(
                 tx,
                 id,
