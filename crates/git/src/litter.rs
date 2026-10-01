@@ -1,8 +1,9 @@
 //! Deterministic pre-commit litter guard; no model or filesystem access.
 //!
 //! Always exclude `*.log`, `.DS_Store`, `*.tmp`, `*.swp` and `*~`. For untracked files also
-//! exclude `scratch*`, `notes*.md`, `NOTES*.md`, `TODO*.md`, `debug_*`, `tmp_*`, `test_output*`,
-//! and anything under `__pycache__`, `node_modules`, `.pytest_cache` or `target` at any depth.
+//! exclude anything under `__pycache__`, `node_modules`, `.pytest_cache` or `target` at any
+//! depth, and `scratch*`, `notes*.md`, `NOTES*.md`, `TODO*.md`, `debug_*`, `tmp_*` and
+//! `test_output*` unless the report lists that very file (a `NOTES.md` the task asked for).
 //! Other untracked files are kept only when the report lists that file or an ancestor directory.
 //! Tracked changes are kept unless an always-excluded pattern matches. The fixed Keep/Exclude
 //! API has no warning variant: callers should flag unreported tracked changes to the reviewer
@@ -23,16 +24,24 @@ pub enum Verdict {
 }
 
 /// Classify changes in input order. Reported entries are repo-relative file or parent directory
-/// paths; separators are `/`. Reporting a litter path never overrides an exclusion rule.
+/// paths; separators are `/`. Only listing the file itself overrides a scratch-like name; no
+/// report overrides the other exclusion rules.
 pub fn classify(changes: &[Change], reported: &[String]) -> Vec<(Change, Verdict)> {
     changes.iter().map(|change| {
-        let verdict = if let Some(pattern) = litter_pattern(change) {
+        let pattern = litter_pattern(change).or_else(|| {
+            scratch_name(change).filter(|_| !reported.iter().any(|p| lists_file(p, &change.path)))
+        });
+        let verdict = if let Some(pattern) = pattern {
             Verdict::Exclude { reason: format!("matches litter pattern {pattern}") }
         } else if change.untracked && !reported.iter().any(|p| reported_contains(p, &change.path)) {
             Verdict::Exclude { reason: "untracked path is not listed in the worker report (or a reported parent directory)".into() }
         } else { Verdict::Keep };
         (change.clone(), verdict)
     }).collect()
+}
+
+fn lists_file(reported: &str, path: &str) -> bool {
+    reported.strip_prefix("./").unwrap_or(reported) == path
 }
 
 fn reported_contains(reported: &str, path: &str) -> bool {
@@ -77,6 +86,14 @@ fn litter_pattern(change: &Change) -> Option<&'static str> {
                 _ => {}
             }
         }
+    }
+    None
+}
+
+/// An untracked file named like a worker's scratch notes or throwaway scripts.
+fn scratch_name(change: &Change) -> Option<&'static str> {
+    let name = change.path.rsplit('/').next().unwrap_or(&change.path);
+    if change.untracked {
         for (prefix, pattern) in [
             ("scratch", "scratch*"),
             ("debug_", "debug_*"),
@@ -100,4 +117,53 @@ fn litter_pattern(change: &Change) -> Option<&'static str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ChangeKind;
+
+    fn new_file(path: &str) -> Change {
+        Change {
+            path: path.into(),
+            kind: ChangeKind::Added,
+            untracked: true,
+        }
+    }
+
+    fn kept(path: &str, reported: &[&str]) -> bool {
+        let reported: Vec<String> = reported.iter().map(|p| (*p).to_owned()).collect();
+        classify(&[new_file(path)], &reported)[0].1 == Verdict::Keep
+    }
+
+    #[test]
+    fn a_listed_file_with_a_scratch_name_is_kept() {
+        assert!(kept("NOTES.md", &["NOTES.md"]));
+        assert!(kept("docs/TODO.md", &["./docs/TODO.md"]));
+        assert!(kept("src/debug_view.rs", &["src/debug_view.rs"]));
+    }
+
+    #[test]
+    fn a_scratch_name_under_a_listed_directory_stays_out() {
+        assert!(!kept("NOTES.md", &["."]));
+        assert!(!kept("docs/notes-1.md", &["docs"]));
+        assert!(!kept("NOTES.md", &[]));
+    }
+
+    #[test]
+    fn listing_never_keeps_logs_or_build_output() {
+        assert!(!kept("build.log", &["build.log"]));
+        assert!(!kept(
+            "node_modules/x/index.js",
+            &["node_modules/x/index.js"]
+        ));
+        assert!(!kept("target/out.txt", &["target/out.txt"]));
+    }
+
+    #[test]
+    fn an_unlisted_new_file_stays_out() {
+        assert!(!kept("src/new.rs", &["src/other.rs"]));
+        assert!(kept("src/new.rs", &["src"]));
+    }
 }
