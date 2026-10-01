@@ -792,6 +792,22 @@ pub struct SessionSpec {
     /// which are reborn instead (PLAN.md §2): Claude's auto-compact is switched off; Codex's
     /// cannot be, so its limit is raised as far as Codex allows (90% of the window).
     pub auto_compact: bool,
+    /// The models the session may hand work to through the CLI's own sub-agents; `None`: no
+    /// limit (raw sessions, orchestrators, Chats). Claude allows exactly these, or runs without
+    /// its Agent tool when it can't; Codex runs without sub-agents.
+    pub allowed_models: Option<AllowedModels>,
+}
+
+/// The models a worker's own sub-agents may run on (PLAN.md §7): the router's eligible set for
+/// its task, in its CLI's exact model ids.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AllowedModels {
+    /// Exact model ids (`claude-opus-5-5`, never an alias such as `opus`), the session's own
+    /// model among them. Empty when its own model has no exact id: then no sub-agents at all.
+    pub ids: Vec<String>,
+    /// Every model id of the CLI Brigadier knows of, allowed or not (its list, Fable and hidden
+    /// models included, and the registry's): what an allowed id must not also admit.
+    pub known: Vec<String>,
 }
 
 /// Something a session created that must be removed when it is disposed of. Recorded in the

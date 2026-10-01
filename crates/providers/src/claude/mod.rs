@@ -13,6 +13,10 @@
 //! Sessions load only the project's settings plus Brigadier's own (`--setting-sources
 //! project`, `--settings`), so the user's personal hooks, plugins and allow rules never apply,
 //! and only Brigadier's MCP servers (`--strict-mcp-config`).
+//!
+//! A worker's sub-agents run only on the models its task may use ([`SessionSpec::allowed_models`]):
+//! `availableModels` in its settings lists their exact ids, and when Claude's prefix matching
+//! would let another model in too, the worker runs without its Agent tool ([`available_models`]).
 
 mod files;
 pub mod parse;
@@ -54,6 +58,8 @@ const COMPACT_SINCE: &str = "2.1.282";
 const LEAN_DENIED_TOOLS: &str = "Workflow,ScheduleWakeup,CronCreate,CronDelete,CronList,\
 RemoteTrigger,PushNotification,DesignSync,ReportFindings,EnterWorktree,ExitWorktree,ListAgents,\
 SendMessage,TaskStop,Monitor,NotebookEdit";
+/// Claude's built-in tool that starts a sub-agent (`Task` is its older name).
+const SUB_AGENT_TOOLS: &str = "Agent,Task";
 
 pub struct Claude {
     platform: Arc<dyn Platform>,
@@ -189,12 +195,12 @@ impl Claude {
         .to_vec();
         args.push("--mcp-config".into());
         args.push(mcp_config(&spec.mcp_servers).to_string());
+        if let Some(denied) = denied_tools(spec) {
+            args.push("--disallowedTools".into());
+            args.push(denied);
+        }
         match spec.tools {
-            ToolSet::Default => {}
-            ToolSet::Lean => {
-                args.push("--disallowedTools".into());
-                args.push(LEAN_DENIED_TOOLS.into());
-            }
+            ToolSet::Default | ToolSet::Lean => {}
             ToolSet::None => {
                 args.push("--tools".into());
                 args.push(String::new());
@@ -297,6 +303,24 @@ fn mcp_config(servers: &[McpServer]) -> Value {
     json!({ "mcpServers": servers })
 }
 
+/// The built-in tools a session runs without (`--disallowedTools`): a worker's lean start
+/// leaves some out, and sub-agents that could run on a model the task may not use are not
+/// started at all.
+fn denied_tools(spec: &SessionSpec) -> Option<String> {
+    let mut denied: Vec<&str> = Vec::new();
+    if spec.tools == ToolSet::Lean {
+        denied.push(LEAN_DENIED_TOOLS);
+    }
+    if spec
+        .allowed_models
+        .as_ref()
+        .is_some_and(|allowed| available_models(allowed).is_none())
+    {
+        denied.push(SUB_AGENT_TOOLS);
+    }
+    (!denied.is_empty()).then(|| denied.join(","))
+}
+
 /// A permission rule path for an absolute path (`//abs/path/**`).
 fn rule_path(path: &Path) -> String {
     format!("/{}/**", path.display())
@@ -389,7 +413,7 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
     if !deny.is_empty() {
         permissions["deny"] = json!(deny);
     }
-    json!({
+    let mut settings = json!({
         // The Project Brain is Brigadier's memory; workers do not write Claude's.
         "autoMemoryEnabled": false,
         // At a usage limit the session reports it and stops, so Brigadier can hand the work to
@@ -405,7 +429,55 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
                 "options": { "instructionFiles": "claude-md-and-agents-md" },
             },
         },
-    })
+    });
+    // The models the session and its sub-agents may run on (a sub-agent asking for another
+    // steps down to an allowed one).
+    if let Some(ids) = spec.allowed_models.as_ref().and_then(available_models) {
+        settings["availableModels"] = json!(ids);
+    }
+    settings
+}
+
+/// The `availableModels` list that holds a session to `allowed`, or `None` when Claude can't
+/// hold it exactly. Claude matches an entry as a prefix of a model id up to a `-`
+/// (`claude-opus-5` also allows `claude-opus-5-5`; `availableModelsMatch`, which turns that
+/// off, is honored only from managed settings). So when a known model outside the set extends
+/// an allowed id (beyond a dated or `-fast` spelling of the same model), the list would let it
+/// in; and an empty list allows the default model. The session then runs without sub-agents.
+fn available_models(allowed: &AllowedModels) -> Option<Vec<String>> {
+    let ids: Vec<String> = allowed.ids.iter().map(|id| model_key(id)).collect();
+    if ids.is_empty() {
+        return None;
+    }
+    let outside = allowed
+        .known
+        .iter()
+        .map(|id| model_key(id))
+        .filter(|known| !ids.contains(known));
+    for known in outside {
+        let admitted = ids.iter().any(|id| {
+            known
+                .strip_prefix(id.as_str())
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|rest| !same_model(rest))
+        });
+        if admitted {
+            return None;
+        }
+    }
+    Some(ids)
+}
+
+/// A model id as `availableModels` compares it: lower case, without its context suffix.
+fn model_key(id: &str) -> String {
+    bare(id.trim()).to_ascii_lowercase()
+}
+
+/// Whether what follows a model id (after its `-`) only spells the same model: a release date
+/// (`20251001`) or the fast tier (`fast`).
+fn same_model(rest: &str) -> bool {
+    rest.split('-')
+        .all(|part| part == "fast" || (part.len() == 8 && part.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// Sandbox paths as Seatbelt matches them: resolved through symlinks (`/tmp` and
@@ -1182,4 +1254,109 @@ fn process_failure(process: &CliProcess) -> String {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed(ids: &[&str], known: &[&str]) -> AllowedModels {
+        AllowedModels {
+            ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            known: known.iter().map(|id| (*id).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn exact_ids_are_listed_when_no_other_model_extends_them() {
+        let known = [
+            "claude-opus-5-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "claude-fable-5-1",
+        ];
+        assert_eq!(
+            available_models(&allowed(
+                &["claude-opus-5-5[1m]", "claude-sonnet-5"],
+                &known
+            )),
+            Some(vec![
+                "claude-opus-5-5".to_owned(),
+                "claude-sonnet-5".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn a_prefix_of_a_model_left_out_turns_sub_agents_off() {
+        // `claude-opus-5` would also allow `claude-opus-5-5`.
+        let known = ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5"];
+        assert_eq!(
+            available_models(&allowed(&["claude-opus-5", "claude-sonnet-5"], &known)),
+            None
+        );
+        // Allowed too, it is no collision.
+        assert!(
+            available_models(&allowed(&["claude-opus-5", "claude-opus-5-5"], &known)).is_some()
+        );
+        // A model that only shares the start of a word is not admitted.
+        assert!(available_models(&allowed(&["claude-opus-5"], &["claude-opus-55"])).is_some());
+    }
+
+    #[test]
+    fn dated_and_fast_spellings_are_the_same_model() {
+        let known = ["claude-haiku-4-5-20251001", "claude-opus-5-5-fast"];
+        assert!(
+            available_models(&allowed(&["claude-haiku-4-5", "claude-opus-5-5"], &known)).is_some()
+        );
+    }
+
+    #[test]
+    fn no_exact_id_turns_sub_agents_off() {
+        assert_eq!(available_models(&allowed(&[], &["claude-opus-5-5"])), None);
+    }
+
+    #[test]
+    fn the_agent_tool_is_denied_only_when_the_list_cannot_hold() {
+        let spec = |ids: &[&str]| SessionSpec {
+            cwd: PathBuf::from("/tmp"),
+            model: Some("opus".into()),
+            effort: None,
+            fast: false,
+            origin: Origin::New,
+            access: Access::Full,
+            append_system_prompt: None,
+            mcp_servers: Vec::new(),
+            tools: ToolSet::Lean,
+            env: Vec::new(),
+            path_prepend: Vec::new(),
+            record_to: None,
+            redactor: None,
+            owned_cwd: false,
+            auto_compact: true,
+            allowed_models: Some(allowed(ids, &["claude-opus-5", "claude-opus-5-5"])),
+        };
+        let held = spec(&["claude-opus-5-5"]);
+        assert_eq!(
+            settings(&held, Path::new("/tmp"))["availableModels"],
+            json!(["claude-opus-5-5"])
+        );
+        assert_eq!(denied_tools(&held).as_deref(), Some(LEAN_DENIED_TOOLS));
+        let leaky = spec(&["claude-opus-5"]);
+        assert!(
+            settings(&leaky, Path::new("/tmp"))
+                .get("availableModels")
+                .is_none()
+        );
+        assert_eq!(
+            denied_tools(&leaky),
+            Some(format!("{LEAN_DENIED_TOOLS},{SUB_AGENT_TOOLS}"))
+        );
+        let unlimited = SessionSpec {
+            allowed_models: None,
+            tools: ToolSet::Default,
+            ..spec(&[])
+        };
+        assert_eq!(denied_tools(&unlimited), None);
+    }
 }

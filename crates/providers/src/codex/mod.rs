@@ -87,8 +87,11 @@ const RESTRICTED_FEATURES: &[&str] = &[
 /// Per-process overrides for the same sessions. The sub-agent tools (`collaboration.*`) come
 /// with the model, whatever the feature flags say; only `agents.enabled` removes them. The
 /// user's personal skills catalog stays out of their context.
-const RESTRICTED_OVERRIDES: &[&str] =
-    &["agents.enabled=false", "skills.include_instructions=false"];
+const RESTRICTED_OVERRIDES: &[&str] = &[NO_SUB_AGENTS, "skills.include_instructions=false"];
+
+/// Removes Codex's sub-agent tools. Codex can't hold a sub-agent to a set of models, so a
+/// session whose models are limited ([`SessionSpec::allowed_models`]) runs without them.
+const NO_SUB_AGENTS: &str = "agents.enabled=false";
 
 /// Features that bring the user's personal Codex setup (or desktop integrations) into a
 /// session.
@@ -208,29 +211,10 @@ impl Codex {
         ledger: Option<Arc<dyn Ledger>>,
     ) -> Result<(Arc<Rpc>, mpsc::Receiver<String>)> {
         let mut spec = self.env.spec(self.binary()?);
-        let mut args: Vec<String> = vec!["app-server".into()];
-        let tools = session.map(|session| session.tools).unwrap_or_default();
-        let role_features: &[&str] = match tools {
-            ToolSet::Default | ToolSet::Lean => &[],
-            ToolSet::None | ToolSet::Web => RESTRICTED_FEATURES,
-        };
-        for feature in DISABLED_FEATURES.iter().chain(role_features) {
-            args.push("--disable".into());
-            args.push((*feature).into());
-        }
-        if !role_features.is_empty() {
-            for value in RESTRICTED_OVERRIDES {
-                args.push("-c".into());
-                args.push((*value).into());
-            }
-        }
-        args.push("-c".into());
-        args.push("notify=[]".into());
-        // Commands run in a plain (non-login) shell. A login shell, and the login environment
-        // Codex snapshots from one, would rebuild PATH and drop the command gate's shims.
-        args.push("-c".into());
-        args.push("allow_login_shell=false".into());
-        spec.args = args.into_iter().map(Into::into).collect();
+        spec.args = app_server_args(session)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         spec.cwd = Some(cwd.to_owned());
         if let Some(session) = session {
             crate::cli::apply_session_env(&mut spec, &session.env, &session.path_prepend);
@@ -265,6 +249,38 @@ impl Codex {
         reader.abort();
         result
     }
+}
+
+/// `codex app-server`'s arguments for a session (`None`: a control connection).
+fn app_server_args(session: Option<&SessionSpec>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["app-server".into()];
+    let tools = session.map(|session| session.tools).unwrap_or_default();
+    let role_features: &[&str] = match tools {
+        ToolSet::Default | ToolSet::Lean => &[],
+        ToolSet::None | ToolSet::Web => RESTRICTED_FEATURES,
+    };
+    for feature in DISABLED_FEATURES.iter().chain(role_features) {
+        args.push("--disable".into());
+        args.push((*feature).into());
+    }
+    if !role_features.is_empty() {
+        for value in RESTRICTED_OVERRIDES {
+            args.push("-c".into());
+            args.push((*value).into());
+        }
+    } else if session.is_some_and(|session| session.allowed_models.is_some()) {
+        // `spawn_agent` takes any model Codex offers, one Brigadier excluded included (checked
+        // live on 0.159.2), so a worker has no sub-agents.
+        args.push("-c".into());
+        args.push(NO_SUB_AGENTS.into());
+    }
+    args.push("-c".into());
+    args.push("notify=[]".into());
+    // Commands run in a plain (non-login) shell. A login shell, and the login environment
+    // Codex snapshots from one, would rebuild PATH and drop the command gate's shims.
+    args.push("-c".into());
+    args.push("allow_login_shell=false".into());
+    args
 }
 
 /// Serves a control app-server's output: only responses matter.
@@ -1703,4 +1719,48 @@ fn exit_message(process: &CliProcess) -> String {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(tools: ToolSet, allowed_models: Option<AllowedModels>) -> SessionSpec {
+        SessionSpec {
+            cwd: PathBuf::from("/tmp"),
+            model: Some("gpt-6.1-sol".into()),
+            effort: None,
+            fast: false,
+            origin: Origin::New,
+            access: Access::Full,
+            append_system_prompt: None,
+            mcp_servers: Vec::new(),
+            tools,
+            env: Vec::new(),
+            path_prepend: Vec::new(),
+            record_to: None,
+            redactor: None,
+            owned_cwd: false,
+            auto_compact: true,
+            allowed_models,
+        }
+    }
+
+    fn without_sub_agents(args: &[String]) -> bool {
+        args.windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == NO_SUB_AGENTS)
+    }
+
+    #[test]
+    fn a_session_with_limited_models_has_no_sub_agents() {
+        let worker = spec(ToolSet::Lean, Some(AllowedModels::default()));
+        assert!(without_sub_agents(&app_server_args(Some(&worker))));
+        let raw = spec(ToolSet::Default, None);
+        assert!(!without_sub_agents(&app_server_args(Some(&raw))));
+        assert!(!without_sub_agents(&app_server_args(None)));
+        // Restricted sessions never had them, and say so once.
+        let orchestrator = spec(ToolSet::None, Some(AllowedModels::default()));
+        let args = app_server_args(Some(&orchestrator));
+        assert_eq!(args.iter().filter(|arg| *arg == NO_SUB_AGENTS).count(), 1);
+    }
 }

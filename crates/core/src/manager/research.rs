@@ -208,6 +208,7 @@ impl SessionManager {
             redactor: None,
             owned_cwd: true,
             auto_compact: true,
+            allowed_models: None,
         };
         let vendor = match of {
             ProviderKind::Claude => "Anthropic",

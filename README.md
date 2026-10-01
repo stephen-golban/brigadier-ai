@@ -405,6 +405,10 @@ factors in its details).
   rather than going to others. Everywhere or per project, with area overrides. Rules there
   (never, prefer or only a model, family or vendor) keep models from work, during fallback too.
   No Fable, effort at most high, limits and cross-vendor review hold whatever you choose.
+- **Workers' sub-agents.** A Claude worker's own sub-agents run only on models its task could
+  have gone to (your rules, hidden models, quality floors and limits included, never Fable).
+  When Claude can't be held to exactly those, the worker has no sub-agents. Codex workers have
+  none, since Codex can't limit which model a sub-agent uses.
 - **Quota.** The daemon reads Claude's and Codex's usage windows (every 5 minutes while work
   runs, every 30 when idle, and live from the sessions), keeps a week of samples, and projects
   each window to its reset. New work shifts away from a provider whose window runs hot. The

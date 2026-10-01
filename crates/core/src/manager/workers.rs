@@ -965,6 +965,7 @@ impl SessionManager {
         secret_values.push(worker_grant.clone());
         secret_values.push(gate_grant.clone());
         let redactor = secrets::redactor(secret_values);
+        let allowed_models = Some(self.allowed_models(task).await);
         let spec = SessionSpec {
             cwd: cwd.clone(),
             model: task.route.choice.model.clone(),
@@ -987,6 +988,7 @@ impl SessionManager {
             redactor: redactor.clone(),
             owned_cwd: true,
             auto_compact: true,
+            allowed_models,
         };
         let Started { session, events } =
             match self.runtime.start_hosted(&owner, provider, spec).await {

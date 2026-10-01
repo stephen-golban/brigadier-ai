@@ -286,6 +286,7 @@ impl SessionManager {
             // The fork's own process tree still ends with it.
             owned_cwd: false,
             auto_compact: false,
+            allowed_models: None,
         };
         let owner = format!("orch:{id}");
         let Started {

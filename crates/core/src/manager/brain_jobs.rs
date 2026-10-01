@@ -561,6 +561,7 @@ impl SessionManager {
             redactor: secrets::redactor(vec![grant]),
             owned_cwd: codex,
             auto_compact: true,
+            allowed_models: None,
         };
         let access = spec.access.clone();
         let time = match job.kind {

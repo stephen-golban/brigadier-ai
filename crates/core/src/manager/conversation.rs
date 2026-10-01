@@ -1500,6 +1500,7 @@ impl SessionManager {
             owned_cwd: true,
             // An orchestrator is reborn, never compacted.
             auto_compact: conv.kind == ConversationKind::Chat,
+            allowed_models: None,
         };
         let mut resumed = resume.is_some();
         let started = match self

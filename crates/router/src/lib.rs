@@ -32,6 +32,9 @@
 //! - for reviews, its vendor differs from the author's when another vendor can review; else a
 //!   different model of the same vendor reviews, and the reason says so.
 //!
+//! [`eligible`] lists every model these checks let take the task: the models the task's worker
+//! may hand work to through its CLI's own sub-agents.
+//!
 //! # Score
 //!
 //! `strength(category) + mean area modifier + learned adjustment − quota penalty − load penalty
@@ -134,7 +137,7 @@ use ts_rs::TS;
 pub use areas::infer_areas;
 pub use decide::{
     Decision, Exclusion, Needs, Preview, ProviderState, Query, Routed, Waiting, allows_trials,
-    available, decide, default_floor, preview, rule_text, targets,
+    available, decide, default_floor, eligible, preview, rule_text, targets,
 };
 pub use explain::{Alternative, Explanation, Factor, RouteCandidate};
 pub use forecast::{

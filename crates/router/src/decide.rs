@@ -287,9 +287,33 @@ pub fn decide(query: &Query) -> Decision {
     preview(query).decision
 }
 
-/// Routes one task as [`decide`] does, and returns every model weighed with it: the order
-/// routing would try them in, and the manual ranking in force place by place.
-pub fn preview(query: &Query) -> Preview {
+/// Every model that may take the task, by the same checks [`decide`] runs: no Fable, a login
+/// and no confirmed limit, not just failed on it, the user's rules and rankings, its needs and
+/// quality floor, a binding pin, and for reviews the author's vendor or model. The model
+/// [`decide`] picks is always among them; empty when the task would wait. What the task's own
+/// sub-agents may run on.
+pub fn eligible(query: &Query) -> Vec<MergedModel> {
+    assessed(query)
+        .candidates
+        .into_iter()
+        .filter(Candidate::eligible)
+        .map(|candidate| candidate.model.into_owned())
+        .collect()
+}
+
+/// Every candidate checked and scored, with a review's author and a second checker's peers
+/// kept out: what [`preview`] orders and picks from, and [`eligible`] lists.
+struct Assessed<'q> {
+    rules: Vec<&'q OverrideRule>,
+    only: Vec<&'q OverrideRule>,
+    ranking: Option<&'q Ranking>,
+    held: Option<ProviderKind>,
+    candidates: Vec<Candidate<'q>>,
+    notes: Vec<String>,
+    cross_vendor: Option<bool>,
+}
+
+fn assessed<'q>(query: &'q Query) -> Assessed<'q> {
     let rules: Vec<&OverrideRule> = query
         .overrides
         .iter()
@@ -415,6 +439,30 @@ pub fn preview(query: &Query) -> Preview {
             notes.push("the same model checks it twice: no other model could take it".to_owned());
         }
     }
+
+    Assessed {
+        rules,
+        only,
+        ranking,
+        held,
+        candidates,
+        notes,
+        cross_vendor,
+    }
+}
+
+/// Routes one task as [`decide`] does, and returns every model weighed with it: the order
+/// routing would try them in, and the manual ranking in force place by place.
+pub fn preview(query: &Query) -> Preview {
+    let Assessed {
+        rules,
+        only,
+        ranking,
+        held,
+        candidates,
+        mut notes,
+        cross_vendor,
+    } = assessed(query);
 
     // Order: score, then the table's vendor order, then each CLI's own order.
     let order = table::row(query.category).order;
@@ -1914,5 +1962,193 @@ mod tests {
         assert_eq!(at_least(TaskCategory::Verify, "low"), "medium");
         assert_eq!(at_least(TaskCategory::Verify, "high"), "high");
         assert_eq!(at_least(TaskCategory::Scout, "low"), "low");
+    }
+
+    fn info(id: &str, name: &str, resolved: Option<&str>) -> brigadier_providers::ModelInfo {
+        brigadier_providers::ModelInfo {
+            id: id.to_owned(),
+            display_name: name.to_owned(),
+            description: String::new(),
+            resolved: resolved.map(str::to_owned),
+            efforts: vec!["low".into(), "medium".into(), "high".into()],
+            default_effort: Some("medium".into()),
+            is_default: false,
+            input_modalities: vec!["text".into(), "image".into()],
+            fast: None,
+            legacy: false,
+        }
+    }
+
+    /// Both CLIs' lists as they are now, Fable included.
+    fn catalog(registry: &Registry) -> Vec<MergedModel> {
+        let claude = [
+            info("opus[1m]", "Opus 5.5", Some("claude-opus-5-5[1m]")),
+            info("claude-fable-5-1[1m]", "Fable", Some("claude-fable-5-1")),
+            info("sonnet", "Sonnet 5", Some("claude-sonnet-5")),
+            info("haiku", "Haiku 4.5", Some("claude-haiku-4-5-20251001")),
+            info("claude-opus-5", "Opus 5", None),
+        ];
+        let codex = [
+            info("gpt-6.1-sol", "GPT-6.1-Sol", None),
+            info("gpt-6-astra", "GPT-6-Astra", None),
+            info("gpt-6-luna", "GPT-6-Luna", None),
+            info("gpt-5.6-terra", "GPT-5.6-Terra", None),
+        ];
+        crate::merge(
+            registry,
+            &[
+                (ProviderKind::Claude, claude.as_slice()),
+                (ProviderKind::Codex, codex.as_slice()),
+            ],
+            &[],
+            &[],
+        )
+    }
+
+    fn rule(effect: OverrideEffect, target: OverrideTarget) -> OverrideRule {
+        OverrideRule {
+            id: "r".into(),
+            effect,
+            target,
+            categories: Vec::new(),
+            areas: Vec::new(),
+            project_id: None,
+            created_at_ms: 0,
+        }
+    }
+
+    /// Providers, rules, models that just failed and the author under review.
+    type Case<'a> = (
+        &'a [ProviderState],
+        &'a [OverrideRule],
+        &'a [Exclusion],
+        Option<Author>,
+    );
+
+    #[test]
+    fn eligible_is_what_decide_may_pick_and_never_fable() {
+        let registry = Registry::bundled();
+        let models = catalog(&registry);
+        let both = [ProviderKind::Claude, ProviderKind::Codex].map(|provider| ProviderState {
+            provider,
+            logged_in: true,
+            quota: None,
+        });
+        let claude_only = [
+            both[0].clone(),
+            ProviderState {
+                logged_in: false,
+                ..both[1].clone()
+            },
+        ];
+        let never_opus = [rule(
+            OverrideEffect::Never,
+            OverrideTarget::Family {
+                provider: ProviderKind::Claude,
+                family: "opus".into(),
+            },
+        )];
+        let only_luna = [rule(
+            OverrideEffect::Only,
+            OverrideTarget::Model {
+                provider: ProviderKind::Codex,
+                id: "gpt-6-luna".into(),
+            },
+        )];
+        let failed = [Exclusion {
+            provider: ProviderKind::Codex,
+            model: None,
+        }];
+        let author = Author {
+            provider: ProviderKind::Claude,
+            model: Some("opus[1m]".into()),
+        };
+        let cases: [Case; 6] = [
+            (&both, &[], &[], None),
+            (&claude_only, &[], &[], None),
+            (&both, &never_opus, &[], None),
+            (&both, &only_luna, &[], None),
+            (&both, &[], &failed, None),
+            (&both, &[], &[], Some(author)),
+        ];
+        let mut runs = 0;
+        for (providers, overrides, exclude, avoid) in cases {
+            for category in TaskCategory::ALL {
+                let query = Query {
+                    category,
+                    areas: &[],
+                    floor: default_floor(category),
+                    needs: Needs::default(),
+                    pin: None,
+                    hold_pin: false,
+                    avoid: avoid.clone(),
+                    distinct_from: Vec::new(),
+                    exclude,
+                    overrides,
+                    rankings: &[],
+                    project_id: None,
+                    running: &[],
+                    trial_slot: false,
+                    providers,
+                    models: &models,
+                    registry: &registry,
+                    learned: &[],
+                    now_ms: 0,
+                };
+                let eligible = eligible(&query);
+                let listed: Vec<(ProviderKind, String)> = eligible
+                    .iter()
+                    .map(|model| (model.provider, model.id.clone()))
+                    .collect();
+                for model in &eligible {
+                    for name in [Some(&model.id), Some(&model.display_name)]
+                        .into_iter()
+                        .chain([model.resolved.as_ref()])
+                        .flatten()
+                    {
+                        assert!(!table::names_fable(name), "{category:?}: {name} is Fable");
+                    }
+                }
+                let preview = preview(&query);
+                // Exactly the models the preview found able to run.
+                let able: Vec<(ProviderKind, String)> = preview
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.blocked.is_none())
+                    .map(|candidate| (candidate.provider, candidate.model.clone()))
+                    .collect();
+                assert_eq!(listed.len(), able.len(), "{category:?}");
+                assert!(able.iter().all(|model| listed.contains(model)));
+                match decide(&query) {
+                    Decision::Run(routed) => {
+                        runs += 1;
+                        assert!(
+                            listed.contains(&(routed.provider, routed.model.clone())),
+                            "{category:?}: {} is not eligible",
+                            routed.model
+                        );
+                    }
+                    Decision::Wait(_) => assert!(listed.is_empty(), "{category:?}"),
+                }
+                // A review goes to another vendor than the author's: so do its sub-agents.
+                if query.avoid.is_some() && !listed.is_empty() {
+                    assert!(
+                        listed
+                            .iter()
+                            .all(|(provider, _)| *provider == ProviderKind::Codex)
+                    );
+                }
+                if overrides == only_luna.as_slice() {
+                    assert!(listed.iter().all(|(_, id)| id == "gpt-6-luna"));
+                }
+                if overrides == never_opus.as_slice() || exclude == failed.as_slice() {
+                    assert!(!listed.iter().any(|(provider, id)| {
+                        (exclude == failed.as_slice() && *provider == ProviderKind::Codex)
+                            || (overrides == never_opus.as_slice() && id.contains("opus"))
+                    }));
+                }
+            }
+        }
+        assert!(runs > 0);
     }
 }

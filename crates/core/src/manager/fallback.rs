@@ -247,68 +247,19 @@ impl SessionManager {
     /// provider or bucket unavailable by itself). A context window too small asks for a bigger
     /// one.
     async fn reroute(&self, task: &Task) -> std::result::Result<Route, brigadier_router::Waiting> {
-        // A gate member stays independent: never the author's model, nor another member's.
-        let (avoid, distinct_from) = self.gate_avoid(task).await;
-        // Right after an error, the models that failed are left out. A task that waited since
-        // tries them again: the cause may be gone, and the hand-off cap still ends a model that
-        // keeps failing.
-        let exclude: Vec<brigadier_router::Exclusion> = task
-            .attempts
-            .iter()
-            .filter(|_| task.quota_wait.is_none())
-            .filter(|attempt| matches!(attempt.end, Some(AttemptEnd::Error { .. })))
-            .map(|attempt| brigadier_router::Exclusion {
-                provider: attempt.route.choice.provider,
-                model: attempt.route.choice.model.clone(),
-            })
-            .collect();
-        let mut needs = super::workers::needs_of(&task.attachments, &task.needs);
-        if let Some(attempt) = task.attempts.last()
-            && matches!(
-                attempt.end,
-                Some(AttemptEnd::Error {
-                    kind: ErrorKind::ContextWindow,
-                    ..
-                })
-            )
-            && let Some(window) = self
-                .routing_inputs(None, now_ms())
-                .await
-                .models
-                .iter()
-                .find(|model| {
-                    model.provider == attempt.route.choice.provider
-                        && Some(&model.id) == attempt.route.choice.model.as_ref()
-                })
-                .and_then(|model| model.context_window)
-        {
-            needs.context_tokens = Some(window + 1);
-        }
-        let project = self
-            .core
-            .conversation(&task.conversation_id)
-            .ok()
-            .and_then(|conversation| conversation.project_id);
+        let question = self.task_question(task).await;
         let decision = self
-            .decide(&super::routing::Ask {
-                category: super::workers::category(task.kind),
-                areas: &task.areas,
-                floor: task.floor,
-                needs,
-                pin: task.pin.clone(),
+            .decide(&question.ask(
+                task,
                 // A pin binds once a model has worked on the task.
-                hold_pin: !task.attempts.is_empty(),
-                avoid,
-                distinct_from,
-                exclude: &exclude,
-                project_id: project.as_ref(),
+                !task.attempts.is_empty(),
                 // A task that never started keeps the trial slot it was created with.
-                trial: if task.attempts.is_empty() && task.trial_slot {
+                if task.attempts.is_empty() && task.trial_slot {
                     super::routing::Trial::Held
                 } else {
                     super::routing::Trial::Never
                 },
-            })
+            ))
             .await;
         match decision {
             brigadier_router::Decision::Run(routed) => Ok(super::routing::route_from(routed)),
