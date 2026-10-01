@@ -410,6 +410,14 @@ factors in its details).
   each window to its reset. New work shifts away from a provider whose window runs hot. The
   Usage page (Settings → Usage, the rail's menu, or the status bar's chip) shows the windows, their estimates, Brigadier's
   own tokens, hand-offs and waits, and the models with what routing learned.
+- **Less usage, built in.** There is nothing to turn on. A Claude orchestrator idle past its
+  one-hour prompt cache starts over from a checkpoint briefing instead of sending its whole
+  history again. A worker whose context passes 160k tokens hands over to a fresh session of the
+  same model, with a handoff note and its full transcript on disk. Claude workers start without
+  the built-in tools they never use, workers find code with the code index first, and Brain
+  answers give a few results of each kind and page the rest. The orchestrator and the workers'
+  reports are brief and plain and keep every fact; implement workers follow short code rules
+  (reuse what exists, no extra abstractions, update every caller). See PLAN.md §7.
 - **Fallback.** A worker whose provider hits a limit (or that keeps failing) hands its task to
   the best eligible model in the same worktree, with the spec, a progress log and the current
   diff; with none left the task waits for the earliest reset while others go on. A task the
