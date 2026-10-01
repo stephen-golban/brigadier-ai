@@ -46,6 +46,7 @@ use super::watchdog::WorkerWatch;
 use super::worker_handoff::Handover;
 use super::{
     EventSource, SessionManager, blocking, fallback, git_error, instructions, prompts, secrets,
+    warm,
 };
 use crate::model::{
     ConversationId, DomainEvent, Environment, ModelChoice, PermissionLevel, Setup, streams,
@@ -1293,14 +1294,29 @@ impl SessionManager {
                 None => WorktreeSpec::Detached { at: start.clone() },
             },
         );
+        // Workers that build or test start from copies of the checkout's dependency installs
+        // and build caches (best effort; see `warm`).
+        let warm = task.kind.writes() || matches!(task.kind, TaskKind::Review | TaskKind::Verify);
+        let (platform, task_id) = (self.runtime.platform().clone(), task.id.clone());
         blocking(move || {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|err| Error::Invalid(err.to_string()))?;
             }
             let repo = git.open(&repo_path).map_err(git_error)?;
-            repo.add_worktree(&path, spec)
-                .map(|_| ())
-                .map_err(git_error)
+            repo.add_worktree(&path, spec).map_err(git_error)?;
+            if warm {
+                let started = std::time::Instant::now();
+                let installing = warm::install_running(&*platform, repo.root());
+                let warmed = warm::warm_worktree(&repo, &[repo_path], &path, installing);
+                tracing::info!(
+                    task = %task_id,
+                    copied = ?warmed.copied,
+                    skipped = ?warmed.skipped,
+                    ms = started.elapsed().as_millis() as u64,
+                    "warmed the task's worktree"
+                );
+            }
+            Ok(())
         })
         .await?;
         Ok(Workspace {

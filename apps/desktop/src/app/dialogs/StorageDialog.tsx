@@ -287,6 +287,11 @@ function Usage({ report }: { report: StorageReport }) {
           </tbody>
         </table>
       </div>
+      <p className="text-muted-foreground text-xs">
+        Worktrees start with copies of your project’s installed packages and build files. Where
+        the disk allows, those copies share space with the originals, so worktrees may use less
+        than shown.
+      </p>
     </section>
   );
 }

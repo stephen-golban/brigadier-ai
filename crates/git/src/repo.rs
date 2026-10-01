@@ -509,6 +509,16 @@ impl Repo {
         Ok((files, truncated))
     }
 
+    /// The files git tracks in this checkout (its index), relative to its root, unsorted.
+    pub fn tracked_files(&self) -> Result<Vec<String>> {
+        let out = self.cmd(&["ls-files", "-z", "--cached"], true)?;
+        Ok(out
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect())
+    }
+
     /// A repo-relative file's content as `commit` has it; `None` when the commit has no such
     /// file (deleted, never added, or a folder).
     pub fn file_at(&self, commit: &Oid, path: &str) -> Result<Option<Vec<u8>>> {
