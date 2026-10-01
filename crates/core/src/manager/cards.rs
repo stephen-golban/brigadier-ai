@@ -495,26 +495,25 @@ impl SessionManager {
         approve: bool,
         message: Option<String>,
     ) -> Result<()> {
-        let board = self.core.board(&conversation_id).await?;
-        let mut plan = board
-            .plans
-            .get(&card_id)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(format!("plan {card_id}")))?;
-        if !matches!(plan.state, PlanState::Proposed | PlanState::InReview { .. }) {
-            return Err(Error::Invalid("this plan was already decided".into()));
-        }
-        plan.state = if approve {
-            PlanState::Approved {
-                by: PlanApprover::User,
-            }
-        } else {
-            PlanState::Rejected {
-                message: message.clone(),
-            }
-        };
-        plan.decided_at_ms = Some(now_ms());
-        self.store_plan(&plan).await?;
+        // A review still running is moot once the user decides.
+        let plan = self
+            .change_plan(&conversation_id, &card_id, |plan| {
+                if !matches!(plan.state, PlanState::Proposed | PlanState::InReview { .. }) {
+                    return Err(Error::Invalid("this plan was already decided".into()));
+                }
+                plan.state = if approve {
+                    PlanState::Approved {
+                        by: PlanApprover::User,
+                    }
+                } else {
+                    PlanState::Rejected {
+                        message: message.clone(),
+                    }
+                };
+                plan.decided_at_ms = Some(now_ms());
+                Ok(())
+            })
+            .await?;
         // Approving a plan leaves plan mode, the same as accepting the plan to implement it.
         if approve
             && let Some(mut setup) = self.core.conversation(&conversation_id)?.setup
@@ -547,7 +546,7 @@ impl SessionManager {
                 steps.join("\n")
             ),
         );
-        let text = if approve {
+        let mut text = if approve {
             format!(
                 "[decision] The user approved the plan \"{}\". Go ahead, and pass each step's number as `step` when you delegate it.",
                 plan.title
@@ -561,6 +560,7 @@ impl SessionManager {
                     .unwrap_or_else(|| ".".into())
             )
         };
+        text.push_str(&super::plan_gates::review_for_decision(&plan));
         self.deliver_for(
             &conversation_id,
             Envelope {

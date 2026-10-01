@@ -2,4 +2,4 @@
 import type { PlanApprover } from "./PlanApprover";
 import type { TaskId } from "./TaskId";
 
-export type PlanState = { "type": "proposed" } | { "type": "inReview", taskId: TaskId, } | { "type": "approved", by: PlanApprover, } | { "type": "rejected", message: string | null, } | { "type": "superseded" };
+export type PlanState = { "type": "proposed" } | { "type": "inReview", taskId: TaskId, } | { "type": "approved", by: PlanApprover, } | { "type": "rejected", message: string | null, } | { "type": "superseded" } | { "type": "revising" };

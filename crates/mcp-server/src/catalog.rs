@@ -69,7 +69,10 @@ Returns the best-matching passages with their dates.";
 const PROPOSE_PLAN: &str = "Show the user a plan card for multi-step work: a title and the \
 steps. Returns at once; the decision arrives later as a message. Under \"Ask for approval\" no \
 write task may start until the user approved a plan. Set `risky` for big, risky or \
-architectural plans.";
+architectural plans. Under \"Approve for me\" a plan of two or more steps is reviewed \
+independently first; when the review asks for changes, propose the revised plan with \
+`revises` (the plan's id) and one response per finding (\"F1 accepted: …\", \"F2 declined: \
+why\").";
 
 const REQUEST_APPROVAL: &str = "Ask the user to approve an action Brigadier cannot see on its \
 own. Returns at once; the decision arrives later as a message.";

@@ -28,7 +28,7 @@ use brigadier_git::{
     ChangeKind, CommitOutcome, LandBlock, LandOutcome, LandRequest, MergeOutcome, Oid,
     PrepareOutcome, RebaseOutcome, litter,
 };
-use brigadier_providers::{ApprovalDecision, ProviderKind};
+use brigadier_providers::ApprovalDecision;
 
 use super::cards::CardAnswer;
 use super::conversation::Envelope;
@@ -37,10 +37,9 @@ use super::workers::Workspace;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{ConversationId, Environment, PermissionLevel, Setup};
 use crate::work::{
-    ApprovalSubject, Candidate, DiffStat, ExcludedFile, FileStat, InjectionKind, Plan,
-    PlanApprover, PlanState, ReviewVerdict, Task, TaskKind, TaskState,
+    ApprovalSubject, Candidate, DiffStat, ExcludedFile, FileStat, InjectionKind, Task, TaskState,
 };
-use crate::{Error, Result, now_ms};
+use crate::{Error, Result};
 
 /// Diffs up to this size are given to the reviewer inline.
 const INLINE_DIFF_BYTES: usize = 24_000;
@@ -533,51 +532,6 @@ impl SessionManager {
         Ok((start.onto, start.commit))
     }
 
-    /// A plan's reviewer reported.
-    pub(crate) async fn review_reported(&self, review: &Task) {
-        let Ok(board) = self.core.board(&review.conversation_id).await else {
-            return;
-        };
-        let verdict = review.report.as_ref().and_then(|r| r.verdict);
-        let summary = review
-            .report
-            .as_ref()
-            .map(|r| {
-                let mut text = r.summary.clone();
-                for issue in &r.open_questions {
-                    text.push_str(&format!("\n- {issue}"));
-                }
-                text
-            })
-            .unwrap_or_default();
-        if let Some(plan) = board
-            .plans
-            .values()
-            .find(|p| matches!(&p.state, PlanState::InReview { task_id } if *task_id == review.id))
-            .cloned()
-        {
-            self.plan_reviewed(plan, review, verdict, summary).await;
-        }
-    }
-
-    /// A plan's reviewer failed (its provider down, signed out, …): the plan is turned down
-    /// so the orchestrator can propose it again instead of waiting on a review that will never
-    /// come.
-    pub(crate) async fn review_failed(&self, review: &Task, reason: &str) {
-        let Ok(board) = self.core.board(&review.conversation_id).await else {
-            return;
-        };
-        if let Some(plan) = board
-            .plans
-            .values()
-            .find(|p| matches!(&p.state, PlanState::InReview { task_id } if *task_id == review.id))
-            .cloned()
-        {
-            let summary = format!("The review could not run: {reason}");
-            self.plan_reviewed(plan, review, None, summary).await;
-        }
-    }
-
     /// Step 5 (the user's approval under "Ask for approval"), then step 6.
     pub(super) async fn approve_and_land(&self, task: &Task) -> Result<()> {
         let conversation = self.core.conversation(&task.conversation_id)?;
@@ -988,102 +942,6 @@ impl SessionManager {
                 .await;
         });
         Ok("Asked the user to approve merging the session branch; the outcome arrives as a message.".into())
-    }
-
-    /// A risky plan under "Approve for me" gets one review by another vendor first.
-    pub(crate) async fn start_plan_review(&self, id: &ConversationId, plan: &Plan) -> Result<Task> {
-        let orchestrator = match self.core.conversation(id)?.setup {
-            Some(Setup::Session { orchestrator, .. }) => brigadier_router::Author {
-                provider: orchestrator.provider,
-                model: orchestrator.model,
-            },
-            _ => brigadier_router::Author {
-                provider: ProviderKind::Claude,
-                model: None,
-            },
-        };
-        let mut spec = format!(
-            "Review this plan before it is carried out. Check it against the repository (read-only): is it sound, complete, and the simplest thing that works? Are there risks, missing steps or wrong assumptions?\n\nPlan: {}\n",
-            plan.title
-        );
-        for (index, step) in plan.steps.iter().enumerate() {
-            spec.push_str(&format!("{}. {}", index + 1, step.title));
-            if let Some(detail) = &step.detail {
-                spec.push_str(&format!(" — {detail}"));
-            }
-            spec.push('\n');
-        }
-        spec.push_str("\nEnd with submit_report and a verdict: approve, or requestChanges with the exact issues in open_questions.");
-        self.create_task(
-            id,
-            format!("Review plan: {}", plan.title),
-            TaskKind::Review,
-            spec,
-            None,
-            Some(orchestrator),
-            Vec::new(),
-            Some(crate::work::GateLink {
-                owner: crate::work::GateOwner::Plan {
-                    plan_id: plan.id.clone(),
-                },
-                round: 1,
-                role: crate::work::GateRole::Review,
-            }),
-            None,
-            Vec::new(),
-            None,
-            None,
-            Vec::new(),
-        )
-        .await
-    }
-
-    async fn plan_reviewed(
-        &self,
-        mut plan: Plan,
-        review: &Task,
-        verdict: Option<ReviewVerdict>,
-        summary: String,
-    ) {
-        let approved = verdict == Some(ReviewVerdict::Approve);
-        plan.state = if approved {
-            PlanState::Approved {
-                by: PlanApprover::Review,
-            }
-        } else {
-            PlanState::Rejected {
-                message: Some(summary.clone()),
-            }
-        };
-        plan.decided_at_ms = Some(now_ms());
-        if let Err(err) = self.store_plan(&plan).await {
-            tracing::warn!(plan = %plan.id, error = %err, "could not record a plan review");
-        }
-        let text = if approved {
-            format!(
-                "[decision] The plan \"{}\" was reviewed by task-{} ({}) and approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.\n{summary}",
-                plan.title,
-                review.number,
-                super::workers::route_label(review)
-            )
-        } else {
-            format!(
-                "[decision] The reviewer (task-{}, {}) did not approve the plan \"{}\":\n{summary}\nRevise it and propose it again.",
-                review.number,
-                super::workers::route_label(review),
-                plan.title
-            )
-        };
-        self.deliver(
-            &plan.conversation_id,
-            Envelope {
-                kind: InjectionKind::Decision,
-                label: "plan review".into(),
-                task_id: Some(review.id.clone()),
-                text,
-            },
-        )
-        .await;
     }
 
     pub(super) fn task_repo(&self, task: &Task) -> Result<PathBuf> {

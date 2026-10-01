@@ -98,7 +98,7 @@ impl SessionManager {
         recheck: Recheck,
         retry: Option<(String, Author)>,
     ) -> std::result::Result<(), NotOpened> {
-        let _held = self.gates.lock().await;
+        let held = self.gates.lock().await;
         let task = self.task_by_id(&task.conversation_id, &task.id).await?;
         let candidate = task
             .candidate
@@ -130,6 +130,7 @@ impl SessionManager {
             Recheck::Full => self.panel_size(&task).await,
             Recheck::Verify => 0,
         };
+        let plan = plan_note(&task, self.wrote_plan(&task).await);
         let mut members: Vec<GateMember> = Vec::new();
         let mut started: Vec<Task> = Vec::new();
         let mut checking: Vec<Author> = Vec::new();
@@ -145,7 +146,7 @@ impl SessionManager {
                             format!("Second review of task-{}", task.number)
                         },
                         TaskKind::Review,
-                        review_spec(&task, &candidate.commit, &unreported),
+                        review_spec(&task, &candidate.commit, &unreported, plan.as_deref()),
                         None,
                         Some(author.clone()),
                         checking.clone(),
@@ -186,7 +187,12 @@ impl SessionManager {
                     &task.conversation_id,
                     format!("Verify task-{}", task.number),
                     TaskKind::Verify,
-                    verify_spec(&task, &candidate.commit, retry.as_ref().map(|(why, _)| why)),
+                    verify_spec(
+                        &task,
+                        &candidate.commit,
+                        retry.as_ref().map(|(why, _)| why),
+                        plan.as_deref(),
+                    ),
                     None,
                     Some(author.clone()),
                     retry.iter().map(|(_, before)| before.clone()).collect(),
@@ -215,7 +221,9 @@ impl SessionManager {
         let first = match opened {
             Ok(first) => first,
             Err(err) => {
-                // Nothing half-started keeps running.
+                // Nothing half-started keeps running. Stopped outside the lock: a stopped
+                // member's missing result is recorded under it.
+                drop(held);
                 for member in started {
                     let _ = Box::pin(self.stop_task(member.id)).await;
                 }
@@ -232,6 +240,7 @@ impl SessionManager {
                 outcome: None,
                 relanding,
                 retry: retrying,
+                findings: Vec::new(),
             });
             if let Some(first) = first {
                 t.review = Some(first);
@@ -241,6 +250,18 @@ impl SessionManager {
         })
         .await?;
         Ok(())
+    }
+
+    /// Whether the worker wrote a plan (plan.md in its outputs folder) before a big change.
+    async fn wrote_plan(&self, task: &Task) -> bool {
+        let Some(workspace) = &task.workspace else {
+            return false;
+        };
+        let plan =
+            super::outputs::outputs_dir(std::path::Path::new(&workspace.scratch)).join("plan.md");
+        tokio::fs::metadata(&plan)
+            .await
+            .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
     }
 
     /// Whether two commits of the task's repository hold the same files.
@@ -265,9 +286,12 @@ impl SessionManager {
         let Some(link) = member.gate_link.clone() else {
             return;
         };
-        let GateOwner::Task { task_id } = &link.owner else {
-            self.review_reported(member).await;
-            return;
+        let task_id = match &link.owner {
+            GateOwner::Task { task_id } => task_id,
+            GateOwner::Plan { plan_id } => {
+                self.plan_member_done(member, plan_id, &link, None).await;
+                return;
+            }
         };
         let Some(report) = &member.report else {
             return;
@@ -293,9 +317,13 @@ impl SessionManager {
         let Some(link) = member.gate_link.clone() else {
             return;
         };
-        let GateOwner::Task { task_id } = &link.owner else {
-            self.review_failed(member, reason).await;
-            return;
+        let task_id = match &link.owner {
+            GateOwner::Task { task_id } => task_id,
+            GateOwner::Plan { plan_id } => {
+                self.plan_member_done(member, plan_id, &link, Some(reason))
+                    .await;
+                return;
+            }
         };
         let result = GateResult::NoResult {
             reason: format!(
@@ -602,8 +630,11 @@ impl SessionManager {
         let Some(link) = &member.gate_link else {
             return (None, Vec::new());
         };
-        let GateOwner::Task { task_id } = &link.owner else {
-            return (None, Vec::new());
+        let task_id = match &link.owner {
+            GateOwner::Task { task_id } => task_id,
+            GateOwner::Plan { plan_id } => {
+                return self.plan_gate_avoid(member, plan_id, link.round).await;
+            }
         };
         let Ok(owner) = self.task_by_id(&member.conversation_id, task_id).await else {
             return (None, Vec::new());
@@ -636,8 +667,30 @@ impl SessionManager {
     }
 }
 
+/// A change bigger than this (files, or lines added and removed) is planned first: the
+/// implement worker writes plan.md before it starts (see `prompts::worker`).
+const PLANNED_FILES: usize = 3;
+const PLANNED_LINES: u32 = 150;
+
+/// What the gate checks about the worker's plan: the change against plan.md when there is
+/// one, and a big change without one.
+fn plan_note(task: &Task, wrote_plan: bool) -> Option<String> {
+    if wrote_plan {
+        return Some("The worker wrote a plan first (plan.md, below): check the change against it. Each planned step should be done, and anything outside the plan needs a reason.".into());
+    }
+    let stat = &task.candidate.as_ref()?.diff_stat;
+    let lines = stat.insertions + stat.deletions;
+    (task.kind == TaskKind::Implement && (stat.files.len() > PLANNED_FILES || lines > PLANNED_LINES))
+        .then(|| {
+            format!(
+                "This change is big ({} files, {lines} lines) and the worker wrote no plan.md, which it was asked to do for a change of more than {PLANNED_FILES} files or about {PLANNED_LINES} lines. Name that under risks in your report, and check its scope with extra care: every part must be needed by the task.",
+                stat.files.len()
+            )
+        })
+}
+
 /// What a reviewer reads first.
-fn review_spec(task: &Task, commit: &str, unreported: &[String]) -> String {
+fn review_spec(task: &Task, commit: &str, unreported: &[String], plan: Option<&str>) -> String {
     let mut spec = format!(
         "Review the candidate commit {} of task-{} (\"{}\"). Decide whether it may land: it must do what the task asked, correctly, without slop, stray files or unverified claims.",
         short(commit),
@@ -650,12 +703,15 @@ fn review_spec(task: &Task, commit: &str, unreported: &[String]) -> String {
             unreported.join(", ")
         ));
     }
+    if let Some(plan) = plan {
+        spec.push_str(&format!("\n{plan}"));
+    }
     spec.push_str("\nEnd with submit_report and a verdict: approve, or requestChanges with the exact issues in open_questions.");
     spec
 }
 
 /// What a verifier reads first.
-fn verify_spec(task: &Task, commit: &str, retry: Option<&String>) -> String {
+fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&str>) -> String {
     let mut spec = format!(
         "Verify the candidate commit {} of task-{} (\"{}\") independently, before it may land. Your checkout is at that commit.
 1. Find every \"done when\" criterion of the task below (and of the orchestrator's later messages to the worker). For each one, produce your own evidence: run the command and quote the decisive line, or read the code and say where. The worker's claims are not evidence.
@@ -678,6 +734,9 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>) -> String {
         for line in gave_up {
             spec.push_str(&format!("\n- {line}"));
         }
+    }
+    if let Some(plan) = plan {
+        spec.push_str(&format!("\n{plan}"));
     }
     if let Some(why) = retry {
         spec.push_str(&format!(
@@ -720,7 +779,7 @@ fn criterion_text(line: &str) -> &str {
 }
 
 /// A reviewer's result.
-fn review_result(report: &Report) -> GateResult {
+pub(super) fn review_result(report: &Report) -> GateResult {
     match report.verdict {
         Some(ReviewVerdict::Approve) => GateResult::Passed,
         Some(ReviewVerdict::RequestChanges) => GateResult::Failed {
@@ -782,7 +841,7 @@ fn verify_result(report: &Report) -> GateResult {
 }
 
 /// How a round with every result in ended.
-fn outcome_of(members: &[GateMember]) -> GateOutcome {
+pub(super) fn outcome_of(members: &[GateMember]) -> GateOutcome {
     let results = || members.iter().filter_map(|m| m.result.as_ref());
     if results().any(|r| matches!(r, GateResult::NoResult { .. })) {
         GateOutcome::NoResult

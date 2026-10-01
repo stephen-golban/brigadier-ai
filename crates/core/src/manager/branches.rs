@@ -230,12 +230,33 @@ impl SessionManager {
                 ));
             }
         }
+        let of = |id: &Option<String>| id.as_deref() == Some(request);
+        // Its plans close first, so their reviewers stopping below tells the orchestrator
+        // nothing.
+        for plan in board.plans.values() {
+            if of(&plan.request_id)
+                && matches!(
+                    plan.state,
+                    PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+                )
+            {
+                let closed = self
+                    .change_plan(&conv.id, &plan.id, |plan| {
+                        plan.state = PlanState::Superseded;
+                        plan.decided_at_ms = Some(now_ms());
+                        Ok(())
+                    })
+                    .await;
+                if let Err(err) = closed {
+                    tracing::warn!(card = %plan.id, error = %err, "could not close a plan");
+                }
+            }
+        }
         for task in tasks {
             if let Err(err) = self.stop_task(task.id.clone()).await {
                 tracing::warn!(task = %task.id, error = %err, "could not stop a task for an edit");
             }
         }
-        let of = |id: &Option<String>| id.as_deref() == Some(request);
         for approval in board.approvals.values() {
             if of(&approval.request_id) && approval.state == CardState::Pending {
                 self.settle_approval(
@@ -253,18 +274,6 @@ impl SessionManager {
                 && question.answered_at_ms.is_none()
             {
                 self.withdraw_question(question).await;
-            }
-        }
-        for plan in board.plans.values() {
-            if of(&plan.request_id)
-                && matches!(plan.state, PlanState::Proposed | PlanState::InReview { .. })
-            {
-                let mut plan = plan.clone();
-                plan.state = PlanState::Superseded;
-                plan.decided_at_ms = Some(now_ms());
-                if let Err(err) = self.store_plan(&plan).await {
-                    tracing::warn!(card = %plan.id, error = %err, "could not close a plan");
-                }
             }
         }
         Ok(preview)

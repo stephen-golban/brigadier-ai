@@ -486,11 +486,12 @@ impl SessionManager {
             return Ok(());
         }
         let board = self.core.board(id).await?;
-        if let Some(open) = board
-            .plans
-            .values()
-            .find(|plan| matches!(plan.state, PlanState::Proposed | PlanState::InReview { .. }))
-        {
+        if let Some(open) = board.plans.values().find(|plan| {
+            matches!(
+                plan.state,
+                PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+            )
+        }) {
             return Err(Error::Invalid(format!(
                 "The plan \"{}\" is waiting for the user's decision: wait for it before starting implement or merge tasks.",
                 open.title
@@ -514,6 +515,7 @@ impl SessionManager {
         id: &ConversationId,
         args: crate::tools::ProposePlan,
     ) -> Result<String> {
+        use super::plan_gates::{adds_or_changes_steps, parse_responses, plan_reviewers};
         if args.steps.is_empty() {
             return Err(Error::Invalid("a plan needs at least one step".into()));
         }
@@ -527,61 +529,187 @@ impl SessionManager {
             _ => PermissionLevel::ApproveForMe,
         };
         let board = self.core.board(id).await?;
-        // A new plan replaces the ones still open.
+        let request_id = self.request_for(id, None).await;
+        // A revision names the plan whose review asked for changes and answers each finding.
+        let revises = args
+            .revises
+            .as_deref()
+            .map(str::trim)
+            .filter(|revises| !revises.is_empty());
+        let previous = match revises {
+            Some(revises) => {
+                let previous = board
+                    .plans
+                    .get(&CardId(revises.to_owned()))
+                    .ok_or_else(|| Error::Invalid(format!("there is no plan {revises}")))?;
+                if previous.state != PlanState::Revising {
+                    return Err(Error::Invalid(format!(
+                        "the plan \"{}\" is not waiting for a revision: `revises` names only a plan whose review asked for changes. Propose this plan without it.",
+                        previous.title
+                    )));
+                }
+                Some(previous.clone())
+            }
+            None => {
+                if !args.responses.is_empty() {
+                    return Err(Error::Invalid(
+                        "`responses` answer the findings of the plan named in `revises`: name it"
+                            .into(),
+                    ));
+                }
+                if let Some(revising) = board
+                    .plans
+                    .values()
+                    .find(|p| p.state == PlanState::Revising && p.request_id == request_id)
+                {
+                    return Err(Error::Invalid(format!(
+                        "The plan \"{}\" is being revised after its review: propose the revision with revises: \"{}\" and one response per finding.",
+                        revising.title, revising.id
+                    )));
+                }
+                None
+            }
+        };
+        let responses = match &previous {
+            Some(previous) => parse_responses(
+                &args.responses,
+                previous
+                    .gate
+                    .as_ref()
+                    .map_or(&[][..], |gate| gate.findings.as_slice()),
+            )
+            .map_err(Error::Invalid)?,
+            None => Vec::new(),
+        };
+        let steps: Vec<PlanStep> = args
+            .steps
+            .into_iter()
+            .map(|step| PlanStep {
+                title: step.title,
+                detail: step.detail,
+                task_id: None,
+            })
+            .collect();
+        // A new plan after an approved one of the same request is reviewed again when it adds
+        // or changes steps.
+        let approved = board
+            .plans
+            .values()
+            .filter(|p| matches!(p.state, PlanState::Approved { .. }) && p.request_id == request_id)
+            .max_by_key(|p| p.created_at_ms)
+            .filter(|_| previous.is_none());
+        let reviewers = plan_reviewers(
+            steps.len(),
+            args.risky,
+            previous.is_some(),
+            approved.map(|before| adds_or_changes_steps(&before.steps, &steps)),
+        );
+        let round = previous
+            .as_ref()
+            .and_then(|previous| previous.gate.as_ref())
+            .map_or(1, |gate| gate.round + 1);
+        // A new plan replaces the ones still open (a revision, the plan it revises).
         for plan in board.plans.values() {
-            if matches!(plan.state, PlanState::Proposed | PlanState::InReview { .. }) {
-                let mut plan = plan.clone();
-                plan.state = PlanState::Superseded;
-                plan.decided_at_ms = Some(now_ms());
-                self.store_plan(&plan).await?;
+            if matches!(
+                plan.state,
+                PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+            ) {
+                self.change_plan(id, &plan.id, |plan| {
+                    if matches!(
+                        plan.state,
+                        PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+                    ) {
+                        plan.state = PlanState::Superseded;
+                        plan.decided_at_ms = Some(now_ms());
+                    }
+                    Ok(())
+                })
+                .await?;
             }
         }
         let mut plan = Plan {
             id: CardId::generate(),
             conversation_id: id.clone(),
-            request_id: self.request_for(id, None).await,
+            request_id,
             position: 0,
             title: args.title,
-            steps: args
-                .steps
-                .into_iter()
-                .map(|step| PlanStep {
-                    title: step.title,
-                    detail: step.detail,
-                    task_id: None,
-                })
-                .collect(),
+            steps,
             risky: args.risky,
             state: PlanState::Proposed,
+            gate: None,
+            revises: previous.as_ref().map(|previous| previous.id.clone()),
+            responses,
+            review_notes: Vec::new(),
             created_at_ms: now_ms(),
             decided_at_ms: None,
         };
-        match (permission, plan.risky) {
-            (PermissionLevel::AskForApproval, _) => {
-                self.store_plan(&plan).await?;
-                Ok("The plan is shown to the user. Wait for their decision (it arrives as a message) before starting implement or merge tasks.".into())
-            }
-            (_, false) => {
+        let user_decides = permission == PermissionLevel::AskForApproval;
+        if reviewers == 0 {
+            if !user_decides {
                 plan.state = PlanState::Approved {
                     by: PlanApprover::Brigadier,
                 };
                 plan.decided_at_ms = Some(now_ms());
-                self.store_plan(&plan).await?;
-                Ok("Approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.".into())
             }
-            (_, true) => {
-                self.store_plan(&plan).await?;
-                let review = self.start_plan_review(id, &plan).await?;
-                plan.state = PlanState::InReview {
-                    task_id: review.id.clone(),
-                };
-                self.store_plan(&plan).await?;
-                Ok(format!(
-                    "The plan is risky, so an independent reviewer (task-{}) checks it before Brigadier approves it on the user's behalf. The outcome arrives as a message; don't start write tasks before it.",
-                    review.number
-                ))
-            }
+            self.store_plan(&plan).await?;
+            return Ok(if user_decides {
+                "The plan is shown to the user. Wait for their decision (it arrives as a message) before starting implement or merge tasks.".into()
+            } else {
+                "Approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.".into()
+            });
         }
+        self.store_plan(&plan).await?;
+        let started = match self
+            .open_plan_gate(&plan, round, reviewers, !user_decides)
+            .await
+        {
+            Ok(started) => started,
+            Err(err) if user_decides => {
+                return Ok(format!(
+                    "The plan is shown to the user (its independent review could not start: {err}). Wait for their decision (it arrives as a message) before starting implement or merge tasks."
+                ));
+            }
+            Err(err) => {
+                let reason = err.to_string();
+                self.change_plan(id, &plan.id, |plan| {
+                    if plan.state == PlanState::Proposed {
+                        plan.state = PlanState::Rejected {
+                            message: Some(format!("The review could not start: {reason}")),
+                        };
+                        plan.decided_at_ms = Some(now_ms());
+                    }
+                    Ok(())
+                })
+                .await?;
+                return Err(Error::Invalid(format!(
+                    "the plan needs an independent review, which could not start: {reason}"
+                )));
+            }
+        };
+        let who = started
+            .iter()
+            .map(|task| format!("task-{}", task.number))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let reviewed = if round > 1 {
+            format!(
+                "The revision goes to the last review round ({round} of {}), by {who}",
+                super::plan_gates::PLAN_ROUNDS
+            )
+        } else if started.len() > 1 {
+            format!("The plan is risky, so two independent reviewers ({who}) check it")
+        } else {
+            format!("An independent reviewer ({who}) checks the plan")
+        };
+        Ok(if user_decides {
+            format!(
+                "The plan is shown to the user. {reviewed}; its findings show on the user's card. Wait for the user's decision (it arrives as a message) before starting implement or merge tasks."
+            )
+        } else {
+            format!(
+                "{reviewed} before Brigadier approves it on the user's behalf. The outcome arrives as a message; don't start write tasks before it."
+            )
+        })
     }
 
     /// The user's attachments in this conversation, by id.

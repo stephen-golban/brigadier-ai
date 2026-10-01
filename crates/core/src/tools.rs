@@ -351,10 +351,18 @@ pub struct ProposePlan {
     pub title: String,
     /// The steps, in order.
     pub steps: Vec<PlanStepInput>,
-    /// True for big, risky or architectural plans: they get a cross-vendor review before
-    /// Brigadier approves them on the user's behalf.
+    /// True for big, risky or architectural plans: they get two independent reviewers
+    /// (plans of two or more steps get one) before Brigadier approves them on the user's
+    /// behalf.
     #[serde(default)]
     pub risky: bool,
+    /// The id of the plan this one revises after its review asked for changes.
+    #[serde(default)]
+    pub revises: Option<String>,
+    /// With `revises`: one line per finding of that review, "F1 accepted: what changed" or
+    /// "F2 declined: why".
+    #[serde(default)]
+    pub responses: Vec<String>,
 }
 
 /// `request_approval`: ask the user to approve an action Brigadier cannot see otherwise.

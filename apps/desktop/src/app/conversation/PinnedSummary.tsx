@@ -91,6 +91,7 @@ function planLine(plan: Plan, tasks: Readonly<Record<string, Task>>): string {
   const total = plan.steps.length;
   if (plan.state.type === "proposed") return `${total} steps · waiting for you`;
   if (plan.state.type === "inReview") return `${total} steps · in review`;
+  if (plan.state.type === "revising") return `${total} steps · being revised after review`;
   const finished = plan.steps.filter((step) => {
     const task = step.taskId ? tasks[step.taskId] : undefined;
     return task !== undefined && isFinal(task);

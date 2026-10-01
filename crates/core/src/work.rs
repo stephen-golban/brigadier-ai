@@ -373,6 +373,34 @@ pub struct Gate {
     /// A second verification after a verifier could not check the change.
     #[serde(default)]
     pub retry: bool,
+    /// A plan's round that asked for changes: its reviewers' issues, numbered F1, F2, … for
+    /// the revision to answer one by one.
+    #[serde(default)]
+    pub findings: Vec<Finding>,
+}
+
+/// A problem a plan's reviewer found, by the id the revision answers it with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Finding {
+    /// "F1", "F2", … within its round.
+    pub id: String,
+    pub text: String,
+    /// The reviewer that found it.
+    pub by: TaskId,
+}
+
+/// How a revised plan answers a finding of the plan it revises.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingResponse {
+    /// The finding's id ("F1").
+    pub id: String,
+    /// The finding, as the reviewer wrote it.
+    pub finding: String,
+    pub accepted: bool,
+    /// What changed for it, or why it was declined.
+    pub note: String,
 }
 
 /// A task checking a change or plan in a gate round.
@@ -710,7 +738,8 @@ pub enum PlanApprover {
     /// Approve for me, a plan the orchestrator did not mark risky: approved without review,
     /// and marked as such on the card.
     Brigadier,
-    /// Approve for me, a risky plan: approved after a cross-vendor plan review.
+    /// Approve for me, a plan of two or more steps or a risky one: approved after a
+    /// cross-vendor plan review.
     Review,
 }
 
@@ -722,7 +751,8 @@ pub enum PlanApprover {
 )]
 pub enum PlanState {
     Proposed,
-    /// A reviewer from another vendor is checking it.
+    /// Reviewers from another vendor are checking it (`task_id`: the first; all are on its
+    /// gate).
     InReview {
         task_id: TaskId,
     },
@@ -734,6 +764,9 @@ pub enum PlanState {
     },
     /// A newer plan replaced it.
     Superseded,
+    /// Its review asked for changes: the orchestrator revises it (`propose_plan` with
+    /// `revises`), answering each finding.
+    Revising,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -750,6 +783,18 @@ pub struct Plan {
     /// Big, risky or architectural, as the orchestrator judged it.
     pub risky: bool,
     pub state: PlanState,
+    /// Its current review round (reviewers from other vendors than the orchestrator's).
+    #[serde(default)]
+    pub gate: Option<Gate>,
+    /// The plan it revises after that plan's review asked for changes.
+    #[serde(default)]
+    pub revises: Option<CardId>,
+    /// Its answer to each finding of the plan it revises.
+    #[serde(default)]
+    pub responses: Vec<FindingResponse>,
+    /// What the reviewers noted when they approved it.
+    #[serde(default)]
+    pub review_notes: Vec<String>,
     pub created_at_ms: i64,
     pub decided_at_ms: Option<i64>,
 }
@@ -1256,5 +1301,35 @@ mod tests {
         .expect("an old report");
         assert!(report.done_when.is_empty() && report.risks.is_empty());
         assert!(report.needs_user.is_empty());
+    }
+
+    #[test]
+    fn a_plan_in_review_stored_before_plan_gates_still_reads() {
+        let plan: Plan = serde_json::from_value(serde_json::json!({
+            "id": "p1",
+            "conversationId": "c1",
+            "position": 3,
+            "title": "Rework the API",
+            "steps": [{ "title": "Change it", "detail": null, "taskId": null }],
+            "risky": true,
+            "state": { "type": "inReview", "taskId": "t1" },
+            "createdAtMs": 1,
+            "decidedAtMs": null,
+        }))
+        .expect("an old plan");
+        assert_eq!(
+            plan.state,
+            PlanState::InReview {
+                task_id: TaskId("t1".into())
+            }
+        );
+        assert!(plan.gate.is_none() && plan.revises.is_none());
+        assert!(plan.responses.is_empty() && plan.review_notes.is_empty());
+        let gate: Gate = serde_json::from_value(serde_json::json!({
+            "round": 1,
+            "members": [{ "taskId": "t2", "role": "review" }],
+        }))
+        .expect("an old gate");
+        assert!(gate.findings.is_empty());
     }
 }

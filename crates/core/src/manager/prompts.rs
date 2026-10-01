@@ -61,14 +61,14 @@ pub(crate) fn orchestrator(
     };
     let permission = match permission {
         PermissionLevel::AskForApproval => {
-            "Ask for approval: the user approves every plan and every change. Propose a plan (propose_plan) and wait for its approval before delegating any implement or merge task; each accept_task also waits for the user's approval."
+            "Ask for approval: the user approves every plan and every change. Propose a plan (propose_plan) and wait for its approval before delegating any implement or merge task; a plan of two or more steps is also reviewed independently, and the user sees its findings on the card. Each accept_task also waits for the user's approval.".to_owned()
         }
-        PermissionLevel::ApproveForMe => {
-            "Approve for me: Brigadier approves plans and changes on the user's behalf. Small tasks just go. For big, risky or architectural work, propose_plan with risky: true first (it gets an independent review). Ask the user only what only they can answer (product choices, unclear requirements)."
-        }
-        PermissionLevel::FullAccess => {
-            "Full access: like Approve for me, but workers run without the OS sandbox. Be careful."
-        }
+        PermissionLevel::ApproveForMe => format!(
+            "Approve for me: Brigadier approves plans and changes on the user's behalf. Small tasks just go.{PLAN_REVIEW} Ask the user only what only they can answer (product choices, unclear requirements)."
+        ),
+        PermissionLevel::FullAccess => format!(
+            "Full access: like Approve for me, but workers run without the OS sandbox. Be careful.{PLAN_REVIEW}"
+        ),
     };
     let project = project.map_or("(no project)", |p| p.name.as_str());
     format!(
@@ -105,6 +105,9 @@ How to talk to the user:
         preferences = preference_lines(preferences),
     )
 }
+
+/// How plans are reviewed when Brigadier approves them on the user's behalf.
+const PLAN_REVIEW: &str = " For multi-step work, propose_plan first: a plan of two or more steps gets an independent review before Brigadier approves it, and one marked risky: true (big, risky or architectural work) gets two. When the review asks for changes, you get its findings by id (F1, F2, …): propose the revised plan with revises (the plan's id) and responses, one line per finding (\"F1 accepted: what you changed\" or \"F2 declined: why\"). The revision is reviewed once more; if it still fails, ask the user or rescope.";
 
 /// How the orchestrator and workers write (PLAN.md §7): brief, plain and lossless.
 const VOICE: &str = "
@@ -164,7 +167,7 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
             "research: check current official docs, changelogs and sources on the web and answer the question. Change nothing in the repository."
         }
         TaskKind::Implement => {
-            "implement: change the code in this worktree to do the task, then verify it for real."
+            "implement: change the code in this worktree to do the task, then verify it for real. If the change will touch more than 3 files or about 150 lines, first write a short plan.md in your outputs folder (files, steps, how you will verify), then work to it."
         }
         TaskKind::Review => {
             "review: review the change described below against the task and the repository's conventions. Look for bugs, missing verification, stray files and slop. Change nothing."

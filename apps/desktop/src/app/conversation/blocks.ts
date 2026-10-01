@@ -159,6 +159,7 @@ function keepPlan(plan: Plan): boolean {
   switch (plan.state.type) {
     case "proposed":
     case "inReview":
+    case "revising":
     case "rejected":
       return true;
     case "approved":

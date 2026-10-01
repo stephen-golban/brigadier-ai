@@ -36,6 +36,7 @@ mod lifecycle;
 mod outcomes;
 mod outputs;
 mod past_projects;
+mod plan_gates;
 mod project_removal;
 mod prompts;
 mod pull_request;
