@@ -4,3 +4,4 @@
 - `crates/index/queries/csharp.scm` adapts the tags query from [tree-sitter-c-sharp](https://github.com/tree-sitter/tree-sitter-c-sharp) 0.23.5 (MIT).
 - `crates/index/queries/swift.scm` adapts the tags query from [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) 0.7.3 (MIT).
 - The Brain's embedding model, [minishlab/potion-retrieval-32M](https://huggingface.co/minishlab/potion-retrieval-32M) (MIT), revision `6fc8051fab2a1e0ee76689cf08c853792ac285e7`, is downloaded at runtime into the data folder, not shipped. `crates/brain/src/embed.rs` computes its embeddings the way [Model2Vec](https://github.com/MinishLab/model2vec) (MIT) does; no code is taken from it.
+- The code rules for implement and merge workers in `crates/core/src/manager/prompts.rs` (`WORKER_CODE_RULES`) follow, partly in close wording, the rules of [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, Copyright (c) 2026 DietrichGebert), commit `e3ba2aa`.

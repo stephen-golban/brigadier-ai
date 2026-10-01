@@ -129,12 +129,16 @@ const WORKER_VOICE: &str = "
 const WORKER_CODE_TOOLS: &str = "
 - To find code, use the Brigadier tools first: code_search (definitions and files by name), code_refs (where a symbol is defined and used) and project_map (the repository at a glance). They are instant and return less than grepping or reading whole files. Then read only the lines you need.";
 
-/// Rules for writing less code, for implement and merge workers (PLAN.md §7).
-const WORKER_BUILD_RULES: &str = "
-- Before writing something new, look for code in the repository that already does it, and reuse or extend that.
-- Add no abstraction, option or layer the task doesn't need.
-- When you change a shared function, type or contract, find all its callers and update them.
-- Never simplify away validation, error handling or security checks.";
+/// How implement and merge workers write code (PLAN.md §7; after ponytail's rules, see
+/// THIRD_PARTY_NOTICES.md).
+const WORKER_CODE_RULES: &str = "
+
+How to write code:
+- First read the task and the code it touches, and trace the real flow. The smallest change in the wrong place is a second bug.
+- Reuse what the repository already has (a helper, type or pattern), then the standard library, then a dependency already installed. Add a dependency only when the task needs it.
+- Write the least code that does the job: no abstraction, option, layer or scaffolding the task didn't ask for. Prefer deleting to adding and plain code to clever code. Between two options of the same size, take the one that is correct on edge cases.
+- Fix bugs at their root. When you change a shared function, type or contract, find all its callers and keep them correct.
+- Never simplify away validation, error handling, security checks or anything the task asks for.";
 
 /// The user's preferences as an instructions section (empty without any).
 fn preference_lines(preferences: &[String]) -> String {
@@ -182,7 +186,7 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
         practices.push_str(WORKER_CODE_TOOLS);
     }
     if matches!(task.kind, TaskKind::Implement | TaskKind::Merge) {
-        practices.push_str(WORKER_BUILD_RULES);
+        practices.push_str(WORKER_CODE_RULES);
     }
     format!(
         r#"You are a Brigadier worker. Today is {today}. Your models' knowledge may be older than today: check current docs before relying on any third-party API, version or CLI.
