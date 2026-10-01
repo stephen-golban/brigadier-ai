@@ -509,6 +509,12 @@ pub enum ProviderEvent {
         item_id: String,
         text: String,
     },
+    /// Work under way that the transcript doesn't show (a sub-agent's steps, a long tool's
+    /// progress): the session is alive. `itemId` is the tool call or sub-agent it belongs to.
+    /// Never stored.
+    Progress {
+        item_id: String,
+    },
     FileChanges {
         item_id: String,
         changes: Vec<FileChange>,

@@ -421,6 +421,31 @@ impl Parser {
                 },
                 output: None,
             },
+            // A sub-agent call (spawning one, waiting for it…) is a tool call of the worker's;
+            // what the sub-agent does meanwhile only shows the session is alive.
+            ThreadItem::CollabAgentToolCall {
+                id,
+                tool,
+                prompt,
+                status,
+                ..
+            } => ProviderEvent::ToolCall {
+                item_id: id,
+                name: format!("agents/{tool}"),
+                input: prompt.map(|prompt| clip(&prompt, OUTPUT_CLIP)),
+                status: match status {
+                    p::CollabAgentToolCallStatus::InProgress => ItemStatus::InProgress,
+                    p::CollabAgentToolCallStatus::Completed => ItemStatus::Completed,
+                    p::CollabAgentToolCallStatus::Failed
+                    | p::CollabAgentToolCallStatus::Interrupted => ItemStatus::Failed,
+                },
+                output: None,
+            },
+            ThreadItem::SubAgentActivity {
+                agent_thread_id, ..
+            } => ProviderEvent::Progress {
+                item_id: agent_thread_id,
+            },
             ThreadItem::WebSearch { id, query, .. } => ProviderEvent::ToolCall {
                 item_id: id,
                 name: "web_search".into(),
@@ -894,4 +919,77 @@ fn decode<T: DeserializeOwned>(method: &str, params: Value, out: &mut Vec<Output
 
 fn notice(level: NoticeLevel, message: String) -> Output {
     Output::Event(ProviderEvent::Notice { level, message })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn events(parser: &mut Parser, line: &Value) -> Vec<ProviderEvent> {
+        parser
+            .feed(&line.to_string())
+            .into_iter()
+            .filter_map(|output| match output {
+                Output::Event(event) => Some(event),
+                Output::Control(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sub_agent_calls_and_their_work_are_reported() {
+        let mut parser = Parser::live();
+        let call = |status: &str| {
+            json!({
+                "id": "c1",
+                "type": "collabAgentToolCall",
+                "tool": "wait",
+                "status": status,
+                "senderThreadId": "t1",
+                "receiverThreadIds": ["t2"],
+                "agentsStates": {},
+            })
+        };
+        let started = json!({ "method": "item/started", "params": {
+            "item": call("inProgress"), "startedAtMs": 0, "threadId": "t1", "turnId": "u1",
+        }});
+        assert_eq!(
+            events(&mut parser, &started),
+            [ProviderEvent::ToolCall {
+                item_id: "c1".into(),
+                name: "agents/wait".into(),
+                input: None,
+                status: ItemStatus::InProgress,
+                output: None,
+            }]
+        );
+        let activity = json!({ "method": "item/completed", "params": {
+            "item": {
+                "id": "a1",
+                "type": "subAgentActivity",
+                "kind": "interacted",
+                "agentPath": "worker/1",
+                "agentThreadId": "t2",
+            },
+            "completedAtMs": 1, "threadId": "t1", "turnId": "u1",
+        }});
+        assert_eq!(
+            events(&mut parser, &activity),
+            [ProviderEvent::Progress {
+                item_id: "t2".into()
+            }]
+        );
+        let interrupted = json!({ "method": "item/completed", "params": {
+            "item": call("interrupted"), "completedAtMs": 2, "threadId": "t1", "turnId": "u1",
+        }});
+        assert!(matches!(
+            events(&mut parser, &interrupted).as_slice(),
+            [ProviderEvent::ToolCall {
+                status: ItemStatus::Failed,
+                ..
+            }]
+        ));
+    }
 }

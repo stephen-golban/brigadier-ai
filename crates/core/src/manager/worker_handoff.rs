@@ -216,7 +216,22 @@ impl SessionManager {
         pending: Option<String>,
         why: Handover,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.hand_over(live, task, from, note, pending, why))
+        Box::pin(async move {
+            let _handing = live.reroute.lock().await;
+            self.hand_over(live, task, from, note, pending, why).await
+        })
+    }
+
+    /// [`Self::hand_over_worker`] for a caller that holds the task's `reroute` lock (the
+    /// stall watchdog, which closed the stalled session itself).
+    pub(crate) fn hand_over_held<'a>(
+        &'a self,
+        live: &'a Arc<TaskLive>,
+        task: &'a Task,
+        from: u64,
+        why: Handover,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.hand_over(live, task, from, None, None, why))
     }
 
     async fn hand_over(
@@ -228,7 +243,6 @@ impl SessionManager {
         pending: Option<String>,
         why: Handover,
     ) -> Result<()> {
-        let _handing = live.reroute.lock().await;
         // Another hand-over came first (a message arrived while the turn that asked for a
         // note was ending, or the other way round): its fresh session must not be closed
         // mid-turn. It has the old session's last messages, the note among them; a pending
@@ -247,6 +261,15 @@ impl SessionManager {
                 let _ = write!(first.text, "\n\nWaiting for you now:\n{pending}");
             }
             return self.start_fresh(live, task, first).await;
+        }
+        // Stopped meanwhile: its session is closed with it, not handed over.
+        if self
+            .task_by_id(&task.conversation_id, &task.id)
+            .await?
+            .state
+            .is_final()
+        {
+            return Ok(());
         }
         let tokens = match live.context().await {
             (Some(tokens), _) => Some(tokens),

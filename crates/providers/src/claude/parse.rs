@@ -191,7 +191,9 @@ impl Parser {
                     }));
                 }
             }
-            // Heartbeats, prompt suggestions, tool progress: nothing to report.
+            // A long tool still runs: nothing to show, but the session is alive.
+            Some("tool_progress") => progress(&value, &mut out),
+            // Heartbeats, prompt suggestions: nothing to report.
             _ => {}
         }
         out
@@ -308,11 +310,13 @@ impl Parser {
         {
             return;
         }
-        // Subagent output is summarized by its tool result.
+        // Subagent output is summarized by its tool result; meanwhile it shows the session is
+        // alive.
         if value
             .get("parent_tool_use_id")
             .is_some_and(|id| !id.is_null())
         {
+            progress(value, out);
             return;
         }
         let message_id = str_of(&message, "id").unwrap_or("message").to_owned();
@@ -417,6 +421,7 @@ impl Parser {
             .get("parent_tool_use_id")
             .is_some_and(|id| !id.is_null())
         {
+            progress(value, out);
             return;
         }
         // With `--replay-user-messages` Claude echoes each message when it takes it: while idle
@@ -581,6 +586,8 @@ impl Parser {
                         .to_owned(),
                 ));
             }
+            // A background task or sub-agent at work.
+            Some("task_started" | "task_progress") => progress(value, out),
             _ => {}
         }
     }
@@ -1104,6 +1111,17 @@ fn iso_ms(value: Option<&Value>) -> Option<i64> {
         .and_then(crate::time::parse_rfc3339_ms)
 }
 
+/// Work under way the transcript doesn't show (a sub-agent's message, a tool's or a task's
+/// progress), under the tool call it belongs to.
+fn progress(value: &Value, out: &mut Vec<Output>) {
+    let item_id = ["parent_tool_use_id", "tool_use_id", "task_id"]
+        .iter()
+        .find_map(|key| str_of(value, key))
+        .unwrap_or("progress")
+        .to_owned();
+    out.push(Output::Event(ProviderEvent::Progress { item_id }));
+}
+
 fn notice(level: NoticeLevel, message: String) -> Output {
     Output::Event(ProviderEvent::Notice { level, message })
 }
@@ -1137,7 +1155,7 @@ pub fn user_message(content: Vec<Value>) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::content_text;
+    use super::*;
 
     #[test]
     fn a_tool_search_result_names_the_tools_it_loaded() {
@@ -1149,5 +1167,51 @@ mod tests {
             content_text(&result),
             "Loaded tool: mcp__brigadier__code_search\ndone"
         );
+    }
+
+    #[test]
+    fn sub_agent_work_and_tool_progress_show_the_session_is_alive() {
+        let mut parser = Parser::live();
+        let progress = |parser: &mut Parser, line: Value| -> Vec<String> {
+            parser
+                .feed(&line.to_string())
+                .into_iter()
+                .filter_map(|output| match output {
+                    Output::Event(ProviderEvent::Progress { item_id }) => Some(item_id),
+                    _ => None,
+                })
+                .collect()
+        };
+        let tool = json!({
+            "type": "tool_progress",
+            "tool_use_id": "toolu_1",
+            "tool_name": "Bash",
+            "parent_tool_use_id": null,
+            "elapsed_time_seconds": 30,
+        });
+        assert_eq!(progress(&mut parser, tool), ["toolu_1"]);
+        let sub_agent = json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_2",
+            "message": { "id": "m1", "content": [{ "type": "text", "text": "Reading files" }] },
+        });
+        let outputs = parser.feed(&sub_agent.to_string());
+        assert!(matches!(
+            outputs.as_slice(),
+            [Output::Event(ProviderEvent::Progress { item_id })] if item_id == "toolu_2"
+        ));
+        let result = json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_2",
+            "message": { "content": [{ "type": "tool_result", "tool_use_id": "toolu_3", "content": "ok" }] },
+        });
+        assert_eq!(progress(&mut parser, result), ["toolu_2"]);
+        let task = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "task_1",
+            "tool_use_id": "toolu_4",
+        });
+        assert_eq!(progress(&mut parser, task), ["toolu_4"]);
     }
 }

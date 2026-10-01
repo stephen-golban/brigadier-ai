@@ -92,12 +92,32 @@ pub(crate) fn verdict(error: &ProviderError) -> ErrorVerdict {
 
 impl SessionManager {
     /// Ends the running model's part of `task` for `end` and hands the task on (or makes it
-    /// wait). Runs outside the worker's event pump: closing the CLI waits for the pump.
-    pub(crate) async fn hand_off(&self, live: &Arc<TaskLive>, end: AttemptEnd) {
+    /// wait). `from` is the CLI session the hand-off was decided for
+    /// ([`TaskLive::generation`]): once another hand-on or hand-over has moved the task to a
+    /// fresh session, that session is left alone. Runs outside the worker's event pump:
+    /// closing the CLI waits for the pump.
+    pub(crate) async fn hand_off(&self, live: &Arc<TaskLive>, end: AttemptEnd, from: u64) {
+        // One hand-on or hand-over at a time, each checking the session it was decided for.
+        let _handing = live.reroute.lock().await;
+        if live.generation().await != from {
+            tracing::info!(task = %live.id, "the task was already handed on");
+            return;
+        }
+        self.hand_off_held(live, end).await;
+    }
+
+    /// [`Self::hand_off`] for a caller that holds the task's `reroute` lock and checked the
+    /// CLI session itself (the stall watchdog).
+    pub(crate) async fn hand_off_held(&self, live: &Arc<TaskLive>, end: AttemptEnd) {
         let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await else {
             return;
         };
-        if task.state.is_final() {
+        // Ended, or its attempt already ended (another hand-on made it wait for quota).
+        let ended = task
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.ended_at_ms.is_some());
+        if task.state.is_final() || ended {
             return;
         }
         let errors = task
@@ -149,7 +169,7 @@ impl SessionManager {
             self.record_outcome(&task, attempt, result).await;
         }
         tracing::info!(task = %task.id, from = %from.provider, "handing the task on");
-        self.continue_task(live, task).await;
+        self.continue_held(live, task).await;
     }
 
     /// Routes a task whose model stopped (or that waits for quota) and starts the chosen
@@ -163,6 +183,17 @@ impl SessionManager {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             let _rerouting = live.reroute.lock().await;
+            self.continue_held(live, task).await;
+        })
+    }
+
+    /// [`Self::continue_task`] for a caller that holds the task's `reroute` lock.
+    fn continue_held<'a>(
+        &'a self,
+        live: &'a Arc<TaskLive>,
+        task: Task,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
             let Ok(task) = self.task_by_id(&task.conversation_id, &task.id).await else {
                 return;
             };

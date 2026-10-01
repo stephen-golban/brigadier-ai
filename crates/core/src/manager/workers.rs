@@ -42,6 +42,7 @@ use super::brains::ReportLearning;
 use super::conversation::{Cli, Envelope, safe_file_name};
 use super::outputs::outputs_dir;
 use super::usage::TokenOwner;
+use super::watchdog::WorkerWatch;
 use super::worker_handoff::Handover;
 use super::{
     EventSource, SessionManager, blocking, fallback, git_error, instructions, prompts, secrets,
@@ -64,6 +65,8 @@ const DELTA_WINDOW: Duration = Duration::from_millis(30);
 /// The CLIs' own limit on a worker's MCP calls: effectively none, since Codex does not cancel
 /// a call it timed out; Brigadier bounds `ask_orchestrator` itself.
 const WORKER_TOOL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+/// How long the watchdog's nudge may take to reach a silent worker's CLI.
+const NUDGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `ask_orchestrator` waits for the orchestrator's answer.
 const QUESTION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// Report size cap: about 800 tokens.
@@ -154,7 +157,7 @@ pub(crate) struct TaskLive {
     state: tokio::sync::Mutex<TaskLiveState>,
     /// Held while the worker's report is recorded and while it is stopped, so a stop and a
     /// report never both take effect.
-    settle: tokio::sync::Mutex<()>,
+    pub(crate) settle: tokio::sync::Mutex<()>,
     /// Held while the task is routed again and its next model started, so a quota timer and
     /// a Resume (or two hand-offs) never start two models on it.
     pub(crate) reroute: tokio::sync::Mutex<()>,
@@ -162,6 +165,8 @@ pub(crate) struct TaskLive {
     wait_timer: std::sync::atomic::AtomicU64,
     /// Hand-overs the current attempt made, once counted from its recorded events.
     handovers: std::sync::Mutex<Option<u32>>,
+    /// A stall watchdog action on the worker is under way: the next rounds leave it be.
+    pub(crate) watchdog_busy: std::sync::atomic::AtomicBool,
     /// Versions the task's reports before their Brain writes are spawned, so late findings
     /// survive an older report's write running afterward.
     pub(crate) learning: Arc<ReportLearning>,
@@ -305,9 +310,12 @@ impl TaskLive {
 
     /// What the stall watchdog needs to know of the worker at `now`. A task live without a
     /// running CLI is noted from the first time it is seen so.
-    pub(crate) async fn watch(&self, now: i64) -> super::watchdog::WorkerWatch {
+    pub(crate) async fn watch(&self, now: i64) -> WorkerWatch {
         let reroute_free = self.reroute.try_lock().is_ok();
-        let mut state = self.state.lock().await;
+        Self::watched(&mut *self.state.lock().await, now, reroute_free)
+    }
+
+    fn watched(state: &mut TaskLiveState, now: i64, reroute_free: bool) -> WorkerWatch {
         let alive = state
             .cli
             .as_ref()
@@ -317,7 +325,7 @@ impl TaskLive {
         } else {
             state.orphaned_at_ms.get_or_insert(now);
         }
-        super::watchdog::WorkerWatch {
+        WorkerWatch {
             generation: state.generation,
             alive,
             busy: state.busy,
@@ -332,45 +340,73 @@ impl TaskLive {
         }
     }
 
-    /// Asks the silent worker of CLI session `generation` (a steer) whether it is stuck. False
-    /// when that session is no longer the one at work, or not mid-turn.
-    pub(crate) async fn nudge_stall(&self, generation: u64, text: String) -> bool {
-        let mut state = self.state.lock().await;
-        if state.generation != generation || !state.busy || state.stopping {
-            return false;
-        }
-        let Some(cli) = state.cli.clone() else {
-            return false;
+    /// Asks the silent worker (a steer) whether it is stuck, if `due` still holds for it as it
+    /// is now ([`super::watchdog::still_due`]). The steer is bounded and runs without the
+    /// worker's state held, so a CLI that stopped reading holds up nothing else. Delivered or
+    /// not, the nudge counts for the CLI session it was meant for: a worker that stays silent
+    /// is handed over after the grace. `None` when it was no longer due; else whether it
+    /// was delivered.
+    pub(crate) async fn nudge_stall(
+        &self,
+        due: impl FnOnce(&WorkerWatch) -> bool,
+        text: String,
+    ) -> Option<bool> {
+        let reroute_free = self.reroute.try_lock().is_ok();
+        let (cli, generation) = {
+            let mut state = self.state.lock().await;
+            if !due(&Self::watched(&mut state, now_ms(), reroute_free)) {
+                return None;
+            }
+            (state.cli.clone()?, state.generation)
         };
-        if let Err(err) = cli.session.steer(TurnInput::text(text)).await {
-            tracing::warn!(task = %self.id, error = %err, "could not nudge a silent worker");
-            return false;
+        // Activity from here on shows the worker heard it, or was never stuck.
+        let at = now_ms();
+        let delivered = match tokio::time::timeout(
+            NUDGE_TIMEOUT,
+            cli.session.steer(TurnInput::text(text)),
+        )
+        .await
+        {
+            Ok(Ok(())) => true,
+            Ok(Err(err)) => {
+                tracing::warn!(task = %self.id, error = %err, "could not nudge a silent worker");
+                false
+            }
+            Err(_) => {
+                tracing::warn!(task = %self.id, "nudging a silent worker timed out");
+                false
+            }
+        };
+        let mut state = self.state.lock().await;
+        if state.generation == generation {
+            state.stall_nudged_at_ms = Some(at);
         }
-        state.stall_nudged_at_ms = Some(now_ms());
-        true
+        Some(delivered)
     }
 
-    /// Takes the stall of CLI session `generation` on for a fresh session: false when that
-    /// session is no longer the one at work, or is already being closed.
-    pub(crate) async fn claim_stall(&self, generation: u64) -> bool {
+    /// Takes the CLI session of a stalled worker off its task, if `due` still holds for it as
+    /// it is now ([`super::watchdog::still_due`]); the caller holds `reroute`, and `settle`
+    /// so no report is recorded meanwhile. From now on the session's end is this hand-on, not
+    /// a reason for another. `stall`: the same model continues in a fresh session, which
+    /// counts as a stall of the current attempt; else another model takes over, and a pending
+    /// cut-off (which wins) is returned with the session to end ([`Self::end_cli`]). `None`
+    /// when it was no longer due.
+    pub(crate) async fn detach_stalled(
+        &self,
+        due: impl FnOnce(&WorkerWatch) -> bool,
+        stall: bool,
+    ) -> Option<(Option<Arc<Cli>>, Option<AttemptEnd>)> {
         let mut state = self.state.lock().await;
-        if state.generation != generation || state.stopping {
-            return false;
-        }
-        state.stalls += 1;
-        true
-    }
-
-    /// Takes CLI session `generation` off the task for another model: from now on its end is
-    /// this hand-off, not a reason for another. Returns a pending cut-off, which wins. `None`
-    /// when that session is no longer the one at work, or is already being closed.
-    pub(crate) async fn claim_replace(&self, generation: u64) -> Option<Option<AttemptEnd>> {
-        let mut state = self.state.lock().await;
-        if state.generation != generation || state.stopping {
+        if !due(&Self::watched(&mut state, now_ms(), true)) {
             return None;
         }
-        state.stopping = true;
-        Some(state.cutoff.take())
+        let cutoff = if stall {
+            state.stalls += 1;
+            None
+        } else {
+            state.cutoff.take()
+        };
+        Some((Self::detach_cli(&mut state), cutoff))
     }
 
     /// A new attempt: its stalls are counted afresh.
@@ -393,6 +429,7 @@ impl TaskLive {
             reroute: tokio::sync::Mutex::new(()),
             wait_timer: std::sync::atomic::AtomicU64::new(0),
             handovers: std::sync::Mutex::new(None),
+            watchdog_busy: std::sync::atomic::AtomicBool::new(false),
             learning: Arc::default(),
         }
     }
@@ -433,7 +470,8 @@ impl TaskLive {
         state.cli.take()
     }
 
-    async fn end_cli(cli: Option<Arc<Cli>>) {
+    /// Ends a CLI session taken out of the worker's state.
+    pub(crate) async fn end_cli(cli: Option<Arc<Cli>>) {
         if let Some(cli) = cli {
             let _ = tokio::time::timeout(Duration::from_secs(2), cli.session.interrupt()).await;
             cli.session.close().await;
@@ -1527,6 +1565,10 @@ impl SessionManager {
             };
             tokio::select! {
                 event = events.recv() => match event {
+                    // It only shows the worker is alive: never stored.
+                    Some(event @ ProviderEvent::Progress { .. }) => {
+                        live.note_event(&cli, &event).await;
+                    }
                     Some(event) if is_delta(&event) => {
                         live.note_event(&cli, &event).await;
                         merge_delta(&mut deltas, event);
@@ -1555,14 +1597,14 @@ impl SessionManager {
         }
         self.record_worker_events(&live.id, deltas).await;
         self.grants.revoke_owner(&cli.owner);
-        let stopping = {
+        let (stopping, from) = {
             let mut state = live.state.lock().await;
             if state.cli.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cli)) {
                 state.cli = None;
             }
             state.busy = false;
             state.question = None;
-            state.stopping
+            (state.stopping, state.generation)
         };
         cli.ended.cancel();
         if !stopping
@@ -1577,7 +1619,7 @@ impl SessionManager {
             });
             let manager = self.arc();
             let live = live.clone();
-            self.spawn(async move { manager.hand_off(&live, end).await });
+            self.spawn(async move { manager.hand_off(&live, end, from).await });
         }
     }
 
@@ -1716,7 +1758,7 @@ impl SessionManager {
             live.state.lock().await.stopping = true;
             let manager = self.arc();
             let live = live.clone();
-            self.spawn(async move { manager.hand_off(&live, end).await });
+            self.spawn(async move { manager.hand_off(&live, end, from).await });
             return;
         }
         if status == TurnStatus::Interrupted {
@@ -2629,8 +2671,9 @@ impl SessionManager {
             // Paused by hand after its model was cut off.
             self.set_task_state(&conversation_id, &task_id, TaskState::Running)
                 .await?;
+            let from = live.generation().await;
             let manager = self.arc();
-            self.spawn(async move { manager.hand_off(&live, end).await });
+            self.spawn(async move { manager.hand_off(&live, end, from).await });
             return Ok(());
         }
         {
@@ -3103,5 +3146,38 @@ mod tests {
         // findings may come after the report.
         assert!(!checks_a_change(&task("verify")));
         assert!(!checks_a_change(&task("scout")));
+    }
+
+    #[tokio::test]
+    async fn a_stall_counts_only_once_its_session_is_taken() {
+        let live = TaskLive::new(TaskId("t1".into()), ConversationId("c1".into()));
+        live.set_cutoff(AttemptEnd::Error {
+            kind: brigadier_providers::ErrorKind::Auth,
+            message: "logged out".into(),
+        })
+        .await;
+        // No longer due (the worker moved on): nothing is taken or counted.
+        assert!(live.detach_stalled(|_| false, true).await.is_none());
+        assert_eq!(live.watch(0).await.stalls, 0);
+        assert!(!live.watch(0).await.stopping);
+        // Taken for a fresh session: a stall of the attempt, the cut-off left for later.
+        let (cli, cutoff) = live.detach_stalled(|_| true, true).await.expect("taken");
+        assert!(cli.is_none() && cutoff.is_none());
+        let watch = live.watch(0).await;
+        assert_eq!(watch.stalls, 1);
+        assert!(watch.stopping);
+        // Taken for another model: the cut-off wins, and no stall is counted.
+        let (_, cutoff) = live.detach_stalled(|_| true, false).await.expect("taken");
+        assert!(matches!(cutoff, Some(AttemptEnd::Error { .. })));
+        assert_eq!(live.watch(0).await.stalls, 1);
+    }
+
+    #[tokio::test]
+    async fn a_nudge_no_longer_due_is_not_sent_or_counted() {
+        let live = TaskLive::new(TaskId("t1".into()), ConversationId("c1".into()));
+        assert_eq!(live.nudge_stall(|_| false, "carry on".into()).await, None);
+        // Without a CLI there is nothing to nudge either.
+        assert_eq!(live.nudge_stall(|_| true, "carry on".into()).await, None);
+        assert_eq!(live.watch(0).await.nudged_at_ms, None);
     }
 }

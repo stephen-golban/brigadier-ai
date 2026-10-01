@@ -21,13 +21,17 @@
 //!   "Waiting on you" (over when the card is answered or expires), with one desktop
 //!   notification.
 //!
-//! Each action is checked against the CLI session it was decided for, so a session that
-//! moved on meanwhile is never closed, and each is logged under "Decided for you". A debug
-//! build scales every threshold with `BRIGADIER_STALL_SECS` (the silence before a nudge, in
-//! seconds), so the watchdog can be tried live.
+//! Each action on a worker is checked again right before it is taken ([`still_due`]): the
+//! same CLI session, nothing heard from it since, its task still running and waiting for
+//! nothing. So a worker that moved on meanwhile is never closed, and a restart is one with
+//! the other hand-ons and hand-overs (under the task's `reroute` lock). Each runs in a task of
+//! its own, so a CLI slow to take a nudge holds up only itself. Each is logged under
+//! "Decided for you". A debug build scales every threshold with `BRIGADIER_STALL_SECS` (the
+//! silence before a nudge, in seconds), so the watchdog can be tried live.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use brigadier_providers::{ErrorKind, NoticeLevel, ProviderEvent};
@@ -185,6 +189,31 @@ pub(crate) fn stall_verdict(
         timing.silent
     };
     (now - watch.last_event_ms >= quiet).then_some(StallVerdict::Nudge)
+}
+
+/// Whether `decided`, the action decided on the worker as `seen`, still holds for it as it
+/// is now (`current`, with `verdict` what [`stall_verdict`] says of it now): the same CLI
+/// session, nothing heard from it and no nudge or stall since, and the same verdict (its task
+/// still starting or running, a turn under way, nothing it waits for). Rechecked right before
+/// acting, since the worker may have moved on after the round looked.
+pub(crate) fn still_due(
+    decided: StallVerdict,
+    seen: &WorkerWatch,
+    current: &WorkerWatch,
+    verdict: Option<StallVerdict>,
+) -> bool {
+    current.generation == seen.generation
+        && current.last_event_ms == seen.last_event_ms
+        && current.nudged_at_ms == seen.nudged_at_ms
+        && current.stalls == seen.stalls
+        && verdict == Some(decided)
+}
+
+/// Whether a permission card of `task` waits for the user.
+fn card_open(board: &Board, task: &TaskId) -> bool {
+    board.approvals.values().any(|approval| {
+        approval.task_id.as_ref() == Some(task) && approval.state == CardState::Pending
+    })
 }
 
 /// What is wrong with a gate round nobody decided.
@@ -383,7 +412,9 @@ impl SessionManager {
         }
     }
 
-    /// Acts on a worker that stopped moving.
+    /// Acts on a worker that stopped moving: in a task of its own, so a CLI slow to take a
+    /// nudge or to close holds up neither the round nor the other workers; one action per
+    /// worker at a time.
     async fn watch_worker(
         &self,
         live: &Arc<TaskLive>,
@@ -395,21 +426,42 @@ impl SessionManager {
         if task.state.is_final() {
             return;
         }
-        let card_open = board.approvals.values().any(|approval| {
-            approval.task_id.as_ref() == Some(&task.id) && approval.state == CardState::Pending
-        });
         let watch = live.watch(now).await;
         let Some(verdict) = stall_verdict(
             task.state,
             task.quota_wait.is_some(),
-            card_open,
+            card_open(board, &task.id),
             &watch,
             timing,
             now,
         ) else {
             return;
         };
-        let silent = now - watch.last_event_ms;
+        if live.watchdog_busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let busy = Busy(live.clone());
+        let manager = self.arc();
+        let (task, timing) = (task.clone(), *timing);
+        self.spawn(async move {
+            manager
+                .act_on_worker(&busy.0, &task, verdict, &watch, &timing, now)
+                .await;
+        });
+    }
+
+    /// Takes `verdict` on the worker of `task`, decided at `now` on the worker as `seen`, if
+    /// it still holds ([`still_due`]).
+    async fn act_on_worker(
+        &self,
+        live: &Arc<TaskLive>,
+        task: &Task,
+        verdict: StallVerdict,
+        seen: &WorkerWatch,
+        timing: &Timing,
+        now: i64,
+    ) {
+        let silent = now - seen.last_event_ms;
         let n = task.number;
         match verdict {
             StallVerdict::Nudge => {
@@ -417,27 +469,52 @@ impl SessionManager {
                     "[Brigadier] Nothing has come from you for {}. If a command is hanging, stop it and run it again with a timeout, or in the background. If you are stuck, say why in submit_report. Otherwise carry on.",
                     spoken(silent)
                 );
-                if !live.nudge_stall(watch.generation, text).await {
+                let Some((state, quota_wait, card)) = self.task_now(live).await else {
                     return;
+                };
+                let due = |current: &WorkerWatch| {
+                    let verdict_now =
+                        stall_verdict(state, quota_wait, card, current, timing, now_ms());
+                    still_due(verdict, seen, current, verdict_now)
+                };
+                match live.nudge_stall(due, text).await {
+                    None => {}
+                    Some(true) => {
+                        tracing::info!(task = %task.id, silent, "nudged a silent worker");
+                        self.watchdog_notice(
+                            task,
+                            format!(
+                                "No activity for {}: asked the worker to carry on or report.",
+                                spoken(silent)
+                            ),
+                        )
+                        .await;
+                        self.decided_for_task(
+                            task,
+                            format!("Nudged task-{n}: no activity for {}", spoken(silent)),
+                            "A worker silent this long is usually stuck on a command; it was asked to carry on or report what stops it.".into(),
+                        )
+                        .await;
+                    }
+                    Some(false) => {
+                        self.watchdog_notice(
+                            task,
+                            format!(
+                                "No activity for {}, and its CLI didn't take the nudge: a fresh session takes over if it stays silent.",
+                                spoken(silent)
+                            ),
+                        )
+                        .await;
+                    }
                 }
-                tracing::info!(task = %task.id, silent, "nudged a silent worker");
-                self.watchdog_notice(
-                    task,
-                    format!(
-                        "No activity for {}: asked the worker to carry on or report.",
-                        spoken(silent)
-                    ),
-                )
-                .await;
-                self.decided_for_task(
-                    task,
-                    format!("Nudged task-{n}: no activity for {}", spoken(silent)),
-                    "A worker silent this long is usually stuck on a command; it was asked to carry on or report what stops it.".into(),
-                )
-                .await;
             }
             StallVerdict::HandOver => {
-                if !live.claim_stall(watch.generation).await {
+                let _handing = live.reroute.lock().await;
+                if self
+                    .take_stalled(live, verdict, seen, timing)
+                    .await
+                    .is_none()
+                {
                     return;
                 }
                 tracing::info!(task = %task.id, silent, "a silent worker continues in a fresh session");
@@ -458,28 +535,17 @@ impl SessionManager {
                     ),
                 )
                 .await;
-                let manager = self.arc();
-                let (live, task) = (live.clone(), task.clone());
-                let from = watch.generation;
-                self.spawn(async move {
-                    if let Err(err) = manager
-                        .hand_over_worker(
-                            &live,
-                            &task,
-                            from,
-                            None,
-                            None,
-                            Handover::Stalled { silent },
-                        )
-                        .await
-                    {
-                        let reason = format!("The task could not continue after it stalled: {err}");
-                        manager.worker_failed(&task, &reason).await;
-                    }
-                });
+                if let Err(err) = self
+                    .hand_over_held(live, task, seen.generation, Handover::Stalled { silent })
+                    .await
+                {
+                    let reason = format!("The task could not continue after it stalled: {err}");
+                    self.worker_failed(task, &reason).await;
+                }
             }
             StallVerdict::Replace(why) => {
-                let Some(cutoff) = live.claim_replace(watch.generation).await else {
+                let _handing = live.reroute.lock().await;
+                let Some(cutoff) = self.take_stalled(live, verdict, seen, timing).await else {
                     return;
                 };
                 let (end, what, because) = match why {
@@ -507,13 +573,49 @@ impl SessionManager {
                 self.watchdog_notice(task, format!("{because} Another model takes over."))
                     .await;
                 self.decided_for_task(task, what, because.into()).await;
-                let manager = self.arc();
-                let live = live.clone();
                 // A model cut off meanwhile hands on for that.
-                let end = cutoff.unwrap_or(end);
-                self.spawn(async move { manager.hand_off(&live, end).await });
+                self.hand_off_held(live, cutoff.unwrap_or(end)).await;
             }
         }
+    }
+
+    /// Closes the CLI session of a stalled worker for a hand-over or hand-off, if `verdict`
+    /// (decided on the worker as `seen`) still holds now, with its task as the board has it:
+    /// still starting or running, no card or quota it waits for, nothing reported meanwhile
+    /// (the report lock is held for the check). The caller holds `reroute`, so no other
+    /// hand-on or hand-over runs meanwhile. Answers a pending cut-off (for another model);
+    /// `None` when the action is no longer due.
+    async fn take_stalled(
+        &self,
+        live: &Arc<TaskLive>,
+        verdict: StallVerdict,
+        seen: &WorkerWatch,
+        timing: &Timing,
+    ) -> Option<Option<AttemptEnd>> {
+        let settled = live.settle.lock().await;
+        let (state, quota_wait, card) = self.task_now(live).await?;
+        let due = |current: &WorkerWatch| {
+            let verdict_now = stall_verdict(state, quota_wait, card, current, timing, now_ms());
+            still_due(verdict, seen, current, verdict_now)
+        };
+        let (cli, cutoff) = live
+            .detach_stalled(due, verdict == StallVerdict::HandOver)
+            .await?;
+        drop(settled);
+        TaskLive::end_cli(cli).await;
+        Some(cutoff)
+    }
+
+    /// The task of `live` as the board has it now: its state, whether it waits for quota, and
+    /// whether a permission card of it waits for the user.
+    async fn task_now(&self, live: &TaskLive) -> Option<(TaskState, bool, bool)> {
+        let board = self.core.board(&live.conversation_id).await.ok()?;
+        let task = board.tasks.get(&live.id)?;
+        Some((
+            task.state,
+            task.quota_wait.is_some(),
+            card_open(&board, &task.id),
+        ))
     }
 
     /// Records a watchdog action in the task's transcript.
@@ -635,6 +737,15 @@ impl SessionManager {
                 }
             }
         }
+    }
+}
+
+/// Marks a watchdog action on a worker under way, until it is over.
+struct Busy(Arc<TaskLive>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.watchdog_busy.store(false, Ordering::Release);
     }
 }
 
@@ -857,6 +968,93 @@ mod tests {
             ..gone
         };
         assert_eq!(verdict(TaskState::Running, &unseen, 60 * MIN), None);
+    }
+
+    #[test]
+    fn a_nudge_counts_whether_or_not_it_was_delivered() {
+        // Recorded at the time the nudge began, even when its CLI never took it: the
+        // hand-over follows the grace.
+        let mut watch = working();
+        watch.nudged_at_ms = Some(10 * MIN);
+        assert_eq!(
+            verdict(TaskState::Running, &watch, 20 * MIN),
+            Some(StallVerdict::HandOver)
+        );
+        // Heard from while the nudge was on its way: it isn't stuck.
+        watch.last_event_ms = 10 * MIN + 1;
+        assert_eq!(verdict(TaskState::Running, &watch, 20 * MIN), None);
+    }
+
+    #[test]
+    fn an_action_is_taken_only_while_it_still_holds() {
+        let t = timing();
+        let now = 20 * MIN;
+        let seen = WorkerWatch {
+            nudged_at_ms: Some(10 * MIN),
+            ..working()
+        };
+        let due = |current: &WorkerWatch, state: TaskState, quota_wait: bool, card: bool| {
+            let verdict_now = stall_verdict(state, quota_wait, card, current, &t, now);
+            still_due(StallVerdict::HandOver, &seen, current, verdict_now)
+        };
+        assert!(due(&seen, TaskState::Running, false, false));
+        let changed = |change: fn(&mut WorkerWatch)| {
+            let mut current = seen.clone();
+            change(&mut current);
+            current
+        };
+        for (what, current) in [
+            // Heard from since (still before the nudge, so the verdict alone wouldn't tell).
+            ("activity", changed(|w| w.last_event_ms = MIN)),
+            ("another nudge", changed(|w| w.nudged_at_ms = Some(5 * MIN))),
+            ("a fresh session", changed(|w| w.generation = 2)),
+            ("a stall counted", changed(|w| w.stalls = 1)),
+            ("a question", changed(|w| w.question = true)),
+            ("the turn ended", changed(|w| w.busy = false)),
+            ("being closed", changed(|w| w.stopping = true)),
+        ] {
+            assert!(!due(&current, TaskState::Running, false, false), "{what}");
+        }
+        // Its task reported, waits for a card or for quota meanwhile.
+        for state in [
+            TaskState::Reported,
+            TaskState::Reviewing,
+            TaskState::Paused,
+            TaskState::Stopped,
+        ] {
+            assert!(!due(&seen, state, false, false), "{state:?}");
+        }
+        assert!(!due(&seen, TaskState::Running, false, true));
+        assert!(!due(&seen, TaskState::Running, true, false));
+    }
+
+    #[test]
+    fn a_replacement_holds_only_while_the_cli_stays_gone() {
+        let t = timing();
+        let now = 5 * MIN;
+        let seen = WorkerWatch {
+            alive: false,
+            orphaned_at_ms: Some(0),
+            ..working()
+        };
+        let decided = StallVerdict::Replace(Replaced::Exited);
+        let due = |current: &WorkerWatch| {
+            let verdict_now = stall_verdict(TaskState::Running, false, false, current, &t, now);
+            still_due(decided, &seen, current, verdict_now)
+        };
+        assert!(due(&seen));
+        // Another hand-on took it meanwhile (its session closing), or started a new one.
+        let closing = WorkerWatch {
+            stopping: true,
+            ..seen.clone()
+        };
+        assert!(!due(&closing));
+        let fresh = WorkerWatch {
+            alive: true,
+            generation: 2,
+            ..seen.clone()
+        };
+        assert!(!due(&fresh));
     }
 
     fn task(id: &str, number: u32, state: TaskState, updated: i64) -> Task {
