@@ -609,15 +609,28 @@ impl Runtime {
         if changed {
             self.record_overview(overview.clone()).await;
         }
-        let (models, quota) = tokio::join!(provider.models(), provider.quota());
+        // The model list (or its failure) is published as soon as it is known: the startup
+        // screen waits for it, and must not wait for a slow quota request too.
+        let models = async {
+            let models = provider.models().await;
+            let mut with_models = overview.clone();
+            match &models {
+                Ok(catalog) => {
+                    let dir = self.cache_dir.clone();
+                    let cached = catalog.clone();
+                    let _ =
+                        tokio::task::spawn_blocking(move || write_model_cache(&dir, &cached)).await;
+                    with_models.models = Some(catalog.clone());
+                }
+                Err(err) => with_models.error = Some(format!("models: {err}")),
+            }
+            self.record_overview(with_models).await;
+            models
+        };
+        let (models, quota) = tokio::join!(models, provider.quota());
         let mut errors = Vec::new();
         match models {
-            Ok(catalog) => {
-                let dir = self.cache_dir.clone();
-                let cached = catalog.clone();
-                let _ = tokio::task::spawn_blocking(move || write_model_cache(&dir, &cached)).await;
-                overview.models = Some(catalog);
-            }
+            Ok(catalog) => overview.models = Some(catalog),
             Err(err) => errors.push(format!("models: {err}")),
         }
         match quota {
