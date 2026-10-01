@@ -152,7 +152,8 @@ pub(crate) fn hits(
         })
         .collect();
     ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    ranked.truncate(limit);
+    // Keep all candidates until history has resolved to current nodes and duplicate ids
+    // have collapsed. Several matching revisions must use only one result slot.
 
     // Direct hits first, then what they bring, each just below its source.
     let mut scored: HashMap<String, (f64, bool)> = HashMap::new();

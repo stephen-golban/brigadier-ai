@@ -86,6 +86,40 @@ fn query(brain: &Brain, text: &str, history: bool) -> Vec<BrainHit> {
 }
 
 #[test]
+fn matching_history_does_not_use_up_the_current_result_limit() {
+    let brain = TestBrain::new();
+    let mut rule = String::new();
+    for revision in 0..16 {
+        rule = brain
+            .record(node(
+                NodeKind::Convention,
+                Some("convention:history"),
+                "Needle",
+                &format!("revision {revision}"),
+            ))
+            .unwrap();
+    }
+    let module = brain
+        .record(node(
+            NodeKind::Module,
+            Some("module:needle"),
+            "Module",
+            "Needle",
+        ))
+        .unwrap();
+    let answer = brain
+        .query(&BrainQuery {
+            text: "Needle".into(),
+            limit: Some(12),
+            ..BrainQuery::default()
+        })
+        .unwrap();
+    assert_eq!(answer.hits.len(), 2);
+    assert!(answer.hits.iter().any(|hit| hit.node.id == rule));
+    assert!(answer.hits.iter().any(|hit| hit.node.id == module));
+}
+
+#[test]
 fn a_rewritten_rule_keeps_its_earlier_text_as_history() {
     let brain = TestBrain::new();
     let first = node(
