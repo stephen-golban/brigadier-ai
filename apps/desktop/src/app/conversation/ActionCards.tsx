@@ -18,6 +18,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 import { useAction } from "@/app/conversation/useAction";
@@ -57,6 +58,31 @@ import { useBoard } from "@/state/board";
  */
 
 export type PendingAction = { type: "approval" | "question" | "plan"; id: string };
+
+const NOTHING_ASIDE: readonly string[] = [];
+
+/** The cards put aside with × (their ids), by conversation. */
+const useAside = create<{ byConversation: Readonly<Record<string, readonly string[]>> }>(() => ({
+  byConversation: {},
+}));
+
+/** The conversation's cards put aside with ×. */
+export function useAsideCards(conversationId: string | null): readonly string[] {
+  return useAside((s) => (conversationId ? s.byConversation[conversationId] : undefined) ?? NOTHING_ASIDE);
+}
+
+export function setAsideCards(conversationId: string, ids: readonly string[]): void {
+  useAside.setState((s) => ({ byConversation: { ...s.byConversation, [conversationId]: ids } }));
+}
+
+/** Brings a card put aside back to the rail ("Waiting on you" links to it). */
+export function showCard(conversationId: string, cardId: string): void {
+  const aside = useAside.getState().byConversation[conversationId] ?? NOTHING_ASIDE;
+  setAsideCards(
+    conversationId,
+    aside.filter((id) => id !== cardId),
+  );
+}
 
 /** What an answer to a skipped question says, so the asker carries on. */
 const SKIPPED = "Skipped: use your best judgment.";

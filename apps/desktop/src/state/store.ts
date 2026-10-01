@@ -566,6 +566,10 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     // A Chat's Memory chips live on its board; Brain jobs in the Inspector's Brain tab.
     case "memoryUpdated":
     case "brainJobUpdated":
+    // "Decided for you" and "Waiting on you" live on the board.
+    case "decidedForYou":
+    case "waitingOnYou":
+    case "waitingResolved":
       return slice;
   }
 }

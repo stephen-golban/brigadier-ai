@@ -21,6 +21,7 @@ mod branches;
 mod cards;
 mod cold;
 mod conversation;
+mod decisions;
 pub mod disk;
 mod fallback;
 #[cfg(debug_assertions)]
@@ -112,6 +113,9 @@ pub struct SessionManager {
     /// Held while a task is read, changed and recorded (`update_task`), so two writers can't
     /// each write back a copy that lacks the other's change.
     task_writes: tokio::sync::Mutex<()>,
+    /// Held while "Waiting on you" items are read, added and resolved, so one is never added
+    /// twice.
+    waiting: tokio::sync::Mutex<()>,
     waiters: Waiters,
     admitting: AtomicBool,
     background: TaskTracker,
@@ -167,6 +171,7 @@ impl SessionManager {
             session_worktrees: tokio::sync::Mutex::new(()),
             gates: tokio::sync::Mutex::new(()),
             task_writes: tokio::sync::Mutex::new(()),
+            waiting: tokio::sync::Mutex::new(()),
             waiters: Waiters::default(),
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),

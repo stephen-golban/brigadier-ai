@@ -395,6 +395,30 @@ pub struct FinishSession {
     pub message: Option<String>,
 }
 
+/// What `note_for_user` records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteKind {
+    /// A judgement call you made on the user's behalf: it shows under "Decided for you".
+    Decided,
+    /// Something only the user can do: it shows under "Waiting on you" until they mark it
+    /// done.
+    Waiting,
+}
+
+/// `note_for_user`: keep the user's session summary current.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoteForUser {
+    pub kind: NoteKind,
+    /// One line: what you decided ("Kept the v1 endpoint for old clients"), or what the user
+    /// must do ("Add STRIPE_KEY to .env").
+    pub what: String,
+    /// For a decision: why, in a sentence.
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
 /// A tool call from an orchestrator.
 #[derive(Debug, Clone)]
 pub enum OrchestratorCall {
@@ -412,6 +436,7 @@ pub enum OrchestratorCall {
     RequestApproval(RequestApproval),
     AcceptTask(AcceptTask),
     FinishSession(FinishSession),
+    NoteForUser(NoteForUser),
     ListTasks,
 }
 
@@ -433,6 +458,7 @@ impl OrchestratorCall {
             Self::RequestApproval(_) => "request_approval",
             Self::AcceptTask(_) => "accept_task",
             Self::FinishSession(_) => "finish_session",
+            Self::NoteForUser(_) => "note_for_user",
             Self::ListTasks => "list_tasks",
         }
     }

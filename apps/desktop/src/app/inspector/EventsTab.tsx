@@ -106,6 +106,12 @@ function summary(event: DomainEvent): string {
       return `${event.job.kind} ${event.job.state.type}`;
     case "memoryUpdated":
       return `${event.memory.forgotten ? "forgot" : "saved"} “${event.memory.text.slice(0, 80)}”`;
+    case "decidedForYou":
+      return event.decision.what;
+    case "waitingOnYou":
+      return event.item.what;
+    case "waitingResolved":
+      return `done by ${event.by}`;
   }
 }
 

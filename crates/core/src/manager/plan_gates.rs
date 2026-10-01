@@ -226,6 +226,8 @@ impl SessionManager {
             plan.gate = Some(gate.clone());
             // Under "Ask for approval" the user decides: the review only shows on the card.
             let decides = matches!(plan.state, PlanState::InReview { .. });
+            // What it decided on the user's behalf, and why ("Decided for you").
+            let mut decision: Option<(String, String)> = None;
             let envelope = match decided {
                 None => None,
                 Some(GateOutcome::Passed) => {
@@ -239,18 +241,47 @@ impl SessionManager {
                             by: PlanApprover::Review,
                         };
                         plan.decided_at_ms = Some(now_ms());
+                        decision = Some((
+                            format!("Approved the plan \u{201c}{}\u{201d}", plan.title),
+                            match plan.review_notes.len() {
+                                0 => "An independent review from another vendor approved it.".to_owned(),
+                                notes => format!(
+                                    "An independent review from another vendor approved it, with {notes} note{}.",
+                                    if notes == 1 { "" } else { "s" }
+                                ),
+                            },
+                        ));
                         approved_text(&plan, &reviewers)
                     })
                 }
                 Some(GateOutcome::Failed) if decides => {
                     let listed = findings_list(&gate.findings, &reviewers);
+                    let found = gate
+                        .findings
+                        .iter()
+                        .map(|f| format!("{}: {}", f.id, f.text))
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     if gate.round < PLAN_ROUNDS {
+                        decision = Some((
+                            format!(
+                                "Sent the plan \u{201c}{}\u{201d} back for revision",
+                                plan.title
+                            ),
+                            format!("Its independent review asked for changes. {found}"),
+                        ));
                         plan.state = PlanState::Revising;
                         Some(format!(
                             "[plan review] The independent review (round {} of {PLAN_ROUNDS}) asked for changes to the plan \"{}\" (id {}), so it is not approved:\n{listed}\n[/plan review] Revise it: call propose_plan with the revised steps, revises: \"{}\", and responses with one line per finding: \"F1 accepted: what you changed\" or \"F2 declined: why\". The revision is reviewed again; don't start write tasks before it is approved.",
                             gate.round, plan.title, plan.id, plan.id
                         ))
                     } else {
+                        decision = Some((
+                            format!("Did not approve the plan \u{201c}{}\u{201d}", plan.title),
+                            format!(
+                                "It still had problems after {PLAN_ROUNDS} review rounds; the orchestrator asks you or makes it smaller. {found}"
+                            ),
+                        ));
                         plan.state = PlanState::Rejected {
                             message: Some(format!(
                                 "Not approved after {PLAN_ROUNDS} review rounds."
@@ -273,6 +304,17 @@ impl SessionManager {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
+                    decision = Some((
+                        format!("Did not approve the plan \u{201c}{}\u{201d}", plan.title),
+                        format!(
+                            "Its independent review could not run. {}",
+                            reasons
+                                .lines()
+                                .map(|line| line.trim_start_matches("- "))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                    ));
                     plan.state = PlanState::Rejected {
                         message: Some(format!("The review could not run.\n{reasons}")),
                     };
@@ -288,9 +330,12 @@ impl SessionManager {
                 tracing::warn!(plan = %plan.id, error = %err, "could not record a plan review");
                 return;
             }
-            envelope.map(|text| (plan, text))
+            envelope.map(|text| (plan, text, decision))
         };
-        if let Some((plan, text)) = envelope {
+        if let Some((plan, text, decision)) = envelope {
+            if let Some((what, why)) = decision {
+                self.decided_for_plan(&plan, what, why).await;
+            }
             self.deliver_for(
                 &plan.conversation_id,
                 Envelope {

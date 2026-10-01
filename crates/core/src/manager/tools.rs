@@ -8,10 +8,11 @@ use super::SessionManager;
 use super::prompts;
 use super::workers::route_label;
 use crate::model::{ConversationId, DomainEvent, PermissionLevel, Setup};
-use crate::tools::{OrchestratorCall, ToolReply, WorkerCall};
+use crate::tools::{NoteKind, OrchestratorCall, ToolReply, WorkerCall};
 use crate::work::{
-    ApprovalSubject, AttachmentRef, CardId, InjectionKind, OrchestratorStep, OrchestratorStepKind,
-    Plan, PlanApprover, PlanState, PlanStep, QuestionKind, Task, TaskId, TaskKind,
+    ApprovalSubject, AttachmentRef, CardId, DecisionSource, InjectionKind, OrchestratorStep,
+    OrchestratorStepKind, Plan, PlanApprover, PlanState, PlanStep, QuestionKind, Task, TaskId,
+    TaskKind, WaitingSource,
 };
 use crate::{Error, Result, now_ms};
 
@@ -292,6 +293,7 @@ impl SessionManager {
                 self.check_plan_mode(id)?;
                 self.finish_session(id, args.message).await
             }
+            OrchestratorCall::NoteForUser(args) => self.note_for_user(id, args).await,
             OrchestratorCall::ListTasks => {
                 let tasks = self.core.tasks(id).await?;
                 if tasks.is_empty() {
@@ -652,6 +654,18 @@ impl SessionManager {
                 plan.decided_at_ms = Some(now_ms());
             }
             self.store_plan(&plan).await?;
+            if !user_decides {
+                self.decided_for_plan(
+                    &plan,
+                    format!("Approved the plan \u{201c}{}\u{201d}", plan.title),
+                    if approved.is_some() {
+                        "It adds or changes no step of the plan already approved.".into()
+                    } else {
+                        "A one-step plan that isn't marked risky needs no review.".into()
+                    },
+                )
+                .await;
+            }
             return Ok(if user_decides {
                 "The plan is shown to the user. Wait for their decision (it arrives as a message) before starting implement or merge tasks.".into()
             } else {
@@ -710,6 +724,44 @@ impl SessionManager {
                 "{reviewed} before Brigadier approves it on the user's behalf. The outcome arrives as a message; don't start write tasks before it."
             )
         })
+    }
+
+    /// `note_for_user`: a judgement call for "Decided for you", or something only the user
+    /// can do for "Waiting on you", under the request the orchestrator serves.
+    async fn note_for_user(
+        &self,
+        id: &ConversationId,
+        args: crate::tools::NoteForUser,
+    ) -> Result<String> {
+        let what = args.what.trim();
+        if what.is_empty() {
+            return Err(Error::Invalid("`what` is empty".into()));
+        }
+        let request = self.request_for(id, None).await;
+        match args.kind {
+            NoteKind::Decided => {
+                self.record_decision(
+                    id,
+                    request,
+                    DecisionSource::Orchestrator,
+                    what.to_owned(),
+                    args.why.unwrap_or_default(),
+                )
+                .await;
+                Ok("Noted under Decided for you.".into())
+            }
+            NoteKind::Waiting => {
+                let added = self
+                    .wait_on_user(id, request, WaitingSource::Orchestrator, what)
+                    .await?;
+                Ok(if added {
+                    "Listed under Waiting on you. You hear when the user marks it done; carry on with anything that doesn't depend on it."
+                } else {
+                    "It is already listed under Waiting on you."
+                }
+                .into())
+            }
+        }
     }
 
     /// The user's attachments in this conversation, by id.

@@ -3,6 +3,7 @@ import type {
   Approval,
   Compaction,
   CompactionState,
+  Decision,
   Message,
   ModelChoice,
   OrchestratorStep,
@@ -49,9 +50,15 @@ export type BlockStep = {
   position: number;
 };
 
-/** Something the orchestrator did ("Sent message to …"), in the order it happened. */
+/** Something decided on the user's behalf, shown as a quiet row among the orchestrator's. */
+export type DecidedStep = { type: "decided"; what: string; why: string };
+
+/**
+ * Something the orchestrator did ("Sent message to …"), or Brigadier decided for the user, in
+ * the order it happened.
+ */
 export type BlockOrchestratorStep = {
-  kind: OrchestratorStepKind;
+  kind: OrchestratorStepKind | DecidedStep;
   position: number;
 };
 
@@ -113,6 +120,7 @@ export type BoardDigest = {
   requests: Readonly<Record<string, UserRequest>>;
   workerSteps: readonly WorkerStep[];
   orchestratorSteps: readonly OrchestratorStep[];
+  decisions: readonly Decision[];
   compactions: Readonly<Record<string, Compaction>>;
   runRequest: string | null;
   streaming: Board["streaming"];
@@ -251,6 +259,18 @@ export function buildBlocks(
       requestId: step.requestId,
       step: { kind: step.kind, position: step.position },
       atMs: step.atMs,
+    });
+  }
+  for (const decision of board.decisions) {
+    placed.push({
+      kind: "orchestrator",
+      position: decision.position,
+      requestId: decision.requestId,
+      step: {
+        kind: { type: "decided", what: decision.what, why: decision.why },
+        position: decision.position,
+      },
+      atMs: decision.atMs,
     });
   }
   for (const compaction of Object.values(board.compactions)) {
@@ -677,6 +697,7 @@ const EMPTY_WORK: BoardDigest = {
   requests: {},
   workerSteps: [],
   orchestratorSteps: [],
+  decisions: [],
   compactions: {},
   runRequest: null,
   streaming: null,

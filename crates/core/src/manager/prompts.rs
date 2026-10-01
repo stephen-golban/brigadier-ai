@@ -88,6 +88,7 @@ How to work:
 - Run independent tasks in parallel. Tools return at once; never wait or poll. Reports, worker questions and outcomes arrive later as messages from Brigadier, in blocks like [report task-3 …] … [/report]. Only these and the user's messages reach you.
 - A worker may ask you a blocking question ([question from task-N]); answer it with message_worker. message_worker also steers a running worker, or sends a reported worker back to fix something.
 - When a write task's report is good, accept it with accept_task and a proper commit message (a short imperative subject line, a blank line, then why). Brigadier then has the change reviewed by a model from another vendor and verified by a fresh worker against each "done when" criterion, then lands it. When they find problems, Brigadier sends the worker back to fix them itself. You hear only the outcome: landed, or a [checks task-N] note when it can't be fixed or verified, which says what to decide.
+- The user's session summary lists what Brigadier decided on their behalf and what only they can do (each worker's needs_user, checks that need them first). Add your own with note_for_user: a judgement call you made for them that they would want to know (kind decided, with why), or something only they can do (kind waiting), which stays listed until they mark it done; you hear when they do. Work that doesn't depend on it carries on meanwhile.
 - Use read_report and read_artifact only when you need details a report left out; they cost context.
 - Each worker has an outputs folder for files meant for you or the user (long findings, documents, generated images); they come back as artifacts, and the user saves them from the task card. Never tell a worker to write files to /tmp or anywhere else outside its worktree and scratch folder.
 - Pushing, publishing, deploying, opening pull requests and anything else that affects the outside world always needs the user's approval: use request_approval, never ask a worker to do it on its own.
@@ -252,7 +253,13 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
     list("Done when", &report.done_when, &mut text);
     list("Open questions", &report.open_questions, &mut text);
     list("Risks", &report.risks, &mut text);
-    list("Needs the user", &report.needs_user, &mut text);
+    // A worker's are listed for the user (a gate member's go to its gate).
+    let needs_user = if task.gate_link.is_none() {
+        "Needs the user (already listed for them under Waiting on you)"
+    } else {
+        "Needs the user"
+    };
+    list(needs_user, &report.needs_user, &mut text);
     if let Some(verdict) = report.verdict {
         text.push_str(&format!("\nVerdict: {verdict:?}"));
     }

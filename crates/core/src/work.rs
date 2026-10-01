@@ -978,6 +978,94 @@ pub struct OrchestratorStep {
     pub position: i64,
 }
 
+// ----- decided for you, waiting on you ----------------------------------------------------
+
+/// What a decision made on the user's behalf is about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DecisionSource {
+    /// A task: its landing, a fix round, a permission declined, a stalled worker.
+    Task { task_id: TaskId },
+    /// A plan and its review.
+    Plan { plan_id: CardId },
+    /// A judgement call the orchestrator noted (`note_for_user`).
+    Orchestrator,
+}
+
+/// Something decided on the user's behalf (under "Approve for me" and "Full access"), and
+/// why: the summary card's "Decided for you", and a quiet row in the request's thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Decision {
+    pub id: String,
+    /// The user request it was made for.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    pub source: DecisionSource,
+    /// What was decided, in one line ("Landed task-3 “Add the flag”").
+    pub what: String,
+    /// Why, in a sentence or two; empty when the line says it all.
+    #[serde(default)]
+    pub why: String,
+    pub at_ms: i64,
+    /// Where it happened in the conversation's stream (set when the board reads it).
+    #[serde(default)]
+    pub position: i64,
+}
+
+/// Where something only the user can do came from, which also says when it is over without
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum WaitingSource {
+    /// A card nobody answered for long: it is over when the card is answered or expires.
+    Card { card_id: CardId },
+    /// A worker's report listed it under `needs_user`: it is over when the task is stopped,
+    /// or a later report of it no longer lists it.
+    Task { task_id: TaskId },
+    /// The checks of a task's change can't run until the user does it (its verifier's
+    /// `needs_user`): it is over when the task lands or ends.
+    Landing { task_id: TaskId },
+    /// The orchestrator noted it (`note_for_user`).
+    Orchestrator,
+}
+
+/// Something only the user can do, listed under "Waiting on you" until they mark it done or
+/// it is over without them. Its request waits while it is open; other work goes on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingItem {
+    pub id: String,
+    /// The user request it holds up.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    pub source: WaitingSource,
+    /// Its source and normalized text: an open item with the same key is the same item.
+    pub key: String,
+    /// What the user must do, in one line.
+    pub what: String,
+    pub created_at_ms: i64,
+}
+
+/// Who marked a "Waiting on you" item done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ResolvedBy {
+    /// The user clicked Done.
+    User,
+    /// It was over without them: its card settled, its task stopped or landed, or the
+    /// worker no longer listed it.
+    Brigadier,
+}
+
 // ----- compactions -----------------------------------------------------------------------
 
 /// Where a compaction stands.

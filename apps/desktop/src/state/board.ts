@@ -6,6 +6,7 @@ import type {
   Compaction,
   ContextUsage,
   ConversationView,
+  Decision,
   DiffStat,
   EventEnvelope,
   MemoryChange,
@@ -23,6 +24,7 @@ import type {
   UserRequest,
   Rating,
   RebirthThresholds,
+  WaitingItem,
   WorkerStep,
 } from "@/ipc/generated";
 
@@ -59,6 +61,10 @@ export type Board = {
   workerSteps: WorkerStep[];
   /** Every orchestrator step (messaged a worker, read a report, …), in stream order. */
   orchestratorSteps: OrchestratorStep[];
+  /** What was decided on the user's behalf, in stream order. */
+  decisions: Decision[];
+  /** What only the user can do and is not done yet, by id. */
+  waiting: Record<string, WaitingItem>;
   /** A Chat's context compactions, by id. */
   compactions: Record<string, Compaction>;
   /** The user's ratings of answers, by subject (a message id, or `task:<id>`). */
@@ -199,6 +205,8 @@ export function emptyBoard(conversationId: string): Board {
     requests: {},
     workerSteps: [],
     orchestratorSteps: [],
+    decisions: [],
+    waiting: {},
     compactions: {},
     ratings: {},
     queue: EMPTY_QUEUE,
@@ -242,6 +250,9 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "compactionUpdated",
   "messageRated",
   "memoryUpdated",
+  "decidedForYou",
+  "waitingOnYou",
+  "waitingResolved",
 ]);
 
 /** Conversation view reads in flight, each collecting the board events that arrive meanwhile. */
@@ -280,6 +291,8 @@ export function boardFromView(
     requests: byId(view.requests),
     workerSteps: view.workerSteps,
     orchestratorSteps: view.orchestratorSteps,
+    decisions: view.decisions,
+    waiting: byId(view.waiting),
     compactions: byId(view.compactions),
     ratings: view.ratings,
     queue: view.queue,
@@ -437,6 +450,18 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
             ...board,
             orchestratorSteps: [...board.orchestratorSteps, { ...event.step, position: streamSeq }],
           };
+    case "decidedForYou":
+      // Applied again after a view read: a decision is kept once.
+      return board.decisions.some((decision) => decision.id === event.decision.id)
+        ? board
+        : { ...board, decisions: [...board.decisions, { ...event.decision, position: streamSeq }] };
+    case "waitingOnYou":
+      return { ...board, waiting: { ...board.waiting, [event.item.id]: event.item } };
+    case "waitingResolved": {
+      if (!board.waiting[event.id]) return board;
+      const { [event.id]: _done, ...waiting } = board.waiting;
+      return { ...board, waiting };
+    }
     case "compactionUpdated":
       return { ...board, compactions: placed(board.compactions, event.compaction, envelope, board) };
     case "messageRated":
@@ -508,6 +533,7 @@ const TOOL_DOING: Readonly<Record<string, string>> = {
   finish_session: "Finishing the session",
   list_tasks: "Checking on the workers",
   route_follow_up: "Sorting your follow-up",
+  note_for_user: "Noting it for you",
   WebSearch: "Searching the web",
   WebFetch: "Reading a web page",
 };

@@ -2,9 +2,10 @@
 //!
 //! A request works while its turn runs, while an envelope or message for it waits for a turn,
 //! or while a task it started runs. It waits while something it opened needs the user (a
-//! card, a paused worker, a landing on hold). Otherwise it is done, or stopped or failed when
-//! its last turn ended that way. A done request works again when new work for it arrives
-//! (a late report, a worker's question), so its block in the thread stays one block.
+//! card, a paused worker, a landing on hold, something only the user can do). Otherwise it is
+//! done, or stopped or failed when its last turn ended that way. A done request works again
+//! when new work for it arrives (a late report, a worker's question), so its block in the
+//! thread stays one block.
 
 use std::collections::HashSet;
 
@@ -87,9 +88,16 @@ impl SessionManager {
 
     /// Brings every request of the conversation up to date with what runs and waits.
     pub(crate) async fn settle_requests(&self, conversation_id: &ConversationId) {
-        let Ok(board) = self.core.board(conversation_id).await else {
+        let Ok(mut board) = self.core.board(conversation_id).await else {
             return;
         };
+        // What waited on a card that is answered now is over.
+        if self.settle_card_waits(conversation_id, &board).await {
+            let Ok(now) = self.core.board(conversation_id).await else {
+                return;
+            };
+            board = now;
+        }
         if board.requests.is_empty() {
             return;
         }
@@ -260,13 +268,15 @@ fn tasks_in(board: &Board, request: &str, matches: impl Fn(TaskState) -> bool) -
         .any(|task| task.request_id.as_deref() == Some(request) && matches(task.state))
 }
 
-/// Whether something the request opened waits for the user.
+/// Whether something the request opened waits for the user: a card, a task, or something
+/// only the user can do ("Waiting on you").
 fn needs_user(board: &Board, request: &str) -> bool {
     let of = |id: &Option<String>| id.as_deref() == Some(request);
-    board
-        .approvals
-        .values()
-        .any(|a| of(&a.request_id) && a.state == CardState::Pending)
+    board.waiting.values().any(|item| of(&item.request_id))
+        || board
+            .approvals
+            .values()
+            .any(|a| of(&a.request_id) && a.state == CardState::Pending)
         || board
             .questions
             .values()

@@ -54,7 +54,7 @@ use crate::tools::Role;
 use crate::work::{
     ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, GateLink,
     InjectionKind, QuestionKind, QuotaWait, RepoAccess, Report, Route, Task, TaskId, TaskKind,
-    TaskState, TaskWorkspace, WorkerAccess,
+    TaskState, TaskWorkspace, WaitingSource, WorkerAccess,
 };
 use crate::{Error, Result, now_ms};
 
@@ -1697,10 +1697,10 @@ impl SessionManager {
         // Approve for me stays sandboxed and stops only for what only the user can decide:
         // Brigadier declines anything else outside the task's access on the user's behalf.
         // Outward actions always ask.
-        if route == PolicyRoute::AskUser
+        let declined_for_user = route == PolicyRoute::AskUser
             && !outward
-            && self.permission(&live.conversation_id) != PermissionLevel::AskForApproval
-        {
+            && self.permission(&live.conversation_id) != PermissionLevel::AskForApproval;
+        if declined_for_user {
             route = PolicyRoute::Deny;
         }
         match route {
@@ -1720,8 +1720,22 @@ impl SessionManager {
                     tracing::warn!(task = %live.id, error = %err, "could not answer an approval");
                     return;
                 }
+                let what = request
+                    .command
+                    .clone()
+                    .unwrap_or_else(|| request.tool.clone());
                 self.record_worker_resolution(&live.id, request.id, decision, Decider::Policy)
                     .await;
+                if declined_for_user
+                    && let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await
+                {
+                    self.decided_for_task(
+                        &task,
+                        format!("Declined task-{} a permission: {what}", task.number),
+                        "It was outside the task's sandbox (its worktree and scratch folder). Only outward actions, like a push, ask you.".into(),
+                    )
+                    .await;
+                }
             }
             PolicyRoute::AskUser => {
                 let what = request
@@ -1989,6 +2003,18 @@ impl SessionManager {
         let task = self.update_task(conversation_id, task_id, reported).await?;
         drop(settled);
         live.state.lock().await.nudged = true;
+        // What only the user can do is listed for them ("Waiting on you"); a later report
+        // that no longer lists an item ends it. A gate member's go to its gate.
+        if !reviewing {
+            self.sync_waiting(
+                &task,
+                WaitingSource::Task {
+                    task_id: task.id.clone(),
+                },
+                &report.needs_user,
+            )
+            .await;
+        }
         // A write task's claims are knowledge only once its work lands (see `landed`).
         if !task.kind.writes() {
             self.learn_report(&task, &report, Some(live.learning.clone()));
@@ -2608,6 +2634,7 @@ impl SessionManager {
                 tracing::warn!(task = %task.id, error = %err, "could not record the task's end");
             }
         }
+        self.task_ended_waiting(task, state).await;
         let owner = format!("task:{}", task.id);
         self.grants.revoke_owner(&owner);
         let leftovers = self.runtime.ledger().dispose(&owner).await;

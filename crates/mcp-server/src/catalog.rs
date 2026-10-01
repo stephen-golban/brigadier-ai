@@ -5,9 +5,9 @@ use std::sync::{Arc, OnceLock};
 
 use brigadier_core::tools::{
     AcceptTask, AskOrchestrator, AskUser, ChatCall, CodeRefs, CodeSearch, DelegateTask,
-    FinishSession, JobCall, MessageWorker, OrchestratorCall, ProposePlan, QueryBrain, ReadArtifact,
-    RecordNodes, Remember, ReportRef, RequestApproval, Role, RouteFollowUp, SaveMemory,
-    SearchTranscript, SubmitReport, TaskRef, ToolCall, WorkerCall,
+    FinishSession, JobCall, MessageWorker, NoteForUser, OrchestratorCall, ProposePlan, QueryBrain,
+    ReadArtifact, RecordNodes, Remember, ReportRef, RequestApproval, Role, RouteFollowUp,
+    SaveMemory, SearchTranscript, SubmitReport, TaskRef, ToolCall, WorkerCall,
 };
 use rmcp::model::{JsonObject, Tool};
 use serde::de::DeserializeOwned;
@@ -85,6 +85,13 @@ arrives as a message.";
 const FINISH_SESSION: &str = "New-worktree sessions only: when all the work has landed, ask \
 the user to merge the session branch into its base branch (one click on a card). Returns at \
 once; the outcome arrives later as a message.";
+
+const NOTE_FOR_USER: &str = "Keep the user's session summary current. kind \"decided\": a \
+judgement call you made on the user's behalf that they would want to know (a product or scope \
+choice they didn't settle), with why; it shows under \"Decided for you\". kind \"waiting\": \
+something only the user can do (a key, a sign-in, an account, a push), in one line; it shows \
+under \"Waiting on you\" until they mark it done, and you hear when they do. Brigadier lists its \
+own decisions and the workers' needs_user items itself: don't repeat them. Returns at once.";
 
 const LIST_TASKS: &str = "List this session's tasks: id, title, kind, status and model.";
 
@@ -184,6 +191,11 @@ fn orchestrator_tools() -> Vec<Tool> {
             FINISH_SESSION,
             input_schema::<FinishSession>(),
         ),
+        tool(
+            "note_for_user",
+            NOTE_FOR_USER,
+            input_schema::<NoteForUser>(),
+        ),
         tool("list_tasks", LIST_TASKS, no_arguments()),
     ]
 }
@@ -277,6 +289,7 @@ pub fn parse_call(
                 "request_approval" => OrchestratorCall::RequestApproval(args(name, arguments)?),
                 "accept_task" => OrchestratorCall::AcceptTask(args(name, arguments)?),
                 "finish_session" => OrchestratorCall::FinishSession(args(name, arguments)?),
+                "note_for_user" => OrchestratorCall::NoteForUser(args(name, arguments)?),
                 "list_tasks" => OrchestratorCall::ListTasks,
                 _ => return Err(unknown()),
             };

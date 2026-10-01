@@ -988,6 +988,8 @@ impl Core {
             worker_steps: board.worker_steps.clone(),
             orchestrator_steps: board.orchestrator_steps.clone(),
             compactions: board.sorted_compactions(),
+            decisions: board.decisions.clone(),
+            waiting: board.sorted_waiting(),
             ratings: board.ratings.clone(),
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),

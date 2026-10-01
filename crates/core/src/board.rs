@@ -7,8 +7,9 @@ use crate::knowledge::MemoryChange;
 use crate::model::ConversationId;
 use crate::model::{DomainEvent, MessageRole, Notice, Rating, StreamingMessage};
 use crate::work::{
-    Approval, CardId, CardState, Compaction, ConversationActivity, MessageQueue, OrchestratorStep,
-    Plan, PlanState, Question, RunState, Task, TaskId, UserRequest, WorkerStep,
+    Approval, CardId, CardState, Compaction, ConversationActivity, Decision, MessageQueue,
+    OrchestratorStep, Plan, PlanState, Question, RunState, Task, TaskId, UserRequest, WaitingItem,
+    WorkerStep,
 };
 
 /// Notices kept per conversation.
@@ -30,6 +31,9 @@ pub(crate) const KINDS: &[&str] = &[
     "message.rated",
     "conversation.branch",
     "memory.updated",
+    "decision.made",
+    "waiting.updated",
+    "waiting.resolved",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -55,6 +59,10 @@ pub(crate) struct Board {
     pub(crate) notices: Vec<Notice>,
     /// A Chat's saved memories, the latest change per node, in the order first saved.
     pub(crate) memories: Vec<MemoryChange>,
+    /// What was decided on the user's behalf, in stream order.
+    pub(crate) decisions: Vec<Decision>,
+    /// What only the user can do and is not done yet, by id.
+    pub(crate) waiting: HashMap<String, WaitingItem>,
 }
 
 impl Board {
@@ -173,6 +181,17 @@ impl Board {
                     None => self.memories.push(memory.clone()),
                 }
             }
+            DomainEvent::DecidedForYou { decision } => {
+                let mut decision = decision.clone();
+                decision.position = stream_seq;
+                self.decisions.push(decision);
+            }
+            DomainEvent::WaitingOnYou { item } => {
+                self.waiting.insert(item.id.clone(), item.clone());
+            }
+            DomainEvent::WaitingResolved { id, .. } => {
+                self.waiting.remove(id);
+            }
             DomainEvent::CompactionUpdated { compaction } => {
                 let position = self
                     .compactions
@@ -262,6 +281,12 @@ impl Board {
         self.requests
             .values()
             .max_by(|a, b| a.started_at_ms.cmp(&b.started_at_ms).then(a.id.cmp(&b.id)))
+    }
+
+    pub(crate) fn sorted_waiting(&self) -> Vec<WaitingItem> {
+        let mut waiting: Vec<WaitingItem> = self.waiting.values().cloned().collect();
+        waiting.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms).then(a.id.cmp(&b.id)));
+        waiting
     }
 
     pub(crate) fn sorted_compactions(&self) -> Vec<Compaction> {

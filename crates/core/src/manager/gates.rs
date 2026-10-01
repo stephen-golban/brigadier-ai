@@ -27,7 +27,7 @@ use super::{SessionManager, blocking, git_error};
 use crate::model::ModelChoice;
 use crate::work::{
     Gate, GateLink, GateMember, GateOutcome, GateOwner, GateResult, GateRole, InjectionKind,
-    Report, ReviewRecord, ReviewVerdict, Task, TaskId, TaskKind, TaskState,
+    Report, ReviewRecord, ReviewVerdict, Task, TaskId, TaskKind, TaskState, WaitingSource,
 };
 use crate::{Error, Result};
 
@@ -508,11 +508,53 @@ impl SessionManager {
                         Err(NotOpened::Unchanged) => {}
                     }
                 }
+                // What only the user can do before the checks can run is listed for them.
+                let user_only: Vec<String> = gate
+                    .members
+                    .iter()
+                    .filter(|m| m.role == GateRole::Verify)
+                    .filter_map(|m| members.iter().find(|t| t.id == m.task_id))
+                    .filter_map(|t| t.report.as_ref())
+                    .flat_map(|report| report.needs_user.iter().cloned())
+                    .collect();
+                let listed = self
+                    .sync_waiting(
+                        &task,
+                        WaitingSource::Landing {
+                            task_id: task.id.clone(),
+                        },
+                        &user_only,
+                    )
+                    .await;
+                let next = if listed > 0 {
+                    format!(
+                        "Only the user can unblock it; it is listed for them under Waiting on you:\n{}\nYou hear when they mark it done; then call accept_task for task-{} again to verify and land it.",
+                        user_only
+                            .iter()
+                            .map(|line| format!("- {line}"))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        task.number
+                    )
+                } else {
+                    format!(
+                        "If only the user can unblock this (a key, a sign-in, a tool to install), ask them. Once it is fixed, call accept_task for task-{} again to verify and land it.",
+                        task.number
+                    )
+                };
+                self.decided_for_task(
+                    &task,
+                    format!(
+                        "Held task-{} \u{201c}{}\u{201d}: its change could not be verified",
+                        task.number, task.title
+                    ),
+                    format!("Nothing lands unverified. {}", one_line_findings(&reasons)),
+                )
+                .await;
                 self.landing_problem(
                     &task,
                     &format!(
-                        "Its change could not be verified, so nothing landed:\n{reasons}\nIf only the user can unblock this (a key, a sign-in, a tool to install), ask them. Once it is fixed, call accept_task for task-{} again to verify and land it.",
-                        task.number
+                        "Its change could not be verified, so nothing landed:\n{reasons}\n{next}"
                     ),
                     TaskState::ReadyToLand,
                 )
@@ -523,6 +565,15 @@ impl SessionManager {
                 let _ = self
                     .update_task(&task.conversation_id, &task.id, |t| t.landing = None)
                     .await;
+                self.decided_for_task(
+                    &task,
+                    format!(
+                        "Did not land task-{}: its checks could not finish",
+                        task.number
+                    ),
+                    one_line_findings(&reasons),
+                )
+                .await;
                 self.landing_problem(
                     &task,
                     &format!(
@@ -569,7 +620,19 @@ impl SessionManager {
                 Err(err) => Err(err),
             };
             match sent {
-                Ok(_) => return,
+                Ok(_) => {
+                    self.decided_for_task(
+                        task,
+                        format!(
+                            "Sent task-{} back to fix what its checks found (fix {} of {FIX_ROUNDS})",
+                            task.number,
+                            task.fix_rounds + 1
+                        ),
+                        one_line_findings(findings),
+                    )
+                    .await;
+                    return;
+                }
                 Err(err) => {
                     tracing::warn!(task = %task.id, error = %err, "could not send a task back with its findings");
                 }
@@ -594,6 +657,23 @@ impl SessionManager {
                 if rounds == 1 { "" } else { "s" }
             ),
         };
+        let why = match (unchanged, task.fix_rounds) {
+            (true, _) => "The worker's fix changed nothing.".to_owned(),
+            (false, 0) => "Its checks found problems.".to_owned(),
+            (false, rounds) => format!(
+                "The problems were still there after {rounds} fix round{}.",
+                if rounds == 1 { "" } else { "s" }
+            ),
+        };
+        self.decided_for_task(
+            &task,
+            format!(
+                "Did not land task-{}: the orchestrator decides what happens next",
+                task.number
+            ),
+            format!("{why} {}", one_line_findings(findings)),
+        )
+        .await;
         self.announcing(&task).await;
         self.deliver(
             &task.conversation_id,
@@ -825,7 +905,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
         ));
     }
     spec.push_str(
-        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed, notRun (the project has checks but they could not run, after you tried), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker.",
+        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed, notRun (the project has checks but they could not run, after you tried), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
     );
     spec
 }
@@ -984,6 +1064,16 @@ fn findings_text(gate: &Gate, members: &[Task]) -> String {
         }
     }
     text.trim_start().to_owned()
+}
+
+/// A round's findings on one line, for "Decided for you".
+fn one_line_findings(findings: &str) -> String {
+    findings
+        .lines()
+        .map(|line| line.trim().trim_start_matches("- "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn unverified_reasons(gate: &Gate) -> String {

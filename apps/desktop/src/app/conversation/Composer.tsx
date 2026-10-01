@@ -37,7 +37,13 @@ import {
   type ComposerTarget,
   ComposerTargetContext,
 } from "@/app/conversation/composerTarget";
-import { PendingActionCard, usePendingActions, WaitingReminder } from "@/app/conversation/ActionCards";
+import {
+  PendingActionCard,
+  setAsideCards,
+  useAsideCards,
+  usePendingActions,
+  WaitingReminder,
+} from "@/app/conversation/ActionCards";
 import { QueueCard } from "@/app/conversation/QueueCard";
 import { shortcutLabel } from "@/app/conversation/SidePanel";
 import { useComposerDraft } from "@/app/conversation/composerDraft";
@@ -84,18 +90,16 @@ export const ConversationComposer: FC<ComposerProps> = ({ autoFocus, placeholder
   const pending = usePendingActions(target?.conversation ?? null);
   const plan = usePlanMode(target);
   // Cards put aside with ×, for the conversation they belong to.
-  const [aside, setAside] = useState<{ conversationId: string | null; ids: string[] }>({
-    conversationId: null,
-    ids: [],
-  });
+  const putAside = useAsideCards(target?.conversation?.id ?? null);
   if (!target) return null;
   const { conversation, resolved, targets } = target;
   const archived = conversation?.lifecycle === "archived";
   const dictationOwner = conversation?.id ?? NEW_CHAT_SCOPE;
-  const putAside = aside.conversationId === (conversation?.id ?? null) ? aside.ids : [];
   const waiting = pending.filter((entry) => !putAside.includes(entry.id));
   const current = archived ? undefined : waiting[0];
-  const setAsideIds = (ids: string[]) => setAside({ conversationId: conversation?.id ?? null, ids });
+  const setAsideIds = (ids: readonly string[]) => {
+    if (conversation) setAsideCards(conversation.id, ids);
+  };
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>

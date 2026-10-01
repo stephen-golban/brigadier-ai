@@ -3,6 +3,7 @@ import type { Approval } from "./Approval";
 import type { Compaction } from "./Compaction";
 import type { ContextUsage } from "./ContextUsage";
 import type { Conversation } from "./Conversation";
+import type { Decision } from "./Decision";
 import type { MemoryChange } from "./MemoryChange";
 import type { MessagePage } from "./MessagePage";
 import type { MessageQueue } from "./MessageQueue";
@@ -15,6 +16,7 @@ import type { RunState } from "./RunState";
 import type { StreamingMessage } from "./StreamingMessage";
 import type { Task } from "./Task";
 import type { UserRequest } from "./UserRequest";
+import type { WaitingItem } from "./WaitingItem";
 import type { WorkerStep } from "./WorkerStep";
 
 /**
@@ -45,7 +47,15 @@ orchestratorSteps: Array<OrchestratorStep>,
 /**
  * Every compaction of a Chat's context, in the order they happened.
  */
-compactions: Array<Compaction>, queue: MessageQueue, run: RunState, 
+compactions: Array<Compaction>, 
+/**
+ * What was decided on the user's behalf, in the order it was decided.
+ */
+decisions: Array<Decision>, 
+/**
+ * What only the user can do and is not done yet, oldest first.
+ */
+waiting: Array<WaitingItem>, queue: MessageQueue, run: RunState, 
 /**
  * The request the running turn serves.
  */

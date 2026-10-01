@@ -766,6 +766,22 @@ impl SessionManager {
                 }
             })
             .unwrap_or("reviewed");
+        self.decided_for_task(
+            task,
+            format!(
+                "Landed task-{} \u{201c}{}\u{201d} on `{target}`",
+                task.number, task.title
+            ),
+            format!(
+                "Its change passed independent checks: {review}, and verified against each \"done when\" criterion{}.",
+                match task.fix_rounds {
+                    0 => String::new(),
+                    1 => ", after one round of fixes".into(),
+                    rounds => format!(", after {rounds} rounds of fixes"),
+                }
+            ),
+        )
+        .await;
         self.deliver(
             &task.conversation_id,
             Envelope {

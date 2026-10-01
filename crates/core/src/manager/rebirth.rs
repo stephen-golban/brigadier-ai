@@ -692,6 +692,13 @@ impl SessionManager {
                 one_line(&what, 300)
             ));
         }
+        for item in board.sorted_waiting() {
+            items += 1;
+            text.push_str(&format!(
+                "Waiting for the user to do (listed under Waiting on you): {}\n",
+                one_line(&item.what, 300)
+            ));
+        }
         if !board.queue.items.is_empty() {
             text.push_str("The user's queued messages (they reach you later, one by one):\n");
             for item in &board.queue.items {

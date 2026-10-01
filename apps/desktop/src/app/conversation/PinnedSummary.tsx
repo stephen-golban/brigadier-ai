@@ -1,9 +1,11 @@
 import { useAui } from "@assistant-ui/react";
 import {
   Branch,
+  CheckCircle,
   Copy,
   DotsHorizontal,
   FolderOpen,
+  HandRaised,
   Link,
   Plus,
   PullRequestClosed,
@@ -24,7 +26,9 @@ import {
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
+import { showCard } from "@/app/conversation/ActionCards";
 import { isFinal } from "@/app/conversation/blocks";
+import { useAction } from "@/app/conversation/useAction";
 import { GitActions } from "@/app/conversation/GitActions";
 import { COMPOSER_EDITABLE } from "@/app/conversation/composerTarget";
 import { WorkersSummary } from "@/app/conversation/WorkerSummary";
@@ -37,22 +41,33 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { openFolder, openUrl, request } from "@/ipc/client";
+import { Button } from "@/components/ui/button";
 import type {
   Conversation,
+  Decision,
   DiffStat,
   Plan,
   PullRequest,
   PullRequestState,
   Task,
+  WaitingItem,
 } from "@/ipc/generated";
 import { tokenPx } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
-import { getSessionDiff, select, setPinnedSummary, setProjectExpanded } from "@/state/actions";
+import {
+  getSessionDiff,
+  resolveWaiting,
+  select,
+  setPinnedSummary,
+  setProjectExpanded,
+} from "@/state/actions";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
 import { toast } from "@/state/toasts";
 
 const NO_TASKS: Readonly<Record<string, Task>> = {};
+const NO_WAITING: readonly WaitingItem[] = [];
+const NO_DECISIONS: readonly Decision[] = [];
 
 /** How long a reopened summary card keeps restoring its offset while its rows arrive. */
 const RESTORE_MS = 1000;
@@ -226,6 +241,117 @@ function Sources({ conversationId }: { conversationId: string }) {
           ))}
         </PopoverContent>
       </Popover>
+    </Section>
+  );
+}
+
+/** Where an item waiting on the user came from, in a few words. */
+function waitingFrom(item: WaitingItem, tasks: Readonly<Record<string, Task>>): string | null {
+  switch (item.source.type) {
+    case "task":
+    case "landing": {
+      const task = tasks[item.source.taskId];
+      if (!task) return null;
+      return item.source.type === "task"
+        ? `From task-${task.number}`
+        : `Before task-${task.number} can land`;
+    }
+    case "card":
+      return "A card waits for your answer";
+    case "orchestrator":
+      return null;
+  }
+}
+
+/** One thing only the user can do: what, where it came from, and Done (or Show, for a card). */
+function WaitingRow({ item, conversationId }: { item: WaitingItem; conversationId: string }) {
+  const tasks = useBoard((s) => s.board?.tasks ?? NO_TASKS);
+  const action = useAction();
+  const from = waitingFrom(item, tasks);
+  const { source } = item;
+  return (
+    <div className="flex flex-col gap-0.5 py-0.5">
+      <div className="flex items-start gap-2 text-sm">
+        <HandRaised aria-hidden className="text-muted-foreground mt-0.5 size-icon-sm shrink-0" />
+        <span className="min-w-0 flex-1 wrap-break-word">{item.what}</span>
+        {source.type === "card" && (
+          <Button size="xs" variant="ghost" onClick={() => showCard(conversationId, source.cardId)}>
+            Show
+          </Button>
+        )}
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={action.busy}
+          onClick={() => action.run(() => resolveWaiting(conversationId, item.id))}
+        >
+          Done
+        </Button>
+      </div>
+      {from && <span className="text-muted-foreground ps-6 text-xs">{from}</span>}
+      {action.error && <span className="text-destructive ps-6 text-xs">{action.error}</span>}
+    </div>
+  );
+}
+
+/** "Waiting on you": what only the user can do, oldest first, each until they mark it done. */
+function WaitingOnYou({ conversationId }: { conversationId: string }) {
+  const items = useBoard(
+    useShallow((s) =>
+      s.board?.conversationId === conversationId
+        ? Object.values(s.board.waiting).toSorted((a, b) => a.createdAtMs - b.createdAtMs)
+        : NO_WAITING,
+    ),
+  );
+  if (items.length === 0) return null;
+  return (
+    <Section title="Waiting on you">
+      {items.map((item) => (
+        <WaitingRow key={item.id} item={item} conversationId={conversationId} />
+      ))}
+    </Section>
+  );
+}
+
+/** Decisions shown before "Show all". */
+const DECISIONS = 5;
+
+function DecisionRow({ decision }: { decision: Decision }) {
+  return (
+    <div className="flex items-start gap-2 py-0.5 text-sm">
+      <CheckCircle aria-hidden className="text-muted-foreground mt-0.5 size-icon-sm shrink-0" />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="wrap-break-word">{decision.what}</span>
+        {decision.why && (
+          <span className="text-muted-foreground text-xs wrap-break-word">{decision.why}</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/** "Decided for you": what Brigadier decided on the user's behalf, newest first. */
+function DecidedForYou({ conversationId }: { conversationId: string }) {
+  const decisions = useBoard((s) =>
+    s.board?.conversationId === conversationId ? s.board.decisions : NO_DECISIONS,
+  );
+  const [all, setAll] = useState(false);
+  if (decisions.length === 0) return null;
+  const newest = decisions.toReversed();
+  return (
+    <Section title="Decided for you">
+      {(all ? newest : newest.slice(0, DECISIONS)).map((decision) => (
+        <DecisionRow key={decision.id} decision={decision} />
+      ))}
+      {newest.length > DECISIONS && (
+        <button
+          type="button"
+          onClick={() => setAll(!all)}
+          className="text-muted-foreground hover:text-foreground -mx-1 flex h-control-sm items-center px-1 text-start text-sm transition-colors"
+        >
+          {all ? "Show fewer" : `Show all ${newest.length}`}
+        </button>
+      )}
     </Section>
   );
 }
@@ -496,6 +622,12 @@ function SummaryContent({ conversation }: { conversation: Conversation }) {
   const worktree = setup?.environment.type === "newWorktree";
   const diff = useSessionDiff(conversation.id, worktree);
   const sources = useSources(conversation.id).length > 0;
+  const waiting = useBoard((s) =>
+    s.board?.conversationId === conversation.id ? Object.keys(s.board.waiting).length : 0,
+  );
+  const decided = useBoard((s) =>
+    s.board?.conversationId === conversation.id ? s.board.decisions.length : 0,
+  );
   const pullRequest = usePullRequest(conversation.id);
   if (!setup) return null;
   const checkout =
@@ -524,7 +656,10 @@ function SummaryContent({ conversation }: { conversation: Conversation }) {
         </div>
       </GitActions>
       {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
-      {(workers > 0 || plan || sources) && <div className="border-border border-t" />}
+      {(workers > 0 || plan || sources || waiting > 0 || decided > 0) && (
+        <div className="border-border border-t" />
+      )}
+      <WaitingOnYou conversationId={conversation.id} />
       {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
       {plan && (
         <Section title="Plan">
@@ -533,6 +668,7 @@ function SummaryContent({ conversation }: { conversation: Conversation }) {
           </p>
         </Section>
       )}
+      <DecidedForYou conversationId={conversation.id} />
       <Sources conversationId={conversation.id} />
     </div>
   );

@@ -456,6 +456,12 @@ pub enum Request {
     RestoreKeptWork {
         task_id: TaskId,
     },
+    /// The user did something only they could do (Done on a "Waiting on you" item); the
+    /// orchestrator hears it.
+    ResolveWaiting {
+        conversation_id: ConversationId,
+        id: String,
+    },
     /// A page of a worker's live transcript.
     ListWorkerEvents {
         task_id: TaskId,
@@ -864,6 +870,7 @@ pub enum Response {
     RestoreKeptWork {
         outcome: RestoreOutcome,
     },
+    ResolveWaiting,
     ListWorkerEvents {
         page: WorkerPage,
     },

@@ -657,6 +657,10 @@ pub struct ConversationView {
     pub orchestrator_steps: Vec<OrchestratorStep>,
     /// Every compaction of a Chat's context, in the order they happened.
     pub compactions: Vec<Compaction>,
+    /// What was decided on the user's behalf, in the order it was decided.
+    pub decisions: Vec<crate::work::Decision>,
+    /// What only the user can do and is not done yet, oldest first.
+    pub waiting: Vec<crate::work::WaitingItem>,
     pub queue: MessageQueue,
     pub run: RunState,
     /// The request the running turn serves.
@@ -1262,6 +1266,19 @@ pub enum DomainEvent {
         conversation_id: ConversationId,
         memory: MemoryChange,
     },
+    /// Something was decided on the user's behalf ("Decided for you").
+    DecidedForYou {
+        decision: crate::work::Decision,
+    },
+    /// Something only the user can do was listed, or reworded (full snapshot).
+    WaitingOnYou {
+        item: crate::work::WaitingItem,
+    },
+    /// A "Waiting on you" item is done.
+    WaitingResolved {
+        id: String,
+        by: crate::work::ResolvedBy,
+    },
     /// Diagnostic probe used to measure ingest → paint latency end to end.
     Probe {
         burst_id: String,
@@ -1315,6 +1332,9 @@ impl DomainEvent {
             Self::DraftPinned { .. } => "draft.pinned",
             Self::BrainJobUpdated { .. } => "brain.job",
             Self::MemoryUpdated { .. } => "memory.updated",
+            Self::DecidedForYou { .. } => "decision.made",
+            Self::WaitingOnYou { .. } => "waiting.updated",
+            Self::WaitingResolved { .. } => "waiting.resolved",
             Self::Probe { .. } => "diag.probe",
         }
     }

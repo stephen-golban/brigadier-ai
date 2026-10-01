@@ -6,6 +6,7 @@ import type { BrainJob } from "./BrainJob";
 import type { Compaction } from "./Compaction";
 import type { Conversation } from "./Conversation";
 import type { ConversationId } from "./ConversationId";
+import type { Decision } from "./Decision";
 import type { KeptBranch } from "./KeptBranch";
 import type { Lifecycle } from "./Lifecycle";
 import type { MemoryChange } from "./MemoryChange";
@@ -26,12 +27,14 @@ import type { Rating } from "./Rating";
 import type { RawSession } from "./RawSession";
 import type { RawSessionId } from "./RawSessionId";
 import type { RawState } from "./RawState";
+import type { ResolvedBy } from "./ResolvedBy";
 import type { RunState } from "./RunState";
 import type { Settings } from "./Settings";
 import type { Setup } from "./Setup";
 import type { Task } from "./Task";
 import type { TaskId } from "./TaskId";
 import type { UserRequest } from "./UserRequest";
+import type { WaitingItem } from "./WaitingItem";
 import type { WorkerStep } from "./WorkerStep";
 
 /**
@@ -45,4 +48,4 @@ requestId: string | null, } | { "type": "requestUpdated", request: UserRequest, 
 /**
  * The answer: a message id, or `task:<id>` for a worker's report.
  */
-subject: string, rating: Rating, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "draftPinned", scope: string, attachments: Array<AttachmentRef>, } | { "type": "brainJobUpdated", job: BrainJob, } | { "type": "memoryUpdated", conversationId: ConversationId, memory: MemoryChange, } | { "type": "probe", burstId: string, index: number, count: number, };
+subject: string, rating: Rating, } | { "type": "branchSwitched", conversationId: ConversationId, head: string, } | { "type": "conversationNotice", conversationId: ConversationId, notice: Notice, } | { "type": "taskUpdated", task: Task, } | { "type": "approvalUpdated", approval: Approval, } | { "type": "questionUpdated", question: Question, } | { "type": "planUpdated", plan: Plan, } | { "type": "queueChanged", conversationId: ConversationId, queue: MessageQueue, } | { "type": "workerEvent", taskId: TaskId, event: ProviderEvent, } | { "type": "orchestratorLogged", conversationId: ConversationId, entry: OrchestratorEntry, } | { "type": "draftPinned", scope: string, attachments: Array<AttachmentRef>, } | { "type": "brainJobUpdated", job: BrainJob, } | { "type": "memoryUpdated", conversationId: ConversationId, memory: MemoryChange, } | { "type": "decidedForYou", decision: Decision, } | { "type": "waitingOnYou", item: WaitingItem, } | { "type": "waitingResolved", id: string, by: ResolvedBy, } | { "type": "probe", burstId: string, index: number, count: number, };

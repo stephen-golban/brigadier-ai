@@ -259,6 +259,11 @@ impl SessionManager {
                     DomainEvent::OrchestratorStepped { step } if of(&step.request_id) => {
                         DomainEvent::OrchestratorStepped { step }
                     }
+                    // What was decided for the copied requests; what waited for the user
+                    // stays the source's, whose work it holds up.
+                    DomainEvent::DecidedForYou { decision } if of(&decision.request_id) => {
+                        DomainEvent::DecidedForYou { decision }
+                    }
                     DomainEvent::MessageRated { subject, rating }
                         if parents.contains_key(subject.as_str()) || tasks.contains(&subject) =>
                     {

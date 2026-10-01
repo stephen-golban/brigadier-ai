@@ -123,6 +123,9 @@ impl Projection {
             | DomainEvent::DraftPinned { .. }
             | DomainEvent::BrainJobUpdated { .. }
             | DomainEvent::MemoryUpdated { .. }
+            | DomainEvent::DecidedForYou { .. }
+            | DomainEvent::WaitingOnYou { .. }
+            | DomainEvent::WaitingResolved { .. }
             | DomainEvent::Probe { .. } => {}
         }
     }

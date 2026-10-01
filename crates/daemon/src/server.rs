@@ -1081,6 +1081,13 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
         Request::RestoreKeptWork { task_id } => Response::RestoreKeptWork {
             outcome: sessions.restore_kept_work(task_id).await?,
         },
+        Request::ResolveWaiting {
+            conversation_id,
+            id,
+        } => {
+            sessions.resolve_waiting(conversation_id, id).await?;
+            Response::ResolveWaiting
+        }
         Request::Hibernate { id } => Response::Hibernate {
             conversation: Box::new(sessions.hibernate(id).await?),
         },
