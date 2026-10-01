@@ -114,6 +114,8 @@ impl SessionManager {
                 }
             })
             .await?;
+        // What the worker wrote after its report goes with the outcome, not before it.
+        self.hold_late_findings(&task).await;
         let number = task.number;
         let manager = self.arc();
         self.spawn(async move {
@@ -177,6 +179,9 @@ impl SessionManager {
                 }
             })
             .await?;
+        // What the worker wrote after its report goes to its checks, and to the orchestrator
+        // with their outcome, not before it.
+        self.hold_late_findings(&task).await;
         let number = task.number;
         let manager = self.arc();
         self.spawn(async move {
@@ -878,6 +883,7 @@ impl SessionManager {
                 }
             })
             .unwrap_or("reviewed");
+        let fixes = fixes_made(task);
         self.decided_for_task(
             task,
             format!(
@@ -886,7 +892,7 @@ impl SessionManager {
             ),
             format!(
                 "Its change passed independent checks: {review}, and verified against each \"done when\" criterion{}.",
-                match task.fix_rounds {
+                match fixes {
                     0 => String::new(),
                     1 => ", after one round of fixes".into(),
                     rounds => format!(", after {rounds} rounds of fixes"),
@@ -904,7 +910,7 @@ impl SessionManager {
                     "[landed task-{}] Commit {} is on `{target}` ({review}, and verified{}).",
                     task.number,
                     short(new_tip),
-                    match task.fix_rounds {
+                    match fixes {
                         0 => String::new(),
                         1 => "; Brigadier had the worker fix the checks' findings once".into(),
                         rounds => format!(
@@ -1228,6 +1234,13 @@ fn clip(text: &str, max: usize) -> String {
     format!("{}…", &text[..end])
 }
 
+/// The fixes Brigadier had the worker make to its change, also those before the orchestrator
+/// accepted it again (after a hold or a hand-back): a fresh accept starts `fix_rounds` over,
+/// `fixes` keeps every one.
+fn fixes_made(task: &Task) -> usize {
+    task.fixes.len().max(task.fix_rounds as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1267,5 +1280,11 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("--- fix 2\nFrom the verification"), "{text}");
+        // Accepted again after a hold: its fix rounds start over, the fixes made still count.
+        task.fix_rounds = 0;
+        assert_eq!(fixes_made(&task), 2);
+        task.fix_rounds = 1;
+        task.fixes.clear();
+        assert_eq!(fixes_made(&task), 1);
     }
 }

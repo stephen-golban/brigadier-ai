@@ -52,8 +52,9 @@ use crate::runtime::{is_delta, merge_delta};
 use crate::sessions::push_block;
 use crate::tools::Role;
 use crate::work::{
-    AttachmentRef, Compaction, CompactionState, ContextInjection, InjectionKind, OrchestratorEntry,
-    OrchestratorStepKind, QueuedMessage, QuotaWait, RequestState, RunState, Task, TaskId,
+    AttachmentRef, CardId, Compaction, CompactionState, ContextInjection, InjectionKind,
+    OrchestratorEntry, OrchestratorStepKind, QueuedMessage, QuotaWait, RequestState, RunState,
+    Task, TaskId,
 };
 use crate::{Error, Result, now_ms};
 
@@ -170,6 +171,15 @@ struct ConvState {
     /// Reported write tasks the orchestrator was reminded to decide on (see
     /// [`SessionManager::remind_undecided`]): once each.
     reminded: HashSet<TaskId>,
+    /// Plans whose revision the orchestrator was asked for again (see
+    /// [`SessionManager::remind_revision`]): once each.
+    revision_reminded: HashSet<CardId>,
+    /// The running turn's last reply.
+    last_reply: Option<String>,
+    /// Requests whose last turn ended asking the user something in its reply: until the user
+    /// writes again, no reminder pushes the orchestrator past its question, and one with a
+    /// reported change still undecided waits on the user.
+    asked_user: HashSet<String>,
     /// The next CLI session starts fresh and must be given the transcript so far.
     reseed: bool,
     /// The running turn failed on a usage limit (which window, and its reset, when the CLI
@@ -385,7 +395,6 @@ impl ConvLive {
         state.busy.then(|| state.request.clone()).flatten()
     }
 
-    /// What the driver holds for each request right now.
     /// The orchestrator sent a worker of `request` back to work: what the user saw of the
     /// request so far is not its answer.
     pub async fn sent_back(&self, request: &str) {
@@ -397,6 +406,20 @@ impl ConvLive {
             .or_insert(Unanswered::Armed);
     }
 
+    /// Takes the envelopes `which` picks back out of the inbox, before a turn reads them.
+    pub(super) async fn take_envelopes(
+        &self,
+        which: impl Fn(&Envelope) -> bool,
+    ) -> Vec<(Envelope, Option<String>)> {
+        let mut state = self.state.lock().await;
+        let (taken, kept) = std::mem::take(&mut state.inbox)
+            .into_iter()
+            .partition(|(envelope, _)| which(envelope));
+        state.inbox = kept;
+        taken
+    }
+
+    /// What the driver holds for each request right now.
     pub(super) async fn request_activity(&self) -> RequestActivity {
         let state = self.state.lock().await;
         RequestActivity {
@@ -414,6 +437,7 @@ impl ConvLive {
                 .chain(state.announcing.values().flatten().cloned())
                 .collect(),
             outcomes: state.outcomes.clone(),
+            asked_user: state.asked_user.clone(),
         }
     }
 }
@@ -426,6 +450,8 @@ pub(super) struct RequestActivity {
     pub carried: HashSet<String>,
     /// How requests' last turns ended, when they were stopped or failed.
     pub outcomes: HashMap<String, RequestState>,
+    /// Requests whose last turn ended asking the user something in its reply.
+    pub asked_user: HashSet<String>,
 }
 
 impl SessionManager {
@@ -512,6 +538,8 @@ impl SessionManager {
                 let mut into = None;
                 if steered {
                     self.log_user_injection(&conv, &message).await;
+                    // The user wrote again: whatever was asked of them is answered or moot.
+                    state.asked_user.clear();
                     // The rest of the turn answers the new message: its own request.
                     into = std::mem::replace(&mut state.request, message.request_id.clone());
                     state.in_turn.push(message.clone());
@@ -633,6 +661,8 @@ impl SessionManager {
         };
         let into = if steered {
             self.log_user_injection(conv, &message).await;
+            // The user wrote again: whatever was asked of them is answered or moot.
+            state.asked_user.clear();
             state.in_turn.push(message.clone());
             // The rest of the turn answers the new message: its own request.
             std::mem::replace(&mut state.request, message.request_id.clone())
@@ -1214,9 +1244,16 @@ impl SessionManager {
             state.busy = true;
             state.limit_hit = None;
             state.turn_error = None;
+            state.last_reply = None;
             state.request.clone_from(&request);
             if let Some(request) = &request {
                 state.outcomes.remove(request);
+                // This turn says anew whether the request waits on the user.
+                state.asked_user.remove(request);
+            }
+            if !users.is_empty() {
+                // The user wrote again: whatever was asked of them is answered or moot.
+                state.asked_user.clear();
             }
             state.in_turn = users.clone();
             break (users, envelopes, request, notes);
@@ -2154,6 +2191,7 @@ impl SessionManager {
             } => {
                 let request = {
                     let mut state = conv.state.lock().await;
+                    state.last_reply = Some(text.clone());
                     state
                         .replying_for
                         .remove(item_id)
@@ -2425,6 +2463,16 @@ impl SessionManager {
             {
                 state.outcomes.insert(request.clone(), ended);
             }
+            // A session's turn that ended on a question to the user: nothing pushes the
+            // orchestrator past it before the user answers (see `asked_user`).
+            let reply = state.last_reply.take();
+            if conv.kind == ConversationKind::Session
+                && status == TurnStatus::Completed
+                && let Some(request) = &served
+                && reply.as_deref().is_some_and(asks_user)
+            {
+                state.asked_user.insert(request.clone());
+            }
             (
                 state.limit_hit.take(),
                 std::mem::take(&mut state.in_turn),
@@ -2464,6 +2512,11 @@ impl SessionManager {
                 }
             }
         }
+        if status == TurnStatus::Completed
+            && let Some(request) = &served
+        {
+            self.remind_revision(conv, request).await;
+        }
         self.set_run(&conv.id, RunState::Idle, None).await;
         self.settle_requests(&conv.id).await;
         if status == TurnStatus::Completed
@@ -2472,6 +2525,40 @@ impl SessionManager {
             self.remind_undecided(conv, request).await;
         }
         self.kick(conv);
+    }
+
+    /// A turn of `request` ended while a plan of it still waits for its revision: the
+    /// orchestrator is asked for it again, once per plan, unless it asked the user something
+    /// (in its reply, or with ask_user). After that the request waits for a decision without
+    /// holding anything back (see [`SessionManager::settle_requests`]).
+    async fn remind_revision(&self, conv: &Arc<ConvLive>, request: &str) {
+        let Ok(board) = self.core.board(&conv.id).await else {
+            return;
+        };
+        if super::requests::needs_user(&board, request) {
+            return;
+        }
+        let Some((plan, text)) = self.revision_reminder(&board, request) else {
+            return;
+        };
+        let mut state = conv.state.lock().await;
+        // A turn of the request comes anyway: it is reminded after that one, if still due.
+        let carried = state
+            .inbox
+            .iter()
+            .any(|(_, of)| of.as_deref() == Some(request));
+        if carried || state.asked_user.contains(request) || !state.revision_reminded.insert(plan) {
+            return;
+        }
+        state.inbox.push((
+            Envelope {
+                kind: InjectionKind::Reminder,
+                label: "revision".into(),
+                task_id: None,
+                text,
+            },
+            Some(request.to_owned()),
+        ));
     }
 
     /// A request over while reported changes still wait for the orchestrator's decision: it
@@ -3555,6 +3642,44 @@ fn without_quiet(text: &str) -> Option<&str> {
     (!text.trim_start().is_empty()).then_some(text)
 }
 
+/// Whether an orchestrator's reply ends by asking the user something: a question in its last
+/// paragraph, or in the one before a closing list of options. A question mark inside a word
+/// (a URL's query) is not one.
+fn asks_user(reply: &str) -> bool {
+    let Some(reply) = without_quiet(reply) else {
+        return false;
+    };
+    let question = |text: &str| {
+        text.char_indices().any(|(at, c)| {
+            c == '?'
+                && text[at + 1..].chars().next().is_none_or(|next| {
+                    next.is_whitespace()
+                        || matches!(
+                            next,
+                            ')' | '"' | '\'' | '*' | '_' | '`' | '\u{201d}' | '\u{2019}'
+                        )
+                })
+        })
+    };
+    let option = |line: &str| {
+        let line = line.trim_start();
+        line.starts_with(['-', '*', '\u{2022}'])
+            || line.split_once(['.', ')']).is_some_and(|(number, _)| {
+                !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+            })
+    };
+    let paragraphs: Vec<&str> = reply
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect();
+    match paragraphs.as_slice() {
+        [.., before, last] if last.lines().all(option) => question(before) || question(last),
+        [.., last] => question(last),
+        [] => false,
+    }
+}
+
 /// Takes every envelope of one request from the inbox, in arrival order: the request of the
 /// first worker question (it blocks a worker), else of the oldest envelope.
 fn take_one_request(
@@ -3690,5 +3815,33 @@ fn setup_choice(conversation: &crate::model::Conversation) -> Option<ModelChoice
         Some(Setup::Session { orchestrator, .. }) => Some(orchestrator.clone()),
         Some(Setup::Chat { model }) => Some(model.clone()),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reply_that_ends_on_a_question_asks_the_user() {
+        for reply in [
+            "There's a conflicting test.\n\nHow do you want to resolve it: keep isPrime(1) true, or change the convention?",
+            "Stuck on a conflict.\n\nHow do you want to resolve it:\n1. Keep isPrime(1) true, or\n2. Change the convention.\n\nWhich one, or something else?",
+            "Two ways on. Which do you prefer?\n\n- Keep it\n- Drop it",
+            "Should I land it anyway? (It fails `npm test`.)",
+            "Land it as it is?\n\n[quiet]",
+            "Do you want \"strict\" mode?\"",
+        ] {
+            assert!(asks_user(reply), "{reply}");
+        }
+        for reply in [
+            "[quiet]",
+            "Landed as commit afd589834a on main.",
+            "Why did it fail? A missing export.\n\nI sent the worker back to fix it.",
+            "See https://example.com/docs?page=2 for the details.",
+            "",
+        ] {
+            assert!(!asks_user(reply), "{reply}");
+        }
     }
 }

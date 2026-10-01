@@ -1,12 +1,14 @@
 //! User requests: what one user message set in motion, and when it is over.
 //!
 //! A request works while its turn runs, while an envelope or message for it waits for a turn,
-//! or while a task it started runs; and, unless it was stopped or failed, while a plan of it
-//! waits for the orchestrator's revision. It waits while something it opened needs the user (a
-//! card, a paused worker, a landing on hold, something only the user can do). Otherwise it is
-//! done, or stopped or failed when its last turn ended that way. A done request works again
-//! when new work for it arrives (a late report, a worker's question), so its block in the
-//! thread stays one block.
+//! or while a task it started runs. It waits while something it opened needs the user (a
+//! card, a paused worker, a landing on hold, something only the user can do), while its last
+//! turn ended asking the user something about a reported change still undecided, and, unless
+//! it was stopped or failed, while a plan of it waits for a revision the orchestrator did not
+//! make (it was asked for it again once). A waiting request holds back none of the user's
+//! queued messages. Otherwise it is done, or stopped or failed when its last turn ended that
+//! way. A done request works again when new work for it arrives (a late report, a worker's
+//! question), so its block in the thread stays one block.
 
 use std::collections::HashSet;
 
@@ -143,7 +145,12 @@ impl SessionManager {
                     )
                 }) {
                 RequestState::Working
-            } else if needs_user(&board, id) {
+            } else if needs_user(&board, id)
+                || (activity.asked_user.contains(id)
+                    && !self.undecided(&board, id).await.is_empty())
+            {
+                // The orchestrator's question about a change it has not decided on is the
+                // user's to answer (an offer at the end of a finished answer is not).
                 RequestState::Waiting
             } else if tasks_in(&board, id, |state| state == TaskState::Blocked) {
                 // Blocked on the orchestrator's answer (a gate's card makes it Waiting).
@@ -156,8 +163,9 @@ impl SessionManager {
             ) {
                 request.state.clone()
             } else if awaits_revision(&board, id) {
-                // Its plan waits for the orchestrator's revision.
-                RequestState::Working
+                // Its plan waits for a revision its turns ended without (they were asked for
+                // it again once): a decision is due, and nothing runs meanwhile.
+                RequestState::Waiting
             } else {
                 RequestState::Done
             };
@@ -231,6 +239,10 @@ impl SessionManager {
                 })
                 .collect();
             running.sort_by_key(|task| task.number);
+            // A change held back from landing runs no more: it waits for what holds it.
+            let (held, running): (Vec<_>, Vec<_>) = running.into_iter().partition(|task| {
+                task.state == TaskState::ReadyToLand && !announced.contains(&task.id)
+            });
             let undecided = self.undecided(&board, request).await;
             last.push_str("\n\n");
             if running.is_empty() {
@@ -259,6 +271,10 @@ impl SessionManager {
                     prompts::QUIET
                 ));
             }
+            if !held.is_empty() {
+                last.push('\n');
+                last.push_str(&held_note(&held));
+            }
             if !undecided.is_empty() {
                 last.push('\n');
                 last.push_str(&prompts::undecided_note(&undecided));
@@ -286,6 +302,18 @@ impl SessionManager {
     }
 }
 
+/// The request's changes held back from landing (`ReadyToLand`): not running, and not landed.
+fn held_note(held: &[&Task]) -> String {
+    let list: Vec<String> = held
+        .iter()
+        .map(|task| format!("task-{} \"{}\"", task.number, task.title))
+        .collect();
+    format!(
+        "[held, not landed: {}. Nothing of it landed; once what holds it is fixed, call accept_task for it again.]",
+        list.join(", ")
+    )
+}
+
 /// Whether a task of the request is in a state `matches` accepts.
 fn tasks_in(board: &Board, request: &str, matches: impl Fn(TaskState) -> bool) -> bool {
     board
@@ -304,7 +332,7 @@ fn awaits_revision(board: &Board, request: &str) -> bool {
 
 /// Whether something the request opened waits for the user: a card, a task, or something
 /// only the user can do ("Waiting on you").
-fn needs_user(board: &Board, request: &str) -> bool {
+pub(super) fn needs_user(board: &Board, request: &str) -> bool {
     let of = |id: &Option<String>| id.as_deref() == Some(request);
     board.waiting.values().any(|item| of(&item.request_id))
         || board
@@ -333,7 +361,33 @@ mod tests {
     use crate::work::{CardId, Plan};
 
     #[test]
-    fn a_plan_being_revised_is_work_still_to_do() {
+    fn a_held_change_is_named_held_not_running() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t3",
+            "conversationId": "c",
+            "number": 3,
+            "position": 0,
+            "title": "credit bot",
+            "kind": "implement",
+            "spec": "Credit the bot.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "readyToLand",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        let note = held_note(&[&task]);
+        assert!(
+            note.starts_with("[held, not landed: task-3 \"credit bot\""),
+            "{note}"
+        );
+        assert!(!note.contains("running"), "{note}");
+    }
+
+    #[test]
+    fn a_plan_waiting_for_its_revision_is_found() {
         let plan = |request: &str, state| Plan {
             id: CardId(format!("{request}-plan")),
             conversation_id: ConversationId("c".into()),

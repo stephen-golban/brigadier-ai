@@ -397,6 +397,31 @@ impl SessionManager {
         }
     }
 
+    /// What asks the orchestrator again for the revision of `request`'s plan that waits for
+    /// one, and that plan: its review's findings, and the way on.
+    pub(crate) fn revision_reminder(
+        &self,
+        board: &crate::board::Board,
+        request: &str,
+    ) -> Option<(CardId, String)> {
+        let plan = board.plans.values().find(|plan| {
+            plan.request_id.as_deref() == Some(request) && plan.state == PlanState::Revising
+        })?;
+        let gate = plan.gate.as_ref()?;
+        let reviewers: Vec<Task> = gate
+            .members
+            .iter()
+            .filter_map(|m| board.tasks.get(&m.task_id).cloned())
+            .collect();
+        Some((
+            plan.id.clone(),
+            format!(
+                "{}\nYour last turn ended without the revision. Revise the plan now; if only the user can settle a finding, ask them (ask_user).",
+                revise_text(plan, gate, &reviewers)
+            ),
+        ))
+    }
+
     /// Changes a plan as it is stored now, under the gate lock so a review result can't race
     /// the change. A review round still open on a plan that is no longer open is closed, and
     /// its reviewers stop.

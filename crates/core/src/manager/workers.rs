@@ -68,6 +68,8 @@ const DELTA_WINDOW: Duration = Duration::from_millis(30);
 const WORKER_TOOL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 /// How long the watchdog's nudge may take to reach a silent worker's CLI.
 const NUDGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a fix Brigadier lands waits for the worker's turn that reported it to end.
+const TURN_END_WAIT: Duration = Duration::from_secs(30);
 /// How long `ask_orchestrator` waits for the orchestrator's answer.
 const QUESTION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// Report size cap: about 800 tokens.
@@ -184,6 +186,9 @@ pub(crate) struct TaskLive {
     /// Versions the task's reports before their Brain writes are spawned, so late findings
     /// survive an older report's write running afterward.
     pub(crate) learning: Arc<ReportLearning>,
+    /// Held while the end of a worker's turn is handled (what it wrote after its report among
+    /// it): see [`TaskLive::turn_over`].
+    turn_end: tokio::sync::Mutex<()>,
 }
 
 impl TaskLive {
@@ -445,6 +450,26 @@ impl TaskLive {
             handovers: std::sync::Mutex::new(None),
             watchdog_busy: std::sync::atomic::AtomicBool::new(false),
             learning: Arc::default(),
+            turn_end: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Waits until the worker's running turn is over and its end handled, so what it wrote
+    /// after its report is known; at most [`TURN_END_WAIT`] (a CLI that never ends its turn
+    /// holds nothing up for good).
+    pub(crate) async fn turn_over(&self) {
+        let deadline = tokio::time::Instant::now() + TURN_END_WAIT;
+        loop {
+            {
+                let _end = self.turn_end.lock().await;
+                if !self.state.lock().await.busy {
+                    return;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -1761,6 +1786,8 @@ impl SessionManager {
         cli: &Arc<Cli>,
         status: TurnStatus,
     ) {
+        // Taken before the turn counts as over: see `TaskLive::turn_over`.
+        let _end = live.turn_end.lock().await;
         let (nudge, handoff_asked, from) = {
             let mut state = live.state.lock().await;
             state.busy = false;
@@ -2252,11 +2279,14 @@ impl SessionManager {
             self.gate_member_reported(&task).await;
         } else if relanding {
             // Its fix is built, checked and landed like the first time, with the same commit
-            // message.
+            // message: once its turn is over, so what it writes after this report is held with
+            // the task, and goes with the outcome of the checks.
             let message = task.landing.clone().unwrap_or_default();
             let manager = self.arc();
             let conversation_id = conversation_id.clone();
+            let live = live.clone();
             self.spawn(async move {
+                live.turn_over().await;
                 if let Err(err) = manager
                     .begin_landing(&conversation_id, task.clone(), message, false)
                     .await
@@ -2431,7 +2461,7 @@ impl SessionManager {
         }
         let envelope = Envelope {
             kind: InjectionKind::Report,
-            label: format!("report task-{} (addendum)", task.number),
+            label: addendum_label(task.number),
             task_id: Some(task.id.clone()),
             text: prompts::late_findings_envelope(&updated, &shown),
         };
@@ -2442,8 +2472,17 @@ impl SessionManager {
             .queue_envelope(&task.conversation_id, envelope, request)
             .await
         {
-            self.settle_requests(&task.conversation_id).await;
-            self.kick(&conv);
+            // Accepted meanwhile: Brigadier holds it after all.
+            if self
+                .task_by_id(&task.conversation_id, &task.id)
+                .await
+                .is_ok_and(|now| brigadier_lands(&now))
+            {
+                self.hold_late_findings(&updated).await;
+            } else {
+                self.settle_requests(&task.conversation_id).await;
+                self.kick(&conv);
+            }
         }
         if !updated.kind.writes()
             && let Some(report) = &updated.report
@@ -2451,6 +2490,51 @@ impl SessionManager {
             self.learn_report(&updated, report, Some(live.learning.clone()));
         }
         updated
+    }
+
+    /// Brigadier took the task's change in hand (an accept, a fix to land): what its worker
+    /// wrote after its report and still waits in the orchestrator's inbox is held with the
+    /// task instead (see [`Self::late_findings`]), so no turn of the orchestrator comes between
+    /// the accept and the outcome of the checks.
+    pub(crate) async fn hold_late_findings(&self, task: &Task) {
+        let Ok(conv) = self.conv(&task.conversation_id) else {
+            return;
+        };
+        let label = addendum_label(task.number);
+        let taken = conv
+            .take_envelopes(|envelope| {
+                envelope.task_id.as_ref() == Some(&task.id) && envelope.label == label
+            })
+            .await;
+        if taken.is_empty() {
+            return;
+        }
+        let shown = taken
+            .iter()
+            .filter_map(|(envelope, _)| prompts::late_findings_shown(&envelope.text))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let mut held = false;
+        let _ = self
+            .update_task(&task.conversation_id, &task.id, |t| {
+                if brigadier_lands(t) {
+                    held = true;
+                    t.addendum = Some(match t.addendum.take() {
+                        Some(before) => format!("{before}\n\n{shown}"),
+                        None => shown,
+                    });
+                }
+            })
+            .await;
+        if !held {
+            // The landing ended meanwhile: the orchestrator reads them after all.
+            for (envelope, request) in taken {
+                self.queue_envelope(&task.conversation_id, envelope, request)
+                    .await;
+            }
+            self.kick(&conv);
+        }
+        self.settle_requests(&task.conversation_id).await;
     }
 
     /// `message_worker`: answers a blocking question, steers a running worker, or sends a
@@ -3198,6 +3282,11 @@ pub(crate) fn route_label(task: &Task) -> String {
         let _ = write!(label, ", took over from {}", before.join(", then "));
     }
     label
+}
+
+/// The label of the envelope with what a worker wrote after its report.
+fn addendum_label(number: u32) -> String {
+    format!("report task-{number} (addendum)")
 }
 
 /// Whether a task checks another task's change (a gate member, or a review or verification

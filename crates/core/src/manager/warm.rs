@@ -11,9 +11,10 @@
 //!   folder (one holding a [`MANIFESTS`] file) up to [`MAX_DEPTH`] folders down. A package
 //!   cache is copied only while the worktree's manifest and lockfiles match the checkout's
 //!   ([`DEPENDENCY_FILES`]): otherwise its packages would be the wrong versions.
-//! - **Never:** Python environments ([`NEVER`], anything holding a `pyvenv.cfg`, or a link to
-//!   one). Their scripts point at the interpreter and packages they were made with, so a copy
-//!   would keep using the user's own environment.
+//! - **Never:** Python environments (a folder holding a `pyvenv.cfg`, a cache inside one, or a
+//!   link to one). Their scripts point at the interpreter and packages they were made with, so
+//!   a copy would keep using the user's own environment. A folder's name alone doesn't make one:
+//!   a package folder called `env` is warmed like any other.
 //! - **Only real folders:** every folder from the checkout or the worktree down to a cache is
 //!   reached without following links ([`clone::Folder`]), so a link can't send a copy, a
 //!   clean-up or a rename anywhere else.
@@ -69,9 +70,6 @@ const CACHES: &[&str] = &[
     "Pods",
     ".build",
 ];
-
-/// Python environments, never copied whatever else they are called.
-const NEVER: &[&str] = &[".venv", "venv", "env"];
 
 /// Files that make the folder holding them a package folder.
 const MANIFESTS: &[&str] = &[
@@ -258,8 +256,12 @@ impl Warm<'_> {
             return Err("the worktree already has it".into());
         }
         let from = self.paths.source.join(rel);
-        if from.join("pyvenv.cfg").symlink_metadata().is_ok() {
-            return Err("it is a Python environment".into());
+        if let Some(env) = python_env(&self.paths.source, rel) {
+            return Err(if env == rel {
+                "it is a Python environment".into()
+            } else {
+                format!("it is inside a Python environment ({env})")
+            });
         }
         let name = last_name(rel);
         let package = package_of(rel);
@@ -358,8 +360,25 @@ fn candidates(dirs: &BTreeSet<String>) -> Vec<String> {
                 dir => format!("{dir}/{cache}"),
             })
         })
-        .filter(|rel| !rel.split('/').any(|part| NEVER.contains(&part)))
         .collect()
+}
+
+/// The folder from `rel` up (short of the checkout itself) that is a Python environment: one
+/// holding a `pyvenv.cfg`.
+fn python_env<'a>(source: &Path, rel: &'a str) -> Option<&'a str> {
+    let mut folder = Some(rel).filter(|rel| !rel.is_empty());
+    while let Some(rel) = folder {
+        if source
+            .join(rel)
+            .join("pyvenv.cfg")
+            .symlink_metadata()
+            .is_ok()
+        {
+            return Some(rel);
+        }
+        folder = rel.rsplit_once('/').map(|(parent, _)| parent);
+    }
+    None
 }
 
 fn last_name(rel: &str) -> &str {
@@ -1285,11 +1304,6 @@ mod tests {
         assert!(found.contains(&"node_modules".to_owned()));
         assert!(found.contains(&"apps/web/.next/cache".to_owned()));
         assert!(found.contains(&"a/b/c/target".to_owned()));
-        assert!(
-            found
-                .iter()
-                .all(|rel| !rel.split('/').any(|part| NEVER.contains(&part)))
-        );
         assert_eq!(package_of("apps/web/.next/cache"), "apps/web");
         assert_eq!(package_of(".next/cache"), "");
         assert_eq!(package_of("node_modules"), "");
@@ -1781,6 +1795,37 @@ mod tests {
         assert!(warmed.skipped[0].1.contains("Python environment"));
         assert!(!fx.worktree.join("node_modules").exists());
         assert!(fx.leftovers().is_empty());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_package_folder_named_env_is_warmed_but_not_a_python_environment() {
+        let Some(fx) = Fixture::with("node_modules/\n", |root| {
+            for package in ["packages/env", "tools/venv"] {
+                fs::create_dir_all(root.join(package)).unwrap();
+                fs::write(root.join(package).join("package.json"), "{}").unwrap();
+            }
+        }) else {
+            return;
+        };
+        for package in ["packages/env", "tools/venv"] {
+            fx.write(&format!("{package}/node_modules/a/index.js"), b"export {}");
+            fx.age(&format!("{package}/node_modules"));
+        }
+        // `tools/venv` is a Python environment too: a package inside it is left out, and said so.
+        fx.write("tools/venv/pyvenv.cfg", b"home = /usr/bin");
+        let warmed = fx.warm();
+        assert_eq!(warmed.copied, ["packages/env/node_modules"], "{warmed:?}");
+        assert!(
+            fx.worktree
+                .join("packages/env/node_modules/a/index.js")
+                .exists()
+        );
+        assert_eq!(
+            Fixture::why(&warmed, "tools/venv/node_modules"),
+            "it is inside a Python environment (tools/venv)"
+        );
+        assert!(!fx.worktree.join("tools/venv/node_modules").exists());
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

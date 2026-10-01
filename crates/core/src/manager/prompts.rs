@@ -350,6 +350,14 @@ pub(crate) fn late_findings_envelope(task: &Task, shown: &str) -> String {
     )
 }
 
+/// What a [`late_findings_envelope`] shows of the worker's text; `None` for other text.
+pub(crate) fn late_findings_shown(envelope: &str) -> Option<&str> {
+    let (head, rest) = envelope.split_once('\n')?;
+    (head.starts_with("[report task-") && head.contains(" · addendum] "))
+        .then(|| rest.strip_suffix("\n[/report]"))
+        .flatten()
+}
+
 /// Asks the orchestrator to sort a follow-up the user sent while `request` works.
 pub(crate) fn follow_up(
     id: &str,
@@ -396,5 +404,33 @@ mod tests {
             shown.ends_with("[…cut; read_artifact blob1 reads all 9000 bytes]"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_held_back_addendum_is_read_back_from_its_envelope() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "isPrime",
+            "kind": "implement",
+            "spec": "Add isPrime.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reported",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        let shown = "Done.\n\n`test/primes.test.js:7` expects false.";
+        let envelope = late_findings_envelope(&task, shown);
+        assert_eq!(late_findings_shown(&envelope), Some(shown));
+        assert_eq!(
+            late_findings_shown("[report task-1] Done.\n[/report]"),
+            None
+        );
+        assert_eq!(late_findings_shown("Done."), None);
     }
 }

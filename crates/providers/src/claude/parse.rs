@@ -191,8 +191,11 @@ impl Parser {
                     }));
                 }
             }
-            // A long tool still runs: nothing to show, but the session is alive.
-            Some("tool_progress") => progress(&value, &mut out),
+            // A long tool still runs: nothing to show, but the session is alive. A heartbeat
+            // (sent every 30 s while a foreground command runs) only says the command has not
+            // ended, not that anything moves: a hung command must still look silent to the
+            // stall watchdog, which allows a running command longer.
+            Some("tool_progress") if !is_heartbeat(&value) => progress(&value, &mut out),
             // Heartbeats, prompt suggestions: nothing to report.
             _ => {}
         }
@@ -1122,6 +1125,12 @@ fn progress(value: &Value, out: &mut Vec<Output>) {
     out.push(Output::Event(ProviderEvent::Progress { item_id }));
 }
 
+/// Whether a `tool_progress` line is only the CLI's heartbeat for a running tool.
+fn is_heartbeat(value: &Value) -> bool {
+    value.get("heartbeat").and_then(Value::as_bool) == Some(true)
+        || str_of(value, "tool_use_id").is_some_and(|id| id.contains("-heartbeat-"))
+}
+
 fn notice(level: NoticeLevel, message: String) -> Output {
     Output::Event(ProviderEvent::Notice { level, message })
 }
@@ -1190,6 +1199,24 @@ mod tests {
             "elapsed_time_seconds": 30,
         });
         assert_eq!(progress(&mut parser, tool), ["toolu_1"]);
+        // A heartbeat for a foreground command only says it has not ended: a hung command
+        // stays silent.
+        let heartbeat = json!({
+            "type": "tool_progress",
+            "tool_use_id": "toolu_5-heartbeat-0",
+            "tool_name": "Bash",
+            "parent_tool_use_id": "toolu_5",
+            "elapsed_time_seconds": 30,
+            "heartbeat": true,
+        });
+        assert!(parser.feed(&heartbeat.to_string()).is_empty());
+        let unmarked = json!({
+            "type": "tool_progress",
+            "tool_use_id": "toolu_5-heartbeat-1",
+            "tool_name": "Bash",
+            "elapsed_time_seconds": 60,
+        });
+        assert!(parser.feed(&unmarked.to_string()).is_empty());
         let sub_agent = json!({
             "type": "assistant",
             "parent_tool_use_id": "toolu_2",

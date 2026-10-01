@@ -561,7 +561,9 @@ impl SessionManager {
             redactor: secrets::redactor(vec![grant]),
             owned_cwd: codex,
             auto_compact: true,
-            allowed_models: None,
+            // A Brain job hands nothing on: no sub-agents at all (Codex runs without them,
+            // Claude without its Agent tool).
+            allowed_models: Some(brigadier_providers::AllowedModels::default()),
         };
         let access = spec.access.clone();
         let time = match job.kind {

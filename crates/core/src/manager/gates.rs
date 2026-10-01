@@ -1006,6 +1006,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
 4. Change no tracked file and add no source file: build output goes only into the project's ignored folders. Brigadier compares your checkout with the commit after your report and discards a verification that changed it.
 5. Workers often decide too early that a check can't run. Never do that yourself: before you call a check not run, try it, then try another way (install what is missing, use the project's own scripts, read how CI runs it). Name each command you tried and quote its error.
 6. When a check fails, find out whether it fails the same way without this change: unpack the parent commit into your scratch folder (`mkdir <scratch>/parent && git archive HEAD~1 | tar -x -C <scratch>/parent`) and run it there, or read the code. A failure that is already there on the parent is not this change's: it is never [not met], an open question or a failed check for this change. Name it under risks.
+7. When a check can't run here, try it on the parent the same way. If it can't run there either, for the same reason (the same missing key, sign-in or service), it is a gap the project already had, not this change's: name it under risks as \"[pre-existing] the check: why it can't run, here and on the parent\", and it does not make checks notRun. A check that can't run here but runs on the parent, or one you couldn't try there, goes under risks as \"[not run] the check: the command you tried and its error\".
 {JUDGE_THE_CHANGE}",
         short(commit),
         task.number,
@@ -1035,7 +1036,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
         ));
     }
     spec.push_str(
-        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed, apart from failures already on the parent), failed (a check ran and failed because of this change), notRun (the project has checks but they could not run, after you tried; a check stopped by a missing key, sign-in or service is notRun, not failed), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
+        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed, apart from failures already on the parent and [pre-existing] checks that can't run on the parent either), failed (a check ran and failed because of this change), notRun (a check could not run, after you tried, and it is not [pre-existing]; a check stopped by a missing key, sign-in or service is notRun, not failed), or noChecks (the project has no checks you could run, apart from [pre-existing] ones). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
     );
     spec
 }
@@ -1106,9 +1107,33 @@ pub(super) fn review_result(report: &Report) -> GateResult {
     }
 }
 
+/// The checks a verifier named under risks as unable to run: those that can't run on the
+/// parent either, for the same reason ("[pre-existing] …", a gap the project already had),
+/// and the others ("[not run] …").
+fn unrun_checks(risks: &[String]) -> (Vec<&String>, Vec<&String>) {
+    let marked = |line: &String, marker: &str| {
+        without_marker(line)
+            .get(..marker.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(marker))
+    };
+    (
+        risks
+            .iter()
+            .filter(|line| marked(line, "[pre-existing]"))
+            .collect(),
+        risks
+            .iter()
+            .filter(|line| marked(line, "[not run]"))
+            .collect(),
+    )
+}
+
 /// A verifier's result. It passed only when every "done when" criterion is shown met with
 /// evidence (at least as many as the worker listed, `listed`), the project's checks passed
-/// (or it has none), and it found nothing for the worker to fix.
+/// (or it has none), and it found nothing for the worker to fix. A check that can't run on
+/// the parent commit either, for the same reason, is a gap the project already had: named
+/// under risks as "[pre-existing] …", it doesn't hold the change ("never land unverified"
+/// is about the checks this change could have run).
 fn verify_result(report: &Report, listed: usize) -> GateResult {
     use crate::work::ChecksResult;
     let mut unmet = Vec::new();
@@ -1151,12 +1176,25 @@ fn verify_result(report: &Report, listed: usize) -> GateResult {
             report.done_when.len()
         ))
     } else {
+        let (gaps, unrun) = unrun_checks(&report.risks);
         match report.checks {
-            Some(ChecksResult::Passed | ChecksResult::NoChecks) => None,
-            Some(ChecksResult::NotRun) => Some(format!(
-                "The project's checks could not run: {}",
-                report.summary
-            )),
+            Some(ChecksResult::Passed | ChecksResult::NoChecks) if unrun.is_empty() => None,
+            // Told not to count them, it still did: what could not run were only such gaps.
+            Some(ChecksResult::NotRun) if !gaps.is_empty() && unrun.is_empty() => None,
+            Some(ChecksResult::Passed | ChecksResult::NoChecks | ChecksResult::NotRun) => {
+                Some(format!(
+                    "The project's checks could not run: {}",
+                    if unrun.is_empty() {
+                        report.summary.clone()
+                    } else {
+                        unrun
+                            .iter()
+                            .map(|line| without_marker(line))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    }
+                ))
+            }
             None => Some("It did not say whether the project's checks ran.".to_owned()),
             Some(ChecksResult::Failed) => unreachable!("handled above"),
         }
@@ -1338,6 +1376,47 @@ mod tests {
         );
         assert!(matches!(
             verify_result(&report, 0),
+            GateResult::Unverified { .. }
+        ));
+    }
+
+    #[test]
+    fn a_check_that_cannot_run_on_the_parent_either_does_not_hold_the_change() {
+        let met = [
+            "[met] CONTRIBUTORS.md lists the bot: CONTRIBUTORS.md:7",
+            "[met] npm test passes: 12 passed, 0 failed",
+        ];
+        let gap = "- [Pre-existing] npm run test:integration: CALC_API_TOKEN is not set, here and on the parent";
+        let mut passed = report(&met, Some(ChecksResult::Passed));
+        passed.risks = vec![gap.into()];
+        assert_eq!(verify_result(&passed, 2), GateResult::Passed);
+        // A verifier that still called the checks notRun over that gap alone.
+        let mut not_run = report(&met, Some(ChecksResult::NotRun));
+        not_run.risks = vec![gap.into(), "The diff is small.".into()];
+        assert_eq!(verify_result(&not_run, 2), GateResult::Passed);
+        // A check this change could have run, but didn't, still holds it.
+        let blocked = "[not run] npm run e2e: the browser download failed";
+        not_run.risks.push(blocked.into());
+        let GateResult::Unverified { reason } = verify_result(&not_run, 2) else {
+            panic!("not unverified");
+        };
+        assert!(reason.contains("npm run e2e"), "{reason}");
+        passed.risks.push(blocked.into());
+        assert!(matches!(
+            verify_result(&passed, 2),
+            GateResult::Unverified { .. }
+        ));
+        // So does any criterion left unchecked.
+        let mut unchecked = report(
+            &[
+                "[met] lint passes: 0 warnings",
+                "[not checked] the API answers: no token",
+            ],
+            Some(ChecksResult::NotRun),
+        );
+        unchecked.risks = vec![gap.into()];
+        assert!(matches!(
+            verify_result(&unchecked, 0),
             GateResult::Unverified { .. }
         ));
     }
