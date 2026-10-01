@@ -3642,42 +3642,96 @@ fn without_quiet(text: &str) -> Option<&str> {
     (!text.trim_start().is_empty()).then_some(text)
 }
 
-/// Whether an orchestrator's reply ends by asking the user something: a question in its last
-/// paragraph, or in the one before a closing list of options. A question mark inside a word
-/// (a URL's query) is not one.
+/// Whether an orchestrator's reply ends by asking the user something: its last sentence (or
+/// the one right before a closing list of options) is a question. A question followed by more
+/// statements ("Why did it fail? A missing export.") asks nothing, and neither does a question
+/// mark in code, in a quotation or inside a word (a URL's query). A question asked with
+/// ask_user is a card, which the request waits on by itself; this reads the reply's text.
 fn asks_user(reply: &str) -> bool {
     let Some(reply) = without_quiet(reply) else {
         return false;
     };
-    let question = |text: &str| {
-        text.char_indices().any(|(at, c)| {
-            c == '?'
-                && text[at + 1..].chars().next().is_none_or(|next| {
-                    next.is_whitespace()
-                        || matches!(
-                            next,
-                            ')' | '"' | '\'' | '*' | '_' | '`' | '\u{201d}' | '\u{2019}'
-                        )
-                })
-        })
-    };
     let option = |line: &str| {
         let line = line.trim_start();
-        line.starts_with(['-', '*', '\u{2022}'])
+        line.strip_prefix(['-', '*', '\u{2022}'])
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace))
             || line.split_once(['.', ')']).is_some_and(|(number, _)| {
                 !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
             })
     };
-    let paragraphs: Vec<&str> = reply
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|paragraph| !paragraph.is_empty())
+    let prose = prose_of(reply);
+    let all: Vec<&str> = prose
+        .lines()
+        .filter(|line| !line.trim().is_empty())
         .collect();
-    match paragraphs.as_slice() {
-        [.., before, last] if last.lines().all(option) => question(before) || question(last),
-        [.., last] => question(last),
-        [] => false,
+    // A closing list of options: the question is the sentence before it (a reply that is
+    // only a list ends on its last item).
+    let mut lines: Vec<&str> = prose.lines().collect();
+    while lines
+        .last()
+        .is_some_and(|line| line.trim().is_empty() || option(line))
+    {
+        lines.pop();
     }
+    if lines.is_empty() {
+        return all.last().is_some_and(|line| ends_on_question(line));
+    }
+    let paragraph = lines
+        .rsplit(|line| line.trim().is_empty())
+        .next()
+        .unwrap_or_default()
+        .join("\n");
+    ends_on_question(paragraph.trim_end())
+}
+
+/// A reply's prose: without code blocks and quoted lines ("> …"), each code span read as a
+/// word.
+fn prose_of(reply: &str) -> String {
+    let mut prose = String::new();
+    let mut fenced = false;
+    for line in reply.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced || trimmed.starts_with('>') {
+            continue;
+        }
+        let mut spans = line.split('`');
+        prose.push_str(spans.next().unwrap_or_default());
+        // Odd pieces are code; an unclosed span runs to the line's end.
+        for (n, piece) in spans.enumerate() {
+            if n % 2 == 1 {
+                prose.push_str(piece);
+            } else {
+                prose.push_str("code");
+            }
+        }
+        prose.push('\n');
+    }
+    prose
+}
+
+/// Whether `text` ends on a question of its own: a `?` after its last word, past closing
+/// marks and a closing aside ("Land it? (It fails `npm test`.)"), outside quotation marks.
+fn ends_on_question(text: &str) -> bool {
+    const CLOSING: [char; 7] = [')', '"', '\'', '*', '_', '\u{201d}', '\u{2019}'];
+    let text = text.trim_end();
+    let bare = text.trim_end_matches(|c: char| CLOSING.contains(&c) || c.is_whitespace());
+    if let Some(before) = bare.strip_suffix('?') {
+        // Inside a quotation that closes after it: someone else's question.
+        let straight = before.matches('"').count();
+        let curly = before.matches('\u{201c}').count() > before.matches('\u{201d}').count();
+        return straight % 2 == 0 && !curly;
+    }
+    // A closing aside after the question.
+    if text.ends_with(')')
+        && let Some(open) = text.rfind('(')
+    {
+        return ends_on_question(&text[..open]);
+    }
+    false
 }
 
 /// Takes every envelope of one request from the inbox, in arrival order: the request of the
@@ -3831,6 +3885,11 @@ mod tests {
             "Should I land it anyway? (It fails `npm test`.)",
             "Land it as it is?\n\n[quiet]",
             "Do you want \"strict\" mode?\"",
+            "Two ways on:\n- keep it\n- drop it\n\nWhich one?",
+            "Which one do you want?\n1. Keep it\n2. Drop it",
+            "Should I land it (as it is?)",
+            "**Land it as it is?**",
+            "Should I run this?\n\n```sh\nnpm test\n```",
         ] {
             assert!(asks_user(reply), "{reply}");
         }
@@ -3838,7 +3897,14 @@ mod tests {
             "[quiet]",
             "Landed as commit afd589834a on main.",
             "Why did it fail? A missing export.\n\nI sent the worker back to fix it.",
+            "Why did verification fail? The worker omitted an export.",
             "See https://example.com/docs?page=2 for the details.",
+            "The worker asked \"should this be public?\"",
+            "The worker asked \u{201c}should this be public?\u{201d}",
+            "It runs `git status --porcelain?`",
+            "Its test reads:\n\n```js\nexpect(isPrime(1)).toBe(false) // why?\n```",
+            "The worker wrote:\n> Should I keep the old flag?",
+            "Done.\n\n- tests pass\n- lint passes",
             "",
         ] {
             assert!(!asks_user(reply), "{reply}");

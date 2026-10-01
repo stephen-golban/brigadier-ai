@@ -581,9 +581,8 @@ impl SessionManager {
     }
 
     /// What the round's verifiers say only the user can do before the checks can run is
-    /// listed for them, whatever the round's outcome; what an earlier round listed and they no
-    /// longer name is over. A round no verifier reported in says nothing about it. Returns the
-    /// lines, and how many are listed.
+    /// listed for them (see [`landing_wait_lines`]); what an earlier round listed and they no
+    /// longer name is over. Returns the lines, and how many are listed.
     async fn landing_waits(
         &self,
         task: &Task,
@@ -597,13 +596,9 @@ impl SessionManager {
             .filter_map(|m| members.iter().find(|t| t.id == m.task_id))
             .filter_map(|t| t.report.as_ref())
             .collect();
-        if reports.is_empty() {
+        let Some(user_only) = landing_wait_lines(gate, &reports) else {
             return (Vec::new(), 0);
-        }
-        let user_only: Vec<String> = reports
-            .iter()
-            .flat_map(|report| report.needs_user.iter().cloned())
-            .collect();
+        };
         let listed = self
             .sync_waiting(
                 task,
@@ -740,6 +735,19 @@ impl SessionManager {
             },
         )
         .await;
+        // From now on, only the user can have this change land despite these findings.
+        if let (Some(gate), Some(candidate)) = (&task.gate, &task.candidate) {
+            let escalated = crate::work::Escalated {
+                round: gate.round,
+                commit: candidate.commit.clone(),
+                at_ms: crate::now_ms(),
+            };
+            let _ = self
+                .update_task(&task.conversation_id, &task.id, |t| {
+                    t.escalated = Some(escalated);
+                })
+                .await;
+        }
     }
 
     /// The worker's fix changed nothing: the orchestrator gets the last round's findings.
@@ -915,6 +923,40 @@ pub(super) fn checks_stand(task: &Task) -> Option<GateOutcome> {
         .then_some(outcome)
 }
 
+/// What a closed round's verifiers (their `reports`) say only the user can do before the
+/// change can land, whatever the round's outcome but a pass: a change that passed waits on
+/// nothing, so whatever was listed for it is over (a gap the parent has too is no blocker).
+/// `None` for a round no verifier reported in: it says nothing about it.
+fn landing_wait_lines(gate: &Gate, reports: &[&Report]) -> Option<Vec<String>> {
+    if gate.outcome == Some(GateOutcome::Passed) {
+        return Some(Vec::new());
+    }
+    if reports.is_empty() {
+        return None;
+    }
+    Some(
+        reports
+            .iter()
+            .flat_map(|report| report.needs_user.iter().cloned())
+            .collect(),
+    )
+}
+
+/// Whether the user spoke (their newest message or answer on a card at `user_at_ms`) after
+/// the orchestrator was handed the failed checks of the task's change as it is now: same
+/// round, same candidate. Only then may `accept_task` land it despite them (`override`);
+/// the orchestrator's word alone is not the user's.
+pub(super) fn user_spoke_since_checks(task: &Task, user_at_ms: Option<i64>) -> bool {
+    let (Some(escalated), Some(gate), Some(candidate)) =
+        (&task.escalated, &task.gate, &task.candidate)
+    else {
+        return false;
+    };
+    escalated.round == gate.round
+        && escalated.commit == candidate.commit
+        && user_at_ms.is_some_and(|at| at > escalated.at_ms)
+}
+
 /// Whether the task's candidate, as it is now, passed its gate (or the user had it land
 /// despite the gate's findings): only that commit may land.
 pub(super) fn candidate_passed(task: &Task) -> bool {
@@ -1006,7 +1048,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
 4. Change no tracked file and add no source file: build output goes only into the project's ignored folders. Brigadier compares your checkout with the commit after your report and discards a verification that changed it.
 5. Workers often decide too early that a check can't run. Never do that yourself: before you call a check not run, try it, then try another way (install what is missing, use the project's own scripts, read how CI runs it). Name each command you tried and quote its error.
 6. When a check fails, find out whether it fails the same way without this change: unpack the parent commit into your scratch folder (`mkdir <scratch>/parent && git archive HEAD~1 | tar -x -C <scratch>/parent`) and run it there, or read the code. A failure that is already there on the parent is not this change's: it is never [not met], an open question or a failed check for this change. Name it under risks.
-7. When a check can't run here, try it on the parent the same way. If it can't run there either, for the same reason (the same missing key, sign-in or service), it is a gap the project already had, not this change's: name it under risks as \"[pre-existing] the check: why it can't run, here and on the parent\", and it does not make checks notRun. A check that can't run here but runs on the parent, or one you couldn't try there, goes under risks as \"[not run] the check: the command you tried and its error\".
+7. When a check can't run here, try it on the parent the same way. If it can't run there either, for the same reason (the same missing key, sign-in or service), it is a gap the project already had, not this change's: name it under risks as \"[pre-existing] <the check>: <your evidence it fails the same way on the parent: the command you ran there and its error>\", one line per check. A check that can't run here but runs on the parent, or one you couldn't try there, goes under risks as \"[not run] the check: the command you tried and its error\".
 {JUDGE_THE_CHANGE}",
         short(commit),
         task.number,
@@ -1036,7 +1078,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
         ));
     }
     spec.push_str(
-        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed, apart from failures already on the parent and [pre-existing] checks that can't run on the parent either), failed (a check ran and failed because of this change), notRun (a check could not run, after you tried, and it is not [pre-existing]; a check stopped by a missing key, sign-in or service is notRun, not failed), or noChecks (the project has no checks you could run, apart from [pre-existing] ones). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user.",
+        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed, apart from failures already on the parent, and the only checks that could not run, if any, are [pre-existing] ones, each named with its evidence), failed (a check ran and failed because of this change), notRun (any other check could not run, after you tried; a check stopped by a missing key, sign-in or service is notRun, not failed; the change never lands on notRun), or noChecks (the project has no checks you could run, apart from [pre-existing] ones). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker. If a check that is not a [pre-existing] gap can't run until the user does something only they can (a key, a sign-in, a paid account), say exactly what under needs_user. A [pre-existing] gap goes under risks only, never under needs_user: needs_user is for what holds this change.",
     );
     spec
 }
@@ -1107,6 +1149,22 @@ pub(super) fn review_result(report: &Report) -> GateResult {
     }
 }
 
+/// A "[pre-existing] …" gap's check and the evidence that it fails the same way on the
+/// parent ("[pre-existing] check: evidence", or a dash instead of the colon); `None` when
+/// either is missing.
+fn pre_existing_gap(line: &str) -> Option<(&str, &str)> {
+    let evidence = criterion_evidence(line)?;
+    let text = criterion_text(line);
+    let check = text[..text.len() - evidence.len()]
+        .trim_end()
+        .trim_end_matches([':', '—', '–', '-', '>', '='])
+        .trim();
+    check
+        .chars()
+        .any(char::is_alphanumeric)
+        .then_some((check, evidence))
+}
+
 /// The checks a verifier named under risks as unable to run: those that can't run on the
 /// parent either, for the same reason ("[pre-existing] …", a gap the project already had),
 /// and the others ("[not run] …").
@@ -1132,8 +1190,9 @@ fn unrun_checks(risks: &[String]) -> (Vec<&String>, Vec<&String>) {
 /// evidence (at least as many as the worker listed, `listed`), the project's checks passed
 /// (or it has none), and it found nothing for the worker to fix. A check that can't run on
 /// the parent commit either, for the same reason, is a gap the project already had: named
-/// under risks as "[pre-existing] …", it doesn't hold the change ("never land unverified"
-/// is about the checks this change could have run).
+/// under risks as "[pre-existing] check: evidence", it doesn't hold the change ("never land
+/// unverified" is about the checks this change could have run). Checks reported `notRun`
+/// never pass, whatever gaps are named beside them.
 fn verify_result(report: &Report, listed: usize) -> GateResult {
     use crate::work::ChecksResult;
     let mut unmet = Vec::new();
@@ -1177,10 +1236,23 @@ fn verify_result(report: &Report, listed: usize) -> GateResult {
         ))
     } else {
         let (gaps, unrun) = unrun_checks(&report.risks);
+        // A gap that names no check, or no evidence that the parent fails the same way, is
+        // no proof that the change had nothing to run.
+        let unproven: Vec<&str> = gaps
+            .iter()
+            .filter(|line| pre_existing_gap(line).is_none())
+            .map(|line| without_marker(line))
+            .collect();
         match report.checks {
+            Some(ChecksResult::Passed | ChecksResult::NoChecks)
+                if unrun.is_empty() && !unproven.is_empty() =>
+            {
+                Some(format!(
+                    "A check it named as failing on the parent too gave no check or no evidence from the parent: {}",
+                    unproven.join("; ")
+                ))
+            }
             Some(ChecksResult::Passed | ChecksResult::NoChecks) if unrun.is_empty() => None,
-            // Told not to count them, it still did: what could not run were only such gaps.
-            Some(ChecksResult::NotRun) if !gaps.is_empty() && unrun.is_empty() => None,
             Some(ChecksResult::Passed | ChecksResult::NoChecks | ChecksResult::NotRun) => {
                 Some(format!(
                     "The project's checks could not run: {}",
@@ -1386,15 +1458,19 @@ mod tests {
             "[met] CONTRIBUTORS.md lists the bot: CONTRIBUTORS.md:7",
             "[met] npm test passes: 12 passed, 0 failed",
         ];
-        let gap = "- [Pre-existing] npm run test:integration: CALC_API_TOKEN is not set, here and on the parent";
+        let gap = "- [Pre-existing] npm run test:integration: on the parent too it stops at `CALC_API_TOKEN is not set`";
         let mut passed = report(&met, Some(ChecksResult::Passed));
         passed.risks = vec![gap.into()];
         assert_eq!(verify_result(&passed, 2), GateResult::Passed);
-        // A verifier that still called the checks notRun over that gap alone.
+        // Checks called notRun never pass, even beside such a gap: another check may have
+        // failed to run without its own line.
         let mut not_run = report(&met, Some(ChecksResult::NotRun));
         not_run.risks = vec![gap.into(), "The diff is small.".into()];
-        assert_eq!(verify_result(&not_run, 2), GateResult::Passed);
-        // A check this change could have run, but didn't, still holds it.
+        assert!(matches!(
+            verify_result(&not_run, 2),
+            GateResult::Unverified { .. }
+        ));
+        // A check this change could have run, but didn't, holds it, and is named.
         let blocked = "[not run] npm run e2e: the browser download failed";
         not_run.risks.push(blocked.into());
         let GateResult::Unverified { reason } = verify_result(&not_run, 2) else {
@@ -1419,6 +1495,65 @@ mod tests {
             verify_result(&unchecked, 0),
             GateResult::Unverified { .. }
         ));
+    }
+
+    #[test]
+    fn a_pre_existing_gap_counts_only_with_its_check_and_evidence_from_the_parent() {
+        let met = ["[met] npm test passes: 12 passed, 0 failed"];
+        for gap in [
+            "[pre-existing]",
+            "[pre-existing] npm run test:integration",
+            "[pre-existing] npm run test:integration:",
+            "[pre-existing] : CALC_API_TOKEN is not set on the parent either",
+            "[pre-existing] npm run test:integration — ",
+        ] {
+            let mut passed = report(&met, Some(ChecksResult::Passed));
+            passed.risks = vec![gap.into()];
+            let GateResult::Unverified { reason } = verify_result(&passed, 1) else {
+                panic!("not unverified: {gap}");
+            };
+            assert!(reason.contains("no evidence from the parent"), "{reason}");
+        }
+        for gap in [
+            "[pre-existing] npm run test:integration: the parent stops at `CALC_API_TOKEN is not set` too",
+            "* [Pre-existing] cargo test --features gpu — no CUDA here or on the parent",
+        ] {
+            let mut passed = report(&met, Some(ChecksResult::Passed));
+            passed.risks = vec![gap.into()];
+            assert_eq!(verify_result(&passed, 1), GateResult::Passed, "{gap}");
+            let mut none = report(&met, Some(ChecksResult::NoChecks));
+            none.risks = vec![gap.into()];
+            assert_eq!(verify_result(&none, 1), GateResult::Passed, "{gap}");
+        }
+        assert_eq!(
+            pre_existing_gap("[pre-existing] npm run lint: the parent fails the same way"),
+            Some(("npm run lint", "the parent fails the same way"))
+        );
+    }
+
+    #[test]
+    fn a_change_that_passed_its_checks_waits_on_the_user_for_nothing() {
+        let mut gate = gated(TaskState::Reviewing, 1, "c1", None, "c1")
+            .gate
+            .expect("a gate");
+        let mut verifier = report(
+            &["[met] npm test passes: 12 passed"],
+            Some(ChecksResult::Passed),
+        );
+        verifier.needs_user = vec!["Set CALC_API_TOKEN to run the integration tests".into()];
+        // Passed: what the verifier listed for the user holds nothing, and what was listed
+        // before is over.
+        gate.outcome = Some(GateOutcome::Passed);
+        assert_eq!(landing_wait_lines(&gate, &[&verifier]), Some(Vec::new()));
+        assert_eq!(landing_wait_lines(&gate, &[]), Some(Vec::new()));
+        // Not verified: it waits on the user.
+        gate.outcome = Some(GateOutcome::Unverified);
+        assert_eq!(
+            landing_wait_lines(&gate, &[&verifier]),
+            Some(verifier.needs_user.clone())
+        );
+        // No verifier reported: the round says nothing about it.
+        assert_eq!(landing_wait_lines(&gate, &[]), None);
     }
 
     #[test]
@@ -1852,6 +1987,36 @@ mod tests {
         let mut unfinished = failed;
         unfinished.gate.as_mut().expect("a gate").outcome = Some(GateOutcome::NoResult);
         assert!(!candidate_passed(&unfinished));
+    }
+
+    #[test]
+    fn only_the_user_speaking_after_the_findings_lets_a_change_land_despite_them() {
+        let mut task = gated(
+            TaskState::Reported,
+            2,
+            "c1",
+            Some(GateOutcome::Failed),
+            "c1",
+        );
+        // The orchestrator never handed the findings on: nothing the user said was about them.
+        assert!(!user_spoke_since_checks(&task, Some(2_000)));
+        task.escalated = Some(crate::work::Escalated {
+            round: 2,
+            commit: "c1".into(),
+            at_ms: 1_000,
+        });
+        // Nothing from the user since, or only from before.
+        assert!(!user_spoke_since_checks(&task, None));
+        assert!(!user_spoke_since_checks(&task, Some(900)));
+        assert!(!user_spoke_since_checks(&task, Some(1_000)));
+        assert!(user_spoke_since_checks(&task, Some(1_001)));
+        // Findings of an earlier round, or about another candidate, are not these.
+        let mut later_round = task.clone();
+        later_round.gate.as_mut().expect("a gate").round = 3;
+        assert!(!user_spoke_since_checks(&later_round, Some(2_000)));
+        let mut newer = task.clone();
+        newer.candidate.as_mut().expect("a candidate").commit = "c2".into();
+        assert!(!user_spoke_since_checks(&newer, Some(2_000)));
     }
 
     fn big(task: &mut Task) {

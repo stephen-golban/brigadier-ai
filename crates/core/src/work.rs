@@ -248,11 +248,13 @@ pub enum ReviewVerdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ChecksResult {
-    /// Every check it ran passed.
+    /// Every check it ran passed. Any it could not run fail the same way on the parent
+    /// commit, each named under risks as "[pre-existing] check: evidence from the parent".
     Passed,
     /// At least one check failed.
     Failed,
-    /// The project has checks, but it could not run them.
+    /// The project has checks, but it could not run some that are not such gaps: the change
+    /// does not land.
     NotRun,
     /// The project has no checks it could run; the evidence for each criterion comes from
     /// reading the code and running what it could.
@@ -381,6 +383,17 @@ pub struct Gate {
     /// the revision to answer one by one.
     #[serde(default)]
     pub findings: Vec<Finding>,
+}
+
+/// The orchestrator was handed a write task's failed checks (see [`Task::escalated`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Escalated {
+    /// The gate round whose findings it was told.
+    pub round: u32,
+    /// The candidate commit those findings are about.
+    pub commit: String,
+    pub at_ms: i64,
 }
 
 /// A problem a plan's reviewer found, by the id the revision answers it with.
@@ -565,6 +578,12 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(skip)]
     pub addendum: Option<String>,
+    /// A write task: when the orchestrator was told its checks' findings and that nothing
+    /// landed. Only the user's word after that lands the change despite them (`accept_task`
+    /// with `override`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub escalated: Option<Escalated>,
     /// The landed commit.
     pub landed: Option<String>,
     /// Why it is blocked, paused or cannot land yet.

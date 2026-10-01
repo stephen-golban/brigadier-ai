@@ -81,8 +81,8 @@ const ACCEPT_TASK: &str = "Land a finished `implement` or `merge` task as one co
 session's branch, with your commit message. Call it after reading the task's report. Brigadier \
 first has the change reviewed by another vendor and checks that it can land safely; what happens \
 arrives as a message. Set override only when the user explicitly told you to land it despite the \
-checks' findings: the change they found problems in then lands as it is, without being checked \
-again.";
+checks' findings, after those findings reached you: the change they found problems in then lands \
+as it is, without being checked again. Brigadier refuses it unless the user wrote since.";
 
 const FINISH_SESSION: &str = "New-worktree sessions only: when all the work has landed, ask \
 the user to merge the session branch into its base branch (one click on a card). Returns at \

@@ -330,7 +330,7 @@ pub(crate) fn late_findings_text(artifact: &ArtifactRef, text: &str) -> String {
             end -= 1;
         }
         format!(
-            "{}\n[…cut; read_artifact {} reads all {} bytes]",
+            "{}\n{CUT_HEAD}{}{CUT_TAIL}{} bytes]",
             &text[..end],
             artifact.id,
             artifact.bytes
@@ -338,6 +338,35 @@ pub(crate) fn late_findings_text(artifact: &ArtifactRef, text: &str) -> String {
     } else {
         text.to_owned()
     }
+}
+
+/// How [`late_findings_text`] says where the rest is: `{CUT_HEAD}<id>{CUT_TAIL}<n> bytes]`.
+const CUT_HEAD: &str = "[…cut; read_artifact ";
+const CUT_TAIL: &str = " reads all ";
+
+/// The cuts [`late_findings_text`] left in `text`, in order: each one's note, and the id of
+/// the artifact that holds the whole text.
+pub(crate) fn late_findings_cuts(text: &str) -> Vec<(&str, &str)> {
+    let mut cuts = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(CUT_HEAD) {
+        let after = &rest[start + CUT_HEAD.len()..];
+        let Some(end) = after.find(']') else {
+            break;
+        };
+        let note = &rest[start..start + CUT_HEAD.len() + end + 1];
+        if let Some((id, _)) = after[..end].split_once(CUT_TAIL) {
+            cuts.push((note, id));
+        }
+        rest = &rest[start + note.len()..];
+    }
+    cuts
+}
+
+/// What a checker reads in place of a cut's note: the file that holds the whole text (it
+/// has no read_artifact).
+pub(crate) fn late_findings_file_note(path: &std::path::Path) -> String {
+    format!("[…cut; the whole text is in {}]", path.display())
 }
 
 /// What a worker wrote after its report (see [`report_envelope`]), shown as
@@ -404,6 +433,40 @@ mod tests {
             shown.ends_with("[…cut; read_artifact blob1 reads all 9000 bytes]"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_checker_finds_where_the_rest_of_a_cut_addendum_is() {
+        let artifact = |id: &str| ArtifactRef {
+            id: id.into(),
+            title: "What the worker wrote after its report".into(),
+            kind: crate::work::ArtifactKind::Note,
+            mime: "text/markdown".into(),
+            bytes: 9_000,
+            file_name: None,
+        };
+        assert!(late_findings_cuts("Short.").is_empty());
+        let long = "x".repeat(4_000);
+        let held = format!(
+            "{}\n\nShort.\n\n{}",
+            late_findings_text(&artifact("blob1"), &long),
+            late_findings_text(&artifact("blob2"), &long)
+        );
+        let cuts = late_findings_cuts(&held);
+        assert_eq!(
+            cuts,
+            vec![
+                ("[…cut; read_artifact blob1 reads all 9000 bytes]", "blob1"),
+                ("[…cut; read_artifact blob2 reads all 9000 bytes]", "blob2"),
+            ]
+        );
+        let path = std::path::Path::new("/scratch/held-1.md");
+        let shown = held.replacen(cuts[0].0, &late_findings_file_note(path), 1);
+        assert!(
+            shown.contains("[…cut; the whole text is in /scratch/held-1.md]"),
+            "{shown}"
+        );
+        assert_eq!(late_findings_cuts(&shown).len(), 1);
     }
 
     #[test]

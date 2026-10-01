@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use super::SessionManager;
 use super::conversation::Envelope;
 use super::prompts;
+use super::workers::relanding_pending;
 use crate::board::Board;
 use crate::model::{ConversationId, ConversationKind};
 use crate::work::{CardState, PlanState, RequestState, Task, TaskId, TaskState};
@@ -143,7 +144,10 @@ impl SessionManager {
                             | TaskState::Running
                             | TaskState::Reviewing
                     )
-                }) {
+                })
+                || relanding_in(&board, id)
+            {
+                // A fix Brigadier checks and lands once its worker's turn is over still works.
                 RequestState::Working
             } else if needs_user(&board, id)
                 || (activity.asked_user.contains(id)
@@ -235,7 +239,7 @@ impl SessionManager {
                     announced.contains(&task.id)
                         || (task.request_id.as_deref() == Some(request)
                             && !task.state.is_final()
-                            && task.state != TaskState::Reported)
+                            && (task.state != TaskState::Reported || relanding_pending(task)))
                 })
                 .collect();
             running.sort_by_key(|task| task.number);
@@ -284,14 +288,15 @@ impl SessionManager {
     }
 
     /// The request's write tasks whose report waits for the orchestrator's decision: reported
-    /// with a change that could land. Until it accepts, sends back or stops them they stay
-    /// open.
+    /// with a change that could land, and not a fix Brigadier lands on its own. Until it
+    /// accepts, sends back or stops them they stay open.
     pub(super) async fn undecided(&self, board: &Board, request: &str) -> Vec<Task> {
         let mut undecided = Vec::new();
         for task in board.tasks.values().filter(|task| {
             task.request_id.as_deref() == Some(request)
                 && task.state == TaskState::Reported
                 && task.kind.writes()
+                && !relanding_pending(task)
         }) {
             if !self.changed_nothing(task).await {
                 undecided.push(task.clone());
@@ -320,6 +325,15 @@ fn tasks_in(board: &Board, request: &str, matches: impl Fn(TaskState) -> bool) -
         .tasks
         .values()
         .any(|task| task.request_id.as_deref() == Some(request) && matches(task.state))
+}
+
+/// Whether a task of the request reported a fix Brigadier checks and lands on its own, once
+/// its worker's turn is over.
+fn relanding_in(board: &Board, request: &str) -> bool {
+    board
+        .tasks
+        .values()
+        .any(|task| task.request_id.as_deref() == Some(request) && relanding_pending(task))
 }
 
 /// Whether a plan of the request waits for the orchestrator's revision after its review.
@@ -384,6 +398,40 @@ mod tests {
             "{note}"
         );
         assert!(!note.contains("running"), "{note}");
+    }
+
+    #[test]
+    fn a_fix_brigadier_is_about_to_check_keeps_its_request_working() {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t4",
+            "conversationId": "c",
+            "number": 4,
+            "position": 0,
+            "title": "export avg",
+            "kind": "implement",
+            "spec": "Export avg.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reported",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        task.request_id = Some("r1".into());
+        let mut board = Board::default();
+        board.tasks.insert(task.id.clone(), task.clone());
+        // A report the orchestrator decides about: nothing runs for it.
+        assert!(!relanding_in(&board, "r1"));
+        // A fix reported while Brigadier lands the change: checked once the turn is over.
+        task.landing = Some("Export avg".into());
+        board.tasks.insert(task.id.clone(), task.clone());
+        assert!(relanding_in(&board, "r1"));
+        assert!(!relanding_in(&board, "r2"));
+        // Stopped meanwhile: it is over.
+        task.state = TaskState::Stopped;
+        board.tasks.insert(task.id.clone(), task);
+        assert!(!relanding_in(&board, "r1"));
     }
 
     #[test]

@@ -65,8 +65,14 @@ impl SessionManager {
         {
             return Ok(reply);
         }
+        let number = task.number;
         self.begin_landing(conversation_id, task, message, true)
-            .await
+            .await?
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "task-{number} changed meanwhile; look at it again before accepting it"
+                ))
+            })
     }
 
     /// Lands, on the user's word, the change whose last checks found problems, as it is and
@@ -97,6 +103,14 @@ impl SessionManager {
         };
         if checked != candidate.commit && !self.same_tree(task, &checked, &candidate.commit).await {
             return Ok(None);
+        }
+        // The user's word, not the orchestrator's: they wrote after these findings reached it.
+        let user_at_ms = self.user_spoke_at(conversation_id).await;
+        if !super::gates::user_spoke_since_checks(task, user_at_ms) {
+            return Err(Error::Invalid(format!(
+                "task-{n} lands despite its checks' findings only on the user's word, and the user has not written since those findings reached you. Ask the user first, with the findings; only if they tell you to land it anyway, call accept_task for task-{n} with override: true again.",
+                n = task.number
+            )));
         }
         let later = self.later_request_for(conversation_id, task).await;
         let task = self
@@ -130,15 +144,47 @@ impl SessionManager {
         )))
     }
 
+    /// When the user last spoke in the conversation: their newest message, or answer on a
+    /// question card.
+    async fn user_spoke_at(&self, conversation_id: &ConversationId) -> Option<i64> {
+        let wrote = self
+            .core
+            .list_messages(conversation_id.clone(), None, 20)
+            .await
+            .ok()
+            .and_then(|page| {
+                page.messages
+                    .iter()
+                    .filter(|message| message.role == crate::model::MessageRole::User)
+                    .map(|message| message.created_at_ms)
+                    .max()
+            });
+        let answered = self
+            .core
+            .board(conversation_id)
+            .await
+            .ok()
+            .and_then(|board| {
+                board
+                    .questions
+                    .values()
+                    .filter_map(|question| question.answered_at_ms)
+                    .max()
+            });
+        wrote.max(answered)
+    }
+
     /// Starts landing `task`; `fresh` when the orchestrator accepted it (its fix rounds start
-    /// over), not when Brigadier lands a fix on its own.
+    /// over), not when Brigadier lands a fix on its own. `None`, with nothing changed, when
+    /// the task moved on from the state it was read in meanwhile (stopped, sent back,
+    /// reported again, or no longer Brigadier's to land).
     pub(crate) async fn begin_landing(
         &self,
         conversation_id: &ConversationId,
         task: Task,
         message: String,
         fresh: bool,
-    ) -> Result<String> {
+    ) -> Result<Option<String>> {
         if !task.kind.writes() {
             return Err(Error::Invalid(format!(
                 "task-{} is a {:?} task: only implement and merge tasks land",
@@ -163,8 +209,16 @@ impl SessionManager {
         // verified is built and checked again.
         let retry = task.state == TaskState::ReadyToLand && super::gates::candidate_passed(&task);
         let later = self.later_request_for(conversation_id, &task).await;
-        let task = self
-            .update_task(conversation_id, &task.id, |t| {
+        // Checked and changed in one step: a stop, a steer or a newer report that came after
+        // `task` was read wins.
+        let still = |now: &Task| {
+            now.state == task.state
+                && super::workers::same_report(now, &task)
+                && now.candidate == task.candidate
+                && (fresh || now.landing.is_some())
+        };
+        let Some(task) = self
+            .update_task_if(conversation_id, &task.id, still, |t| {
                 t.state = TaskState::Reviewing;
                 t.blocked_reason = None;
                 t.landing = Some(message.clone());
@@ -178,7 +232,10 @@ impl SessionManager {
                     t.request_id = later;
                 }
             })
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
         // What the worker wrote after its report goes to its checks, and to the orchestrator
         // with their outcome, not before it.
         self.hold_late_findings(&task).await;
@@ -196,13 +253,13 @@ impl SessionManager {
                     .await;
             }
         });
-        Ok(if retry {
+        Ok(Some(if retry {
             format!("Landing task-{number} again; the outcome arrives as a message.")
         } else {
             format!(
                 "Accepted task-{number}. Brigadier builds its commit, has it reviewed by another vendor's model and verified, sends the worker back with any findings, and lands it; the outcome arrives as a message."
             )
-        })
+        }))
     }
 
     /// Steps 1–4: candidate, litter guard, commit, review task.
@@ -400,8 +457,8 @@ impl SessionManager {
     }
 
     /// What a reviewer reads about the change: the task, what the worker was told since, the
-    /// worker's report, the diff.
-    pub(crate) async fn review_brief(&self, subject: &Task) -> String {
+    /// worker's report, the diff. `scratch` is the reader's own scratch folder.
+    pub(crate) async fn review_brief(&self, subject: &Task, scratch: &Path) -> String {
         // What the worker wrote after its report may come in after its checks were opened.
         let addendum = match &subject.addendum {
             Some(addendum) => Some(addendum.clone()),
@@ -436,6 +493,7 @@ impl SessionManager {
                 }
             }
             if let Some(addendum) = addendum {
+                let addendum = self.late_findings_for_checker(&addendum, scratch).await;
                 text.push_str(&format!(
                     "\n\nWhat the worker wrote after its report:\n{addendum}"
                 ));
@@ -484,6 +542,28 @@ impl SessionManager {
             }
         }
         text
+    }
+
+    /// What the worker wrote after its report, as a checker reads it: the whole of each part
+    /// cut to a report's size is written into the checker's scratch folder, and the cut
+    /// points at that file (a checker has no read_artifact).
+    async fn late_findings_for_checker(&self, held: &str, scratch: &Path) -> String {
+        let mut shown = held.to_owned();
+        for (n, (note, id)) in super::prompts::late_findings_cuts(held)
+            .into_iter()
+            .enumerate()
+        {
+            let Ok(whole) = self.core.read_blob_text(id.to_owned()).await else {
+                continue;
+            };
+            let path = scratch.join(format!("after-report-{}.md", n + 1));
+            if let Err(err) = tokio::fs::write(&path, whole).await {
+                tracing::warn!(path = %path.display(), error = %err, "could not give a checker what the worker wrote after its report");
+                continue;
+            }
+            shown = shown.replacen(note, &super::prompts::late_findings_file_note(&path), 1);
+        }
+        shown
     }
 
     /// What a merge worker reads: the task whose work it finishes merging and the conflicts
@@ -949,18 +1029,24 @@ impl SessionManager {
     /// block for the orchestrator (empty when none was held).
     async fn hand_back(&self, task: &Task, state: TaskState, blocked: Option<&str>) -> String {
         let mut addendum = None;
+        // A task stopped meanwhile stays stopped.
         let updated = self
-            .update_task(&task.conversation_id, &task.id, |t| {
-                t.state = state;
-                t.blocked_reason = blocked
-                    .filter(|_| state == TaskState::ReadyToLand)
-                    .map(str::to_owned);
-                t.landing = None;
-                addendum = t.addendum.take();
-            })
+            .update_task_if(
+                &task.conversation_id,
+                &task.id,
+                |now| !now.state.is_final(),
+                |t| {
+                    t.state = state;
+                    t.blocked_reason = blocked
+                        .filter(|_| state == TaskState::ReadyToLand)
+                        .map(str::to_owned);
+                    t.landing = None;
+                    addendum = t.addendum.take();
+                },
+            )
             .await;
         match (updated, addendum) {
-            (Ok(updated), Some(addendum)) => format!(
+            (Ok(Some(updated)), Some(addendum)) => format!(
                 "\n{}",
                 super::prompts::late_findings_envelope(&updated, &addendum)
             ),

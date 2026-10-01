@@ -455,21 +455,27 @@ impl TaskLive {
     }
 
     /// Waits until the worker's running turn is over and its end handled, so what it wrote
-    /// after its report is known; at most [`TURN_END_WAIT`] (a CLI that never ends its turn
-    /// holds nothing up for good).
+    /// after its report is known; at most [`TURN_END_WAIT`] (a CLI that never ends its turn,
+    /// or an end that never finishes being handled, holds nothing up for good).
     pub(crate) async fn turn_over(&self) {
-        let deadline = tokio::time::Instant::now() + TURN_END_WAIT;
-        loop {
-            {
-                let _end = self.turn_end.lock().await;
-                if !self.state.lock().await.busy {
-                    return;
+        self.turn_over_within(TURN_END_WAIT).await;
+    }
+
+    /// [`Self::turn_over`], waiting at most `limit`, for the turn's end being handled too.
+    async fn turn_over_within(&self, limit: Duration) {
+        let over = async {
+            loop {
+                {
+                    let _end = self.turn_end.lock().await;
+                    if !self.state.lock().await.busy {
+                        return;
+                    }
                 }
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            if tokio::time::Instant::now() >= deadline {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        if tokio::time::timeout(limit, over).await.is_err() {
+            tracing::debug!(task = %self.id, "the worker's turn did not end in time; going on");
         }
     }
 
@@ -626,10 +632,28 @@ impl SessionManager {
         id: &TaskId,
         change: impl FnOnce(&mut Task),
     ) -> Result<Task> {
+        self.update_task_if(conversation_id, id, |_| true, change)
+            .await?
+            .ok_or_else(|| Error::Invalid("the task changed meanwhile".into()))
+    }
+
+    /// [`Self::update_task`] when `still` holds for the task as it is now, checked and changed
+    /// in one step (nothing else changes the task in between); `None`, and nothing recorded,
+    /// when it no longer holds.
+    pub(crate) async fn update_task_if(
+        &self,
+        conversation_id: &ConversationId,
+        id: &TaskId,
+        still: impl FnOnce(&Task) -> bool,
+        change: impl FnOnce(&mut Task),
+    ) -> Result<Option<Task>> {
         let (task, was) = {
             // Nothing under it waits for anything but the board.
             let _held = self.task_writes.lock().await;
             let mut task = self.task_by_id(conversation_id, id).await?;
+            if !still(&task) {
+                return Ok(None);
+            }
             let was = task.state;
             let reported = task.report.is_some();
             change(&mut task);
@@ -646,7 +670,7 @@ impl SessionManager {
         if task.state != was {
             self.settle_requests(conversation_id).await;
         }
-        Ok(task)
+        Ok(Some(task))
     }
 
     pub(crate) async fn set_task_state(
@@ -829,6 +853,7 @@ impl SessionManager {
             fix_rounds: 0,
             fixes: Vec::new(),
             addendum: None,
+            escalated: None,
             landed: None,
             error: None,
             kept: None,
@@ -1016,7 +1041,7 @@ impl SessionManager {
         };
         let extra = match (&task.kind, subject) {
             (TaskKind::Review | TaskKind::Verify, Some(subject)) => {
-                self.review_brief(subject).await
+                self.review_brief(subject, &workspace.scratch).await
             }
             (TaskKind::Merge, Some(subject)) => self.merge_brief(subject, &workspace).await,
             _ => String::new(),
@@ -2287,12 +2312,25 @@ impl SessionManager {
             let live = live.clone();
             self.spawn(async move {
                 live.turn_over().await;
-                if let Err(err) = manager
-                    .begin_landing(&conversation_id, task.clone(), message, false)
-                    .await
-                {
+                // A stop being recorded now is recorded first; one that came meanwhile, a
+                // steer or a newer report took the task over, and nothing is landed for it
+                // (`begin_landing` checks the task as it is now).
+                let (now, started) = {
+                    let _settled = live.settle.lock().await;
+                    let Ok(now) = manager.task_by_id(&conversation_id, &task.id).await else {
+                        return;
+                    };
+                    if !relanding_pending(&now) || !same_report(&now, &task) {
+                        return;
+                    }
+                    let started = manager
+                        .begin_landing(&conversation_id, now.clone(), message, false)
+                        .await;
+                    (now, started)
+                };
+                if let Err(err) = started {
                     manager
-                        .landing_problem(&task, &err.to_string(), TaskState::Reported)
+                        .landing_problem(&now, &err.to_string(), TaskState::Reported)
                         .await;
                 }
             });
@@ -2515,7 +2553,7 @@ impl SessionManager {
             .collect::<Vec<_>>()
             .join("\n\n");
         let mut held = false;
-        let _ = self
+        let recorded = self
             .update_task(&task.conversation_id, &task.id, |t| {
                 if brigadier_lands(t) {
                     held = true;
@@ -2526,8 +2564,12 @@ impl SessionManager {
                 }
             })
             .await;
-        if !held {
-            // The landing ended meanwhile: the orchestrator reads them after all.
+        if let Err(err) = &recorded {
+            tracing::warn!(task = %task.id, error = %err, "could not hold what the worker wrote after its report");
+        }
+        if !held || recorded.is_err() {
+            // The landing ended meanwhile, or the task could not keep them: the orchestrator
+            // reads them after all.
             for (envelope, request) in taken {
                 self.queue_envelope(&task.conversation_id, envelope, request)
                     .await;
@@ -3312,6 +3354,19 @@ pub(super) fn brigadier_lands(task: &Task) -> bool {
                 )))
 }
 
+/// Whether a write task's report is a fix Brigadier checks and lands on its own, once the
+/// worker's turn is over (see `worker_report`): its request still works, and the orchestrator
+/// has nothing to decide about it.
+pub(super) fn relanding_pending(task: &Task) -> bool {
+    task.kind.writes() && task.state == TaskState::Reported && task.landing.is_some()
+}
+
+/// Whether `now` still holds the report `then` had.
+pub(super) fn same_report(now: &Task, then: &Task) -> bool {
+    now.report.as_ref().map(|report| report.submitted_at_ms)
+        == then.report.as_ref().map(|report| report.submitted_at_ms)
+}
+
 /// Whether `message`, written after a report with `summary`, holds findings the report left
 /// out: any message the summary points at ("reproduced below"), else a long one.
 fn is_late_findings(summary: &str, message: &str) -> bool {
@@ -3442,6 +3497,74 @@ mod tests {
         // A read task's report is the orchestrator's alone.
         task.kind = TaskKind::Scout;
         assert!(!brigadier_lands(&task));
+    }
+
+    #[test]
+    fn a_fix_is_landed_after_its_turn_only_while_nothing_moved_the_task_on() {
+        let mut then: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add cube",
+            "kind": "implement",
+            "spec": "Add cube.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reported",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        then.landing = Some("Add cube".into());
+        then.report = Some(Report {
+            summary: "Fixed.".into(),
+            changes: Vec::new(),
+            decisions: Vec::new(),
+            verification: Vec::new(),
+            done_when: Vec::new(),
+            open_questions: Vec::new(),
+            risks: Vec::new(),
+            needs_user: Vec::new(),
+            verdict: None,
+            checks: None,
+            artifacts: Vec::new(),
+            submitted_at_ms: 10,
+        });
+        let pending = |now: &Task| relanding_pending(now) && same_report(now, &then);
+        assert!(pending(&then));
+        // Steered by the orchestrator: back at work, and the fix loop is its.
+        let mut steered = then.clone();
+        steered.landing = None;
+        steered.state = TaskState::Running;
+        assert!(!pending(&steered));
+        // Stopped.
+        let mut stopped = then.clone();
+        stopped.state = TaskState::Stopped;
+        stopped.landing = None;
+        assert!(!pending(&stopped));
+        // Sent back and reported again: that report has its own landing.
+        let mut newer = then.clone();
+        newer.report.as_mut().expect("a report").submitted_at_ms = 20;
+        assert!(!pending(&newer));
+        // A read task is never landed.
+        let mut scout = then.clone();
+        scout.kind = TaskKind::Scout;
+        assert!(!pending(&scout));
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_turn_to_end_gives_up_even_while_its_end_is_being_handled() {
+        let live = TaskLive::new(TaskId("t1".into()), ConversationId("c1".into()));
+        // The end of the turn is being handled, and that never finishes.
+        let _end = live.turn_end.lock().await;
+        let waited = tokio::time::timeout(
+            Duration::from_secs(5),
+            live.turn_over_within(Duration::from_millis(50)),
+        )
+        .await;
+        assert!(waited.is_ok(), "it waited for the lock past its limit");
     }
 
     #[tokio::test]
