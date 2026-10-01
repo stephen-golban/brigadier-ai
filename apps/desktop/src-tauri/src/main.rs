@@ -350,6 +350,10 @@ fn startup_backdrop(app: &tauri::AppHandle) -> Option<tauri::utils::config::Wind
         .and_then(|window| window.window_effects.clone())
 }
 
+/// The window's colour once the app covers it, as before the startup screen had a backdrop
+/// (`backgroundColor` in tauri.conf.json): a resize never shows through to the desktop.
+const WINDOW_BACKGROUND: tauri::window::Color = tauri::window::Color(0x0f, 0x0f, 0x0e, 0xff);
+
 /// Takes the startup backdrop off `window`. Tauri's `set_effects(None)` clears it only on
 /// Windows, so on macOS the blur views it added are removed here: all of them, so none is left
 /// behind the app.
@@ -382,6 +386,9 @@ fn clear_backdrop(window: &tauri::Window) {
 fn startup_finished(app: tauri::AppHandle, window: tauri::Window) {
     if startup_backdrop(&app).is_some() {
         clear_backdrop(&window);
+        if let Err(err) = window.set_background_color(Some(WINDOW_BACKGROUND)) {
+            tracing::warn!(error = %err, "could not set the window's colour");
+        }
     }
 }
 
@@ -505,6 +512,10 @@ fn main() {
                 // (once: applying it again adds another blur view on macOS).
                 if let Some(backdrop) = startup_backdrop(webview.app_handle()) {
                     let window = webview.window();
+                    // Clear again (a transparent window's default), so the backdrop shows.
+                    if let Err(err) = window.set_background_color(None) {
+                        tracing::warn!(error = %err, "could not clear the window's colour");
+                    }
                     clear_backdrop(&window);
                     if let Err(err) = window.set_effects(backdrop) {
                         tracing::warn!(error = %err, "could not restore the startup backdrop");
