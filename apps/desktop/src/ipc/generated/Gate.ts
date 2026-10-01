@@ -31,7 +31,7 @@ relanding: boolean,
  */
 retry: boolean, 
 /**
- * A plan's round that asked for changes: its reviewers' issues, numbered F1, F2, … for
+ * A plan's round: its reviewers' issues as each result arrives, numbered F1, F2, … for
  * the revision to answer one by one.
  */
 findings: Array<Finding>, };

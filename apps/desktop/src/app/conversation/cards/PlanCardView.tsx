@@ -109,12 +109,15 @@ function PlanReview({ plan }: { plan: Plan }) {
 
 function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) {
   const outcome = gate.outcome?.type ?? null;
-  if (outcome === "superseded") return null;
+  // A round cut short by a decision or a newer plan shows only what it found by then.
+  if (outcome === "superseded" && gate.findings.length === 0) return null;
   const reasons = gate.members.flatMap((member) =>
     member.result?.type === "noResult" || member.result?.type === "unverified"
       ? [member.result.reason]
       : [],
   );
+  // Findings show as each reviewer's result arrives, whatever the round's outcome.
+  const findings = gate.findings.map((finding) => `${finding.id}: ${finding.text}`);
   return (
     <div className="flex flex-col gap-1">
       <p
@@ -127,6 +130,7 @@ function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) 
         {outcome === null ? (
           <>
             in review by <Reviewers members={gate.members} />
+            {findings.length > 0 && `, ${count(findings.length, "problem")} found so far`}
           </>
         ) : outcome === "passed" ? (
           <>
@@ -135,16 +139,19 @@ function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) 
           </>
         ) : outcome === "failed" ? (
           <>
-            <Reviewers members={gate.members} /> found {count(gate.findings.length, "problem")}
+            <Reviewers members={gate.members} /> found {count(findings.length, "problem")}
           </>
+        ) : outcome === "superseded" ? (
+          `stopped early, after finding ${count(findings.length, "problem")}`
         ) : (
-          "the review could not finish"
+          <>
+            the review could not finish
+            {findings.length > 0 && `; it found ${count(findings.length, "problem")} first`}
+          </>
         )}
       </p>
       {outcome === "passed" && notes.length > 0 && <Lines items={notes} />}
-      {outcome === "failed" && (
-        <Lines items={gate.findings.map((finding) => `${finding.id}: ${finding.text}`)} />
-      )}
+      {findings.length > 0 && <Lines items={findings} />}
       {(outcome === "noResult" || outcome === "unverified") && reasons.length > 0 && (
         <Lines items={reasons} />
       )}

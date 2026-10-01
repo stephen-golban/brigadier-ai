@@ -1,7 +1,8 @@
 //! User requests: what one user message set in motion, and when it is over.
 //!
 //! A request works while its turn runs, while an envelope or message for it waits for a turn,
-//! or while a task it started runs. It waits while something it opened needs the user (a
+//! or while a task it started runs; and, unless it was stopped or failed, while a plan of it
+//! waits for the orchestrator's revision. It waits while something it opened needs the user (a
 //! card, a paused worker, a landing on hold, something only the user can do). Otherwise it is
 //! done, or stopped or failed when its last turn ended that way. A done request works again
 //! when new work for it arrives (a late report, a worker's question), so its block in the
@@ -154,6 +155,9 @@ impl SessionManager {
                 RequestState::Stopped | RequestState::Failed { .. }
             ) {
                 request.state.clone()
+            } else if awaits_revision(&board, id) {
+                // Its plan waits for the orchestrator's revision.
+                RequestState::Working
             } else {
                 RequestState::Done
             };
@@ -290,6 +294,14 @@ fn tasks_in(board: &Board, request: &str, matches: impl Fn(TaskState) -> bool) -
         .any(|task| task.request_id.as_deref() == Some(request) && matches(task.state))
 }
 
+/// Whether a plan of the request waits for the orchestrator's revision after its review.
+fn awaits_revision(board: &Board, request: &str) -> bool {
+    board
+        .plans
+        .values()
+        .any(|p| p.request_id.as_deref() == Some(request) && p.state == PlanState::Revising)
+}
+
 /// Whether something the request opened waits for the user: a card, a task, or something
 /// only the user can do ("Waiting on you").
 fn needs_user(board: &Board, request: &str) -> bool {
@@ -312,4 +324,41 @@ fn needs_user(board: &Board, request: &str) -> bool {
                 TaskState::Paused | TaskState::AwaitingApproval | TaskState::ReadyToLand
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ConversationId;
+    use crate::work::{CardId, Plan};
+
+    #[test]
+    fn a_plan_being_revised_is_work_still_to_do() {
+        let plan = |request: &str, state| Plan {
+            id: CardId(format!("{request}-plan")),
+            conversation_id: ConversationId("c".into()),
+            request_id: Some(request.into()),
+            position: 0,
+            title: "Plan".into(),
+            steps: Vec::new(),
+            risky: false,
+            state,
+            gate: None,
+            revises: None,
+            responses: Vec::new(),
+            review_notes: Vec::new(),
+            created_at_ms: 0,
+            decided_at_ms: None,
+        };
+        let mut board = Board::default();
+        for plan in [
+            plan("r1", PlanState::Revising),
+            plan("r2", PlanState::Superseded),
+        ] {
+            board.plans.insert(plan.id.clone(), plan);
+        }
+        assert!(awaits_revision(&board, "r1"));
+        assert!(!awaits_revision(&board, "r2"));
+        assert!(!awaits_revision(&board, "r3"));
+    }
 }

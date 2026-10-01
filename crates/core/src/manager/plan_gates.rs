@@ -12,12 +12,20 @@
 //!   orchestrator proposes the revision with `revises` and an answer to each finding; the
 //!   revision is always reviewed again, with the findings and the answers in view.
 //! - **Still not right after [`PLAN_ROUNDS`] rounds:** nothing is approved; the orchestrator
-//!   asks the user or rescopes the work.
+//!   asks the user or rescopes the work. Whatever it proposes next for the request is
+//!   reviewed, and the same steps again are refused.
 //! - **No result** (a reviewer failed or was stopped): the plan is turned down, and the
-//!   orchestrator may propose it again.
+//!   orchestrator may propose it again (with any findings a finished reviewer gave).
 //!
-//! Under "Ask for approval" the user's card shows at once and the review runs beside it: its
-//! findings and notes show on the card, and the user decides.
+//! Findings count as each reviewer's result arrives. Under "Ask for approval" the user's card
+//! shows at once and the review runs beside it: its findings and notes show on the card as
+//! they come, and the user's decision carries them.
+//!
+//! A plan whose review is under way or asked for changes holds back the request's write
+//! tasks. After a restart, a round's unfinished reviewers are replaced (finished ones keep
+//! their result), and a plan waiting for its revision is asked for again.
+
+use std::collections::HashMap;
 
 use brigadier_providers::ProviderKind;
 use brigadier_router::Author;
@@ -25,10 +33,11 @@ use brigadier_router::Author;
 use super::SessionManager;
 use super::conversation::Envelope;
 use super::gates::{outcome_of, review_result};
-use crate::model::{CardId, ConversationId, Setup};
+use crate::model::{CardId, ConversationId, PermissionLevel, Setup};
 use crate::work::{
     Finding, FindingResponse, Gate, GateLink, GateMember, GateOutcome, GateOwner, GateResult,
-    GateRole, InjectionKind, Plan, PlanApprover, PlanState, PlanStep, Report, Task, TaskKind,
+    GateRole, InjectionKind, Plan, PlanApprover, PlanState, PlanStep, Report, RequestState, Task,
+    TaskId, TaskKind,
 };
 use crate::{Error, Result, now_ms};
 
@@ -51,13 +60,15 @@ impl SessionManager {
         })
     }
 
-    /// Opens review round `round` of a stored plan with `reviewers` reviewers. `decides`: the
-    /// review decides the plan (it goes `InReview`); otherwise the user does, and the review
-    /// only informs them. Returns the reviewers.
+    /// Opens review round `round` of a stored plan with `reviewers` new reviewers, beside
+    /// `keep`: reviewers of the round that already gave their result (a round a restart cut
+    /// off). `decides`: the review decides the plan (it goes `InReview`); otherwise the user
+    /// does, and the review only informs them. Returns the new reviewers.
     pub(crate) async fn open_plan_gate(
         &self,
         plan: &Plan,
         round: u32,
+        keep: Vec<GateMember>,
         reviewers: usize,
         decides: bool,
     ) -> Result<Vec<Task>> {
@@ -73,11 +84,20 @@ impl SessionManager {
         let owner = GateOwner::Plan {
             plan_id: plan.id.clone(),
         };
-        let mut members: Vec<GateMember> = Vec::new();
+        // New reviewers avoid the models of the ones kept, as of each other.
+        let mut checking: Vec<Author> = keep
+            .iter()
+            .filter_map(|member| board.tasks.get(&member.task_id))
+            .map(|task| Author {
+                provider: task.route.choice.provider,
+                model: task.route.choice.model.clone(),
+            })
+            .collect();
+        let kept = keep.len();
+        let mut members: Vec<GateMember> = keep;
         let mut started: Vec<Task> = Vec::new();
-        let mut checking: Vec<Author> = Vec::new();
         let opened: Result<()> = async {
-            for index in 0..reviewers {
+            for index in kept..kept + reviewers {
                 let review = self
                     .create_task(
                         &plan.conversation_id,
@@ -132,6 +152,19 @@ impl SessionManager {
         };
         let stored = match stored {
             Ok(mut stored) if is_open(&stored.state) => {
+                // The kept reviewers' findings stay, under the ids they were given.
+                let findings = stored
+                    .gate
+                    .as_ref()
+                    .filter(|gate| gate.round == round)
+                    .map(|gate| {
+                        gate.findings
+                            .iter()
+                            .filter(|finding| members.iter().any(|m| m.task_id == finding.by))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 stored.gate = Some(Gate {
                     round,
                     commit: None,
@@ -139,12 +172,15 @@ impl SessionManager {
                     outcome: None,
                     relanding: false,
                     retry: false,
-                    findings: Vec::new(),
+                    findings,
                 });
-                if decides && let Some(first) = started.first() {
-                    stored.state = PlanState::InReview {
-                        task_id: first.id.clone(),
-                    };
+                let first = stored
+                    .gate
+                    .as_ref()
+                    .and_then(|gate| gate.members.first())
+                    .map(|member| member.task_id.clone());
+                if decides && let Some(task_id) = first {
+                    stored.state = PlanState::InReview { task_id };
                 }
                 self.store_plan(&stored).await
             }
@@ -182,6 +218,9 @@ impl SessionManager {
             },
         };
         let envelope = {
+            // A plan this sends back for revision can't be replaced meanwhile by a proposal
+            // that read it still in review (see `propose_plan`).
+            let _plans = self.plans.lock().await;
             let _held = self.gates.lock().await;
             let Ok(board) = self.core.board(&member.conversation_id).await else {
                 return;
@@ -205,6 +244,10 @@ impl SessionManager {
                 return;
             };
             slot.result = Some(result);
+            // Its findings count at once: the user's card shows them while the others review,
+            // and a decision made before the round ends carries them.
+            let slot = slot.clone();
+            record_findings(&mut gate.findings, &slot);
             let decided = gate
                 .members
                 .iter()
@@ -218,9 +261,6 @@ impl SessionManager {
                 {
                     reviewers.push(task);
                 }
-            }
-            if decided == Some(GateOutcome::Failed) {
-                gate.findings = number_findings(&gate.members);
             }
             gate.outcome = decided.clone();
             plan.gate = Some(gate.clone());
@@ -271,10 +311,7 @@ impl SessionManager {
                             format!("Its independent review asked for changes. {found}"),
                         ));
                         plan.state = PlanState::Revising;
-                        Some(format!(
-                            "[plan review] The independent review (round {} of {PLAN_ROUNDS}) asked for changes to the plan \"{}\" (id {}), so it is not approved:\n{listed}\n[/plan review] Revise it: call propose_plan with the revised steps, revises: \"{}\", and responses with one line per finding: \"F1 accepted: what you changed\" or \"F2 declined: why\". The revision is reviewed again; don't start write tasks before it is approved.",
-                            gate.round, plan.title, plan.id, plan.id
-                        ))
+                        Some(revise_text(&plan, &gate, &reviewers))
                     } else {
                         decision = Some((
                             format!("Did not approve the plan \u{201c}{}\u{201d}", plan.title),
@@ -319,8 +356,17 @@ impl SessionManager {
                         message: Some(format!("The review could not run.\n{reasons}")),
                     };
                     plan.decided_at_ms = Some(now_ms());
+                    // What a reviewer that did finish found still matters to the next plan.
+                    let found = if gate.findings.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "\nA reviewer that finished found these problems; fix them in the plan you propose:\n{}",
+                            findings_list(&gate.findings, &reviewers)
+                        )
+                    };
                     Some(format!(
-                        "[decision] The independent review of the plan \"{}\" could not run, so it is not approved:\n{reasons}\nPropose it again.",
+                        "[decision] The independent review of the plan \"{}\" could not run, so it is not approved:\n{reasons}{found}\nPropose it again.",
                         plan.title
                     ))
                 }
@@ -359,34 +405,9 @@ impl SessionManager {
         plan_id: &CardId,
         change: impl FnOnce(&mut Plan) -> Result<()>,
     ) -> Result<Plan> {
-        let (plan, moot) = {
-            let _held = self.gates.lock().await;
-            let board = self.core.board(conversation_id).await?;
-            let before = board
-                .plans
-                .get(plan_id)
-                .cloned()
-                .ok_or_else(|| Error::NotFound(format!("plan {plan_id}")))?;
-            let mut plan = before.clone();
-            change(&mut plan)?;
-            let mut moot = Vec::new();
-            if !is_open(&plan.state)
-                && let Some(gate) = plan.gate.as_mut()
-                && gate.outcome.is_none()
-            {
-                gate.outcome = Some(GateOutcome::Superseded);
-                moot = gate
-                    .members
-                    .iter()
-                    .filter(|m| m.result.is_none())
-                    .map(|m| m.task_id.clone())
-                    .collect();
-            }
-            if plan != before {
-                self.store_plan(&plan).await?;
-            }
-            (plan, moot)
-        };
+        let (plan, moot) = self
+            .change_plan_only(conversation_id, plan_id, change)
+            .await?;
         for member in moot {
             // Boxed: stopping a reviewer records its missing result, which reaches this plan.
             let _ = Box::pin(self.stop_task(member)).await;
@@ -394,25 +415,102 @@ impl SessionManager {
         Ok(plan)
     }
 
-    /// After a restart: a plan's review round whose reviewers were stopped runs again, so the
-    /// plan doesn't wait for results that never come.
+    /// [`Self::change_plan`] without stopping anything: returns the changed plan and the
+    /// reviewers of its closed round to stop, for a caller holding a lock their stopping
+    /// needs.
+    pub(crate) async fn change_plan_only(
+        &self,
+        conversation_id: &ConversationId,
+        plan_id: &CardId,
+        change: impl FnOnce(&mut Plan) -> Result<()>,
+    ) -> Result<(Plan, Vec<TaskId>)> {
+        let _held = self.gates.lock().await;
+        let board = self.core.board(conversation_id).await?;
+        let before = board
+            .plans
+            .get(plan_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("plan {plan_id}")))?;
+        let mut plan = before.clone();
+        change(&mut plan)?;
+        let mut moot = Vec::new();
+        if !is_open(&plan.state)
+            && let Some(gate) = plan.gate.as_mut()
+            && gate.outcome.is_none()
+        {
+            gate.outcome = Some(GateOutcome::Superseded);
+            moot = gate
+                .members
+                .iter()
+                .filter(|m| m.result.is_none())
+                .map(|m| m.task_id.clone())
+                .collect();
+        }
+        if plan != before {
+            self.store_plan(&plan).await?;
+        }
+        Ok((plan, moot))
+    }
+
+    /// After a restart: a plan's review round whose reviewers were stopped runs again with
+    /// the reviewers that already gave a result, so the plan doesn't wait for results that
+    /// never come; a plan Brigadier decides whose review never started gets it; and a plan
+    /// still waiting for its revision has the orchestrator told again.
     pub(crate) async fn rerun_plan_reviews(&self, conversation_id: &ConversationId) {
         let Ok(board) = self.core.board(conversation_id).await else {
             return;
         };
+        let brigadier_decides = self.brigadier_decides_plans(conversation_id);
         for plan in board.plans.values() {
-            let (round, reviewers) = match (&plan.gate, &plan.state) {
-                (Some(gate), PlanState::Proposed | PlanState::InReview { .. })
-                    if gate.outcome.is_none() =>
-                {
-                    (gate.round, gate.members.len().max(1))
-                }
-                // Reviewed before plans had a gate.
-                (None, PlanState::InReview { .. }) => (1, if plan.risky { 2 } else { 1 }),
-                _ => continue,
-            };
-            let decides = matches!(plan.state, PlanState::InReview { .. });
-            if let Err(err) = self.open_plan_gate(plan, round, reviewers, decides).await {
+            let (round, keep, reviewers, decides) =
+                match rerun_of(plan, &board.plans, brigadier_decides) {
+                    Some(Rerun::Review {
+                        round,
+                        keep,
+                        start,
+                        decides,
+                    }) => (round, keep, start, decides),
+                    Some(Rerun::Revise) => {
+                        // Unless the user stopped the request, or it failed.
+                        let over = plan
+                            .request_id
+                            .as_ref()
+                            .and_then(|request| board.requests.get(request))
+                            .is_some_and(|request| {
+                                matches!(
+                                    request.state,
+                                    RequestState::Stopped | RequestState::Failed { .. }
+                                )
+                            });
+                        if let (false, Some(gate)) = (over, &plan.gate) {
+                            let reviewers: Vec<Task> = gate
+                                .members
+                                .iter()
+                                .filter_map(|m| board.tasks.get(&m.task_id).cloned())
+                                .collect();
+                            self.deliver_for(
+                                conversation_id,
+                                Envelope {
+                                    kind: InjectionKind::Decision,
+                                    label: "plan review".into(),
+                                    task_id: None,
+                                    text: format!(
+                                        "{}\nBrigadier restarted before the revision arrived.",
+                                        revise_text(plan, gate, &reviewers)
+                                    ),
+                                },
+                                plan.request_id.clone(),
+                            )
+                            .await;
+                        }
+                        continue;
+                    }
+                    None => continue,
+                };
+            if let Err(err) = self
+                .open_plan_gate(plan, round, keep, reviewers, decides)
+                .await
+            {
                 tracing::warn!(plan = %plan.id, error = %err, "could not review a plan again");
                 if decides {
                     let reason = err.to_string();
@@ -432,7 +530,7 @@ impl SessionManager {
                             label: "plan review".into(),
                             task_id: None,
                             text: format!(
-                                "[decision] Brigadier restarted while the plan \"{}\" was in review, and its review could not run again ({reason}), so it is not approved. Propose it again.",
+                                "[decision] Brigadier restarted before the review of the plan \"{}\" finished, and its review could not run again ({reason}), so it is not approved. Propose it again.",
                                 plan.title
                             ),
                         },
@@ -441,6 +539,21 @@ impl SessionManager {
                     .await;
                 }
             }
+        }
+    }
+
+    /// Whether Brigadier decides the conversation's plans on the user's behalf (Approve for me
+    /// and Full access, outside plan mode), as `propose_plan` reads it.
+    pub(crate) fn brigadier_decides_plans(&self, id: &ConversationId) -> bool {
+        match self.core.conversation(id).map(|c| c.setup) {
+            Ok(Some(Setup::Session {
+                plan_mode: true, ..
+            })) => false,
+            Ok(Some(Setup::Session { permission, .. })) => {
+                permission != PermissionLevel::AskForApproval
+            }
+            Ok(_) => true,
+            Err(_) => false,
         }
     }
 
@@ -481,17 +594,19 @@ fn is_open(state: &PlanState) -> bool {
 
 /// How many reviewers check a new plan; none approves it at once (under "Approve for me").
 /// `revising`: it revises a plan whose review asked for changes, so it is always reviewed
-/// again. `after_approved`: it follows an approved plan of the same request, and whether it
-/// adds or changes steps of it.
+/// again. `after_approved`: it follows an approved plan of the same request, and whether its
+/// steps differ from that plan's. `after_rejected`: a plan of the same request ran out of
+/// review rounds, so whatever follows it is reviewed.
 pub(crate) fn plan_reviewers(
     steps: usize,
     risky: bool,
     revising: bool,
     after_approved: Option<bool>,
+    after_rejected: bool,
 ) -> usize {
     if risky {
         2
-    } else if revising {
+    } else if revising || after_rejected {
         1
     } else {
         match after_approved {
@@ -501,44 +616,222 @@ pub(crate) fn plan_reviewers(
     }
 }
 
-/// A step as compared between plans: its title and detail, in lower case with single spaces.
-fn step_key(step: &PlanStep) -> String {
-    let text = format!("{} {}", step.title, step.detail.as_deref().unwrap_or(""));
-    text.split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
+/// How many reviewers check `plan` (stored or about to be), given the conversation's
+/// `plans`.
+pub(crate) fn reviewers_for(plan: &Plan, plans: &HashMap<CardId, Plan>) -> usize {
+    let earlier = || {
+        plans.values().filter(|p| {
+            p.id != plan.id
+                && p.request_id == plan.request_id
+                && p.created_at_ms <= plan.created_at_ms
+        })
+    };
+    let approved = earlier()
+        .filter(|p| matches!(p.state, PlanState::Approved { .. }))
+        .max_by_key(|p| p.created_at_ms)
+        .filter(|_| plan.revises.is_none());
+    let after_rejected = earlier().any(rounds_ran_out);
+    plan_reviewers(
+        plan.steps.len(),
+        plan.risky,
+        plan.revises.is_some(),
+        approved.map(|before| steps_differ(&before.steps, &plan.steps)),
+        after_rejected,
+    )
 }
 
-/// Whether `after` has a step `before` doesn't (new, or changed in title or detail). Dropping
-/// or reordering steps changes nothing material.
-pub(crate) fn adds_or_changes_steps(before: &[PlanStep], after: &[PlanStep]) -> bool {
-    let known: std::collections::HashSet<String> = before.iter().map(step_key).collect();
-    after.iter().any(|step| !known.contains(&step_key(step)))
+/// The review round of `plan`: the one after its predecessor's for a revision, else the first.
+pub(crate) fn review_round(plan: &Plan, plans: &HashMap<CardId, Plan>) -> u32 {
+    plan.revises
+        .as_ref()
+        .and_then(|id| plans.get(id))
+        .and_then(|previous| previous.gate.as_ref())
+        .map_or(1, |gate| gate.round + 1)
 }
 
-/// A failed round's findings, numbered F1, F2, … across its reviewers, in order.
-pub(crate) fn number_findings(members: &[GateMember]) -> Vec<Finding> {
-    members
+/// A plan's steps as compared between plans: each step's title and detail with runs of
+/// whitespace made single spaces, in order. Case is kept: paths are case-sensitive.
+fn step_keys(steps: &[PlanStep]) -> Vec<String> {
+    steps
         .iter()
-        .filter_map(|member| match &member.result {
-            Some(GateResult::Failed { findings }) => Some((member, findings)),
-            _ => None,
-        })
-        .flat_map(|(member, findings)| {
-            findings
-                .iter()
-                .map(|text| text.trim())
-                .filter(|text| !text.is_empty())
-                .map(move |text| (member.task_id.clone(), text.to_owned()))
-        })
-        .enumerate()
-        .map(|(index, (by, text))| Finding {
-            id: format!("F{}", index + 1),
-            text,
-            by,
+        .map(|step| {
+            format!("{} {}", step.title, step.detail.as_deref().unwrap_or(""))
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         })
         .collect()
+}
+
+/// Whether two plans' steps differ materially: a step added, removed, changed, moved or
+/// repeated.
+pub(crate) fn steps_differ(before: &[PlanStep], after: &[PlanStep]) -> bool {
+    step_keys(before) != step_keys(after)
+}
+
+/// Whether a plan ran out of review rounds: its last round still asked for changes, so it was
+/// not approved.
+fn rounds_ran_out(plan: &Plan) -> bool {
+    matches!(plan.state, PlanState::Rejected { .. })
+        && plan.gate.as_ref().is_some_and(|gate| {
+            gate.round >= PLAN_ROUNDS && gate.outcome == Some(GateOutcome::Failed)
+        })
+}
+
+/// The plan of `request` with the same steps as `steps` that ran out of review rounds, or
+/// that such a plan revised: proposing it again would only start its review over.
+pub(crate) fn repeats_rejected<'a>(
+    plans: &'a HashMap<CardId, Plan>,
+    request: Option<&str>,
+    steps: &[PlanStep],
+) -> Option<&'a Plan> {
+    let keys = step_keys(steps);
+    for rejected in plans
+        .values()
+        .filter(|p| p.request_id.as_deref() == request && rounds_ran_out(p))
+    {
+        let mut plan = Some(rejected);
+        // A revision chain is short; the bound only guards against a cycle in stored data.
+        for _ in 0..plans.len() {
+            let Some(of) = plan else {
+                break;
+            };
+            if step_keys(&of.steps) == keys {
+                return Some(rejected);
+            }
+            plan = of.revises.as_ref().and_then(|id| plans.get(id));
+        }
+    }
+    None
+}
+
+/// Why `request`'s write tasks wait, when Brigadier decides plans: a plan of it is still in
+/// its review, or its review asked for changes and the revision hasn't come.
+pub(crate) fn review_blocks_writes<'a>(
+    plans: impl IntoIterator<Item = &'a Plan>,
+    request: Option<&str>,
+) -> Option<String> {
+    let plan = plans.into_iter().find(|plan| {
+        plan.request_id.as_deref() == request
+            && matches!(
+                plan.state,
+                PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+            )
+    })?;
+    Some(if plan.state == PlanState::Revising {
+        format!(
+            "The review of the plan \"{}\" asked for changes: revise the plan first (propose_plan with revises: \"{}\" and one response per finding), then start implement or merge tasks once it is approved.",
+            plan.title, plan.id
+        )
+    } else {
+        format!(
+            "The plan \"{}\" is in its independent review: wait for the plan review (its outcome arrives as a message) before starting implement or merge tasks.",
+            plan.title
+        )
+    })
+}
+
+/// What a restart leaves to redo of a plan's review.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Rerun {
+    /// Run review round `round` again: the reviewers in `keep` already gave their result,
+    /// `start` new ones replace those the restart stopped.
+    Review {
+        round: u32,
+        keep: Vec<GateMember>,
+        start: usize,
+        decides: bool,
+    },
+    /// The plan waits for its revision: tell the orchestrator again.
+    Revise,
+}
+
+/// What a restart leaves to redo of `plan`'s review. `brigadier_decides`: Brigadier decides
+/// the conversation's plans.
+pub(crate) fn rerun_of(
+    plan: &Plan,
+    plans: &HashMap<CardId, Plan>,
+    brigadier_decides: bool,
+) -> Option<Rerun> {
+    let started = plan.gate.as_ref().filter(|gate| !gate.members.is_empty());
+    match (started, &plan.state) {
+        (_, PlanState::Revising) => Some(Rerun::Revise),
+        (Some(gate), PlanState::Proposed | PlanState::InReview { .. })
+            if gate.outcome.is_none() =>
+        {
+            let keep: Vec<GateMember> = gate
+                .members
+                .iter()
+                .filter(|member| member.result.is_some())
+                .cloned()
+                .collect();
+            let start = gate.members.len() - keep.len();
+            (start > 0).then_some(Rerun::Review {
+                round: gate.round,
+                keep,
+                start,
+                decides: matches!(plan.state, PlanState::InReview { .. }),
+            })
+        }
+        // Reviewed before plans had a gate.
+        (None, PlanState::InReview { .. }) => Some(Rerun::Review {
+            round: 1,
+            keep: Vec::new(),
+            start: if plan.risky { 2 } else { 1 },
+            decides: true,
+        }),
+        // Brigadier stopped between recording the plan and starting its review.
+        (None, PlanState::Proposed) if brigadier_decides => {
+            let start = reviewers_for(plan, plans);
+            (start > 0).then(|| Rerun::Review {
+                round: review_round(plan, plans),
+                keep: Vec::new(),
+                start,
+                decides: true,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Adds a reviewer's findings to its round's, numbered on from the last (F1, F2, …), so an
+/// id shown or answered never changes as later results arrive.
+pub(crate) fn record_findings(findings: &mut Vec<Finding>, member: &GateMember) {
+    let Some(GateResult::Failed { findings: found }) = &member.result else {
+        return;
+    };
+    if findings.iter().any(|known| known.by == member.task_id) {
+        return;
+    }
+    let next = findings
+        .iter()
+        .filter_map(|finding| finding.id.get(1..)?.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    for (index, text) in found
+        .iter()
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+        .enumerate()
+    {
+        findings.push(Finding {
+            id: format!("F{}", next + index + 1),
+            text: text.to_owned(),
+            by: member.task_id.clone(),
+        });
+    }
+}
+
+/// What tells the orchestrator to revise a plan whose review asked for changes.
+fn revise_text(plan: &Plan, gate: &Gate, reviewers: &[Task]) -> String {
+    format!(
+        "[plan review] The independent review (round {} of {PLAN_ROUNDS}) asked for changes to the plan \"{}\" (id {}), so it is not approved:\n{}\n[/plan review] Revise it: call propose_plan with the revised steps, revises: \"{}\", and responses with one line per finding: \"F1 accepted: what you changed\" or \"F2 declined: why\". The revision is reviewed again; don't start write tasks before it is approved.",
+        gate.round,
+        plan.title,
+        plan.id,
+        findings_list(&gate.findings, reviewers),
+        plan.id
+    )
 }
 
 /// The revision's answer to each finding, from lines like "F1 accepted: what changed" or
@@ -726,7 +1019,11 @@ pub(crate) fn review_for_decision(plan: &Plan) -> String {
     if let Some(gate) = &plan.gate
         && !gate.findings.is_empty()
     {
-        text.push_str("\nThe independent review's findings, which the user saw:");
+        text.push_str(if gate.outcome == Some(GateOutcome::Superseded) {
+            "\nThe independent review was still running when the user decided; its findings so far, which the user saw:"
+        } else {
+            "\nThe independent review's findings, which the user saw:"
+        });
         for finding in &gate.findings {
             text.push_str(&format!("\n- {}: {}", finding.id, finding.text));
         }
@@ -743,7 +1040,6 @@ pub(crate) fn review_for_decision(plan: &Plan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::work::TaskId;
 
     fn step(title: &str, detail: Option<&str>) -> PlanStep {
         PlanStep {
@@ -765,89 +1061,341 @@ mod tests {
         text.iter().map(|line| (*line).to_owned()).collect()
     }
 
+    fn plan(id: &str, request: &str, state: PlanState, steps: &[&str]) -> Plan {
+        Plan {
+            id: CardId(id.into()),
+            conversation_id: ConversationId("c".into()),
+            request_id: Some(request.into()),
+            position: 0,
+            title: format!("Plan {id}"),
+            steps: steps.iter().map(|title| step(title, None)).collect(),
+            risky: false,
+            state,
+            gate: None,
+            revises: None,
+            responses: Vec::new(),
+            review_notes: Vec::new(),
+            created_at_ms: 0,
+            decided_at_ms: None,
+        }
+    }
+
+    fn gate(round: u32, outcome: Option<GateOutcome>, members: Vec<GateMember>) -> Gate {
+        Gate {
+            round,
+            commit: None,
+            members,
+            outcome,
+            relanding: false,
+            retry: false,
+            findings: Vec::new(),
+        }
+    }
+
+    fn member(id: &str, result: Option<GateResult>) -> GateMember {
+        GateMember {
+            task_id: TaskId(id.into()),
+            role: GateRole::Review,
+            result,
+            avoid: Vec::new(),
+        }
+    }
+
+    fn rejected() -> PlanState {
+        PlanState::Rejected { message: None }
+    }
+
+    /// Plans by id.
+    fn board(plans: Vec<Plan>) -> HashMap<CardId, Plan> {
+        plans
+            .into_iter()
+            .map(|plan| (plan.id.clone(), plan))
+            .collect()
+    }
+
+    /// p1 asked for changes, p2 revised it and still had problems after the last round.
+    fn ran_out() -> HashMap<CardId, Plan> {
+        let mut first = plan(
+            "p1",
+            "r",
+            PlanState::Superseded,
+            &["Add the API", "Wire the UI"],
+        );
+        first.gate = Some(gate(1, Some(GateOutcome::Failed), Vec::new()));
+        let mut second = plan("p2", "r", rejected(), &["Add the API", "Wire it"]);
+        second.revises = Some(first.id.clone());
+        second.gate = Some(gate(PLAN_ROUNDS, Some(GateOutcome::Failed), Vec::new()));
+        board(vec![first, second])
+    }
+
     #[test]
     fn who_gets_reviewed() {
         // A single step goes at once; two or more get one reviewer; risky gets two.
-        assert_eq!(plan_reviewers(1, false, false, None), 0);
-        assert_eq!(plan_reviewers(2, false, false, None), 1);
-        assert_eq!(plan_reviewers(1, true, false, None), 2);
-        assert_eq!(plan_reviewers(5, true, true, None), 2);
+        assert_eq!(plan_reviewers(1, false, false, None, false), 0);
+        assert_eq!(plan_reviewers(2, false, false, None, false), 1);
+        assert_eq!(plan_reviewers(1, true, false, None, false), 2);
+        assert_eq!(plan_reviewers(5, true, true, None, false), 2);
         // A revision after a failed round is always reviewed again, even of one step.
-        assert_eq!(plan_reviewers(1, false, true, None), 1);
-        // After an approved plan, only a revision that adds or changes steps.
-        assert_eq!(plan_reviewers(3, false, false, Some(false)), 0);
-        assert_eq!(plan_reviewers(1, false, false, Some(true)), 1);
+        assert_eq!(plan_reviewers(1, false, true, None, false), 1);
+        // After an approved plan, only a revision whose steps differ.
+        assert_eq!(plan_reviewers(3, false, false, Some(false), false), 0);
+        assert_eq!(plan_reviewers(1, false, false, Some(true), false), 1);
+        // After a plan that ran out of review rounds, every plan, even of one step.
+        assert_eq!(plan_reviewers(1, false, false, None, true), 1);
+        assert_eq!(plan_reviewers(1, false, false, Some(false), true), 1);
     }
 
     #[test]
-    fn new_or_changed_steps_are_material() {
+    fn a_plan_after_one_that_ran_out_of_rounds_is_reviewed() {
+        let plans = ran_out();
+        let mut next = plan("p3", "r", PlanState::Proposed, &["Just the API"]);
+        next.created_at_ms = 1;
+        assert_eq!(reviewers_for(&next, &plans), 1);
+        // Another request's plan is not held to it.
+        next.request_id = Some("other".into());
+        assert_eq!(reviewers_for(&next, &plans), 0);
+        // Nor after a round that only asked for changes, or one that could not run.
+        let mut once = plan("p1", "r", rejected(), &["A", "B"]);
+        once.gate = Some(gate(1, Some(GateOutcome::Failed), Vec::new()));
+        let mut no_result = plan("p2", "r", rejected(), &["A", "B"]);
+        no_result.gate = Some(gate(PLAN_ROUNDS, Some(GateOutcome::NoResult), Vec::new()));
+        let mut next = plan("p3", "r", PlanState::Proposed, &["A"]);
+        next.created_at_ms = 1;
+        assert_eq!(reviewers_for(&next, &board(vec![once, no_result])), 0);
+    }
+
+    #[test]
+    fn the_same_steps_after_running_out_of_rounds_are_refused() {
+        let plans = ran_out();
+        // The last plan's steps, spaced differently, and the plan it revised.
+        assert_eq!(
+            repeats_rejected(
+                &plans,
+                Some("r"),
+                &[step("Add  the API", None), step("Wire it", None)]
+            )
+            .map(|p| p.id.0.as_str()),
+            Some("p2")
+        );
+        assert!(
+            repeats_rejected(
+                &plans,
+                Some("r"),
+                &[step("Add the API", None), step("Wire the UI", None)]
+            )
+            .is_some()
+        );
+        // Other steps, or another request.
+        assert!(repeats_rejected(&plans, Some("r"), &[step("Add the API", None)]).is_none());
+        assert!(
+            repeats_rejected(
+                &plans,
+                Some("x"),
+                &[step("Add the API", None), step("Wire it", None)]
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn removed_moved_repeated_or_changed_steps_are_material() {
         let before = [
-            step("Add the API", Some("in api.rs")),
-            step("Wire the UI", None),
+            step("Add authorization", Some("in auth.rs")),
+            step("Expose the endpoint", None),
+            step("Test the endpoint", None),
         ];
-        // Spacing and case, dropped and reordered steps change nothing material.
-        assert!(!adds_or_changes_steps(
+        // Only spacing changes nothing material.
+        assert!(!steps_differ(
             &before,
             &[
-                step("wire  the ui", None),
-                step("Add the API", Some("In api.rs "))
+                step("Add  authorization", Some(" in auth.rs")),
+                step("Expose the endpoint", None),
+                step("Test the\nendpoint", None),
             ]
         ));
-        assert!(!adds_or_changes_steps(
+        // A prerequisite removed.
+        assert!(steps_differ(&before, &before[1..]));
+        // Reordered.
+        assert!(steps_differ(
             &before,
-            &[step("Wire the UI", None)]
+            &[before[1].clone(), before[0].clone(), before[2].clone()]
         ));
-        assert!(adds_or_changes_steps(
-            &before,
-            &[
-                step("Add the API", Some("in server.rs")),
-                step("Wire the UI", None)
-            ]
-        ));
-        assert!(adds_or_changes_steps(
+        // A step repeated.
+        assert!(steps_differ(
             &before,
             &[
-                step("Add the API", Some("in api.rs")),
-                step("Migrate the data", None)
+                before[0].clone(),
+                before[1].clone(),
+                before[2].clone(),
+                before[2].clone()
             ]
         ));
+        // A path's case changed, a detail changed, a step added.
+        assert!(steps_differ(
+            &before,
+            &[
+                step("Add authorization", Some("in Auth.rs")),
+                before[1].clone(),
+                before[2].clone()
+            ]
+        ));
+        assert!(steps_differ(
+            &before,
+            &[
+                step("Add authorization", Some("in api.rs")),
+                before[1].clone(),
+                before[2].clone()
+            ]
+        ));
+        assert!(steps_differ(&before[..2], &before));
     }
 
     #[test]
-    fn findings_are_numbered_across_reviewers() {
-        let member = |id: &str, result| GateMember {
-            task_id: TaskId(id.into()),
-            role: GateRole::Review,
-            result: Some(result),
-            avoid: Vec::new(),
+    fn writes_wait_for_a_plan_in_review_or_being_revised() {
+        let open = |state| vec![plan("p", "r", state, &["A", "B"])];
+        for state in [
+            PlanState::Proposed,
+            PlanState::InReview {
+                task_id: TaskId("t".into()),
+            },
+        ] {
+            let why = review_blocks_writes(&open(state), Some("r")).expect("held back");
+            assert!(why.contains("wait for the plan review"), "{why}");
+        }
+        let why = review_blocks_writes(&open(PlanState::Revising), Some("r")).expect("held back");
+        assert!(why.contains("revise the plan first"), "{why}");
+        // A decided plan, or another request's, holds nothing back.
+        assert!(review_blocks_writes(&open(rejected()), Some("r")).is_none());
+        assert!(review_blocks_writes(&open(PlanState::Revising), Some("other")).is_none());
+    }
+
+    #[test]
+    fn a_restart_keeps_the_results_a_round_already_has() {
+        let failed = GateResult::Failed {
+            findings: vec!["No rollback".into()],
         };
-        let findings = number_findings(&[
-            member(
+        let mut reviewing = plan(
+            "p",
+            "r",
+            PlanState::InReview {
+                task_id: TaskId("a".into()),
+            },
+            &["A", "B"],
+        );
+        reviewing.gate = Some(gate(
+            1,
+            None,
+            vec![member("a", Some(failed.clone())), member("b", None)],
+        ));
+        assert_eq!(
+            rerun_of(&reviewing, &HashMap::new(), true),
+            Some(Rerun::Review {
+                round: 1,
+                keep: vec![member("a", Some(failed))],
+                start: 1,
+                decides: true,
+            })
+        );
+        // A closed round has nothing to redo.
+        reviewing.gate = Some(gate(1, Some(GateOutcome::Failed), vec![member("a", None)]));
+        assert_eq!(rerun_of(&reviewing, &HashMap::new(), true), None);
+    }
+
+    #[test]
+    fn a_restart_starts_a_review_that_never_started() {
+        let proposed = plan("p", "r", PlanState::Proposed, &["A", "B"]);
+        assert_eq!(
+            rerun_of(&proposed, &HashMap::new(), true),
+            Some(Rerun::Review {
+                round: 1,
+                keep: Vec::new(),
+                start: 1,
+                decides: true,
+            })
+        );
+        // A gate with no reviewers counts as none.
+        let mut empty = proposed.clone();
+        empty.gate = Some(gate(1, None, Vec::new()));
+        assert!(matches!(
+            rerun_of(&empty, &HashMap::new(), true),
+            Some(Rerun::Review { start: 1, .. })
+        ));
+        // The user decides it, or it needs no review.
+        assert_eq!(rerun_of(&proposed, &HashMap::new(), false), None);
+        let single = plan("p", "r", PlanState::Proposed, &["A"]);
+        assert_eq!(rerun_of(&single, &HashMap::new(), true), None);
+        // A revision, in the round after its predecessor's.
+        let mut previous = plan("p0", "r", PlanState::Superseded, &["A", "B"]);
+        previous.gate = Some(gate(1, Some(GateOutcome::Failed), Vec::new()));
+        let mut revision = plan("p", "r", PlanState::Proposed, &["A"]);
+        revision.revises = Some(previous.id.clone());
+        assert_eq!(
+            rerun_of(&revision, &board(vec![previous]), true),
+            Some(Rerun::Review {
+                round: 2,
+                keep: Vec::new(),
+                start: 1,
+                decides: true,
+            })
+        );
+        // A plan waiting for its revision is asked for again.
+        let revising = plan("p", "r", PlanState::Revising, &["A", "B"]);
+        assert_eq!(
+            rerun_of(&revising, &HashMap::new(), true),
+            Some(Rerun::Revise)
+        );
+    }
+
+    #[test]
+    fn findings_are_numbered_as_results_arrive() {
+        let mut findings = Vec::new();
+        // The second reviewer reports first; its ids stay when the first one's arrive.
+        record_findings(
+            &mut findings,
+            &member(
+                "b",
+                Some(GateResult::Failed {
+                    findings: vec!["Step 2 misses the migration".into(), "  ".into()],
+                }),
+            ),
+        );
+        record_findings(&mut findings, &member("c", Some(GateResult::Passed)));
+        record_findings(
+            &mut findings,
+            &member(
                 "a",
-                GateResult::Failed {
-                    findings: vec!["No rollback step".into(), "  ".into()],
-                },
+                Some(GateResult::Failed {
+                    findings: vec!["No rollback step".into(), "Too broad".into()],
+                }),
             ),
-            member("b", GateResult::Passed),
-            member(
-                "c",
-                GateResult::Failed {
-                    findings: vec!["Step 2 misses the migration".into()],
-                },
+        );
+        // Recorded once per reviewer.
+        record_findings(
+            &mut findings,
+            &member(
+                "a",
+                Some(GateResult::Failed {
+                    findings: vec!["No rollback step".into()],
+                }),
             ),
-        ]);
+        );
         assert_eq!(
             findings,
             vec![
                 Finding {
                     id: "F1".into(),
+                    text: "Step 2 misses the migration".into(),
+                    by: TaskId("b".into())
+                },
+                Finding {
+                    id: "F2".into(),
                     text: "No rollback step".into(),
                     by: TaskId("a".into())
                 },
                 Finding {
-                    id: "F2".into(),
-                    text: "Step 2 misses the migration".into(),
-                    by: TaskId("c".into())
+                    id: "F3".into(),
+                    text: "Too broad".into(),
+                    by: TaskId("a".into())
                 },
             ]
         );

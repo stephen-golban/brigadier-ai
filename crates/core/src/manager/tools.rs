@@ -479,17 +479,25 @@ impl SessionManager {
     }
 
     /// Under "Ask for approval", write tasks wait for an approved plan, and for the user's
-    /// decision on a newer plan still open.
+    /// decision on a newer plan still open. Otherwise they wait while a plan of their request
+    /// is in its review, or being revised after it.
     async fn check_plan_gate(&self, id: &ConversationId) -> Result<()> {
         self.check_plan_mode(id)?;
         let conversation = self.core.conversation(id)?;
         let Some(Setup::Session { permission, .. }) = conversation.setup else {
             return Ok(());
         };
-        if permission != PermissionLevel::AskForApproval {
-            return Ok(());
-        }
         let board = self.core.board(id).await?;
+        if permission != PermissionLevel::AskForApproval {
+            let request = self.request_for(id, None).await;
+            return match super::plan_gates::review_blocks_writes(
+                board.plans.values(),
+                request.as_deref(),
+            ) {
+                Some(why) => Err(Error::Invalid(why)),
+                None => Ok(()),
+            };
+        }
         if let Some(open) = board.plans.values().find(|plan| {
             matches!(
                 plan.state,
@@ -519,7 +527,9 @@ impl SessionManager {
         id: &ConversationId,
         args: crate::tools::ProposePlan,
     ) -> Result<String> {
-        use super::plan_gates::{adds_or_changes_steps, parse_responses, plan_reviewers};
+        use super::plan_gates::{
+            PLAN_ROUNDS, parse_responses, repeats_rejected, review_round, reviewers_for,
+        };
         if args.steps.is_empty() {
             return Err(Error::Invalid("a plan needs at least one step".into()));
         }
@@ -532,59 +542,15 @@ impl SessionManager {
             Some(Setup::Session { permission, .. }) => permission,
             _ => PermissionLevel::ApproveForMe,
         };
-        let board = self.core.board(id).await?;
+        let user_decides = permission == PermissionLevel::AskForApproval;
         let request_id = self.request_for(id, None).await;
         // A revision names the plan whose review asked for changes and answers each finding.
         let revises = args
             .revises
             .as_deref()
             .map(str::trim)
-            .filter(|revises| !revises.is_empty());
-        let previous = match revises {
-            Some(revises) => {
-                let previous = board
-                    .plans
-                    .get(&CardId(revises.to_owned()))
-                    .ok_or_else(|| Error::Invalid(format!("there is no plan {revises}")))?;
-                if previous.state != PlanState::Revising {
-                    return Err(Error::Invalid(format!(
-                        "the plan \"{}\" is not waiting for a revision: `revises` names only a plan whose review asked for changes. Propose this plan without it.",
-                        previous.title
-                    )));
-                }
-                Some(previous.clone())
-            }
-            None => {
-                if !args.responses.is_empty() {
-                    return Err(Error::Invalid(
-                        "`responses` answer the findings of the plan named in `revises`: name it"
-                            .into(),
-                    ));
-                }
-                if let Some(revising) = board
-                    .plans
-                    .values()
-                    .find(|p| p.state == PlanState::Revising && p.request_id == request_id)
-                {
-                    return Err(Error::Invalid(format!(
-                        "The plan \"{}\" is being revised after its review: propose the revision with revises: \"{}\" and one response per finding.",
-                        revising.title, revising.id
-                    )));
-                }
-                None
-            }
-        };
-        let responses = match &previous {
-            Some(previous) => parse_responses(
-                &args.responses,
-                previous
-                    .gate
-                    .as_ref()
-                    .map_or(&[][..], |gate| gate.findings.as_slice()),
-            )
-            .map_err(Error::Invalid)?,
-            None => Vec::new(),
-        };
+            .filter(|revises| !revises.is_empty())
+            .map(str::to_owned);
         let steps: Vec<PlanStep> = args
             .steps
             .into_iter()
@@ -594,74 +560,132 @@ impl SessionManager {
                 task_id: None,
             })
             .collect();
-        // A new plan after an approved one of the same request is reviewed again when it adds
-        // or changes steps.
-        let approved = board
-            .plans
-            .values()
-            .filter(|p| matches!(p.state, PlanState::Approved { .. }) && p.request_id == request_id)
-            .max_by_key(|p| p.created_at_ms)
-            .filter(|_| previous.is_none());
-        let reviewers = plan_reviewers(
-            steps.len(),
-            args.risky,
-            previous.is_some(),
-            approved.map(|before| adds_or_changes_steps(&before.steps, &steps)),
-        );
-        let round = previous
-            .as_ref()
-            .and_then(|previous| previous.gate.as_ref())
-            .map_or(1, |gate| gate.round + 1);
-        // A new plan replaces the ones still open (a revision, the plan it revises).
-        for plan in board.plans.values() {
-            if matches!(
-                plan.state,
-                PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
-            ) {
-                self.change_plan(id, &plan.id, |plan| {
-                    if matches!(
-                        plan.state,
-                        PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
-                    ) {
-                        plan.state = PlanState::Superseded;
-                        plan.decided_at_ms = Some(now_ms());
+        // Checked against the plans as they are, and recorded with the open ones replaced, in
+        // one step: a review result can't send a plan back for revision in between. The
+        // reviewers of replaced plans stop after it (their stopping reaches the plans).
+        let mut moot: Vec<TaskId> = Vec::new();
+        let held = self.plans.lock().await;
+        let recorded: Result<(Plan, usize, u32, bool)> = async {
+            let board = self.core.board(id).await?;
+            let previous = match &revises {
+                Some(revises) => {
+                    let previous = board
+                        .plans
+                        .get(&CardId(revises.clone()))
+                        .ok_or_else(|| Error::Invalid(format!("there is no plan {revises}")))?;
+                    if previous.state != PlanState::Revising {
+                        return Err(Error::Invalid(format!(
+                            "the plan \"{}\" is not waiting for a revision: `revises` names only a plan whose review asked for changes. Propose this plan without it.",
+                            previous.title
+                        )));
                     }
-                    Ok(())
-                })
-                .await?;
+                    Some(previous.clone())
+                }
+                None => {
+                    if !args.responses.is_empty() {
+                        return Err(Error::Invalid(
+                            "`responses` answer the findings of the plan named in `revises`: name it"
+                                .into(),
+                        ));
+                    }
+                    if let Some(revising) = board
+                        .plans
+                        .values()
+                        .find(|p| p.state == PlanState::Revising && p.request_id == request_id)
+                    {
+                        return Err(Error::Invalid(format!(
+                            "The plan \"{}\" is being revised after its review: propose the revision with revises: \"{}\" and one response per finding.",
+                            revising.title, revising.id
+                        )));
+                    }
+                    None
+                }
+            };
+            let responses = match &previous {
+                Some(previous) => parse_responses(
+                    &args.responses,
+                    previous
+                        .gate
+                        .as_ref()
+                        .map_or(&[][..], |gate| gate.findings.as_slice()),
+                )
+                .map_err(Error::Invalid)?,
+                None => Vec::new(),
+            };
+            // A plan that ran out of review rounds isn't proposed again unchanged.
+            if let Some(rejected) = repeats_rejected(&board.plans, request_id.as_deref(), &steps) {
+                return Err(Error::Invalid(format!(
+                    "These are the steps of the plan \"{}\", which was not approved after {PLAN_ROUNDS} review rounds: don't propose it again. Ask the user how to proceed (ask_user), or rescope the work into a different, smaller plan.",
+                    rejected.title
+                )));
             }
-        }
-        let mut plan = Plan {
-            id: CardId::generate(),
-            conversation_id: id.clone(),
-            request_id,
-            position: 0,
-            title: args.title,
-            steps,
-            risky: args.risky,
-            state: PlanState::Proposed,
-            gate: None,
-            revises: previous.as_ref().map(|previous| previous.id.clone()),
-            responses,
-            review_notes: Vec::new(),
-            created_at_ms: now_ms(),
-            decided_at_ms: None,
-        };
-        let user_decides = permission == PermissionLevel::AskForApproval;
-        if reviewers == 0 {
-            if !user_decides {
+            // A new plan replaces the ones still open (a revision, the plan it revises).
+            for open in board.plans.values() {
+                if matches!(
+                    open.state,
+                    PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+                ) {
+                    let (_, stop) = self
+                        .change_plan_only(id, &open.id, |plan| {
+                            if matches!(
+                                plan.state,
+                                PlanState::Proposed | PlanState::InReview { .. } | PlanState::Revising
+                            ) {
+                                plan.state = PlanState::Superseded;
+                                plan.decided_at_ms = Some(now_ms());
+                            }
+                            Ok(())
+                        })
+                        .await?;
+                    moot.extend(stop);
+                }
+            }
+            let mut plan = Plan {
+                id: CardId::generate(),
+                conversation_id: id.clone(),
+                request_id: request_id.clone(),
+                position: 0,
+                title: args.title,
+                steps,
+                risky: args.risky,
+                state: PlanState::Proposed,
+                gate: None,
+                revises: previous.as_ref().map(|previous| previous.id.clone()),
+                responses,
+                review_notes: Vec::new(),
+                created_at_ms: now_ms(),
+                decided_at_ms: None,
+            };
+            // A new plan after an approved one of the same request is reviewed again when its
+            // steps differ.
+            let after_approved = plan.revises.is_none()
+                && board.plans.values().any(|p| {
+                    matches!(p.state, PlanState::Approved { .. }) && p.request_id == request_id
+                });
+            let reviewers = reviewers_for(&plan, &board.plans);
+            let round = review_round(&plan, &board.plans);
+            if reviewers == 0 && !user_decides {
                 plan.state = PlanState::Approved {
                     by: PlanApprover::Brigadier,
                 };
                 plan.decided_at_ms = Some(now_ms());
             }
             self.store_plan(&plan).await?;
+            Ok((plan, reviewers, round, after_approved))
+        }
+        .await;
+        drop(held);
+        for member in moot {
+            let _ = Box::pin(self.stop_task(member)).await;
+        }
+        let (plan, reviewers, round, after_approved) = recorded?;
+        if reviewers == 0 {
             if !user_decides {
                 self.decided_for_plan(
                     &plan,
                     format!("Approved the plan \u{201c}{}\u{201d}", plan.title),
-                    if approved.is_some() {
-                        "It adds or changes no step of the plan already approved.".into()
+                    if after_approved {
+                        "Its steps are those of the plan already approved.".into()
                     } else {
                         "A one-step plan that isn't marked risky needs no review.".into()
                     },
@@ -674,9 +698,8 @@ impl SessionManager {
                 "Approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.".into()
             });
         }
-        self.store_plan(&plan).await?;
         let started = match self
-            .open_plan_gate(&plan, round, reviewers, !user_decides)
+            .open_plan_gate(&plan, round, Vec::new(), reviewers, !user_decides)
             .await
         {
             Ok(started) => started,
@@ -709,8 +732,7 @@ impl SessionManager {
             .join(" and ");
         let reviewed = if round > 1 {
             format!(
-                "The revision goes to the last review round ({round} of {}), by {who}",
-                super::plan_gates::PLAN_ROUNDS
+                "The revision goes to the last review round ({round} of {PLAN_ROUNDS}), by {who}"
             )
         } else if started.len() > 1 {
             format!("The plan is risky, so two independent reviewers ({who}) check it")

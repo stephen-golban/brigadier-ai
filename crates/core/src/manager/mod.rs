@@ -110,6 +110,10 @@ pub struct SessionManager {
     /// Held while a gate round opens or records a result, so results can't race the round
     /// that is still being set up.
     gates: tokio::sync::Mutex<()>,
+    /// Held while a plan is proposed (checked against the plans as they are, then recorded
+    /// and the open ones replaced) and while a review result decides a plan, so the two
+    /// can't interleave. Taken before `gates`.
+    plans: tokio::sync::Mutex<()>,
     /// Held while a task is read, changed and recorded (`update_task`), so two writers can't
     /// each write back a copy that lacks the other's change.
     task_writes: tokio::sync::Mutex<()>,
@@ -170,6 +174,7 @@ impl SessionManager {
             tasks: Mutex::new(HashMap::new()),
             session_worktrees: tokio::sync::Mutex::new(()),
             gates: tokio::sync::Mutex::new(()),
+            plans: tokio::sync::Mutex::new(()),
             task_writes: tokio::sync::Mutex::new(()),
             waiting: tokio::sync::Mutex::new(()),
             waiters: Waiters::default(),

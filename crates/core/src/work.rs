@@ -373,7 +373,7 @@ pub struct Gate {
     /// A second verification after a verifier could not check the change.
     #[serde(default)]
     pub retry: bool,
-    /// A plan's round that asked for changes: its reviewers' issues, numbered F1, F2, … for
+    /// A plan's round: its reviewers' issues as each result arrives, numbered F1, F2, … for
     /// the revision to answer one by one.
     #[serde(default)]
     pub findings: Vec<Finding>,
