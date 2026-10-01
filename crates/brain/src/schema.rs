@@ -109,6 +109,44 @@ fn migrations() -> Migrations<'static> {
         CREATE INDEX nodes_by_fold_key ON nodes (fold_key) WHERE fold_key IS NOT NULL;",
         )
         .comment("superseded history: reasons, times and the same-content key of rules"),
+        // Every source that supports a node: forgetting one removes only what no other
+        // supports. `source` is its identity (origin, conversation, task, job); `provenance`
+        // the full record, so a node can show its latest remaining source.
+        M::up(
+            "CREATE TABLE node_sources (
+            node_id      TEXT    NOT NULL REFERENCES nodes (id) ON DELETE CASCADE,
+            source       TEXT    NOT NULL,
+            origin       TEXT    NOT NULL,
+            session_id   TEXT,
+            task_id      TEXT,
+            job_id       TEXT,
+            provider     TEXT,
+            model        TEXT,
+            commit_id    TEXT,
+            provenance   TEXT    NOT NULL,
+            recorded_ms  INTEGER NOT NULL,
+            PRIMARY KEY (node_id, source)
+        ) STRICT, WITHOUT ROWID;
+        CREATE INDEX node_sources_by_session ON node_sources (session_id)
+            WHERE session_id IS NOT NULL;
+        CREATE INDEX node_sources_by_task ON node_sources (task_id) WHERE task_id IS NOT NULL;
+        CREATE INDEX node_sources_by_job ON node_sources (job_id) WHERE job_id IS NOT NULL;
+        CREATE INDEX node_sources_by_origin ON node_sources (origin);
+        INSERT INTO node_sources (node_id, source, origin, session_id, task_id, job_id,
+                                  provider, model, commit_id, provenance, recorded_ms)
+        SELECT id,
+               concat_ws('|', provenance ->> '$.origin',
+                         coalesce(provenance ->> '$.sessionId', ''),
+                         coalesce(provenance ->> '$.taskId', ''),
+                         coalesce(provenance ->> '$.jobId', '')),
+               provenance ->> '$.origin', provenance ->> '$.sessionId',
+               provenance ->> '$.taskId', provenance ->> '$.jobId',
+               provenance ->> '$.worker.provider', provenance ->> '$.worker.model',
+               provenance ->> '$.commit', provenance,
+               coalesce(provenance ->> '$.recordedAtMs', updated_ms)
+        FROM nodes;",
+        )
+        .comment("the sources that support each node"),
     ])
 }
 

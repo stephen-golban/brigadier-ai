@@ -164,6 +164,7 @@ pub(crate) fn record(
                     blob,
                 });
             }
+            add_source(tx, &found.id, node, &provenance)?;
             found.id
         }
         Some(found) => {
@@ -205,6 +206,11 @@ pub(crate) fn record(
                 },
                 None => Change::Remove(found.id.clone()),
             });
+            // Only this recording supports the new text; the earlier sources stay with the
+            // earlier version.
+            tx.prepare_cached("DELETE FROM node_sources WHERE node_id = ?1")?
+                .execute([&found.id])?;
+            add_source(tx, &found.id, node, &provenance)?;
             found.id
         }
         None => {
@@ -238,6 +244,7 @@ pub(crate) fn record(
                 },
                 None => Change::Remove(id.clone()),
             });
+            add_source(tx, &id, node, &provenance)?;
             id
         }
     };
@@ -255,6 +262,39 @@ pub(crate) fn record(
         insert.execute(params![id, path, hash])?;
     }
     Ok(id)
+}
+
+/// Adds (or renews) `node`'s provenance as one of `id`'s sources.
+fn add_source(tx: &Transaction, id: &str, node: &NewNode, json: &str) -> Result<()> {
+    let provenance = &node.provenance;
+    let origin = crate::origin_str(&provenance.origin)?;
+    let source = [
+        origin.as_str(),
+        provenance.session_id.as_deref().unwrap_or_default(),
+        provenance.task_id.as_deref().unwrap_or_default(),
+        provenance.job_id.as_deref().unwrap_or_default(),
+    ]
+    .join("|");
+    let worker = provenance.worker.as_ref();
+    tx.prepare_cached(
+        "INSERT OR REPLACE INTO node_sources (node_id, source, origin, session_id, task_id, \
+         job_id, provider, model, commit_id, provenance, recorded_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )?
+    .execute(params![
+        id,
+        source,
+        origin,
+        provenance.session_id,
+        provenance.task_id,
+        provenance.job_id,
+        worker.map(|worker| worker.provider.as_str()),
+        worker.and_then(|worker| worker.model.as_deref()),
+        provenance.commit,
+        json,
+        provenance.recorded_at_ms
+    ])?;
+    Ok(())
 }
 
 /// Keeps `id` as it stands now as a superseded copy, before `id` is rewritten in place: the
@@ -285,6 +325,13 @@ fn archive(
     tx.prepare_cached(
         "INSERT OR IGNORE INTO edges (from_id, to_id, kind) \
          SELECT ?2, to_id, kind FROM edges WHERE from_id = ?1 AND kind = 'decidedIn'",
+    )?
+    .execute(params![id, copy])?;
+    tx.prepare_cached(
+        "INSERT INTO node_sources (node_id, source, origin, session_id, task_id, job_id, \
+         provider, model, commit_id, provenance, recorded_ms) \
+         SELECT ?2, source, origin, session_id, task_id, job_id, provider, model, commit_id, \
+         provenance, recorded_ms FROM node_sources WHERE node_id = ?1",
     )?
     .execute(params![id, copy])?;
     tx.prepare_cached("UPDATE nodes SET superseded_by = ?2 WHERE superseded_by = ?1 AND id != ?2")?
@@ -540,50 +587,102 @@ pub(crate) fn delete(
     Ok(())
 }
 
-pub(crate) fn forget_session(
-    tx: &Transaction,
-    session: &str,
-    now: i64,
-    changes: &mut Vec<Change>,
-) -> Result<u64> {
-    let ids = tx
-        .prepare_cached("SELECT id FROM nodes WHERE session_id = ?1")?
-        .query_map([session], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    revive(tx, &ids, now, changes)?;
-    tx.prepare_cached("DELETE FROM nodes WHERE session_id = ?1")?
-        .execute([session])?;
-    tx.prepare_cached("DELETE FROM transcript WHERE conversation_id = ?1")?
-        .execute([session])?;
-    // A node revived above but deleted too is simply gone.
-    changes.extend(ids.iter().cloned().map(Change::Remove));
-    Ok(ids.len() as u64)
+/// Which sources to forget.
+pub(crate) enum Sources<'a> {
+    Session(&'a str),
+    Origin(&'a str),
 }
 
-pub(crate) fn forget_origins(
+/// Takes away the support of `sources`: a node no other source supports goes (its latest
+/// earlier version may be current again), the others show their latest remaining source.
+/// Returns how many nodes went.
+pub(crate) fn forget(
     tx: &Transaction,
-    origins: &[String],
+    sources: &Sources<'_>,
     now: i64,
     changes: &mut Vec<Change>,
 ) -> Result<u64> {
-    let mut select =
-        tx.prepare_cached("SELECT id FROM nodes WHERE json_extract(provenance, '$.origin') = ?1")?;
-    let mut ids = Vec::new();
-    for origin in origins {
-        ids.extend(
-            select
-                .query_map([origin], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?,
-        );
+    let (column, value) = match sources {
+        Sources::Session(session) => ("session_id", *session),
+        Sources::Origin(origin) => ("origin", *origin),
+    };
+    let affected: Vec<String> = tx
+        .prepare_cached(&format!(
+            "SELECT DISTINCT node_id FROM node_sources WHERE {column} = ?1"
+        ))?
+        .query_map([value], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    tx.prepare_cached(&format!("DELETE FROM node_sources WHERE {column} = ?1"))?
+        .execute([value])?;
+    drop_unsupported(tx, &affected, now, changes)
+}
+
+/// Of `affected` (nodes that just lost a source), deletes those no source supports any more
+/// and gives the others the provenance of their latest remaining source. Returns how many
+/// went.
+fn drop_unsupported(
+    tx: &Transaction,
+    affected: &[String],
+    now: i64,
+    changes: &mut Vec<Change>,
+) -> Result<u64> {
+    let mut supported =
+        tx.prepare_cached("SELECT EXISTS (SELECT 1 FROM node_sources WHERE node_id = ?1)")?;
+    let mut doomed = Vec::new();
+    let mut kept = Vec::new();
+    for id in affected {
+        if supported.query_row([id], |row| row.get::<_, bool>(0))? {
+            kept.push(id);
+        } else {
+            doomed.push(id.clone());
+        }
     }
-    revive(tx, &ids, now, changes)?;
+    let mut restore = tx.prepare_cached(
+        "UPDATE nodes SET (provenance, session_id) = ( \
+             SELECT provenance, session_id FROM node_sources WHERE node_id = ?1 \
+             ORDER BY recorded_ms DESC, source DESC LIMIT 1) \
+         WHERE id = ?1",
+    )?;
+    for id in kept {
+        restore.execute([id])?;
+    }
+    revive(tx, &doomed, now, changes)?;
     let mut delete = tx.prepare_cached("DELETE FROM nodes WHERE id = ?1")?;
-    for id in &ids {
+    for id in &doomed {
         delete.execute([id])?;
     }
     // A node revived above but deleted too is simply gone.
-    changes.extend(ids.iter().cloned().map(Change::Remove));
-    Ok(ids.len() as u64)
+    changes.extend(doomed.iter().cloned().map(Change::Remove));
+    Ok(doomed.len() as u64)
+}
+
+/// After a task's nodes were recorded again (`recorded`): current nodes it supported before
+/// but didn't record now lose its support, and go if nothing else supports them. Returns how
+/// many went.
+pub(crate) fn release_task(
+    tx: &Transaction,
+    task: &str,
+    recorded: &[String],
+    now: i64,
+    changes: &mut Vec<Change>,
+) -> Result<u64> {
+    let recorded: HashSet<&str> = recorded.iter().map(String::as_str).collect();
+    let dropped: Vec<String> = tx
+        .prepare_cached(
+            "SELECT DISTINCT s.node_id FROM node_sources s JOIN nodes n ON n.id = s.node_id \
+             WHERE s.task_id = ?1 AND n.state != 'superseded'",
+        )?
+        .query_map([task], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|id| !recorded.contains(id.as_str()))
+        .collect();
+    let mut release =
+        tx.prepare_cached("DELETE FROM node_sources WHERE node_id = ?1 AND task_id = ?2")?;
+    for id in &dropped {
+        release.execute(params![id, task])?;
+    }
+    drop_unsupported(tx, &dropped, now, changes)
 }
 
 pub(crate) fn files_changed(

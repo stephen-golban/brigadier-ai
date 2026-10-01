@@ -1977,7 +1977,9 @@ fn is_findings(artifact: &ArtifactRef) -> bool {
         && (artifact.mime == "text/markdown" || (artifact.mime == "text/plain" && !log))
 }
 
-/// Replaces a report and its keyed findings, removing parts left by an earlier version.
+/// Records a report, its findings parts and its decisions in one write. What an earlier
+/// version of the report recorded and this one doesn't (surplus parts, dropped decisions)
+/// loses the task's support, and goes unless something else supports it.
 fn record_report_nodes(
     brain: &Brain,
     task_id: &str,
@@ -1986,53 +1988,49 @@ fn record_report_nodes(
     decisions: Vec<NewNode>,
     modules: Vec<String>,
 ) -> Result<()> {
-    let kind = node.kind;
-    let report_id = brain.record(node).map_err(brain_error)?;
-    let mut edges = Vec::new();
-    for module in &modules {
-        edges.push(Edge {
-            from: report_id.clone(),
-            to: format!("key:{module}"),
-            kind: EdgeKind::About,
-        });
-    }
     let count = parts.len();
-    for part in parts {
-        let part_id = brain.record(part).map_err(brain_error)?;
-        edges.push(Edge {
-            from: report_id.clone(),
-            to: part_id,
-            kind: EdgeKind::Contains,
-        });
-    }
-    // A report sent back and made again may have fewer parts: the rest are its old ones.
-    for index in count..FINDINGS_MAX_PARTS {
-        match brain
-            .node_by_key(kind, &part_key(task_id, index))
-            .map_err(brain_error)?
-        {
-            Some(old) => brain.delete(&old.id).map_err(brain_error)?,
-            None => break,
-        }
-    }
-    for decision in decisions {
-        let decision_id = brain.record(decision).map_err(brain_error)?;
-        edges.push(Edge {
-            from: decision_id.clone(),
-            to: report_id.clone(),
-            kind: EdgeKind::DecidedIn,
-        });
-        for module in &modules {
-            edges.push(Edge {
-                from: decision_id.clone(),
-                to: format!("key:{module}"),
-                kind: EdgeKind::About,
-            });
-        }
-    }
-    if !edges.is_empty() {
-        brain.link(edges).map_err(brain_error)?;
-    }
+    let nodes: Vec<NewNode> = std::iter::once(node)
+        .chain(parts)
+        .chain(decisions)
+        .collect();
+    brain
+        .refresh_task(task_id, nodes, move |ids| {
+            let Some((report_id, rest)) = ids.split_first() else {
+                return Vec::new();
+            };
+            let (parts, decisions) = rest.split_at(count.min(rest.len()));
+            let mut edges = Vec::new();
+            for module in &modules {
+                edges.push(Edge {
+                    from: report_id.clone(),
+                    to: format!("key:{module}"),
+                    kind: EdgeKind::About,
+                });
+            }
+            for part_id in parts {
+                edges.push(Edge {
+                    from: report_id.clone(),
+                    to: part_id.clone(),
+                    kind: EdgeKind::Contains,
+                });
+            }
+            for decision_id in decisions {
+                edges.push(Edge {
+                    from: decision_id.clone(),
+                    to: report_id.clone(),
+                    kind: EdgeKind::DecidedIn,
+                });
+                for module in &modules {
+                    edges.push(Edge {
+                        from: decision_id.clone(),
+                        to: format!("key:{module}"),
+                        kind: EdgeKind::About,
+                    });
+                }
+            }
+            edges
+        })
+        .map_err(brain_error)?;
     Ok(())
 }
 

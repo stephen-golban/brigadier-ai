@@ -6,7 +6,7 @@ import type { NodeKind } from "./NodeKind";
  */
 export type NodeFilter = { kinds: Array<NodeKind>, 
 /**
- * Only nodes learned in this conversation.
+ * Only nodes this conversation supports (learned in it, or learned again in it).
  */
 sessionId: string | null, 
 /**

@@ -560,3 +560,239 @@ fn an_answer_says_what_did_not_fit() {
         answer.text
     );
 }
+
+fn from(origin: Origin, session: Option<&str>, task: Option<&str>, mut node: NewNode) -> NewNode {
+    node.provenance.origin = origin;
+    node.provenance.session_id = session.map(str::to_owned);
+    node.provenance.task_id = task.map(str::to_owned);
+    node
+}
+
+#[test]
+fn forgetting_a_session_keeps_what_another_one_supports() {
+    let brain = TestBrain::new();
+    let rule = || node(NodeKind::Convention, Some("convention:x"), "Tabs", "always");
+    let shared = brain
+        .record(from(Origin::Orchestrator, Some("s1"), None, rule()))
+        .unwrap();
+    assert_eq!(
+        brain
+            .record(from(Origin::Orchestrator, Some("s2"), None, rule()))
+            .unwrap(),
+        shared
+    );
+    let sole = brain
+        .record(from(
+            Origin::Orchestrator,
+            Some("s1"),
+            None,
+            node(NodeKind::Decision, None, "Only s1", ""),
+        ))
+        .unwrap();
+    // Both conversations see the shared rule as theirs.
+    let of = |session: &str| -> Vec<String> {
+        brain
+            .nodes(&NodeFilter {
+                session_id: Some(session.into()),
+                ..NodeFilter::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|node| node.id)
+            .collect()
+    };
+    assert_eq!(of("s2"), std::slice::from_ref(&shared));
+    assert_eq!(of("s1").len(), 2);
+
+    assert_eq!(brain.forget_session("s2").unwrap(), 0);
+    assert!(brain.node(&shared).unwrap().is_some());
+    // s2 recorded it last; s1 is what supports it now.
+    assert_eq!(brain.forget_session("s1").unwrap(), 2);
+    assert!(brain.node(&sole).unwrap().is_none());
+    assert!(brain.node(&shared).unwrap().is_none());
+}
+
+#[test]
+fn a_node_shows_its_latest_remaining_source() {
+    let brain = TestBrain::new();
+    let rule = || node(NodeKind::Convention, Some("convention:x"), "Tabs", "always");
+    let mut first = from(Origin::Orchestrator, Some("s1"), None, rule());
+    first.provenance.commit = Some("abc".into());
+    let id = brain.record(first.clone()).unwrap();
+    brain
+        .record(from(Origin::Orchestrator, Some("s2"), None, rule()))
+        .unwrap();
+    assert_eq!(
+        brain
+            .node(&id)
+            .unwrap()
+            .unwrap()
+            .provenance
+            .session_id
+            .as_deref(),
+        Some("s2")
+    );
+    brain.forget_session("s2").unwrap();
+    assert_eq!(
+        brain.node(&id).unwrap().unwrap().provenance,
+        first.provenance
+    );
+}
+
+#[test]
+fn forgetting_an_origin_keeps_what_another_confirmed() {
+    let brain = TestBrain::new();
+    let module = || node(NodeKind::Module, Some("module:core"), "core", "the core");
+    let id = brain
+        .record(from(Origin::Index, None, None, module()))
+        .unwrap();
+    brain
+        .record(from(Origin::Enrichment, None, None, module()))
+        .unwrap();
+    // Rewritten by enrichment: only enrichment supports the new text.
+    let other = brain
+        .record(from(
+            Origin::Index,
+            None,
+            None,
+            node(NodeKind::Module, Some("module:ui"), "ui", "a"),
+        ))
+        .unwrap();
+    brain
+        .record(from(
+            Origin::Enrichment,
+            None,
+            None,
+            node(NodeKind::Module, Some("module:ui"), "ui", "b"),
+        ))
+        .unwrap();
+    assert!(brain.holds_origin(Origin::Index).unwrap());
+    assert_eq!(brain.forget_origins(&[Origin::Index]).unwrap(), 0);
+    assert!(!brain.holds_origin(Origin::Index).unwrap());
+    assert_eq!(brain.forget_origins(&[Origin::Enrichment]).unwrap(), 2);
+    assert!(brain.node(&id).unwrap().is_none());
+    assert!(brain.node(&other).unwrap().is_none());
+}
+
+#[test]
+fn forgetting_the_source_of_a_rewrite_brings_back_the_version_before() {
+    let brain = TestBrain::new();
+    let key = Some("convention:x");
+    let id = brain
+        .record(from(
+            Origin::Orchestrator,
+            Some("s1"),
+            None,
+            node(NodeKind::Convention, key, "v1", ""),
+        ))
+        .unwrap();
+    brain
+        .record(from(
+            Origin::Orchestrator,
+            Some("s2"),
+            None,
+            node(NodeKind::Convention, key, "v2", ""),
+        ))
+        .unwrap();
+    assert_eq!(brain.forget_session("s2").unwrap(), 1);
+    let current = brain
+        .node_by_key(NodeKind::Convention, "convention:x")
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.title, "v1");
+    assert_ne!(current.id, id);
+    assert_eq!(current.state, NodeState::Fresh);
+    assert_eq!(all(&brain).len(), 1);
+}
+
+#[test]
+fn refreshing_a_task_drops_only_what_it_alone_no_longer_says() {
+    let brain = TestBrain::new();
+    let report = |body: &str| {
+        from(
+            Origin::Report,
+            Some("s1"),
+            Some("t1"),
+            node(NodeKind::Report, Some("task:t1"), "task-1 report", body),
+        )
+    };
+    let part = |index: u32| {
+        from(
+            Origin::Report,
+            Some("s1"),
+            Some("t1"),
+            node(
+                NodeKind::Report,
+                Some(&format!("task:t1:part:{index}")),
+                "part",
+                &format!("part {index}"),
+            ),
+        )
+    };
+    let decision = |task: &str, text: &str| {
+        from(
+            Origin::Report,
+            Some("s1"),
+            Some(task),
+            node(
+                NodeKind::Decision,
+                Some(&format!("task:{task}:{text}")),
+                text,
+                "",
+            ),
+        )
+    };
+    let edges = |ids: &[String]| {
+        ids[1..]
+            .iter()
+            .map(|id| Edge {
+                from: ids[0].clone(),
+                to: id.clone(),
+                kind: EdgeKind::Contains,
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = brain
+        .refresh_task(
+            "t1",
+            vec![
+                report("v1"),
+                part(1),
+                part(2),
+                decision("t1", "Use A"),
+                decision("t1", "Use B"),
+            ],
+            edges,
+        )
+        .unwrap();
+    // Another task of the same conversation made the same decision.
+    let shared = brain.record(decision("t2", "Use B")).unwrap();
+    assert_eq!(shared, first[4]);
+    assert_eq!(all(&brain).len(), 5);
+
+    let second = brain
+        .refresh_task(
+            "t1",
+            vec![report("v2"), part(1), decision("t1", "Use A")],
+            edges,
+        )
+        .unwrap();
+    assert_eq!(
+        second,
+        [first[0].clone(), first[1].clone(), first[3].clone()]
+    );
+    let ids: Vec<String> = all(&brain).into_iter().map(|node| node.id).collect();
+    assert!(!ids.contains(&first[2]), "the surplus part goes");
+    assert!(ids.contains(&first[4]), "t2 still supports Use B");
+    assert_eq!(
+        brain
+            .node(&first[4])
+            .unwrap()
+            .unwrap()
+            .provenance
+            .task_id
+            .as_deref(),
+        Some("t2")
+    );
+    assert_eq!(ids.len(), 4);
+}

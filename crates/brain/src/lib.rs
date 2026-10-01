@@ -282,7 +282,7 @@ pub struct BrainAnswer {
 pub struct NodeFilter {
     #[serde(default)]
     pub kinds: Vec<NodeKind>,
-    /// Only nodes learned in this conversation.
+    /// Only nodes this conversation supports (learned in it, or learned again in it).
     #[serde(default)]
     pub session_id: Option<String>,
     /// Leave out superseded nodes.
@@ -458,7 +458,7 @@ fn scope_str(scope: Scope) -> &'static str {
 }
 
 /// `origin` as provenance stores it.
-fn origin_str(origin: &Origin) -> Result<String> {
+pub(crate) fn origin_str(origin: &Origin) -> Result<String> {
     serde_json::to_value(origin)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -626,24 +626,70 @@ impl Brain {
         self.write(move |tx, changes| write::delete(tx, &id, now, changes))
     }
 
-    /// Deletes every node learned in `session_id`, and its transcript ("forget what the Brain
-    /// learned from this session" on delete). Returns how many nodes went.
+    /// Forgets what the Brain learned in `session_id`, and its transcript ("forget what the
+    /// Brain learned from this session" on delete): nodes only this session supports go,
+    /// nodes another session, task or job also supports stay. Returns how many nodes went.
     pub fn forget_session(&self, session_id: &str) -> Result<u64> {
         let session = session_id.to_owned();
         let now = db::now_ms();
-        self.write(move |tx, changes| write::forget_session(tx, &session, now, changes))
+        self.write(move |tx, changes| {
+            let gone = write::forget(tx, &write::Sources::Session(&session), now, changes)?;
+            tx.prepare_cached("DELETE FROM transcript WHERE conversation_id = ?1")?
+                .execute([&session])?;
+            Ok(gone)
+        })
     }
 
-    /// Deletes every node that came from one of `origins` (what the code index, the skeleton
-    /// pass or enrichment learned of a repository the project no longer uses). Nodes they
-    /// superseded are current again. Returns how many went.
+    /// Forgets what came from one of `origins` (what the code index, the skeleton pass or
+    /// enrichment learned of a repository the project no longer uses): nodes no other origin
+    /// supports go, and their latest earlier versions are current again. Returns how many
+    /// went.
     pub fn forget_origins(&self, origins: &[Origin]) -> Result<u64> {
         let origins = origins
             .iter()
             .map(origin_str)
             .collect::<Result<Vec<String>>>()?;
         let now = db::now_ms();
-        self.write(move |tx, changes| write::forget_origins(tx, &origins, now, changes))
+        self.write(move |tx, changes| {
+            let mut gone = 0;
+            for origin in &origins {
+                gone += write::forget(tx, &write::Sources::Origin(origin), now, changes)?;
+            }
+            Ok(gone)
+        })
+    }
+
+    /// Records a task's nodes (its report, the parts of its findings, its decisions) and the
+    /// edges `edges` makes from their ids (in `nodes`' order), in one write. Nodes the task
+    /// recorded before but not now lose its support, and go if nothing else supports them.
+    /// Returns the ids.
+    pub fn refresh_task(
+        &self,
+        task_id: &str,
+        nodes: Vec<NewNode>,
+        edges: impl FnOnce(&[String]) -> Vec<NewEdge> + Send + 'static,
+    ) -> Result<Vec<String>> {
+        for node in &nodes {
+            check(node)?;
+        }
+        let embedded: Vec<(NewNode, Option<Vec<u8>>)> = nodes
+            .into_iter()
+            .map(|node| {
+                let embedding = self.embedding(&node);
+                (node, embedding)
+            })
+            .collect();
+        let task = task_id.to_owned();
+        let now = db::now_ms();
+        self.write(move |tx, changes| {
+            let mut ids = Vec::with_capacity(embedded.len());
+            for (node, embedding) in &embedded {
+                ids.push(write::record(tx, node, embedding.clone(), now, changes)?);
+            }
+            write::link(tx, &edges(&ids))?;
+            write::release_task(tx, &task, &ids, now, changes)?;
+            Ok(ids)
+        })
     }
 
     /// Whether any node came from `origin`.
@@ -651,10 +697,7 @@ impl Brain {
         let origin = origin_str(&origin)?;
         self.read(|conn| {
             Ok(conn
-                .prepare_cached(
-                    "SELECT EXISTS (SELECT 1 FROM nodes \
-                     WHERE json_extract(provenance, '$.origin') = ?1)",
-                )?
+                .prepare_cached("SELECT EXISTS (SELECT 1 FROM node_sources WHERE origin = ?1)")?
                 .query_row([origin], |row| row.get(0))?)
         })
     }
@@ -910,7 +953,11 @@ fn list_nodes(conn: &rusqlite::Connection, filter: &NodeFilter, extra: usize) ->
         );
     }
     if let Some(session) = &filter.session_id {
-        sql.push_str(" AND session_id = ?");
+        // Shared knowledge counts for every conversation that supports it.
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM node_sources s \
+             WHERE s.node_id = nodes.id AND s.session_id = ?)",
+        );
         args.push(Value::Text(session.clone()));
     }
     if filter.current_only {
