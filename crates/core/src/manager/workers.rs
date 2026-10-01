@@ -38,6 +38,7 @@ use brigadier_router::QualityTier;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::brains::ReportLearning;
 use super::conversation::{Cli, Envelope, safe_file_name};
 use super::outputs::outputs_dir;
 use super::usage::TokenOwner;
@@ -141,9 +142,9 @@ pub(crate) struct TaskLive {
     wait_timer: std::sync::atomic::AtomicU64,
     /// Hand-overs the current attempt made, once counted from its recorded events.
     handovers: std::sync::Mutex<Option<u32>>,
-    /// Held while the Brain keeps one of the task's reports, so a report and the findings
-    /// added to it later are kept in that order.
-    pub(crate) learning: Arc<tokio::sync::Mutex<()>>,
+    /// Versions the task's reports before their Brain writes are spawned, so late findings
+    /// survive an older report's write running afterward.
+    pub(crate) learning: Arc<ReportLearning>,
 }
 
 impl TaskLive {

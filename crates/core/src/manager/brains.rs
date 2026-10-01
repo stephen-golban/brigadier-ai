@@ -16,8 +16,9 @@
 //! blocking pool or, for scans and downloads, a thread of its own; never on the async runtime.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -110,6 +111,30 @@ impl Drop for Learning {
             }
         }
         brains.learned.notify_waiters();
+    }
+}
+
+/// Versions are assigned before spawning a report's Brain write. A later version may run
+/// first, but an older one must never replace it or delete its findings parts.
+#[derive(Default)]
+pub(crate) struct ReportLearning {
+    next: AtomicU64,
+    stored: tokio::sync::Mutex<u64>,
+}
+
+impl ReportLearning {
+    fn next(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    async fn keep(&self, version: u64, write: impl Future<Output = Result<()>>) -> Result<()> {
+        let mut stored = self.stored.lock().await;
+        if version <= *stored {
+            return Ok(());
+        }
+        write.await?;
+        *stored = version;
+        Ok(())
     }
 }
 
@@ -987,24 +1012,26 @@ impl SessionManager {
 
     /// A read-only task reported, or a write task landed: its report becomes a node (the
     /// task's question with its answer), each of its decisions another, linked to the report
-    /// and to the modules it touched. `order`, when given, is held while it is kept, so the
-    /// task's reports are kept in the order they came.
+    /// and to the modules it touched. `order`, when given, assigns a version before spawning
+    /// the write, so an older report cannot replace a newer one even if it runs later.
     pub(crate) fn learn_report(
         &self,
         task: &Task,
         report: &Report,
-        order: Option<Arc<tokio::sync::Mutex<()>>>,
+        order: Option<Arc<ReportLearning>>,
     ) {
         let manager = self.arc();
         let learning = Learning::start(self.arc(), &task.conversation_id);
         let (task, report) = (task.clone(), report.clone());
+        let version = order.as_ref().map(|order| order.next());
         self.spawn(async move {
             let _learning = learning;
-            let _order = match &order {
-                Some(order) => Some(order.lock().await),
-                None => None,
+            let write = manager.record_report(&task, &report);
+            let result = match (order, version) {
+                (Some(order), Some(version)) => order.keep(version, write).await,
+                _ => write.await,
             };
-            if let Err(err) = manager.record_report(&task, &report).await {
+            if let Err(err) = result {
                 tracing::warn!(task = %task.id, error = %err, "the Brain could not keep a report");
             }
         });
@@ -1127,56 +1154,8 @@ impl SessionManager {
             .collect();
         let modules = modules_of(&project, &paths).await;
         let brain = project.brain.clone();
-        blocking(move || {
-            let report_id = brain.record(node).map_err(brain_error)?;
-            let mut edges = Vec::new();
-            for module in &modules {
-                edges.push(Edge {
-                    from: report_id.clone(),
-                    to: format!("key:{module}"),
-                    kind: EdgeKind::About,
-                });
-            }
-            let count = parts.len();
-            for part in parts {
-                let part_id = brain.record(part).map_err(brain_error)?;
-                edges.push(Edge {
-                    from: report_id.clone(),
-                    to: part_id,
-                    kind: EdgeKind::Contains,
-                });
-            }
-            // A report sent back and made again may have fewer parts: the rest are its old ones.
-            for index in count..FINDINGS_MAX_PARTS {
-                match brain
-                    .node_by_key(kind, &part_key(&task_id, index))
-                    .map_err(brain_error)?
-                {
-                    Some(old) => brain.delete(&old.id).map_err(brain_error)?,
-                    None => break,
-                }
-            }
-            for decision in decisions {
-                let decision_id = brain.record(decision).map_err(brain_error)?;
-                edges.push(Edge {
-                    from: decision_id.clone(),
-                    to: report_id.clone(),
-                    kind: EdgeKind::DecidedIn,
-                });
-                for module in &modules {
-                    edges.push(Edge {
-                        from: decision_id.clone(),
-                        to: format!("key:{module}"),
-                        kind: EdgeKind::About,
-                    });
-                }
-            }
-            if !edges.is_empty() {
-                brain.link(edges).map_err(brain_error)?;
-            }
-            Ok(())
-        })
-        .await
+        blocking(move || record_report_nodes(&brain, &task_id, node, parts, decisions, modules))
+            .await
     }
 
     /// A report's findings files as Brain parts: the text a worker left in artifacts rather
@@ -1997,6 +1976,65 @@ fn is_findings(artifact: &ArtifactRef) -> bool {
         && (artifact.mime == "text/markdown" || (artifact.mime == "text/plain" && !log))
 }
 
+/// Replaces a report and its keyed findings, removing parts left by an earlier version.
+fn record_report_nodes(
+    brain: &Brain,
+    task_id: &str,
+    node: NewNode,
+    parts: Vec<NewNode>,
+    decisions: Vec<NewNode>,
+    modules: Vec<String>,
+) -> Result<()> {
+    let kind = node.kind;
+    let report_id = brain.record(node).map_err(brain_error)?;
+    let mut edges = Vec::new();
+    for module in &modules {
+        edges.push(Edge {
+            from: report_id.clone(),
+            to: format!("key:{module}"),
+            kind: EdgeKind::About,
+        });
+    }
+    let count = parts.len();
+    for part in parts {
+        let part_id = brain.record(part).map_err(brain_error)?;
+        edges.push(Edge {
+            from: report_id.clone(),
+            to: part_id,
+            kind: EdgeKind::Contains,
+        });
+    }
+    // A report sent back and made again may have fewer parts: the rest are its old ones.
+    for index in count..FINDINGS_MAX_PARTS {
+        match brain
+            .node_by_key(kind, &part_key(task_id, index))
+            .map_err(brain_error)?
+        {
+            Some(old) => brain.delete(&old.id).map_err(brain_error)?,
+            None => break,
+        }
+    }
+    for decision in decisions {
+        let decision_id = brain.record(decision).map_err(brain_error)?;
+        edges.push(Edge {
+            from: decision_id.clone(),
+            to: report_id.clone(),
+            kind: EdgeKind::DecidedIn,
+        });
+        for module in &modules {
+            edges.push(Edge {
+                from: decision_id.clone(),
+                to: format!("key:{module}"),
+                kind: EdgeKind::About,
+            });
+        }
+    }
+    if !edges.is_empty() {
+        brain.link(edges).map_err(brain_error)?;
+    }
+    Ok(())
+}
+
 /// One part of a findings file: its text, where it sits in the file, and the heading it is
 /// under.
 #[derive(Debug, PartialEq)]
@@ -2196,4 +2234,127 @@ pub(crate) async fn code_refs(index: CodeIndex, args: CodeRefs) -> Result<String
 /// `project_map`, answered from `index`.
 pub(crate) async fn project_map(index: CodeIndex) -> Result<String> {
     blocking(move || index.digest(24_000).map_err(index_error)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn report_node(key: String, body: &str) -> NewNode {
+        NewNode {
+            kind: NodeKind::Report,
+            key: Some(key),
+            title: "Worker findings".into(),
+            body: body.into(),
+            provenance: Provenance {
+                origin: Origin::Report,
+                session_id: None,
+                task_id: Some("test".into()),
+                job_id: None,
+                worker: None,
+                commit: None,
+                recorded_at_ms: 1,
+            },
+            files: Vec::new(),
+            expires_at_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn findings_survive_when_the_addendum_runs_before_the_original() {
+        let dir = TestDir(
+            std::env::temp_dir().join(format!("brigadier-report-order-{}", uuid::Uuid::new_v4())),
+        );
+        let brain = Brain::open(
+            &dir.0.join("brain.sqlite"),
+            Scope::Project,
+            Embedder::new(dir.0.join("embeddings")),
+        )
+        .unwrap();
+        let order = ReportLearning::default();
+        // Like learn_report, reserve both versions before either future is polled.
+        let original_version = order.next();
+        let addendum_version = order.next();
+        let original = async {
+            record_report_nodes(
+                &brain,
+                "test",
+                report_node("task:test".into(), "The findings are below."),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        let addendum = || async {
+            record_report_nodes(
+                &brain,
+                "test",
+                report_node("task:test".into(), "The findings are in the addendum."),
+                vec![report_node(part_key("test", 0), "The late findings.")],
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        order.keep(addendum_version, addendum()).await.unwrap();
+        let part = brain
+            .node_by_key(NodeKind::Report, &part_key("test", 0))
+            .unwrap()
+            .unwrap();
+        order.keep(original_version, original).await.unwrap();
+        assert_eq!(
+            brain
+                .node_by_key(NodeKind::Report, "task:test")
+                .unwrap()
+                .unwrap()
+                .body,
+            "The findings are in the addendum."
+        );
+        assert_eq!(
+            brain
+                .node_by_key(NodeKind::Report, &part_key("test", 0))
+                .unwrap()
+                .unwrap(),
+            part
+        );
+        // Learning the same augmented report again updates its existing nodes.
+        order.keep(order.next(), addendum()).await.unwrap();
+        let kept = brain
+            .node_by_key(NodeKind::Report, &part_key("test", 0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.id, part.id);
+        assert_eq!(kept.body, "The late findings.");
+        assert_eq!(brain.nodes(&NodeFilter::default()).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_report_write_can_be_retried() {
+        let order = ReportLearning::default();
+        let version = order.next();
+        assert!(
+            order
+                .keep(version, async {
+                    Err(Error::Invalid("write failed".into()))
+                })
+                .await
+                .is_err()
+        );
+        let mut retried = false;
+        order
+            .keep(version, async {
+                retried = true;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(retried);
+    }
 }
