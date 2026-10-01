@@ -411,6 +411,10 @@ pub struct GateMember {
     pub role: GateRole,
     #[serde(default)]
     pub result: Option<GateResult>,
+    /// Models it must not be besides the author and the round's other members, kept for a
+    /// hand-off: a second verifier avoids the one that could not check the change.
+    #[serde(default)]
+    pub avoid: Vec<ModelChoice>,
 }
 
 /// What a gate member does. The Phase 6 fusion panel adds an analyst that weighs the

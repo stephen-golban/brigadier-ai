@@ -111,6 +111,7 @@ impl SessionManager {
                     task_id: review.id.clone(),
                     role: GateRole::Review,
                     result: None,
+                    avoid: Vec::new(),
                 });
                 started.push(review);
             }
@@ -773,6 +774,7 @@ mod tests {
             task_id: TaskId(id.into()),
             role: GateRole::Review,
             result: Some(result),
+            avoid: Vec::new(),
         };
         let findings = number_findings(&[
             member(

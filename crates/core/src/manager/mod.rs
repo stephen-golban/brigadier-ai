@@ -109,6 +109,9 @@ pub struct SessionManager {
     /// Held while a gate round opens or records a result, so results can't race the round
     /// that is still being set up.
     gates: tokio::sync::Mutex<()>,
+    /// Held while a task is read, changed and recorded (`update_task`), so two writers can't
+    /// each write back a copy that lacks the other's change.
+    task_writes: tokio::sync::Mutex<()>,
     waiters: Waiters,
     admitting: AtomicBool,
     background: TaskTracker,
@@ -163,6 +166,7 @@ impl SessionManager {
             tasks: Mutex::new(HashMap::new()),
             session_worktrees: tokio::sync::Mutex::new(()),
             gates: tokio::sync::Mutex::new(()),
+            task_writes: tokio::sync::Mutex::new(()),
             waiters: Waiters::default(),
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),

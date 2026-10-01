@@ -19,11 +19,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::conversation::Envelope;
+use super::prompts;
+use super::workers::route_label;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{
     Conversation, ConversationId, ConversationKind, Environment, Lifecycle, Setup, streams,
 };
-use crate::work::{InjectionKind, TaskState};
+use crate::work::{InjectionKind, Task, TaskState};
 use crate::{Error, Result, now_ms};
 
 /// How often idle conversations are checked for hibernation.
@@ -83,6 +85,12 @@ impl SessionManager {
             };
             for task in tasks.into_iter().filter(|task| !task.state.is_final()) {
                 match task.state {
+                    // A fix Brigadier was to check and land on its own, or was still being
+                    // made: the restart ended that, so the orchestrator decides.
+                    _ if interrupted_fix(&task) => {
+                        self.recover_fix(&task).await;
+                        continue;
+                    }
                     // A write task that reported changing nothing has nothing to land.
                     TaskState::Reported if self.changed_nothing(&task).await => {
                         self.dispose_task(&task, TaskState::Done).await;
@@ -150,6 +158,58 @@ impl SessionManager {
             // Nothing runs any more: what was working is over or waits for the user.
             self.settle_requests(&conversation.id).await;
         }
+    }
+
+    /// A write task Brigadier was landing a fix of when it quit: the fix was reported but not
+    /// yet checked, or the worker was still making it. Its worktree stays and it waits as
+    /// reported; the orchestrator gets its report, and decides.
+    async fn recover_fix(&self, task: &Task) {
+        let fixing = task.state != TaskState::Reported;
+        let Ok(task) = self
+            .update_task(&task.conversation_id, &task.id, |t| {
+                t.landing = None;
+                t.state = TaskState::Reported;
+                t.blocked_reason = None;
+            })
+            .await
+        else {
+            return;
+        };
+        let mut text = match &task.report {
+            Some(report) => prompts::report_envelope(&task, report, &route_label(&task)),
+            None => String::new(),
+        };
+        let next = format!(
+            "Decide: accept_task for task-{n} to check and land it, message_worker to send it back, or stop_worker.",
+            n = task.number
+        );
+        if fixing {
+            let findings = self.gate_findings(&task).await;
+            text.push_str(&format!(
+                "\n[not landed task-{}] Brigadier restarted while the worker was fixing what the checks of its change found; its fix is unfinished in its worktree and nothing landed. The report above is from before the fix.{} {next}",
+                task.number,
+                if findings.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nThe findings:\n{findings}")
+                }
+            ));
+        } else {
+            text.push_str(&format!(
+                "\n[not landed task-{}] This is the worker's fix of what the checks found; Brigadier restarted before checking it, so nothing landed. {next}",
+                task.number
+            ));
+        }
+        self.deliver(
+            &task.conversation_id,
+            Envelope {
+                kind: InjectionKind::Report,
+                label: format!("report task-{}", task.number),
+                task_id: Some(task.id.clone()),
+                text: text.trim_start().to_owned(),
+            },
+        )
+        .await;
     }
 
     /// Hibernates conversations idle for longer than the setting.
@@ -520,5 +580,64 @@ fn conversation_owner(conversation: &Conversation) -> (String, &'static str) {
     match conversation.kind {
         ConversationKind::Session => (format!("orch:{}", conversation.id), "orch"),
         ConversationKind::Chat => (format!("chat:{}", conversation.id), "chat"),
+    }
+}
+
+/// Whether a restart cut off a fix Brigadier was landing on its own: the worker's fix report
+/// waits for the checks Brigadier had not started yet, or the worker was still making it (a
+/// task waiting for quota keeps waiting, and lands its fix when it reports).
+fn interrupted_fix(task: &Task) -> bool {
+    task.kind.writes()
+        && task.landing.is_some()
+        && task.quota_wait.is_none()
+        && matches!(
+            task.state,
+            TaskState::Reported
+                | TaskState::Queued
+                | TaskState::Starting
+                | TaskState::Running
+                | TaskState::Blocked
+                | TaskState::Paused
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(state: TaskState, landing: bool) -> Task {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add the flag",
+            "kind": "implement",
+            "spec": "Add the flag.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reported",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        task.state = state;
+        task.landing = landing.then(|| "Add the flag".to_owned());
+        task
+    }
+
+    #[test]
+    fn a_fix_a_restart_cut_off_goes_to_the_orchestrator() {
+        // Its fix report, not yet checked, and a worker still fixing.
+        assert!(interrupted_fix(&task(TaskState::Reported, true)));
+        assert!(interrupted_fix(&task(TaskState::Running, true)));
+        // A report the orchestrator already has, and a landing under way (handled apart).
+        assert!(!interrupted_fix(&task(TaskState::Reported, false)));
+        assert!(!interrupted_fix(&task(TaskState::Reviewing, true)));
+        assert!(!interrupted_fix(&task(TaskState::ReadyToLand, true)));
+        let mut review = task(TaskState::Reported, true);
+        review.kind = crate::work::TaskKind::Review;
+        assert!(!interrupted_fix(&review));
     }
 }

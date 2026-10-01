@@ -24,6 +24,7 @@ use brigadier_router::Author;
 
 use super::conversation::Envelope;
 use super::{SessionManager, blocking, git_error};
+use crate::model::ModelChoice;
 use crate::work::{
     Gate, GateLink, GateMember, GateOutcome, GateOwner, GateResult, GateRole, InjectionKind,
     Report, ReviewRecord, ReviewVerdict, Task, TaskId, TaskKind, TaskState,
@@ -179,6 +180,7 @@ impl SessionManager {
                     task_id: review.id.clone(),
                     role: GateRole::Review,
                     result: None,
+                    avoid: Vec::new(),
                 });
                 started.push(review);
             }
@@ -213,6 +215,16 @@ impl SessionManager {
                 task_id: verify.id.clone(),
                 role: GateRole::Verify,
                 result: None,
+                // A hand-off of the second verifier avoids the first one too.
+                avoid: retry
+                    .iter()
+                    .map(|(_, before)| ModelChoice {
+                        provider: before.provider,
+                        model: before.model.clone(),
+                        effort: None,
+                        fast: None,
+                    })
+                    .collect(),
             });
             started.push(verify);
             Ok(first)
@@ -305,7 +317,16 @@ impl SessionManager {
                         member.number
                     ),
                 },
-                None => verify_result(report),
+                None => {
+                    // It covers at least the criteria the worker listed.
+                    let listed = self
+                        .task_by_id(&member.conversation_id, task_id)
+                        .await
+                        .ok()
+                        .and_then(|owner| owner.report)
+                        .map_or(0, |report| report.done_when.len());
+                    verify_result(report, listed)
+                }
             },
         };
         self.record_gate_result(member, task_id, &link, result)
@@ -336,8 +357,8 @@ impl SessionManager {
             .await;
     }
 
-    /// What a verifier changed in its checkout: tracked files, a new source file or another
-    /// commit. `None` when its checkout is still exactly the commit it checked.
+    /// What a verifier changed in its checkout: tracked files, a new file git doesn't ignore,
+    /// or another commit. `None` when its checkout is still exactly the commit it checked.
     async fn verifier_changes(&self, member: &Task) -> Option<String> {
         let workspace = member.workspace.as_ref()?;
         let worktree = std::path::PathBuf::from(workspace.worktree.clone()?);
@@ -348,14 +369,9 @@ impl SessionManager {
             if worktree.head().map_err(git_error)? != base {
                 return Ok(Some("its checkout is on another commit".to_owned()));
             }
-            let changed: Vec<String> = worktree
-                .changes(&base)
-                .map_err(git_error)?
-                .into_iter()
-                .filter(|change| !change.untracked || is_source(&change.path))
-                .map(|change| change.path)
-                .collect();
-            Ok((!changed.is_empty()).then(|| format!("it changed {}", changed.join(", "))))
+            Ok(checkout_changes(
+                &worktree.changes(&base).map_err(git_error)?,
+            ))
         })
         .await
         .unwrap_or_else(|err| Some(format!("its checkout could not be read: {err}")))
@@ -434,6 +450,14 @@ impl SessionManager {
         let Some(gate) = task.gate.clone() else {
             return;
         };
+        // The task moved on meanwhile (stopped, sent back, a newer round): nothing to do.
+        if !self
+            .task_by_id(&task.conversation_id, &task.id)
+            .await
+            .is_ok_and(|now| round_current(&task, &now) && now.gate == task.gate)
+        {
+            return;
+        }
         let members = self.member_tasks(&task, &gate).await;
         match gate.outcome {
             Some(GateOutcome::Passed) => {
@@ -588,14 +612,19 @@ impl SessionManager {
 
     /// The worker's fix changed nothing: the orchestrator gets the last round's findings.
     pub(crate) async fn escalate_unchanged(&self, task: &Task) {
-        let findings = match &task.gate {
+        let findings = self.gate_findings(task).await;
+        self.send_back_or_escalate(task, &findings, true).await;
+    }
+
+    /// The findings of the task's last gate round, member by member.
+    pub(crate) async fn gate_findings(&self, task: &Task) -> String {
+        match &task.gate {
             Some(gate) => {
                 let members = self.member_tasks(task, gate).await;
                 findings_text(gate, &members)
             }
             None => String::new(),
-        };
-        self.send_back_or_escalate(task, &findings, true).await;
+        }
     }
 
     /// Stops a task's open gate round (the task was stopped): its members' work is moot.
@@ -624,11 +653,13 @@ impl SessionManager {
         }
     }
 
-    /// Who a gate member must not be, for a hand-off to another model: the author of the
-    /// change, and the models of the round's other members.
+    /// Who a checking task must not be, for a hand-off to another model. A gate member: the
+    /// author of the change, the models of the round's other reviewers, and those it was
+    /// told to avoid. A review or verification the orchestrator delegated itself: the author
+    /// of its subject.
     pub(crate) async fn gate_avoid(&self, member: &Task) -> (Option<Author>, Vec<Author>) {
         let Some(link) = &member.gate_link else {
-            return (None, Vec::new());
+            return (self.subject_author(member).await, Vec::new());
         };
         let task_id = match &link.owner {
             GateOwner::Task { task_id } => task_id,
@@ -636,35 +667,85 @@ impl SessionManager {
                 return self.plan_gate_avoid(member, plan_id, link.round).await;
             }
         };
-        let Ok(owner) = self.task_by_id(&member.conversation_id, task_id).await else {
+        let Ok(board) = self.core.board(&member.conversation_id).await else {
             return (None, Vec::new());
         };
-        let author = Author {
-            provider: owner.route.choice.provider,
-            model: owner.route.choice.model.clone(),
+        let Some(owner) = board.tasks.get(task_id) else {
+            return (None, Vec::new());
         };
-        let mut others = Vec::new();
-        if link.role == GateRole::Review
-            && let Some(gate) = owner.gate.as_ref().filter(|g| g.round == link.round)
-        {
-            for other in gate
-                .members
-                .iter()
-                .filter(|m| m.role == GateRole::Review && m.task_id != member.id)
-            {
-                if let Ok(other) = self
-                    .task_by_id(&member.conversation_id, &other.task_id)
-                    .await
-                {
-                    others.push(Author {
-                        provider: other.route.choice.provider,
-                        model: other.route.choice.model.clone(),
-                    });
-                }
-            }
-        }
-        (Some(author), others)
+        let others = match owner.gate.as_ref().filter(|g| g.round == link.round) {
+            Some(gate) => member_avoids(gate, &member.id, link.role, |id| {
+                board.tasks.get(id).map(|t| author_of(&t.route.choice))
+            }),
+            None => Vec::new(),
+        };
+        (Some(author_of(&owner.route.choice)), others)
     }
+
+    /// The author of the change a review or verification task checks.
+    async fn subject_author(&self, task: &Task) -> Option<Author> {
+        if !matches!(task.kind, TaskKind::Review | TaskKind::Verify) {
+            return None;
+        }
+        let subject = self
+            .task_by_id(&task.conversation_id, task.subject.as_ref()?)
+            .await
+            .ok()?;
+        Some(author_of(&subject.route.choice))
+    }
+}
+
+/// The models a gate member must differ from besides the author: a reviewer, the round's
+/// other reviewers; any member, the models it was told to avoid when it started.
+fn member_avoids(
+    gate: &Gate,
+    member: &TaskId,
+    role: GateRole,
+    model_of: impl Fn(&TaskId) -> Option<Author>,
+) -> Vec<Author> {
+    let mut avoid = Vec::new();
+    for other in &gate.members {
+        if &other.task_id == member {
+            avoid.extend(other.avoid.iter().map(author_of));
+        } else if role == GateRole::Review
+            && other.role == GateRole::Review
+            && let Some(model) = model_of(&other.task_id)
+        {
+            avoid.push(model);
+        }
+    }
+    avoid
+}
+
+fn author_of(choice: &ModelChoice) -> Author {
+    Author {
+        provider: choice.provider,
+        model: choice.model.clone(),
+    }
+}
+
+/// Whether the round decided on `decided` (the task when its round ended, or when its
+/// landing was approved) still speaks for the task as it is `now`: the same round on the same
+/// commit, and the task still landing (not stopped, sent back or landed meanwhile).
+pub(super) fn round_current(decided: &Task, now: &Task) -> bool {
+    let (Some(then), Some(gate)) = (&decided.gate, &now.gate) else {
+        return false;
+    };
+    gate.round == then.round
+        && gate.commit == then.commit
+        && matches!(
+            now.state,
+            TaskState::Reviewing | TaskState::AwaitingApproval
+        )
+}
+
+/// Whether the task's candidate, as it is now, passed its gate: only that commit may land.
+pub(super) fn candidate_passed(task: &Task) -> bool {
+    task.gate.as_ref().is_some_and(|gate| {
+        gate.outcome == Some(GateOutcome::Passed)
+            && gate.commit.is_some()
+            && gate.commit.as_deref() == task.candidate.as_ref().map(|c| c.commit.as_str())
+    })
 }
 
 /// A change bigger than this (files, or lines added and removed) is planned first: the
@@ -714,7 +795,7 @@ fn review_spec(task: &Task, commit: &str, unreported: &[String], plan: Option<&s
 fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&str>) -> String {
     let mut spec = format!(
         "Verify the candidate commit {} of task-{} (\"{}\") independently, before it may land. Your checkout is at that commit.
-1. Find every \"done when\" criterion of the task below (and of the orchestrator's later messages to the worker). For each one, produce your own evidence: run the command and quote the decisive line, or read the code and say where. The worker's claims are not evidence.
+1. Find every \"done when\" criterion: the task's below, those in the orchestrator's later messages to the worker, and each one the worker listed in its report. For each one, produce your own evidence: run the command and quote the decisive line, or read the code and say where. The worker's claims are not evidence.
 2. Run the project's checks the way the project runs them (see its README, package scripts, Makefile and CI config): typecheck, lint, build, the existing tests, and a runtime smoke check where the project has one. Install missing dependencies in this checkout first.
 3. Check hygiene: files the commit should not hold (logs, scratch notes, debug output, secrets, generated junk), debug code left in, and changes the task didn't ask for.
 4. Change no tracked file and add no source file: build output goes only into the project's ignored folders. Brigadier compares your checkout with the commit after your report and discards a verification that changed it.
@@ -744,7 +825,7 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
         ));
     }
     spec.push_str(
-        "\nEnd with submit_report. done_when: one line per criterion, \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed, notRun (the project has checks but they could not run, after you tried), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions.",
+        "\nEnd with submit_report. done_when: one line per criterion, for every criterion (the task's and the worker's, never fewer lines than the worker listed): \"[met] criterion: your evidence\", \"[not met] criterion: what fails\", or \"[not checked] criterion: the command you tried and its error\"; a check you did not run yourself is never [met]. checks: passed (every check you ran passed), failed, notRun (the project has checks but they could not run, after you tried), or noChecks (the project has no checks you could run). Put each problem the worker must fix in open_questions, and nothing else: any line there sends the change back to the worker.",
     );
     spec
 }
@@ -778,6 +859,17 @@ fn criterion_text(line: &str) -> &str {
     line.find(']').map_or(line, |end| line[end + 1..].trim())
 }
 
+/// The evidence a "done when" line gives after its criterion ("[met] criterion: evidence",
+/// or a dash instead of the colon), if any.
+fn criterion_evidence(line: &str) -> Option<&str> {
+    let text = criterion_text(line);
+    let at = [": ", " — ", " – ", " - ", " -> ", " => "]
+        .iter()
+        .filter_map(|separator| text.find(separator).map(|at| at + separator.len()))
+        .min()?;
+    Some(text[at..].trim()).filter(|evidence| evidence.chars().any(char::is_alphanumeric))
+}
+
 /// A reviewer's result.
 pub(super) fn review_result(report: &Report) -> GateResult {
     match report.verdict {
@@ -796,22 +888,26 @@ pub(super) fn review_result(report: &Report) -> GateResult {
 }
 
 /// A verifier's result. It passed only when every "done when" criterion is shown met with
-/// evidence and the project's checks passed (or it has none).
-fn verify_result(report: &Report) -> GateResult {
+/// evidence (at least as many as the worker listed, `listed`), the project's checks passed
+/// (or it has none), and it found nothing for the worker to fix.
+fn verify_result(report: &Report, listed: usize) -> GateResult {
     use crate::work::ChecksResult;
     let mut unmet = Vec::new();
     let mut unchecked = Vec::new();
     let mut met = 0;
     for line in &report.done_when {
         match criterion_status(line) {
-            // Evidence is more than a word or two after the criterion.
-            Some(Status::Met) if criterion_text(line).len() >= 12 => met += 1,
+            Some(Status::Met) if criterion_evidence(line).is_some() => met += 1,
             Some(Status::Met) => unchecked.push(format!("{line} (no evidence given)")),
             Some(Status::NotMet) => unmet.push(line.clone()),
             Some(Status::NotChecked) | None => unchecked.push(line.clone()),
         }
     }
-    if report.checks == Some(ChecksResult::Failed) || !unmet.is_empty() {
+    // It was told to put each problem the worker must fix in open_questions.
+    if report.checks == Some(ChecksResult::Failed)
+        || !unmet.is_empty()
+        || !report.open_questions.is_empty()
+    {
         let mut findings = unmet;
         findings.extend(report.open_questions.iter().cloned());
         if findings.is_empty() {
@@ -823,6 +919,11 @@ fn verify_result(report: &Report) -> GateResult {
         Some("It showed no \"done when\" criterion met with evidence.".to_owned())
     } else if !unchecked.is_empty() {
         Some(format!("Left unchecked: {}", unchecked.join("; ")))
+    } else if report.done_when.len() < listed {
+        Some(format!(
+            "It covered {} \"done when\" criteria; the worker listed {listed}, so some were not checked.",
+            report.done_when.len()
+        ))
     } else {
         match report.checks {
             Some(ChecksResult::Passed | ChecksResult::NoChecks) => None,
@@ -914,17 +1015,12 @@ fn role_name(role: GateRole) -> &'static str {
     }
 }
 
-/// Whether a new file a verifier left is source a check could have used (not a log or a
-/// build product the project forgot to ignore).
-fn is_source(path: &str) -> bool {
-    const SOURCE: &[&str] = &[
-        "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "swift", "c", "cc",
-        "cpp", "h", "hpp", "cs", "rb", "php", "json", "toml", "yaml", "yml",
-    ];
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| SOURCE.contains(&ext.to_ascii_lowercase().as_str()))
+/// What a verifier's checkout holds that its commit doesn't: any changed tracked file and
+/// any new file git doesn't ignore, whatever its kind (a check may have used it). Build
+/// output goes into ignored folders, which don't count.
+fn checkout_changes(changes: &[brigadier_git::Change]) -> Option<String> {
+    let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+    (!paths.is_empty()).then(|| format!("it changed {}", paths.join(", ")))
 }
 
 fn short(commit: &str) -> &str {
@@ -962,7 +1058,7 @@ mod tests {
             ],
             Some(ChecksResult::Passed),
         );
-        assert_eq!(verify_result(&report), GateResult::Passed);
+        assert_eq!(verify_result(&report, 0), GateResult::Passed);
     }
 
     #[test]
@@ -971,7 +1067,7 @@ mod tests {
             &["[met] the page title reads Home: src/app.tsx:12"],
             Some(ChecksResult::NoChecks),
         );
-        assert_eq!(verify_result(&report), GateResult::Passed);
+        assert_eq!(verify_result(&report, 0), GateResult::Passed);
     }
 
     #[test]
@@ -981,7 +1077,7 @@ mod tests {
             Some(ChecksResult::NotRun),
         );
         assert!(matches!(
-            verify_result(&report),
+            verify_result(&report, 0),
             GateResult::Unverified { .. }
         ));
     }
@@ -995,7 +1091,7 @@ mod tests {
             ],
             Some(ChecksResult::NotRun),
         );
-        let GateResult::Unverified { reason } = verify_result(&report) else {
+        let GateResult::Unverified { reason } = verify_result(&report, 0) else {
             panic!("not unverified");
         };
         assert!(
@@ -1014,7 +1110,7 @@ mod tests {
             ],
             Some(ChecksResult::Passed),
         );
-        let GateResult::Unverified { reason } = verify_result(&report) else {
+        let GateResult::Unverified { reason } = verify_result(&report, 0) else {
             panic!("not unverified");
         };
         assert!(reason.contains("[met] ok (no evidence given)"), "{reason}");
@@ -1024,7 +1120,7 @@ mod tests {
     #[test]
     fn no_criteria_at_all_is_unverified() {
         assert!(matches!(
-            verify_result(&report(&[], Some(ChecksResult::Passed))),
+            verify_result(&report(&[], Some(ChecksResult::Passed)), 0),
             GateResult::Unverified { .. }
         ));
     }
@@ -1040,7 +1136,7 @@ mod tests {
         );
         failed.open_questions = vec!["Fix the null check in api.ts".into()];
         assert_eq!(
-            verify_result(&failed),
+            verify_result(&failed, 0),
             GateResult::Failed {
                 findings: vec![
                     "[not met] tests pass: 2 failed in api.test.ts".into(),
@@ -1072,6 +1168,7 @@ mod tests {
             task_id: TaskId("t".into()),
             role: GateRole::Review,
             result: Some(result),
+            avoid: Vec::new(),
         };
         let unverified = GateResult::Unverified { reason: "x".into() };
         let failed = GateResult::Failed {
@@ -1095,10 +1192,198 @@ mod tests {
     }
 
     #[test]
-    fn only_source_files_count_as_a_verifier_change() {
-        assert!(is_source("src/missing.ts"));
-        assert!(is_source("Cargo.toml"));
-        assert!(!is_source("test-output.log"));
-        assert!(!is_source("coverage/lcov.info"));
+    fn any_new_file_counts_as_a_verifier_change() {
+        let change = |path: &str, untracked| brigadier_git::Change {
+            path: path.into(),
+            kind: brigadier_git::ChangeKind::Added,
+            untracked,
+        };
+        assert_eq!(checkout_changes(&[]), None);
+        // Not only source: a migration, a script or a page a check could have used.
+        assert_eq!(
+            checkout_changes(&[change("db/001.sql", true), change("run.sh", true)]),
+            Some("it changed db/001.sql, run.sh".into())
+        );
+        assert_eq!(
+            checkout_changes(&[change("src/app.ts", false)]),
+            Some("it changed src/app.ts".into())
+        );
+    }
+
+    #[test]
+    fn a_verifier_finding_in_open_questions_fails_an_otherwise_passing_report() {
+        let mut found = report(
+            &["[met] tests pass: 41 passed, 0 failed"],
+            Some(ChecksResult::Passed),
+        );
+        found.open_questions = vec!["debug.log is committed; remove it".into()];
+        assert_eq!(
+            verify_result(&found, 1),
+            GateResult::Failed {
+                findings: vec!["debug.log is committed; remove it".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn fewer_criteria_than_the_worker_listed_is_unverified() {
+        let short = report(
+            &["[met] tests pass: 41 passed, 0 failed"],
+            Some(ChecksResult::Passed),
+        );
+        let GateResult::Unverified { reason } = verify_result(&short, 2) else {
+            panic!("not unverified");
+        };
+        assert!(reason.contains("covered 1"), "{reason}");
+        assert!(reason.contains("listed 2"), "{reason}");
+        // As many as the worker listed, or more (the task's own), passes.
+        assert_eq!(verify_result(&short, 1), GateResult::Passed);
+    }
+
+    #[test]
+    fn a_met_line_needs_evidence_after_its_criterion_not_just_length() {
+        let long = report(
+            &[
+                "[met] tests pass: 41 passed",
+                "[met] the settings page shows the new toggle for dark mode",
+            ],
+            Some(ChecksResult::Passed),
+        );
+        let GateResult::Unverified { reason } = verify_result(&long, 0) else {
+            panic!("not unverified");
+        };
+        assert!(reason.contains("(no evidence given)"), "{reason}");
+        assert_eq!(
+            criterion_evidence("[met] the build works — cargo build finished in 12s"),
+            Some("cargo build finished in 12s")
+        );
+        assert_eq!(
+            criterion_evidence("- [met] tests pass - 41 passed"),
+            Some("41 passed")
+        );
+        assert_eq!(criterion_evidence("[met] tests pass:"), None);
+        assert_eq!(criterion_evidence("[met] tests pass: -"), None);
+        // A colon inside a path is not a separator.
+        assert_eq!(criterion_evidence("[met] see src/app.ts:12"), None);
+    }
+
+    fn author(model: &str) -> Author {
+        Author {
+            provider: brigadier_providers::ProviderKind::Codex,
+            model: Some(model.into()),
+        }
+    }
+
+    #[test]
+    fn a_gate_member_keeps_avoiding_what_it_started_avoiding() {
+        let member = |id: &str, role, avoid: &[&str]| GateMember {
+            task_id: TaskId(id.into()),
+            role,
+            result: None,
+            avoid: avoid
+                .iter()
+                .map(|model| ModelChoice {
+                    provider: brigadier_providers::ProviderKind::Codex,
+                    model: Some((*model).into()),
+                    effort: None,
+                    fast: None,
+                })
+                .collect(),
+        };
+        let gate = Gate {
+            round: 2,
+            commit: Some("c2".into()),
+            members: vec![
+                member("r1", GateRole::Review, &[]),
+                member("r2", GateRole::Review, &[]),
+                member("v", GateRole::Verify, &["first-verifier"]),
+            ],
+            outcome: None,
+            relanding: false,
+            retry: true,
+            findings: Vec::new(),
+        };
+        let model_of = |id: &TaskId| Some(author(&format!("model-of-{}", id.0)));
+        // The second verifier: the one that could not check, not the reviewers.
+        assert_eq!(
+            member_avoids(&gate, &TaskId("v".into()), GateRole::Verify, model_of),
+            vec![author("first-verifier")]
+        );
+        // A reviewer: the other reviewer.
+        assert_eq!(
+            member_avoids(&gate, &TaskId("r1".into()), GateRole::Review, model_of),
+            vec![author("model-of-r2")]
+        );
+    }
+
+    /// A write task whose round `round` on `commit` ended with `outcome`, now at `state`
+    /// with candidate `candidate`.
+    fn gated(
+        state: TaskState,
+        round: u32,
+        commit: &str,
+        outcome: Option<GateOutcome>,
+        candidate: &str,
+    ) -> Task {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "conversationId": "c1",
+            "number": 1,
+            "position": 0,
+            "title": "Add the flag",
+            "kind": "implement",
+            "spec": "Add the flag.",
+            "access": { "repo": "write", "network": false, "unsandboxed": false },
+            "route": { "choice": { "provider": "claude", "model": null, "effort": null }, "reason": "" },
+            "state": "reviewing",
+            "attachments": [],
+            "createdAtMs": 0,
+            "updatedAtMs": 0
+        }))
+        .expect("a task");
+        task.state = state;
+        task.gate = Some(Gate {
+            round,
+            commit: Some(commit.into()),
+            members: Vec::new(),
+            outcome,
+            relanding: false,
+            retry: false,
+            findings: Vec::new(),
+        });
+        task.candidate = Some(crate::work::Candidate {
+            commit: candidate.into(),
+            onto: "base".into(),
+            message: "Add the flag".into(),
+            diff_stat: crate::work::DiffStat {
+                files: Vec::new(),
+                insertions: 1,
+                deletions: 0,
+            },
+            excluded: Vec::new(),
+            diff: None,
+        });
+        task
+    }
+
+    #[test]
+    fn an_old_approval_never_lands_a_newer_candidate() {
+        let passed = Some(GateOutcome::Passed);
+        let approved = gated(TaskState::AwaitingApproval, 1, "c1", passed.clone(), "c1");
+        assert!(round_current(&approved, &approved));
+        assert!(candidate_passed(&approved));
+        // Sent back and accepted again: round 2 checks c2 while round 1's card is open.
+        let newer = gated(TaskState::Reviewing, 2, "c2", None, "c2");
+        assert!(!round_current(&approved, &newer));
+        assert!(!candidate_passed(&newer));
+        // Sent back, still working: nothing lands.
+        let working = gated(TaskState::Running, 1, "c1", passed.clone(), "c1");
+        assert!(!round_current(&approved, &working));
+        // Stopped meanwhile.
+        let stopped = gated(TaskState::Stopped, 1, "c1", passed.clone(), "c1");
+        assert!(!round_current(&approved, &stopped));
+        // A candidate that is not the commit the round passed.
+        let moved = gated(TaskState::Reviewing, 1, "c1", passed, "c3");
+        assert!(!candidate_passed(&moved));
     }
 }

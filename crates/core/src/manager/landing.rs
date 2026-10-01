@@ -91,11 +91,7 @@ impl SessionManager {
         }
         // Only a candidate whose checks all passed lands as it is; one that couldn't be
         // verified is built and checked again.
-        let retry = task.state == TaskState::ReadyToLand
-            && task
-                .gate
-                .as_ref()
-                .is_some_and(|gate| gate.outcome == Some(crate::work::GateOutcome::Passed));
+        let retry = task.state == TaskState::ReadyToLand && super::gates::candidate_passed(&task);
         let later = self.later_request_for(conversation_id, &task).await;
         let task = self
             .update_task(conversation_id, &task.id, |t| {
@@ -561,7 +557,14 @@ impl SessionManager {
                     },
                 )
                 .await?;
-            match rx.await {
+            let answer = rx.await;
+            // The answer is about this round's commit: once the task moved on (a newer round,
+            // sent back, stopped), it decides nothing.
+            let now = self.task_by_id(&task.conversation_id, &task.id).await?;
+            if !super::gates::round_current(task, &now) {
+                return Ok(());
+            }
+            match answer {
                 Ok(CardAnswer::Decision(ApprovalDecision::Allow)) => {}
                 Ok(CardAnswer::Decision(ApprovalDecision::Deny { message })) => {
                     self.announcing(task).await;
@@ -594,9 +597,23 @@ impl SessionManager {
     }
 
     /// Step 6: lands the candidate. When the target moved, the candidate is replayed onto it
-    /// and the new commit goes through the gate again before it lands.
-    pub(super) async fn land_task(&self, task: &Task) -> Result<()> {
-        let task = self.task_by_id(&task.conversation_id, &task.id).await?;
+    /// and the new commit goes through the gate again before it lands. `decided` is the task
+    /// as its round was decided (or its landing approved): only that round's commit lands,
+    /// and only once it passed.
+    pub(super) async fn land_task(&self, decided: &Task) -> Result<()> {
+        let task = self
+            .task_by_id(&decided.conversation_id, &decided.id)
+            .await?;
+        if !super::gates::round_current(decided, &task) {
+            tracing::info!(task = %task.id, "dropped the landing of a round the task moved on from");
+            return Ok(());
+        }
+        if !super::gates::candidate_passed(&task) {
+            return Err(Error::Invalid(format!(
+                "Its current change has not passed its checks, so it did not land. Call accept_task for task-{} again to check and land it.",
+                task.number
+            )));
+        }
         let candidate = task
             .candidate
             .clone()

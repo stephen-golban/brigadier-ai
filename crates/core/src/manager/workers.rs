@@ -410,25 +410,31 @@ impl SessionManager {
             .ok_or_else(|| Error::NotFound(format!("task {id}")))
     }
 
-    /// Changes a task and records it.
+    /// Changes a task and records it. The read, the change and the record are one step for
+    /// every writer, so concurrent changes of a task all stay.
     pub(crate) async fn update_task(
         &self,
         conversation_id: &ConversationId,
         id: &TaskId,
         change: impl FnOnce(&mut Task),
     ) -> Result<Task> {
-        let mut task = self.task_by_id(conversation_id, id).await?;
-        let was = task.state;
-        let reported = task.report.is_some();
-        change(&mut task);
-        task.updated_at_ms = now_ms();
-        let mut events = vec![DomainEvent::TaskUpdated {
-            task: Box::new(task.clone()),
-        }];
-        events.extend(worker_step(&task, Some(was), reported));
-        self.core
-            .record_conversation(conversation_id, events)
-            .await?;
+        let (task, was) = {
+            // Nothing under it waits for anything but the board.
+            let _held = self.task_writes.lock().await;
+            let mut task = self.task_by_id(conversation_id, id).await?;
+            let was = task.state;
+            let reported = task.report.is_some();
+            change(&mut task);
+            task.updated_at_ms = now_ms();
+            let mut events = vec![DomainEvent::TaskUpdated {
+                task: Box::new(task.clone()),
+            }];
+            events.extend(worker_step(&task, Some(was), reported));
+            self.core
+                .record_conversation(conversation_id, events)
+                .await?;
+            (task, was)
+        };
         if task.state != was {
             self.settle_requests(conversation_id).await;
         }
