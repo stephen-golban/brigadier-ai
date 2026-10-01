@@ -1547,7 +1547,8 @@ impl SessionManager {
             // Reported; the worker waits (write tasks can be sent back to fix things). What it
             // wrote after its report reaches the orchestrator first.
             let task = self.late_findings(live, task).await;
-            if !task.kind.writes() {
+            // A write task waits for its landing, unless it changed nothing that could land.
+            if !task.kind.writes() || self.changed_nothing(&task).await {
                 // Not from inside the worker's own event pump: closing waits for it.
                 let manager = self.arc();
                 self.spawn(async move { manager.finish_read_task(&task).await });
@@ -1890,7 +1891,10 @@ impl SessionManager {
             .report_files(&task, live.redactor().await, &input.artifacts, texts)
             .await?;
         let mut artifacts = files.artifacts;
-        if let Some(diff) = self.diff_artifact(&live, &task).await {
+        let diff = self.worktree_diff(&task).await;
+        // Nothing it could land: it ends once its turn is over, with nothing to accept.
+        let unchanged = task.kind == TaskKind::Implement && diff.as_deref() == Some("");
+        if let Some(diff) = self.diff_artifact(&live, &task, diff).await {
             artifacts.push(diff);
         }
         // What it wrote as a message instead: the report may only point at it.
@@ -1929,11 +1933,18 @@ impl SessionManager {
         } else {
             let mut shown = task.clone();
             reported(&mut shown);
+            let mut text = prompts::report_envelope(&shown, &report, &route_label(&shown));
+            if unchanged {
+                text.push_str(&format!(
+                    "\n[nothing to land task-{}] It changed no files, so it is done; there is nothing to accept.",
+                    task.number
+                ));
+            }
             let envelope = Envelope {
                 kind: InjectionKind::Report,
                 label: format!("report task-{}", task.number),
                 task_id: Some(task.id.clone()),
-                text: prompts::report_envelope(&shown, &report, &route_label(&shown)),
+                text,
             };
             let request = self.request_for(conversation_id, Some(task_id)).await;
             self.queue_envelope(conversation_id, envelope, request)
@@ -1955,8 +1966,9 @@ impl SessionManager {
         Ok("Report received. Your part is done: end your turn now.".into())
     }
 
-    /// The worker's changes so far, as a diff artifact (write tasks).
-    async fn diff_artifact(&self, live: &Arc<TaskLive>, task: &Task) -> Option<ArtifactRef> {
+    /// The worker's changes so far against its base, untracked files included (write tasks);
+    /// `None` when its worktree can't be read.
+    async fn worktree_diff(&self, task: &Task) -> Option<String> {
         let workspace = task.workspace.as_ref()?;
         if !task.kind.writes() {
             return None;
@@ -1966,15 +1978,32 @@ impl SessionManager {
             PathBuf::from(workspace.worktree.as_ref()?),
             Oid(workspace.base.clone()?),
         );
-        let diff = blocking(move || {
+        blocking(move || {
             let worktree = git.open_worktree(&path).map_err(git_error)?;
             worktree.diff_from(&base).map_err(git_error)
         })
         .await
-        .ok()?;
-        if diff.is_empty() {
-            return None;
-        }
+        .ok()
+    }
+
+    /// Whether an implement task's worktree holds no change at all, so nothing of it could
+    /// land. A merge task always ends through its landing.
+    pub(super) async fn changed_nothing(&self, task: &Task) -> bool {
+        task.kind == TaskKind::Implement
+            && self
+                .worktree_diff(task)
+                .await
+                .is_some_and(|diff| diff.is_empty())
+    }
+
+    /// `diff` (the worker's changes so far, see [`Self::worktree_diff`]) as a diff artifact.
+    async fn diff_artifact(
+        &self,
+        live: &Arc<TaskLive>,
+        task: &Task,
+        diff: Option<String>,
+    ) -> Option<ArtifactRef> {
+        let diff = diff.filter(|diff| !diff.is_empty())?;
         let diff = self.redact_for(live, &diff).await;
         let bytes = diff.into_bytes();
         let size = bytes.len() as u64;
@@ -2480,7 +2509,8 @@ impl SessionManager {
         .await;
     }
 
-    /// A read task reported: its worker and workspace go.
+    /// A read task, or a write task that changed nothing, reported: its worker and workspace
+    /// go.
     async fn finish_read_task(&self, task: &Task) {
         if let Some(live) = self.existing_task_live(&task.id) {
             live.close_cli().await;
@@ -2633,7 +2663,10 @@ impl SessionManager {
 
     /// The task's diff as an artifact, read back from the blob store to be sure it is there.
     async fn kept_diff(&self, task: &Task) -> Option<ArtifactRef> {
-        let artifact = self.diff_artifact(&self.task_live(task), task).await?;
+        let diff = self.worktree_diff(task).await;
+        let artifact = self
+            .diff_artifact(&self.task_live(task), task, diff)
+            .await?;
         let hash = artifact.id.parse().ok()?;
         match self.core.store().blobs().get(hash).await {
             Ok(Some(bytes)) if bytes.len() as u64 == artifact.bytes => Some(artifact),

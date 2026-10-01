@@ -83,6 +83,11 @@ impl SessionManager {
             };
             for task in tasks.into_iter().filter(|task| !task.state.is_final()) {
                 match task.state {
+                    // A write task that reported changing nothing has nothing to land.
+                    TaskState::Reported if self.changed_nothing(&task).await => {
+                        self.dispose_task(&task, TaskState::Done).await;
+                        continue;
+                    }
                     // Its worktree is intact; the worker resumes when sent back to work.
                     TaskState::Reported | TaskState::ReadyToLand if task.kind.writes() => continue,
                     // No CLI ran; it waits for quota as before.
