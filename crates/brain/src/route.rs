@@ -30,7 +30,7 @@ pub fn route(text: &str) -> Route {
         let span = span.trim();
         // A quoted sentence is prose; a quoted word or path is a name.
         if !span.is_empty() && !span.contains(char::is_whitespace) && !is_url(span) {
-            push(&mut names, trim(span));
+            push(&mut names, bare_name(trim(span)));
         }
     }
     let words: Vec<&str> = text
@@ -40,7 +40,7 @@ pub fn route(text: &str) -> Route {
         .collect();
     for word in &words {
         if is_name(word) {
-            push(&mut names, word);
+            push(&mut names, bare_name(word));
         }
     }
     // `Brain` alone, `QueryBrain`: a bare word asked on its own is a lookup too.
@@ -93,8 +93,11 @@ fn trim(word: &str) -> &str {
             word = &word[..word.len() - 1];
         }
     }
-    let word = word.trim_matches(|c: char| matches!(c, '.' | ',' | ':' | ';' | '?' | '!'));
-    // A call names the function.
+    word.trim_matches(|c: char| matches!(c, '.' | ',' | ':' | ';' | '?' | '!'))
+}
+
+/// Strip call syntax only after recognizing it, so plain lowercase function names count.
+fn bare_name(word: &str) -> &str {
     word.strip_suffix("()").unwrap_or(word)
 }
 
@@ -104,6 +107,11 @@ fn trim(word: &str) -> &str {
 fn is_name(word: &str) -> bool {
     if is_url(word) || word.len() < 3 || !word.chars().any(char::is_alphabetic) {
         return false;
+    }
+    if let Some(name) = word.strip_suffix("()")
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
+        return true;
     }
     if word.contains("::") {
         return true;
@@ -191,6 +199,10 @@ mod tests {
         );
         assert_eq!(names("how does Brain::query rank?"), ["Brain::query"]);
         assert_eq!(names("what calls useState() here"), ["useState"]);
+        assert_eq!(names("where is lookup() called?"), ["lookup"]);
+        assert_eq!(names("where is lookup(), defined?"), ["lookup"]);
+        assert_eq!(names("what calls f()?"), ["f"]);
+        assert_eq!(names("what calls `lookup()`?"), ["lookup"]);
         assert_eq!(names("QueryBrain"), ["QueryBrain"]);
         assert_eq!(names("the \"SaversSection\" component"), ["SaversSection"]);
         assert_eq!(
