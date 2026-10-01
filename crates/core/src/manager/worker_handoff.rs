@@ -53,14 +53,6 @@ words. Don't call submit_report for this.",
 }
 
 impl SessionManager {
-    /// The worker context at which a worker is handed over, when the setting is on.
-    pub(crate) fn worker_handoff_at(&self) -> Option<i64> {
-        let usage = self.core.settings().usage;
-        usage
-            .worker_handoff
-            .then(|| knowledge::worker_handoff_tokens(usage.worker_handoff_tokens))
-    }
-
     /// A worker reported its context size: past the hand-off size mid-turn, it is asked to wrap
     /// up with a handoff note.
     pub(crate) async fn worker_context(&self, live: &Arc<TaskLive>, cli: &Arc<Cli>, tokens: i64) {
@@ -102,9 +94,7 @@ impl SessionManager {
         tokens: i64,
         start: Option<i64>,
     ) -> bool {
-        let Some(at) = self.worker_handoff_at() else {
-            return false;
-        };
+        let at = knowledge::worker_handoff_tokens();
         if !knowledge::worker_handoff_due(tokens, start, at, 0) {
             return false;
         }

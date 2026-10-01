@@ -18,7 +18,6 @@ import { PERSONALIZATION_ROWS, PersonalizationPage } from "@/app/settings/Person
 import { STORAGE_ROWS, StoragePage } from "@/app/settings/StoragePage";
 import { PROVIDERS_ROWS, ProvidersPage } from "@/app/providers/ProvidersPage";
 import { ROUTING_PAGE_ROWS, RoutingPage } from "@/app/routing/RoutingPage";
-import { SAVER_ROWS } from "@/app/usage/SaversSection";
 import type { SettingsPageId } from "@/state/store";
 
 /**
@@ -64,7 +63,6 @@ const INSPECTOR_ROWS: readonly SettingsRowCopy[] = [
 const USAGE_ROWS: readonly SettingsRowCopy[] = [
   { label: "Usage windows", description: "How much of each agent's usage is left." },
   { label: "Recent activity", description: "Hand-offs, and work waiting for quota." },
-  ...Object.values(SAVER_ROWS),
 ];
 
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = ["Personal", "Agents", "System", "Archived"];

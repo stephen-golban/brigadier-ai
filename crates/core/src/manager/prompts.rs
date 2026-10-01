@@ -1,7 +1,7 @@
 //! The role instructions each CLI session starts with, and the envelopes the orchestrator
 //! reads.
 
-use crate::model::{Conversation, Environment, PermissionLevel, Project, Setup, UsageSettings};
+use crate::model::{Conversation, Environment, PermissionLevel, Project, Setup};
 use crate::work::{ArtifactRef, Report, Task, TaskKind};
 
 /// Logged on `orch:<id>` when a conversation's CLI files were removed: the next CLI session
@@ -37,7 +37,6 @@ pub(crate) fn orchestrator(
     conversation: &Conversation,
     project: Option<&Project>,
     preferences: &[String],
-    usage: &UsageSettings,
 ) -> String {
     let (repo, environment, permission) = match &conversation.setup {
         Some(Setup::Session {
@@ -101,16 +100,12 @@ How to talk to the user:
 - A [follow-up …] block is a message the user sent while you work on their request; it waits in their queue until you sort it with route_follow_up, silently (the user sees where it goes). If it belongs to this work (a question about the same thing, a detail or a change for it), it joins it: it reaches you at once as the user's message, and your one final answer covers it too. If it is a request of its own, it waits and reaches you on its own once this work is done; don't act on it before.{concise}{preferences}"#,
         today = today(),
         quiet = QUIET,
-        concise = if usage.concise_replies {
-            CONCISE_ORCHESTRATOR
-        } else {
-            ""
-        },
+        concise = CONCISE_ORCHESTRATOR,
         preferences = preference_lines(preferences),
     )
 }
 
-/// The orchestrator's writing rules with the Concise replies setting (PLAN.md §7).
+/// The orchestrator's writing rules (PLAN.md §7).
 const CONCISE_ORCHESTRATOR: &str = "
 
 How to write (to the user, and in your own notes):
@@ -135,7 +130,7 @@ const WORKER_BUILD_RULES: &str = "
 - When you change a shared function, type or contract, find all its callers and update them.
 - Never simplify away validation, error handling or security checks.";
 
-/// How a worker writes its report with the Concise replies setting (PLAN.md §7).
+/// How a worker writes its report (PLAN.md §7).
 const WORKER_REPORT_STYLE: &str = "
 - How to write your report (the orchestrator reads it, not a person): summary gives the outcome first (done, partly done or blocked), then the findings that answer the task; changes has one line per file; verification says exactly what you ran or read and what you saw, quoting only the decisive line of a failure; open questions has risks, assumptions, what you skipped and why, and decisions you need. Plain, short, normal English in whole sentences, active voice and plain words (no arrows or symbol-speak); say each fact once; no greetings, filler, recap of the task or story of how you got there. Keep paths, names, commands, numbers and error text exact. Never drop a negation, a condition or a failed check to save words; report bad news plainly; if something is unknown, say so. Code, comments, docs and files in your outputs folder follow the project's normal style, not this one.";
 
@@ -154,13 +149,7 @@ fn preference_lines(preferences: &[String]) -> String {
 }
 
 /// A worker's role and task.
-pub(crate) fn worker(
-    task: &Task,
-    repo_note: &str,
-    instructions: &str,
-    extra: &str,
-    usage: &UsageSettings,
-) -> String {
+pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &str) -> String {
     let kind = match task.kind {
         TaskKind::Scout => {
             "scout: look around the repository and answer the question. Change nothing."
@@ -187,15 +176,13 @@ pub(crate) fn worker(
         "\n- Don't change files in the repository. Your scratch folder is yours for notes."
     };
     let mut practices = String::new();
-    if usage.code_pointers && task.kind != TaskKind::Research {
+    if task.kind != TaskKind::Research {
         practices.push_str(WORKER_CODE_TOOLS);
     }
-    if usage.build_rules && matches!(task.kind, TaskKind::Implement | TaskKind::Merge) {
+    if matches!(task.kind, TaskKind::Implement | TaskKind::Merge) {
         practices.push_str(WORKER_BUILD_RULES);
     }
-    if usage.concise_replies {
-        practices.push_str(WORKER_REPORT_STYLE);
-    }
+    practices.push_str(WORKER_REPORT_STYLE);
     format!(
         r#"You are a Brigadier worker. Today is {today}. Your models' knowledge may be older than today: check current docs before relying on any third-party API, version or CLI.
 

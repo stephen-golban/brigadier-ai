@@ -7,7 +7,6 @@ import type { OverrideRule } from "./OverrideRule";
 import type { PermissionLevel } from "./PermissionLevel";
 import type { ProviderKind } from "./ProviderKind";
 import type { Ranking } from "./Ranking";
-import type { UsageSettings } from "./UsageSettings";
 
 /**
  * User settings persisted by the core.
@@ -65,10 +64,6 @@ routingOverrides: Array<OverrideRule>,
  * overrides): where one is Manual, routing tries its models top-down instead of scoring.
  */
 routingRankings: Array<Ranking>, 
-/**
- * Ways to use less Claude and Codex usage (PLAN.md §7).
- */
-usage: UsageSettings, 
 /**
  * Agents switched off on the Providers page: their models are hidden from every picker
  * and get no work, not even in the background. Conversations already running go on.

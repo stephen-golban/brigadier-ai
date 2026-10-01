@@ -49,10 +49,9 @@ const EMBEDDER_IDLE: Duration = Duration::from_secs(10 * 60);
 const QUERY_SAMPLES: usize = 1_000;
 /// Nodes embedded per maintenance round, once the model is loaded.
 const EMBED_BATCH: u32 = 256;
-/// The answer budget of one `query_brain` call, in tokens.
-const QUERY_TOKENS: u32 = 1_500;
-/// `query_brain`'s budget with [`BrainCaps`] (the `brain_router` saver).
-const CAPPED_QUERY_TOKENS: u32 = 1_000;
+/// The answer budget of one `query_brain` call, in tokens (each kind of result is capped too,
+/// with the rest by page).
+const QUERY_TOKENS: u32 = 1_000;
 /// Definitions and references `query_brain` shows per name it finds in the code index.
 const CODE_LOOKUP: u32 = 10;
 /// Research nodes go stale after this (PLAN.md §6 Phase 6: a TTL of about 7 days).
@@ -706,13 +705,10 @@ impl SessionManager {
             });
         }
         let query = text.clone();
-        let usage = self.core.settings().usage;
-        let code_pointers = usage.code_pointers;
-        let caps = usage.brain_router.then(BrainCaps::default);
         // Names only code has also go to the code index (once, on the first page); the Brain
         // still answers the whole question.
         let names = match brigadier_brain::route(&text) {
-            Route::Code { names } if usage.brain_router && page.unwrap_or(1) <= 1 => names,
+            Route::Code { names } if page.unwrap_or(1) <= 1 => names,
             _ => Vec::new(),
         };
         let index = project.as_ref().and_then(|project| project.index.clone());
@@ -735,14 +731,10 @@ impl SessionManager {
                             text: query.clone(),
                             kinds: Vec::new(),
                             limit: None,
-                            max_tokens: Some(if caps.is_some() {
-                                CAPPED_QUERY_TOKENS
-                            } else {
-                                QUERY_TOKENS
-                            }),
-                            files: code_pointers,
+                            max_tokens: Some(QUERY_TOKENS),
+                            files: true,
                             history,
-                            caps,
+                            caps: Some(BrainCaps::default()),
                             page,
                         })
                         .map_err(brain_error)?,

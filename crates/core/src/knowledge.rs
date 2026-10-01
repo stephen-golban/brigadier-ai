@@ -197,14 +197,10 @@ pub fn cold_rebirth_min_tokens(provider: ProviderKind, window: Option<i64>) -> i
     COLD_REBIRTH_MIN_TOKENS.min(rebirth_thresholds(provider, window).prepare_tokens)
 }
 
-/// A worker context under this is never handed over: its handoff would cost about as much as
-/// it saves.
-const WORKER_HANDOFF_MIN_TOKENS: i64 = 60_000;
-
-/// The worker context at which a worker is handed over to a fresh session (PLAN.md §7), from
-/// the setting. A debug build takes `BRIGADIER_WORKER_HANDOFF_TOKENS`, so a hand-off can be
-/// tried on a small task.
-pub fn worker_handoff_tokens(setting: u32) -> i64 {
+/// The worker context at which a worker is handed over to a fresh session (PLAN.md §7). A
+/// debug build takes `BRIGADIER_WORKER_HANDOFF_TOKENS`, so a hand-off can be tried on a small
+/// task.
+pub fn worker_handoff_tokens() -> i64 {
     if cfg!(debug_assertions)
         && let Some(tokens) = std::env::var("BRIGADIER_WORKER_HANDOFF_TOKENS")
             .ok()
@@ -213,7 +209,7 @@ pub fn worker_handoff_tokens(setting: u32) -> i64 {
     {
         return tokens;
     }
-    i64::from(setting).max(WORKER_HANDOFF_MIN_TOKENS)
+    160_000
 }
 
 /// Hand-overs one attempt of a task may make: past this, its session keeps growing (the CLI

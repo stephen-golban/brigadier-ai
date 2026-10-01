@@ -274,7 +274,6 @@ impl SessionManager {
                 &conversation,
                 project.as_ref(),
                 &preferences,
-                &self.core.settings().usage,
             )),
             mcp_servers: Vec::new(),
             tools: ToolSet::None,
@@ -796,7 +795,6 @@ impl SessionManager {
                 .unwrap_or_default(),
         };
         let brain = project.brain.clone();
-        let capped = self.core.settings().usage.brain_router;
         let digest = blocking(move || {
             let structure = brain
                 .nodes(&NodeFilter {
@@ -823,7 +821,7 @@ impl SessionManager {
                         max_tokens: Some(1_200),
                         files: false,
                         history: false,
-                        caps: capped.then(BrainCaps::default),
+                        caps: Some(BrainCaps::default()),
                         page: None,
                     })
                     .ok()

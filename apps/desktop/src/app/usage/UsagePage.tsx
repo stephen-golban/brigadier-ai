@@ -12,7 +12,6 @@ import { useState } from "react";
 import { useAction } from "@/app/conversation/useAction";
 import { SettingsButton, SettingsPage } from "@/app/settings/parts";
 import { PROVIDER_LABELS } from "@/app/inspector/providers/shared";
-import { SaversSection } from "@/app/usage/SaversSection";
 import { WindowChart } from "@/app/usage/WindowChart";
 import type { ModelGroup } from "@/components/assistant-ui/elements/model-selector";
 import { ProviderGlyph } from "@/components/glyphs/provider-glyphs";
@@ -52,7 +51,7 @@ import { loadUsage, useUsage, useUsageRefresh } from "@/state/usage";
 /**
  * The Usage page: each agent's usage windows, a row each (how much is used, when it resets,
  * where it's heading; opening one shows its history and Brigadier's own use of it), what
- * routing did about them lately, then the usage savers' switches.
+ * routing did about them lately.
  */
 export function UsagePage() {
   useUsageRefresh();
@@ -120,8 +119,6 @@ export function UsagePage() {
             <ActivitySection activity={view.activity} groups={groups} now={now} />
           </>
         )}
-
-        <SaversSection />
       </div>
     </SettingsPage>
   );

@@ -528,8 +528,6 @@ pub struct Settings {
     /// The user's manual rankings per kind of work (global and per project, with area
     /// overrides): where one is Manual, routing tries its models top-down instead of scoring.
     pub routing_rankings: Vec<Ranking>,
-    /// Ways to use less Claude and Codex usage (PLAN.md §7).
-    pub usage: UsageSettings,
     /// Agents switched off on the Providers page: their models are hidden from every picker
     /// and get no work, not even in the background. Conversations already running go on.
     pub disabled_providers: Vec<ProviderKind>,
@@ -556,50 +554,6 @@ pub struct ModelRef {
     pub id: String,
 }
 
-/// Usage savers (PLAN.md §7). One is on by default once completed tasks show it saves usage at
-/// equal quality. A field missing from saved settings (as in settings from before it existed)
-/// takes its default.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", default)]
-pub struct UsageSettings {
-    /// A Claude orchestrator whose prompt cache has expired starts over from a briefing
-    /// instead of resuming, when a checkpoint written while the cache was warm covers
-    /// everything since.
-    pub rebirth_when_cache_expired: bool,
-    /// Claude workers start without the built-in tools they never use.
-    pub lean_worker_tools: bool,
-    /// The orchestrator writes plain, short English, and workers' reports are short.
-    pub concise_replies: bool,
-    /// Workers are told about Brigadier's code search tools, and Brain answers name each
-    /// hit's files.
-    pub code_pointers: bool,
-    /// Implement and merge workers follow a few rules for writing less code.
-    pub build_rules: bool,
-    /// A worker whose context passes `worker_handoff_tokens` continues in a fresh session of
-    /// the same model, from its own handoff note and its full transcript on disk.
-    pub worker_handoff: bool,
-    /// The worker context, in tokens, at which the hand-off happens.
-    pub worker_handoff_tokens: u32,
-    /// `query_brain` also looks up the code index for names in a question (identifiers,
-    /// paths, quoted names), and each kind of Brain result is capped, with the rest by page.
-    pub brain_router: bool,
-}
-
-impl Default for UsageSettings {
-    fn default() -> Self {
-        Self {
-            rebirth_when_cache_expired: true,
-            lean_worker_tools: true,
-            concise_replies: false,
-            code_pointers: true,
-            build_rules: false,
-            worker_handoff: false,
-            worker_handoff_tokens: 160_000,
-            brain_router: false,
-        }
-    }
-}
-
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -616,7 +570,6 @@ impl Default for Settings {
             keep_awake_lid_closed: false,
             routing_overrides: Vec::new(),
             routing_rankings: Vec::new(),
-            usage: UsageSettings::default(),
             disabled_providers: Vec::new(),
             hidden_models: Vec::new(),
             known_models: Vec::new(),
@@ -1416,23 +1369,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn saved_settings_without_usage_savers_take_their_defaults() {
-        let settings: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(settings.usage, UsageSettings::default());
-        assert!(settings.usage.rebirth_when_cache_expired);
-        assert!(settings.usage.lean_worker_tools);
-        assert!(settings.usage.code_pointers);
-        assert!(!settings.usage.concise_replies);
-        assert!(!settings.usage.build_rules);
-        assert!(!settings.usage.worker_handoff);
-        assert!(!settings.usage.brain_router);
-
-        let settings: Settings =
-            serde_json::from_str(r#"{"usage":{"buildRules":true,"leanWorkerTools":false}}"#)
-                .unwrap();
-        assert!(settings.usage.build_rules);
-        assert!(!settings.usage.lean_worker_tools);
-        assert!(settings.usage.rebirth_when_cache_expired);
-        assert_eq!(settings.usage.worker_handoff_tokens, 160_000);
+    fn saved_settings_with_the_old_usage_switches_still_load() {
+        // Settings from before these behaviours were built in carry a `usage` object; it is
+        // ignored, and nothing else changes.
+        let settings: Settings = serde_json::from_str(
+            r#"{"usage":{"conciseReplies":false,"workerHandoff":false,"workerHandoffTokens":90000,"brainRouter":false},"hibernateAfterMinutes":12}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.hibernate_after_minutes, 12);
+        assert!(
+            !serde_json::to_string(&settings)
+                .unwrap()
+                .contains(r#""usage""#)
+        );
     }
 }

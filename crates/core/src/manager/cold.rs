@@ -95,9 +95,6 @@ impl SessionManager {
     /// Starts a checkpoint for every orchestrator that has idled long enough with a context
     /// large enough to be worth a rebirth, unless a current one exists.
     async fn checkpoint_idle(&self) {
-        if !self.core.settings().usage.rebirth_when_cache_expired {
-            return;
-        }
         let convs: Vec<_> = self.convs_lock().values().cloned().collect();
         let now = now_ms();
         for conv in convs {
@@ -156,9 +153,6 @@ impl SessionManager {
     /// orchestrator would resume the session of its last request, the context is worth it,
     /// and a checkpoint with a note covers everything since.
     pub(super) async fn cold_rebirth_plan(&self, conv: &Arc<ConvLive>) -> Option<BriefingPlan> {
-        if !self.core.settings().usage.rebirth_when_cache_expired {
-            return None;
-        }
         let mark = self.cache_mark_of(conv).await?;
         let lifetime = cache_lifetime(mark.provider)?;
         let now = now_ms();

@@ -1422,12 +1422,7 @@ impl SessionManager {
                     .as_ref()
                     .and_then(|id| self.core.project(id).ok());
                 let preferences = self.memory_lines(super::brain_jobs::MEMORY_BYTES).await;
-                let prompt = prompts::orchestrator(
-                    &conversation,
-                    project.as_ref(),
-                    &preferences,
-                    &self.core.settings().usage,
-                );
+                let prompt = prompts::orchestrator(&conversation, project.as_ref(), &preferences);
                 let grant = self.grants.issue(
                     &owner,
                     Role::Orchestrator {

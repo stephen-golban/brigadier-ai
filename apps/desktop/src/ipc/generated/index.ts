@@ -263,7 +263,6 @@ export type { UninstallItem } from "./UninstallItem";
 export type { UninstallPlan } from "./UninstallPlan";
 export type { UninstallReport } from "./UninstallReport";
 export type { UninstallStep } from "./UninstallStep";
-export type { UsageSettings } from "./UsageSettings";
 export type { UsageView } from "./UsageView";
 export type { UserRequest } from "./UserRequest";
 export type { WindowHistory } from "./WindowHistory";
