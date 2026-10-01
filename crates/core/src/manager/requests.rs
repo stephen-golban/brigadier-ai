@@ -197,6 +197,7 @@ impl SessionManager {
                 })
                 .collect();
             running.sort_by_key(|task| task.number);
+            let undecided = self.undecided(&board, request).await;
             last.push_str("\n\n");
             if running.is_empty() {
                 last.push_str("[nothing else is running for this request]");
@@ -224,8 +225,30 @@ impl SessionManager {
                     prompts::QUIET
                 ));
             }
+            if !undecided.is_empty() {
+                last.push('\n');
+                last.push_str(&prompts::undecided_note(&undecided));
+            }
         }
         notes
+    }
+
+    /// The request's write tasks whose report waits for the orchestrator's decision: reported
+    /// with a change that could land. Until it accepts, sends back or stops them they stay
+    /// open.
+    pub(super) async fn undecided(&self, board: &Board, request: &str) -> Vec<Task> {
+        let mut undecided = Vec::new();
+        for task in board.tasks.values().filter(|task| {
+            task.request_id.as_deref() == Some(request)
+                && task.state == TaskState::Reported
+                && task.kind.writes()
+        }) {
+            if !self.changed_nothing(task).await {
+                undecided.push(task.clone());
+            }
+        }
+        undecided.sort_by_key(|task| task.number);
+        undecided
     }
 }
 

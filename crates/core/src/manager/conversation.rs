@@ -167,6 +167,9 @@ struct ConvState {
     /// Requests in which the orchestrator sent a worker back and the user has seen nothing
     /// since: such a request must not end with nothing said.
     sent_back: HashMap<String, Unanswered>,
+    /// Reported write tasks the orchestrator was reminded to decide on (see
+    /// [`SessionManager::remind_undecided`]): once each.
+    reminded: HashSet<TaskId>,
     /// The next CLI session starts fresh and must be given the transcript so far.
     reseed: bool,
     /// The running turn failed on a usage limit (which window, and its reset, when the CLI
@@ -2464,7 +2467,51 @@ impl SessionManager {
         }
         self.set_run(&conv.id, RunState::Idle, None).await;
         self.settle_requests(&conv.id).await;
+        if status == TurnStatus::Completed
+            && let Some(request) = &served
+        {
+            self.remind_undecided(conv, request).await;
+        }
         self.kick(conv);
+    }
+
+    /// A request over while reported changes still wait for the orchestrator's decision: it
+    /// is asked once per task to accept, send back or stop them, so none stays open for good.
+    async fn remind_undecided(&self, conv: &Arc<ConvLive>, request: &str) {
+        let Ok(board) = self.core.board(&conv.id).await else {
+            return;
+        };
+        if board
+            .requests
+            .get(request)
+            .is_none_or(|of| of.state != RequestState::Done)
+        {
+            return;
+        }
+        let undecided = self.undecided(&board, request).await;
+        let mut state = conv.state.lock().await;
+        let new: Vec<TaskId> = undecided
+            .into_iter()
+            .map(|task| task.id)
+            .filter(|id| !state.reminded.contains(id))
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        state.reminded.extend(new);
+        state.inbox.push((
+            Envelope {
+                kind: InjectionKind::Reminder,
+                label: "undecided reports".into(),
+                task_id: None,
+                // The turn's notes list them (see `request_notes`).
+                text: format!(
+                    "[Your answer is out, but reported work still waits for your decision (listed below). Decide now; then reply {} unless what you told the user changes.]",
+                    prompts::QUIET
+                ),
+            },
+            Some(request.to_owned()),
+        ));
     }
 
     /// After an orchestrator's turn: past the prepare threshold its handoff note is started;

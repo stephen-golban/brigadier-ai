@@ -281,6 +281,19 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
     text
 }
 
+/// The reported write tasks still waiting for the orchestrator's decision (see
+/// `SessionManager::undecided`).
+pub(crate) fn undecided_note(tasks: &[Task]) -> String {
+    let list: Vec<String> = tasks
+        .iter()
+        .map(|task| format!("task-{} \"{}\"", task.number, task.title))
+        .collect();
+    format!(
+        "[waiting for your decision: {}. Accept each with accept_task, send it back with message_worker, or stop it with stop_worker if its work should not land; until then it stays open.]",
+        list.join(", ")
+    )
+}
+
 /// What a worker wrote after its report (see [`report_envelope`]): in full when it fits the
 /// report's size, else its first part and the artifact that holds it all.
 pub(crate) fn late_findings_envelope(task: &Task, artifact: &ArtifactRef, text: &str) -> String {
