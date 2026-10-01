@@ -153,6 +153,7 @@ impl SessionManager {
         else {
             return (None, None);
         };
+        let history_complete = page.len() < EVENTS_PAGE as usize;
         let events: Vec<ProviderEvent> = page
             .iter()
             .filter_map(
@@ -162,7 +163,7 @@ impl SessionManager {
                 },
             )
             .collect();
-        session_sizes(&events)
+        session_sizes(&events, history_complete)
     }
 
     /// Hand-overs the task's current attempt made, from its recorded events.
@@ -557,8 +558,10 @@ fn is_handover(event: &ProviderEvent) -> bool {
 
 /// The last context size of the latest CLI session in `events` (newest first), and its first:
 /// the session may have been resumed, which starts it again under the same id. Without any
-/// session start in `events` (a long session), only the last size is known.
-fn session_sizes(events: &[ProviderEvent]) -> (Option<i64>, Option<i64>) {
+/// session start in `events` (a long session), only the last size is known. A start under the
+/// same id may be a resume: its first size is trusted only when an older session or the start
+/// of the stream proves that the original start is present.
+fn session_sizes(events: &[ProviderEvent], history_complete: bool) -> (Option<i64>, Option<i64>) {
     let (mut last, mut first) = (None, None);
     // The sizes since the previous session start seen (newest first, so the later ones).
     let (mut run_last, mut run_first) = (None, None);
@@ -583,7 +586,7 @@ fn session_sizes(events: &[ProviderEvent]) -> (Option<i64>, Option<i64>) {
     if session.is_none() {
         return (run_last, None);
     }
-    (last, first)
+    (last, if history_complete { first } else { None })
 }
 
 #[cfg(test)]
@@ -621,21 +624,54 @@ mod tests {
             size(61_000),
         ];
         events.reverse();
-        assert_eq!(session_sizes(&events), (Some(61_000), Some(28_000)));
+        assert_eq!(session_sizes(&events, true), (Some(61_000), Some(28_000)));
     }
 
     #[test]
     fn a_session_without_sizes_has_none() {
         let mut events = vec![started("a"), size(10_000), started("b")];
         events.reverse();
-        assert_eq!(session_sizes(&events), (None, None));
+        assert_eq!(session_sizes(&events, true), (None, None));
     }
 
     #[test]
     fn a_long_session_has_only_its_last_size() {
         let mut events = vec![size(90_000), size(95_000)];
         events.reverse();
-        assert_eq!(session_sizes(&events), (Some(95_000), None));
+        assert_eq!(session_sizes(&events, true), (Some(95_000), None));
+    }
+
+    #[test]
+    fn an_incomplete_history_cannot_use_a_resume_as_the_baseline() {
+        // The original start at 10k fell outside the replay page. The start still visible
+        // is a resume of the same session at 110k, not its original baseline.
+        let mut events = vec![size(115_000), size(110_000), started("a")];
+        events.resize_with(EVENTS_PAGE as usize, || {
+            notice("An older event in the same session".into())
+        });
+        let (last, first) = session_sizes(&events, false);
+        assert_eq!((last, first), (Some(115_000), None));
+        // Use the plain 100k threshold, not the resume's 110k + 50k guard.
+        assert!(knowledge::worker_handoff_due(
+            last.unwrap(),
+            first,
+            100_000,
+            0
+        ));
+    }
+
+    #[test]
+    fn an_older_session_proves_the_baseline_even_in_an_incomplete_history() {
+        let mut events = vec![
+            started("a"),
+            size(170_000),
+            started("b"),
+            size(28_000),
+            started("b"),
+            size(61_000),
+        ];
+        events.reverse();
+        assert_eq!(session_sizes(&events, false), (Some(61_000), Some(28_000)));
     }
 
     fn notice(message: String) -> ProviderEvent {
