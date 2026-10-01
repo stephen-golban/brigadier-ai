@@ -16,7 +16,8 @@
 //!
 //! A worker's sub-agents run only on the models its task may use ([`SessionSpec::allowed_models`]):
 //! `availableModels` in its settings lists their exact ids, and when Claude's prefix matching
-//! would let another model in too, the worker runs without its Agent tool ([`available_models`]).
+//! would let another model in too, or the project's own settings could widen the list, the
+//! worker runs without its Agent tool ([`sub_agents`]).
 
 mod files;
 pub mod parse;
@@ -195,7 +196,9 @@ impl Claude {
         .to_vec();
         args.push("--mcp-config".into());
         args.push(mcp_config(&spec.mcp_servers).to_string());
-        if let Some(denied) = denied_tools(spec) {
+        // Decided once, for both the tools and the settings.
+        let sub_agents = sub_agents(spec, cwd);
+        if let Some(denied) = denied_tools(spec, &sub_agents) {
             args.push("--disallowedTools".into());
             args.push(denied);
         }
@@ -211,7 +214,7 @@ impl Claude {
             }
         }
         args.push("--settings".into());
-        args.push(settings(spec, cwd).to_string());
+        args.push(settings(spec, cwd, &sub_agents).to_string());
         args.push("--permission-mode".into());
         args.push(
             match spec.access {
@@ -303,22 +306,107 @@ fn mcp_config(servers: &[McpServer]) -> Value {
     json!({ "mcpServers": servers })
 }
 
+/// The models a session's sub-agents may run on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SubAgents {
+    /// Any model: no limit was asked for.
+    Any,
+    /// Only these (`availableModels`).
+    Only(Vec<String>),
+    /// None: Claude can't hold them to the allowed set, so they are not started at all.
+    Off,
+}
+
+/// How `spec`'s sub-agents are held to [`SessionSpec::allowed_models`], for a session in
+/// `cwd`.
+fn sub_agents(spec: &SessionSpec, cwd: &Path) -> SubAgents {
+    let Some(allowed) = &spec.allowed_models else {
+        return SubAgents::Any;
+    };
+    if project_widens_models(cwd) {
+        return SubAgents::Off;
+    }
+    available_models(allowed).map_or(SubAgents::Off, SubAgents::Only)
+}
+
 /// The built-in tools a session runs without (`--disallowedTools`): a worker's lean start
 /// leaves some out, and sub-agents that could run on a model the task may not use are not
 /// started at all.
-fn denied_tools(spec: &SessionSpec) -> Option<String> {
+fn denied_tools(spec: &SessionSpec, sub_agents: &SubAgents) -> Option<String> {
     let mut denied: Vec<&str> = Vec::new();
     if spec.tools == ToolSet::Lean {
         denied.push(LEAN_DENIED_TOOLS);
     }
-    if spec
-        .allowed_models
-        .as_ref()
-        .is_some_and(|allowed| available_models(allowed).is_none())
-    {
+    if *sub_agents == SubAgents::Off {
         denied.push(SUB_AGENT_TOOLS);
     }
     (!denied.is_empty()).then(|| denied.join(","))
+}
+
+/// Whether the project's own Claude settings could widen the models a session in `cwd` may
+/// use: Claude joins the `availableModels` lists of all the settings it loads, and a session
+/// loads the project's (`--setting-sources project`). So a `.claude/settings.json` or
+/// `.claude/settings.local.json` (in `cwd`, up to its repository's root, and in the main
+/// checkout of a worktree) that lists models, maps one to another (`modelOverrides`) or names
+/// one in `env` (`ANTHROPIC_DEFAULT_OPUS_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`) could let a
+/// sub-agent run on a model the task may not use. A file that can't be read counts too.
+fn project_widens_models(cwd: &Path) -> bool {
+    project_dirs(cwd).iter().any(|dir| {
+        ["settings.json", "settings.local.json"].iter().any(|name| {
+            match std::fs::read_to_string(dir.join(".claude").join(name)) {
+                Ok(text) => serde_json::from_str::<Value>(&text)
+                    .map_or(true, |settings| widens_models(&settings)),
+                Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+            }
+        })
+    })
+}
+
+/// Whether a settings file's content names models.
+fn widens_models(settings: &Value) -> bool {
+    settings.get("availableModels").is_some()
+        || settings.get("modelOverrides").is_some()
+        || settings
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| {
+                env.keys()
+                    .any(|key| key.to_ascii_uppercase().contains("MODEL"))
+            })
+}
+
+/// The folders whose `.claude` settings a session in `cwd` may load: `cwd` and the folders
+/// above it up to its repository's root, and the main checkout of a linked worktree. Only
+/// `cwd` outside a repository.
+fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for dir in cwd.ancestors() {
+        dirs.push(dir.to_owned());
+        let git = dir.join(".git");
+        if git.is_dir() {
+            return dirs;
+        }
+        if git.is_file() {
+            dirs.extend(main_checkout(&git));
+            return dirs;
+        }
+    }
+    vec![cwd.to_owned()]
+}
+
+/// The main checkout of a linked worktree, from its `.git` file (`gitdir: <main>/.git/
+/// worktrees/<name>`, whose `commondir` names the main `.git`).
+fn main_checkout(git_file: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(git_file).ok()?;
+    let gitdir = git_file
+        .parent()?
+        .join(text.trim().strip_prefix("gitdir:")?.trim());
+    let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+    let common = gitdir.join(common.trim()).canonicalize().ok()?;
+    if common.file_name()? != ".git" {
+        return None;
+    }
+    common.parent().map(Path::to_owned)
 }
 
 /// A permission rule path for an absolute path (`//abs/path/**`).
@@ -327,7 +415,7 @@ fn rule_path(path: &Path) -> String {
 }
 
 /// Brigadier's settings layer for a session, passed with `--settings` (above project settings).
-fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
+fn settings(spec: &SessionSpec, cwd: &Path, sub_agents: &SubAgents) -> Value {
     let mut ask = policy::claude_ask_rules();
     // Leaving the sandbox always goes through the permission prompt, even if a project rule
     // would allow the command.
@@ -432,52 +520,42 @@ fn settings(spec: &SessionSpec, cwd: &Path) -> Value {
     });
     // The models the session and its sub-agents may run on (a sub-agent asking for another
     // steps down to an allowed one).
-    if let Some(ids) = spec.allowed_models.as_ref().and_then(available_models) {
+    if let SubAgents::Only(ids) = sub_agents {
         settings["availableModels"] = json!(ids);
     }
     settings
 }
 
 /// The `availableModels` list that holds a session to `allowed`, or `None` when Claude can't
-/// hold it exactly. Claude matches an entry as a prefix of a model id up to a `-`
-/// (`claude-opus-5` also allows `claude-opus-5-5`; `availableModelsMatch`, which turns that
-/// off, is honored only from managed settings). So when a known model outside the set extends
-/// an allowed id (beyond a dated or `-fast` spelling of the same model), the list would let it
-/// in; and an empty list allows the default model. The session then runs without sub-agents.
+/// hold it exactly. Claude compares ids without their context suffix, and matches an entry as
+/// a prefix of a model id up to a `-` (`claude-opus-5` also allows `claude-opus-5-5`, and
+/// `claude-opus-5-5` allows `claude-opus-5-5-fast` and `claude-opus-5-5[1m]`;
+/// `availableModelsMatch`, which turns that off, is honored only from managed settings). So
+/// when a model the session may not use has an allowed id, or extends one, the list would let
+/// it in; and an empty list allows the default model. The session then runs without
+/// sub-agents.
 fn available_models(allowed: &AllowedModels) -> Option<Vec<String>> {
     let ids: Vec<String> = allowed.ids.iter().map(|id| model_key(id)).collect();
     if ids.is_empty() {
         return None;
     }
-    let outside = allowed
-        .known
+    let admitted = allowed
+        .outside
         .iter()
         .map(|id| model_key(id))
-        .filter(|known| !ids.contains(known));
-    for known in outside {
-        let admitted = ids.iter().any(|id| {
-            known
-                .strip_prefix(id.as_str())
-                .and_then(|rest| rest.strip_prefix('-'))
-                .is_some_and(|rest| !same_model(rest))
+        .any(|outside| {
+            ids.iter().any(|id| {
+                outside
+                    .strip_prefix(id.as_str())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+            })
         });
-        if admitted {
-            return None;
-        }
-    }
-    Some(ids)
+    (!admitted).then_some(ids)
 }
 
 /// A model id as `availableModels` compares it: lower case, without its context suffix.
 fn model_key(id: &str) -> String {
     bare(id.trim()).to_ascii_lowercase()
-}
-
-/// Whether what follows a model id (after its `-`) only spells the same model: a release date
-/// (`20251001`) or the fast tier (`fast`).
-fn same_model(rest: &str) -> bool {
-    rest.split('-')
-        .all(|part| part == "fast" || (part.len() == 8 && part.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// Sandbox paths as Seatbelt matches them: resolved through symlinks (`/tmp` and
@@ -1260,25 +1338,49 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
 
-    fn allowed(ids: &[&str], known: &[&str]) -> AllowedModels {
+    /// A fresh folder, removed after the test.
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new() -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("brigadier-claude-{}", uuid::Uuid::new_v4()))
+                .join("project");
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            if let Some(parent) = self.0.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+    }
+
+    fn allowed(ids: &[&str], outside: &[&str]) -> AllowedModels {
         AllowedModels {
             ids: ids.iter().map(|id| (*id).to_owned()).collect(),
-            known: known.iter().map(|id| (*id).to_owned()).collect(),
+            outside: outside.iter().map(|id| (*id).to_owned()).collect(),
         }
     }
 
     #[test]
     fn exact_ids_are_listed_when_no_other_model_extends_them() {
-        let known = [
-            "claude-opus-5-5",
-            "claude-sonnet-5",
+        let outside = [
             "claude-haiku-4-5-20251001",
             "claude-fable-5-1",
+            "claude-opus-4-8",
         ];
         assert_eq!(
             available_models(&allowed(
                 &["claude-opus-5-5[1m]", "claude-sonnet-5"],
-                &known
+                &outside
             )),
             Some(vec![
                 "claude-opus-5-5".to_owned(),
@@ -1290,24 +1392,47 @@ mod tests {
     #[test]
     fn a_prefix_of_a_model_left_out_turns_sub_agents_off() {
         // `claude-opus-5` would also allow `claude-opus-5-5`.
-        let known = ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5"];
         assert_eq!(
-            available_models(&allowed(&["claude-opus-5", "claude-sonnet-5"], &known)),
+            available_models(&allowed(
+                &["claude-opus-5", "claude-sonnet-5"],
+                &["claude-opus-5-5"]
+            )),
             None
-        );
-        // Allowed too, it is no collision.
-        assert!(
-            available_models(&allowed(&["claude-opus-5", "claude-opus-5-5"], &known)).is_some()
         );
         // A model that only shares the start of a word is not admitted.
         assert!(available_models(&allowed(&["claude-opus-5"], &["claude-opus-55"])).is_some());
     }
 
     #[test]
-    fn dated_and_fast_spellings_are_the_same_model() {
-        let known = ["claude-haiku-4-5-20251001", "claude-opus-5-5-fast"];
-        assert!(
-            available_models(&allowed(&["claude-haiku-4-5", "claude-opus-5-5"], &known)).is_some()
+    fn a_context_variant_left_out_turns_sub_agents_off() {
+        // `claude-opus-5-5` allows `claude-opus-5-5[1m]` too.
+        assert_eq!(
+            available_models(&allowed(&["claude-opus-5-5"], &["claude-opus-5-5[1m]"])),
+            None
+        );
+        assert_eq!(
+            available_models(&allowed(&["claude-opus-5-5[1m]"], &["claude-opus-5-5"])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dated_or_fast_model_left_out_turns_sub_agents_off() {
+        assert_eq!(
+            available_models(&allowed(&["claude-opus-5-5"], &["claude-opus-5-5-fast"])),
+            None
+        );
+        assert_eq!(
+            available_models(&allowed(
+                &["claude-haiku-4-5"],
+                &["claude-haiku-4-5-20251001"]
+            )),
+            None
+        );
+        // One routing allows is not outside: the list holds.
+        assert_eq!(
+            available_models(&allowed(&["claude-haiku-4-5"], &["claude-opus-5-5-fast"])),
+            Some(vec!["claude-haiku-4-5".to_owned()])
         );
     }
 
@@ -1316,10 +1441,9 @@ mod tests {
         assert_eq!(available_models(&allowed(&[], &["claude-opus-5-5"])), None);
     }
 
-    #[test]
-    fn the_agent_tool_is_denied_only_when_the_list_cannot_hold() {
-        let spec = |ids: &[&str]| SessionSpec {
-            cwd: PathBuf::from("/tmp"),
+    fn spec(cwd: &Path, ids: &[&str]) -> SessionSpec {
+        SessionSpec {
+            cwd: cwd.to_owned(),
             model: Some("opus".into()),
             effort: None,
             fast: false,
@@ -1334,29 +1458,106 @@ mod tests {
             redactor: None,
             owned_cwd: false,
             auto_compact: true,
-            allowed_models: Some(allowed(ids, &["claude-opus-5", "claude-opus-5-5"])),
-        };
-        let held = spec(&["claude-opus-5-5"]);
+            allowed_models: Some(allowed(ids, &["claude-opus-5-5", "claude-fable-5-1"])),
+        }
+    }
+
+    #[test]
+    fn the_agent_tool_is_denied_only_when_the_list_cannot_hold() {
+        let cwd = Temp::new();
+        let cwd = cwd.path();
+        let held = spec(cwd, &["claude-sonnet-5"]);
+        let models = sub_agents(&held, cwd);
+        assert_eq!(models, SubAgents::Only(vec!["claude-sonnet-5".to_owned()]));
         assert_eq!(
-            settings(&held, Path::new("/tmp"))["availableModels"],
-            json!(["claude-opus-5-5"])
+            settings(&held, cwd, &models)["availableModels"],
+            json!(["claude-sonnet-5"])
         );
-        assert_eq!(denied_tools(&held).as_deref(), Some(LEAN_DENIED_TOOLS));
-        let leaky = spec(&["claude-opus-5"]);
+        assert_eq!(
+            denied_tools(&held, &models).as_deref(),
+            Some(LEAN_DENIED_TOOLS)
+        );
+        let leaky = spec(cwd, &["claude-opus-5"]);
+        let models = sub_agents(&leaky, cwd);
+        assert_eq!(models, SubAgents::Off);
         assert!(
-            settings(&leaky, Path::new("/tmp"))
+            settings(&leaky, cwd, &models)
                 .get("availableModels")
                 .is_none()
         );
         assert_eq!(
-            denied_tools(&leaky),
+            denied_tools(&leaky, &models),
             Some(format!("{LEAN_DENIED_TOOLS},{SUB_AGENT_TOOLS}"))
         );
         let unlimited = SessionSpec {
             allowed_models: None,
             tools: ToolSet::Default,
-            ..spec(&[])
+            ..spec(cwd, &[])
         };
-        assert_eq!(denied_tools(&unlimited), None);
+        assert_eq!(sub_agents(&unlimited, cwd), SubAgents::Any);
+        assert_eq!(denied_tools(&unlimited, &SubAgents::Any), None);
+    }
+
+    #[test]
+    fn project_settings_that_name_models_turn_sub_agents_off() {
+        let write = |dir: &Path, name: &str, text: &str| {
+            std::fs::create_dir_all(dir.join(".claude")).expect("folder");
+            std::fs::write(dir.join(".claude").join(name), text).expect("settings");
+        };
+        let held = |cwd: &Path| sub_agents(&spec(cwd, &["claude-sonnet-5"]), cwd);
+        // Settings that leave models alone change nothing.
+        let repo = Temp::new();
+        let repo = repo.path();
+        std::fs::create_dir(repo.join(".git")).expect("git");
+        write(
+            repo,
+            "settings.json",
+            r#"{"permissions": {"allow": ["Bash"]}}"#,
+        );
+        assert!(matches!(held(repo), SubAgents::Only(_)));
+        // A list of their own (Claude joins the lists), a model in `env`, a mapping, or a
+        // file that can't be read as JSON.
+        for (name, text) in [
+            (
+                "settings.json",
+                r#"{"availableModels": ["claude-fable-5-1"]}"#,
+            ),
+            (
+                "settings.local.json",
+                r#"{"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-fable-5-1"}}"#,
+            ),
+            ("settings.local.json", r#"{"modelOverrides": {}}"#),
+            ("settings.json", "{ // not JSON"),
+        ] {
+            let repo = Temp::new();
+            let repo = repo.path();
+            std::fs::create_dir(repo.join(".git")).expect("git");
+            write(repo, name, text);
+            assert_eq!(held(repo), SubAgents::Off, "{name}: {text}");
+            // From a folder inside the repository too.
+            let inner = repo.join("crates");
+            std::fs::create_dir(&inner).expect("folder");
+            assert_eq!(held(&inner), SubAgents::Off, "{name}: {text}");
+        }
+        // A linked worktree: the main checkout's settings count.
+        let main = Temp::new();
+        let main = main.path();
+        let gitdir = main.join(".git").join("worktrees").join("w1");
+        std::fs::create_dir_all(&gitdir).expect("gitdir");
+        std::fs::write(gitdir.join("commondir"), "../..\n").expect("commondir");
+        let worktree = Temp::new();
+        let worktree = worktree.path();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("git file");
+        assert!(matches!(held(worktree), SubAgents::Only(_)));
+        write(
+            main,
+            "settings.local.json",
+            r#"{"availableModels": ["claude-fable-5-1"]}"#,
+        );
+        assert_eq!(held(worktree), SubAgents::Off);
     }
 }

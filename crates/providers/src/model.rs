@@ -811,9 +811,10 @@ pub struct AllowedModels {
     /// Exact model ids (`claude-opus-5-5`, never an alias such as `opus`), the session's own
     /// model among them. Empty when its own model has no exact id: then no sub-agents at all.
     pub ids: Vec<String>,
-    /// Every model id of the CLI Brigadier knows of, allowed or not (its list, Fable and hidden
-    /// models included, and the registry's): what an allowed id must not also admit.
-    pub known: Vec<String>,
+    /// Every exact id of the CLI's models Brigadier knows of that the session may not use (its
+    /// list, Fable and hidden models included, and the registry's), a context variant kept
+    /// apart (`claude-opus-5-5[1m]`): what an allowed id must not also admit.
+    pub outside: Vec<String>,
 }
 
 /// Something a session created that must be removed when it is disposed of. Recorded in the

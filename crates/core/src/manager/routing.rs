@@ -306,8 +306,8 @@ impl SessionManager {
     /// ([`brigadier_router::eligible`]), asked as a hand-off asks but with no trial (a trial
     /// measures the task's own model) and its pin only a preference (other vendors are left
     /// out anyway), and always the model it runs on. In the CLI's exact ids, with every id of
-    /// the CLI Brigadier knows (Fable and models made unavailable included), for Claude's
-    /// prefix check.
+    /// the CLI Brigadier knows that the task may not use (Fable and models made unavailable
+    /// included), for Claude's prefix check.
     pub(crate) async fn allowed_models(&self, task: &Task) -> AllowedModels {
         let provider = task.route.choice.provider;
         let own = task.route.choice.model.clone();
@@ -315,15 +315,15 @@ impl SessionManager {
         let ask = question.ask(task, false, Trial::Never);
         self.ask_router(&ask, |query, inputs| {
             let eligible = brigadier_router::eligible(query);
+            let own = own.as_deref().map(|id| {
+                (
+                    id,
+                    own_model(provider, id, &inputs.models, &inputs.registry),
+                )
+            });
             AllowedModels {
-                ids: allowed_ids(
-                    provider,
-                    own.as_deref(),
-                    &eligible,
-                    &inputs.models,
-                    &inputs.registry,
-                ),
-                known: known_ids(provider, &inputs.models, &inputs.registry),
+                ids: allowed_ids(provider, own, &eligible, &inputs.registry),
+                outside: outside_ids(provider, own, &eligible, &inputs.models, &inputs.registry),
             }
         })
         .await
@@ -387,21 +387,36 @@ fn exact_named(provider: ProviderKind, id: &str) -> Option<String> {
     }
 }
 
-/// The exact ids of `provider`'s models in `eligible`, the session's own model (`own`) first.
-/// Empty when its own model has no exact id: a list without it would stop the session itself.
+/// The session's own model in `provider`'s list: the one it is named by, else the one whose
+/// alias, resolved id or curated entry names it.
+fn own_model<'m>(
+    provider: ProviderKind,
+    own: &str,
+    models: &'m [MergedModel],
+    registry: &Registry,
+) -> Option<&'m MergedModel> {
+    let listed = models.iter().filter(|model| model.provider == provider);
+    listed
+        .clone()
+        .find(|model| model.id.eq_ignore_ascii_case(own))
+        .or_else(|| {
+            listed
+                .clone()
+                .find(|model| brigadier_router::is_model(model, registry, own))
+        })
+}
+
+/// The exact ids of `provider`'s models in `eligible`, the session's own model first (`own`:
+/// its id, and its entry in the list). Empty when its own model has no exact id: a list
+/// without it would stop the session itself.
 fn allowed_ids(
     provider: ProviderKind,
-    own: Option<&str>,
+    own: Option<(&str, Option<&MergedModel>)>,
     eligible: &[MergedModel],
-    models: &[MergedModel],
     registry: &Registry,
 ) -> Vec<String> {
-    let Some(own) = own.and_then(|id| {
-        models
-            .iter()
-            .find(|model| {
-                model.provider == provider && brigadier_router::is_model(model, registry, id)
-            })
+    let Some(own) = own.and_then(|(id, model)| {
+        model
             .and_then(|model| exact_id(model, registry))
             .or_else(|| exact_named(provider, id))
     }) else {
@@ -420,29 +435,67 @@ fn allowed_ids(
     ids
 }
 
-/// Every id of `provider`'s models Brigadier knows: its CLI's list (Fable and models made
-/// unavailable included) and the registry's.
-fn known_ids(provider: ProviderKind, models: &[MergedModel], registry: &Registry) -> Vec<String> {
-    let mut known: Vec<String> = Vec::new();
-    let listed = models
+/// Every exact id of `provider`'s models Brigadier knows that the task may not use: the ids
+/// of each model in its CLI's list (Fable and models made unavailable included) that is
+/// neither eligible nor the session's own, a context variant kept apart (`opus[1m]` left out
+/// while `opus` may run is `claude-opus-5-5[1m]`), and the registry's ids that name none of
+/// the models it may use (a dated or `-fast` id of an eligible model is that model, and an
+/// entry's id names a model listed only with its context suffix).
+fn outside_ids(
+    provider: ProviderKind,
+    own: Option<(&str, Option<&MergedModel>)>,
+    eligible: &[MergedModel],
+    models: &[MergedModel],
+    registry: &Registry,
+) -> Vec<String> {
+    let own = own.and_then(|(_, model)| model);
+    let same = |a: &MergedModel, b: &MergedModel| a.provider == b.provider && a.id == b.id;
+    let usable: Vec<&MergedModel> = models
         .iter()
         .filter(|model| model.provider == provider)
-        .flat_map(|model| {
-            [Some(model.id.as_str()), model.resolved.as_deref()]
-                .into_iter()
-                .flatten()
-        });
-    let registered = registry
-        .entries(provider)
-        .flat_map(|entry| entry.matches.ids.iter().map(String::as_str));
-    for id in listed.chain(registered) {
-        if let Some(id) = exact_named(provider, id)
-            && !known.contains(&id)
-        {
-            known.push(id);
+        .filter(|model| {
+            own.is_some_and(|own| same(own, model))
+                || eligible.iter().any(|eligible| same(eligible, model))
+        })
+        .collect();
+    let mut outside: Vec<String> = Vec::new();
+    let mut add = |id: &str| {
+        let id = id.trim();
+        if exact_named(provider, id).is_some() && !outside.iter().any(|known| known == id) {
+            outside.push(id.to_owned());
+        }
+    };
+    for model in models
+        .iter()
+        .filter(|model| model.provider == provider)
+        .filter(|model| !usable.iter().any(|usable| same(usable, model)))
+    {
+        add(&model.id);
+        if let Some(resolved) = &model.resolved {
+            add(resolved);
         }
     }
-    known
+    for id in registry
+        .entries(provider)
+        .flat_map(|entry| entry.matches.ids.iter())
+        .filter(|id| {
+            !usable.iter().any(|model| {
+                brigadier_router::is_model(model, registry, id)
+                    || [Some(&model.id), model.resolved.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|name| {
+                            name.split('[')
+                                .next()
+                                .unwrap_or(name)
+                                .eq_ignore_ascii_case(id)
+                        })
+            })
+        })
+    {
+        add(id);
+    }
+    outside
 }
 
 /// A task's route from the router's choice.
@@ -528,17 +581,45 @@ mod tests {
         )
     }
 
+    /// The allowed ids for a session on `own`, with `eligible` what routing allows.
+    fn allowed(
+        provider: ProviderKind,
+        own: Option<&str>,
+        eligible: &[MergedModel],
+        models: &[MergedModel],
+        registry: &Registry,
+    ) -> Vec<String> {
+        let own = own.map(|id| (id, own_model(provider, id, models, registry)));
+        allowed_ids(provider, own, eligible, registry)
+    }
+
+    /// The ids left out for a Claude session on `own`, with `eligible` what routing allows.
+    fn outside(
+        own: &str,
+        eligible: &[MergedModel],
+        models: &[MergedModel],
+        registry: &Registry,
+    ) -> Vec<String> {
+        let own = Some((own, own_model(ProviderKind::Claude, own, models, registry)));
+        outside_ids(ProviderKind::Claude, own, eligible, models, registry)
+    }
+
+    /// `models` without the ones named.
+    fn without(models: &[MergedModel], ids: &[&str]) -> Vec<MergedModel> {
+        models
+            .iter()
+            .filter(|model| !model.excluded && !ids.contains(&model.id.as_str()))
+            .cloned()
+            .collect()
+    }
+
     #[test]
     fn allowed_ids_are_exact_and_start_with_the_sessions_own_model() {
         let registry = Registry::bundled();
         let models = catalog(&registry);
         // What the router finds eligible never holds Fable.
-        let eligible: Vec<MergedModel> = models
-            .iter()
-            .filter(|model| !model.excluded)
-            .cloned()
-            .collect();
-        let ids = allowed_ids(
+        let eligible = without(&models, &[]);
+        let ids = allowed(
             ProviderKind::Claude,
             Some("opus[1m]"),
             &eligible,
@@ -554,7 +635,7 @@ mod tests {
                 "claude-opus-5",
             ]
         );
-        let codex = allowed_ids(
+        let codex = allowed(
             ProviderKind::Codex,
             Some("gpt-6-luna"),
             &eligible,
@@ -563,7 +644,7 @@ mod tests {
         );
         assert_eq!(codex, ["gpt-6-luna", "gpt-6.1-sol"]);
         // Its own model always, even when routing would not pick it now.
-        let alone = allowed_ids(
+        let alone = allowed(
             ProviderKind::Claude,
             Some("sonnet"),
             &[],
@@ -572,9 +653,9 @@ mod tests {
         );
         assert_eq!(alone, ["claude-sonnet-5"]);
         // The CLI's default model has no exact id: none at all.
-        assert!(allowed_ids(ProviderKind::Claude, None, &models, &models, &registry).is_empty());
+        assert!(allowed(ProviderKind::Claude, None, &models, &models, &registry).is_empty());
         assert!(
-            allowed_ids(
+            allowed(
                 ProviderKind::Claude,
                 Some("best"),
                 &models,
@@ -586,18 +667,120 @@ mod tests {
     }
 
     #[test]
-    fn known_ids_cover_the_list_fable_and_the_registry_without_aliases() {
+    fn outside_ids_are_fable_and_the_models_nothing_allowed_is() {
         let registry = Registry::bundled();
-        let known = known_ids(ProviderKind::Claude, &catalog(&registry), &registry);
+        let models = catalog(&registry);
+        let left_out = outside("opus[1m]", &without(&models, &[]), &models, &registry);
         for id in [
-            "claude-opus-5-5",
+            "claude-fable-5-1[1m]",
             "claude-fable-5-1",
-            "claude-opus-5",
-            "claude-sonnet-5-5",
+            "claude-opus-4-8",
         ] {
-            assert!(known.iter().any(|known| known == id), "{id}");
+            assert!(left_out.iter().any(|known| known == id), "{id}");
         }
-        assert!(known.iter().all(|id| id.starts_with("claude-")));
-        assert!(known.iter().all(|id| !id.contains('[')));
+        // Aliases are never listed, nor any id of a model it may use.
+        for id in [
+            "opus",
+            "claude-opus-5-5",
+            "claude-opus-5-5[1m]",
+            "claude-opus-5",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
+        ] {
+            assert!(!left_out.iter().any(|known| known == id), "{id}");
+        }
+        // Left out by a rule, its ids are outside; the session's own model never is.
+        let left_out = outside(
+            "opus[1m]",
+            &without(&models, &["opus[1m]", "haiku"]),
+            &models,
+            &registry,
+        );
+        assert!(left_out.iter().any(|id| id == "claude-haiku-4-5-20251001"));
+        assert!(left_out.iter().any(|id| id == "claude-haiku-4-5"));
+        assert!(!left_out.iter().any(|id| id.starts_with("claude-opus-5-5")));
+    }
+
+    #[test]
+    fn a_context_variant_left_out_is_outside_beside_the_one_allowed() {
+        let registry = Registry::bundled();
+        let models = brigadier_router::merge(
+            &registry,
+            &[(
+                ProviderKind::Claude,
+                [
+                    info("opus", Some("claude-opus-5-5")),
+                    info("opus[1m]", Some("claude-opus-5-5[1m]")),
+                ]
+                .as_slice(),
+            )],
+            &[],
+            &[],
+        );
+        // `opus[1m]` hidden: its id stays apart from the allowed `claude-opus-5-5`.
+        let eligible = without(&models, &["opus[1m]"]);
+        assert_eq!(
+            allowed(
+                ProviderKind::Claude,
+                Some("opus"),
+                &eligible,
+                &models,
+                &registry
+            ),
+            ["claude-opus-5-5"]
+        );
+        assert_eq!(
+            outside("opus", &eligible, &models, &registry)
+                .iter()
+                .filter(|id| id.starts_with("claude-opus-5-5"))
+                .collect::<Vec<_>>(),
+            ["claude-opus-5-5[1m]"]
+        );
+        // Both allowed: nothing of Opus 5.5 is outside.
+        assert!(
+            !outside("opus", &without(&models, &[]), &models, &registry)
+                .iter()
+                .any(|id| id.starts_with("claude-opus-5-5"))
+        );
+    }
+
+    #[test]
+    fn a_dated_or_fast_id_is_outside_unless_routing_allows_its_model() {
+        let registry = Registry::bundled();
+        let models = brigadier_router::merge(
+            &registry,
+            &[(
+                ProviderKind::Claude,
+                [
+                    info("claude-opus-5-5", None),
+                    info("claude-opus-5-5-fast", None),
+                    info("claude-haiku-4-5", None),
+                    info("claude-sonnet-5", None),
+                    info("claude-sonnet-5-20260101", None),
+                ]
+                .as_slice(),
+            )],
+            &[],
+            &[],
+        );
+        // A Never rule on the fast model and on the dated Sonnet: both outside.
+        let eligible = without(
+            &models,
+            &["claude-opus-5-5-fast", "claude-sonnet-5-20260101"],
+        );
+        let left_out = outside("claude-opus-5-5", &eligible, &models, &registry);
+        assert!(left_out.iter().any(|id| id == "claude-opus-5-5-fast"));
+        assert!(left_out.iter().any(|id| id == "claude-sonnet-5-20260101"));
+        // Haiku's dated id is Haiku itself, which routing allows: not outside.
+        assert!(!left_out.iter().any(|id| id.starts_with("claude-haiku-4-5")));
+        // Eligible, the fast model is not outside either.
+        let all = outside(
+            "claude-opus-5-5",
+            &without(&models, &[]),
+            &models,
+            &registry,
+        );
+        assert!(!all.iter().any(|id| id.starts_with("claude-opus-5-5")));
+        assert!(!all.iter().any(|id| id == "claude-sonnet-5-20260101"));
     }
 }

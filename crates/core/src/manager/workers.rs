@@ -31,8 +31,8 @@ use std::time::Duration;
 use brigadier_git::{Oid, PatchOutcome, WorktreeSpec};
 use brigadier_providers::policy::{self, ApprovalMode, Route as PolicyRoute};
 use brigadier_providers::{
-    Access, ApprovalDecision, ApprovalRequest, Artifact, Decider, InputFile, Origin, ProviderEvent,
-    ProviderKind, SessionSpec, Started, ToolSet, TurnInput, TurnStatus,
+    Access, AllowedModels, ApprovalDecision, ApprovalRequest, Artifact, Decider, InputFile, Origin,
+    ProviderEvent, ProviderKind, SessionSpec, Started, ToolSet, TurnInput, TurnStatus,
 };
 use brigadier_router::QualityTier;
 use tokio::sync::{mpsc, oneshot};
@@ -140,6 +140,8 @@ struct TaskLiveState {
     stalls: u32,
     /// Since when the task is live without a running CLI, as the watchdog saw it.
     orphaned_at_ms: Option<i64>,
+    /// The models the CLI session's sub-agents were held to when it started (PLAN.md §7).
+    allowed_models: Option<AllowedModels>,
 }
 
 impl TaskLiveState {
@@ -147,6 +149,17 @@ impl TaskLiveState {
     fn begin_turn(&mut self) {
         self.busy = true;
         self.last_event_ms = now_ms();
+    }
+
+    /// Whether the CLI session started with looser model limits than `now` (a rule took a
+    /// model away since): it must start again before its next turn, or its sub-agents keep
+    /// the old ones. Limits that only widened leave the session as it is.
+    fn models_changed(&self, now: &AllowedModels) -> bool {
+        let Some(then) = &self.allowed_models else {
+            return true;
+        };
+        then.ids.iter().any(|id| !now.ids.contains(id))
+            || now.outside.iter().any(|id| !then.outside.contains(id))
     }
 }
 
@@ -1003,7 +1016,7 @@ impl SessionManager {
         secret_values.push(worker_grant.clone());
         secret_values.push(gate_grant.clone());
         let redactor = secrets::redactor(secret_values);
-        let allowed_models = Some(self.allowed_models(task).await);
+        let allowed_models = self.allowed_models(task).await;
         let spec = SessionSpec {
             cwd: cwd.clone(),
             model: task.route.choice.model.clone(),
@@ -1026,7 +1039,7 @@ impl SessionManager {
             redactor: redactor.clone(),
             owned_cwd: true,
             auto_compact: true,
-            allowed_models,
+            allowed_models: Some(allowed_models.clone()),
         };
         let Started { session, events } =
             match self.runtime.start_hosted(&owner, provider, spec).await {
@@ -1064,6 +1077,7 @@ impl SessionManager {
             state.running_items.clear();
             state.stall_nudged_at_ms = None;
             state.orphaned_at_ms = None;
+            state.allowed_models = Some(allowed_models);
             if !resumed {
                 state.context = None;
                 state.session_start = None;
@@ -2406,6 +2420,17 @@ impl SessionManager {
         // A program the user installed (or removed) meanwhile, e.g. after the worker said it
         // was missing.
         self.sync_gate().await?;
+        // What the task may use now, for a worker between turns (routing reads the board, so
+        // not under the worker's lock).
+        let idle = {
+            let state = live.state.lock().await;
+            !state.busy && state.cli.is_some()
+        };
+        let models = if idle && !task.state.is_final() {
+            Some(self.allowed_models(task).await)
+        } else {
+            None
+        };
         let mut state = live.state.lock().await;
         if let Some(waiter) = state.question.take() {
             let _ = waiter.send(text);
@@ -2432,10 +2457,17 @@ impl SessionManager {
                 }
                 None => false,
             };
-        if hand_over {
+        let restart = !state.busy
+            && state.cli.is_some()
+            && models
+                .as_ref()
+                .is_some_and(|models| state.models_changed(models));
+        if hand_over || restart {
             // Between turns, with a context past the hand-off size: the message starts a fresh
-            // session rather than one more large turn (PLAN.md §7). Taken under the lock, so
-            // no session started meanwhile is closed.
+            // session rather than one more large turn (PLAN.md §7). After the models the task
+            // may use changed (a rule added since its session started), it resumes the session
+            // in a new one that follows them. Taken under the lock, so no session started
+            // meanwhile is closed.
             let cli = TaskLive::detach_cli(&mut state);
             drop(state);
             TaskLive::end_cli(cli).await;
@@ -2684,6 +2716,23 @@ impl SessionManager {
                 return self.start_fresh(&live, &task, first).await;
             }
         }
+        let continued = TurnInput {
+            text: "Continue the task.".into(),
+            files: Vec::new(),
+        };
+        // The models the task may use changed while it was paused (a rule added meanwhile):
+        // its CLI session starts again, resumed, so its sub-agents follow them.
+        let models = self.allowed_models(&task).await;
+        {
+            let _handing = live.reroute.lock().await;
+            let changed = {
+                let state = live.state.lock().await;
+                state.cli.is_some() && state.models_changed(&models)
+            };
+            if changed {
+                return self.restart_worker(&live, &task, continued).await;
+            }
+        }
         let cli = {
             let mut state = live.state.lock().await;
             state.begin_turn();
@@ -2694,12 +2743,38 @@ impl SessionManager {
         self.set_task_state(&conversation_id, &task_id, TaskState::Running)
             .await?;
         cli.session
-            .send(TurnInput {
-                text: "Continue the task.".into(),
-                files: Vec::new(),
-            })
+            .send(continued)
             .await
             .map_err(|err| Error::Provider(err.to_string()))
+    }
+
+    /// Ends the worker's CLI session and resumes it in a new one (which takes the task's
+    /// limits as they are now), with `first`.
+    async fn restart_worker(
+        &self,
+        live: &Arc<TaskLive>,
+        task: &Task,
+        first: TurnInput,
+    ) -> Result<()> {
+        let native_id = self.last_worker_native_id(&task.id).await.ok_or_else(|| {
+            Error::Invalid(format!(
+                "task-{} cannot be resumed; delegate a new task",
+                task.number
+            ))
+        })?;
+        let subject = match &task.subject {
+            Some(id) => self.task_by_id(&task.conversation_id, id).await.ok(),
+            None => None,
+        };
+        live.close_cli().await;
+        self.launch_worker(
+            live,
+            task,
+            subject.as_ref(),
+            Origin::Resume { native_id },
+            first,
+        )
+        .await
     }
 
     pub(crate) async fn conversation_of_task(&self, task_id: &TaskId) -> Result<ConversationId> {
@@ -3170,6 +3245,31 @@ mod tests {
         let (_, cutoff) = live.detach_stalled(|_| true, false).await.expect("taken");
         assert!(matches!(cutoff, Some(AttemptEnd::Error { .. })));
         assert_eq!(live.watch(0).await.stalls, 1);
+    }
+
+    #[test]
+    fn a_session_started_with_other_model_limits_starts_again() {
+        let opus = AllowedModels {
+            ids: vec!["claude-opus-5-5".into(), "claude-haiku-4-5-20251001".into()],
+            outside: vec!["claude-fable-5-1".into()],
+        };
+        let mut state = TaskLiveState::default();
+        // No session recorded: nothing shows it holds them.
+        assert!(state.models_changed(&opus));
+        state.allowed_models = Some(opus.clone());
+        assert!(!state.models_changed(&opus));
+        // A Never-Haiku rule added while it was paused.
+        let no_haiku = AllowedModels {
+            ids: vec!["claude-opus-5-5".into()],
+            outside: vec![
+                "claude-fable-5-1".into(),
+                "claude-haiku-4-5-20251001".into(),
+            ],
+        };
+        assert!(state.models_changed(&no_haiku));
+        // Haiku allowed again: the limits only widened, so the session stays.
+        state.allowed_models = Some(no_haiku);
+        assert!(!state.models_changed(&opus));
     }
 
     #[tokio::test]
