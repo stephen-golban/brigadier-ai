@@ -52,9 +52,9 @@ use crate::routing::TokenMeter;
 use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
-    ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, InjectionKind,
-    QuestionKind, QuotaWait, RepoAccess, Report, Route, Task, TaskId, TaskKind, TaskState,
-    TaskWorkspace, WorkerAccess,
+    ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, GateLink,
+    InjectionKind, QuestionKind, QuotaWait, RepoAccess, Report, Route, Task, TaskId, TaskKind,
+    TaskState, TaskWorkspace, WorkerAccess,
 };
 use crate::{Error, Result, now_ms};
 
@@ -488,6 +488,8 @@ impl SessionManager {
         spec: String,
         pin: Option<brigadier_router::Pin>,
         avoid: Option<brigadier_router::Author>,
+        distinct_from: Vec<brigadier_router::Author>,
+        gate_link: Option<GateLink>,
         subject: Option<Task>,
         attachments: Vec<AttachmentRef>,
         areas: Option<Vec<brigadier_router::Area>>,
@@ -511,9 +513,15 @@ impl SessionManager {
                 pin: pin.clone(),
                 hold_pin: false,
                 avoid,
+                distinct_from,
                 exclude: &[],
                 project_id: conversation.project_id.as_ref(),
-                trial: super::routing::Trial::Take,
+                // Checks of another task's work never go to a model on trial.
+                trial: if gate_link.is_some() {
+                    super::routing::Trial::Never
+                } else {
+                    super::routing::Trial::Take
+                },
             })
             .await;
         let now = now_ms();
@@ -601,6 +609,10 @@ impl SessionManager {
             report: None,
             candidate: None,
             review: None,
+            gate: None,
+            gate_link,
+            landing: None,
+            fix_rounds: 0,
             landed: None,
             error: None,
             kept: None,
@@ -787,7 +799,9 @@ impl SessionManager {
             None => String::new(),
         };
         let extra = match (&task.kind, subject) {
-            (TaskKind::Review, Some(subject)) => self.review_brief(subject).await,
+            (TaskKind::Review | TaskKind::Verify, Some(subject)) => {
+                self.review_brief(subject).await
+            }
             (TaskKind::Merge, Some(subject)) => self.merge_brief(subject, &workspace).await,
             _ => String::new(),
         };
@@ -1903,7 +1917,14 @@ impl SessionManager {
             artifacts.push(message);
         }
         let outputs = files.outputs;
-        let reviewing = task.kind == TaskKind::Review && self.review_in_landing(&task).await;
+        // A gate member's report goes to its gate, not to the orchestrator.
+        let reviewing = task.gate_link.is_some();
+        // A fix Brigadier asked for is checked again on its own, unless the worker says only
+        // the user can unblock it: then the orchestrator reads the report.
+        let relanding = task.kind.writes()
+            && task.landing.is_some()
+            && input.needs_user.is_empty()
+            && !unchanged;
         let report = Report {
             summary: self.redact_for(&live, &input.summary).await,
             changes: input.changes.clone(),
@@ -1923,6 +1944,11 @@ impl SessionManager {
             task.outputs.clone_from(&outputs);
             task.state = TaskState::Reported;
             task.blocked_reason = None;
+            if task.kind.writes() && !relanding {
+                // The orchestrator decides about this report: Brigadier no longer lands it on
+                // its own.
+                task.landing = None;
+            }
         };
         let settled = live.settle.lock().await;
         // Stopped while its report was being stored: the stop stands.
@@ -1932,7 +1958,7 @@ impl SessionManager {
         }
         // The report is in the orchestrator's inbox before the task counts as reported, so
         // its request never looks over in between.
-        let queued = if reviewing {
+        let queued = if reviewing || relanding {
             None
         } else {
             let mut shown = task.clone();
@@ -1962,7 +1988,23 @@ impl SessionManager {
             self.learn_report(&task, &report, Some(live.learning.clone()));
         }
         if reviewing {
-            self.review_reported(&task).await;
+            self.gate_member_reported(&task).await;
+        } else if relanding {
+            // Its fix is built, checked and landed like the first time, with the same commit
+            // message.
+            let message = task.landing.clone().unwrap_or_default();
+            let manager = self.arc();
+            let conversation_id = conversation_id.clone();
+            self.spawn(async move {
+                if let Err(err) = manager
+                    .begin_landing(&conversation_id, task.clone(), message, false)
+                    .await
+                {
+                    manager
+                        .landing_problem(&task, &err.to_string(), TaskState::Reported)
+                        .await;
+                }
+            });
         } else if let Some(conv) = queued {
             self.settle_requests(conversation_id).await;
             self.kick(&conv);
@@ -2271,10 +2313,8 @@ impl SessionManager {
         if task.state.is_final() {
             return Ok(());
         }
-        // A reviewer that gave its verdict already has its outcome under way (a landing).
-        let reviewing = task.kind == TaskKind::Review
-            && task.report.is_none()
-            && self.review_in_landing(&task).await;
+        // A gate member that gave its result already has its outcome under way.
+        let reviewing = task.gate_link.is_some() && task.report.is_none();
         if let Some(live) = &live {
             live.close_cli().await;
         }
@@ -2284,9 +2324,11 @@ impl SessionManager {
         // reviewing, as one that failed does: otherwise it would wait for a verdict that never
         // comes.
         if reviewing {
-            self.review_failed(&task, "It was stopped before it gave a verdict.")
+            self.gate_member_failed(&task, "It was stopped before it gave a result.")
                 .await;
         }
+        // Checks of a change that will not land are moot.
+        self.close_gate(&task).await;
         Ok(())
     }
 
@@ -2466,7 +2508,7 @@ impl SessionManager {
     /// A worker failed: the task ends and the orchestrator hears why. A landing's or plan's
     /// reviewer failing releases what it was reviewing.
     pub(crate) async fn worker_failed(&self, task: &Task, reason: &str) {
-        let reviewing = task.kind == TaskKind::Review && self.review_in_landing(task).await;
+        let reviewing = task.gate_link.is_some();
         let mut kept = None;
         if let Some(live) = self.existing_task_live(&task.id) {
             live.close_cli().await;
@@ -2492,7 +2534,7 @@ impl SessionManager {
                 .await;
         }
         if reviewing {
-            self.review_failed(task, reason).await;
+            self.gate_member_failed(task, reason).await;
             return;
         }
         self.deliver(

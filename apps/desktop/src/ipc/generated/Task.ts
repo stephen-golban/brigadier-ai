@@ -7,6 +7,8 @@ import type { Candidate } from "./Candidate";
 import type { Capability } from "./Capability";
 import type { CardId } from "./CardId";
 import type { ConversationId } from "./ConversationId";
+import type { Gate } from "./Gate";
+import type { GateLink } from "./GateLink";
 import type { KeptWork } from "./KeptWork";
 import type { Pin } from "./Pin";
 import type { QualityTier } from "./QualityTier";
@@ -69,6 +71,23 @@ subject: TaskId | null,
  * The plan this one reviews.
  */
 plan: CardId | null, attachments: Array<AttachmentRef>, workspace: TaskWorkspace | null, report: Report | null, candidate: Candidate | null, review: ReviewRecord | null, 
+/**
+ * A write task: the current gate round on its candidate (reviewers and a verifier).
+ */
+gate: Gate | null, 
+/**
+ * A reviewer or verifier: the gate round it belongs to.
+ */
+gateLink: GateLink | null, 
+/**
+ * A write task: the commit message it was accepted with, while Brigadier lands it on
+ * its own (it is re-gated after each fix round).
+ */
+landing: string | null, 
+/**
+ * A write task: times Brigadier sent it back with a gate's findings.
+ */
+fixRounds: number, 
 /**
  * The landed commit.
  */

@@ -252,8 +252,11 @@ pub enum ChecksResult {
     Passed,
     /// At least one check failed.
     Failed,
-    /// It could not run the checks.
+    /// The project has checks, but it could not run them.
     NotRun,
+    /// The project has no checks it could run; the evidence for each criterion comes from
+    /// reading the code and running what it could.
+    NoChecks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -348,6 +351,115 @@ pub struct ReviewRecord {
     pub cross_vendor: bool,
 }
 
+/// One round of independent checks of a change before it lands (reviewers and a verifier, on
+/// one candidate commit) or of a plan before it is approved (reviewers). A new candidate or
+/// a revised plan opens a new round; results of an older round are ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Gate {
+    /// From 1, counted per task or plan.
+    pub round: u32,
+    /// The candidate commit the round checks; none for a plan.
+    #[serde(default)]
+    pub commit: Option<String>,
+    pub members: Vec<GateMember>,
+    /// Set once every member has a result; the round is closed then.
+    #[serde(default)]
+    pub outcome: Option<GateOutcome>,
+    /// The user already approved the change it checks (a clean replay onto a target that
+    /// moved): it lands as soon as the round passes.
+    #[serde(default)]
+    pub relanding: bool,
+    /// A second verification after a verifier could not check the change.
+    #[serde(default)]
+    pub retry: bool,
+}
+
+/// A task checking a change or plan in a gate round.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GateMember {
+    pub task_id: TaskId,
+    pub role: GateRole,
+    #[serde(default)]
+    pub result: Option<GateResult>,
+}
+
+/// What a gate member does. The Phase 6 fusion panel adds an analyst that weighs the
+/// reviewers' findings (`SessionManager::panel_size` decides the panel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum GateRole {
+    /// Reviews the change or plan and gives a verdict.
+    Review,
+    /// Runs the checks and proves each "done when" criterion of the task.
+    Verify,
+}
+
+/// A gate member's result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GateResult {
+    Passed,
+    /// The change or plan needs fixing; the findings say what.
+    Failed {
+        findings: Vec<String>,
+    },
+    /// It could not check the change (checks that couldn't run, criteria left unchecked);
+    /// nothing lands unverified.
+    Unverified {
+        reason: String,
+    },
+    /// It gave no usable result: it failed or was stopped, or (a verifier) changed what it
+    /// checked.
+    NoResult {
+        reason: String,
+    },
+}
+
+/// How a gate round ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GateOutcome {
+    Passed,
+    Failed,
+    Unverified,
+    NoResult,
+    /// A newer candidate or plan replaced what it checked.
+    Superseded,
+}
+
+/// The gate round a checking task belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GateLink {
+    pub owner: GateOwner,
+    pub round: u32,
+    pub role: GateRole,
+}
+
+/// What a gate checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GateOwner {
+    /// A write task's candidate commit.
+    Task { task_id: TaskId },
+    /// A proposed plan.
+    Plan { plan_id: CardId },
+}
+
 /// A delegated unit of work and its worker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -393,6 +505,19 @@ pub struct Task {
     pub report: Option<Report>,
     pub candidate: Option<Candidate>,
     pub review: Option<ReviewRecord>,
+    /// A write task: the current gate round on its candidate (reviewers and a verifier).
+    #[serde(default)]
+    pub gate: Option<Gate>,
+    /// A reviewer or verifier: the gate round it belongs to.
+    #[serde(default)]
+    pub gate_link: Option<GateLink>,
+    /// A write task: the commit message it was accepted with, while Brigadier lands it on
+    /// its own (it is re-gated after each fix round).
+    #[serde(default)]
+    pub landing: Option<String>,
+    /// A write task: times Brigadier sent it back with a gate's findings.
+    #[serde(default)]
+    pub fix_rounds: u32,
     /// The landed commit.
     pub landed: Option<String>,
     /// Why it is blocked, paused or cannot land yet.

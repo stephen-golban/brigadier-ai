@@ -231,6 +231,7 @@ impl SessionManager {
                     pin: None,
                     hold_pin: false,
                     avoid: None,
+                    distinct_from: Vec::new(),
                     exclude: &[],
                     project_id: project.as_ref(),
                     trial: Trial::Peek,

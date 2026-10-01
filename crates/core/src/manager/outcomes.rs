@@ -161,7 +161,7 @@ impl SessionManager {
         checked.verification = verified.and_then(|(_, result)| match result {
             ChecksResult::Passed => Some(true),
             ChecksResult::Failed => Some(false),
-            ChecksResult::NotRun => None,
+            ChecksResult::NotRun | ChecksResult::NoChecks => None,
         });
         checked
     }

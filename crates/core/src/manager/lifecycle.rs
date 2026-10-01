@@ -107,6 +107,12 @@ impl SessionManager {
                                 t.state = TaskState::Reported;
                                 t.candidate = None;
                                 t.review = None;
+                                t.landing = None;
+                                if let Some(gate) = t.gate.as_mut()
+                                    && gate.outcome.is_none()
+                                {
+                                    gate.outcome = Some(crate::work::GateOutcome::Superseded);
+                                }
                             })
                             .await;
                         // The orchestrator was promised the landing's outcome as a message.

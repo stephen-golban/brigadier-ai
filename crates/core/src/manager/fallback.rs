@@ -245,17 +245,8 @@ impl SessionManager {
     /// provider or bucket unavailable by itself). A context window too small asks for a bigger
     /// one.
     async fn reroute(&self, task: &Task) -> std::result::Result<Route, brigadier_router::Waiting> {
-        let avoid = match &task.subject {
-            Some(id) if task.kind == crate::work::TaskKind::Review => self
-                .task_by_id(&task.conversation_id, id)
-                .await
-                .ok()
-                .map(|subject| brigadier_router::Author {
-                    provider: subject.route.choice.provider,
-                    model: subject.route.choice.model.clone(),
-                }),
-            _ => None,
-        };
+        // A gate member stays independent: never the author's model, nor another member's.
+        let (avoid, distinct_from) = self.gate_avoid(task).await;
         // Right after an error, the models that failed are left out. A task that waited since
         // tries them again: the cause may be gone, and the hand-off cap still ends a model that
         // keeps failing.
@@ -306,6 +297,7 @@ impl SessionManager {
                 // A pin binds once a model has worked on the task.
                 hold_pin: !task.attempts.is_empty(),
                 avoid,
+                distinct_from,
                 exclude: &exclude,
                 project_id: project.as_ref(),
                 // A task that never started keeps the trial slot it was created with.

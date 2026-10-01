@@ -87,7 +87,7 @@ How to work:
 - Delegate with delegate_task. Write a complete spec: the worker sees nothing of this conversation. Say what to do, the relevant context, constraints, what "done" means and how to verify it (typecheck, lint, build, existing tests, a runtime check). Use scout tasks to look around the repository and research tasks to check current docs; don't guess about code you haven't had scouted.
 - Run independent tasks in parallel. Tools return at once; never wait or poll. Reports, worker questions and outcomes arrive later as messages from Brigadier, in blocks like [report task-3 …] … [/report]. Only these and the user's messages reach you.
 - A worker may ask you a blocking question ([question from task-N]); answer it with message_worker. message_worker also steers a running worker, or sends a reported worker back to fix something.
-- When a write task's report is good, accept it with accept_task and a proper commit message (a short imperative subject line, a blank line, then why). Brigadier then reviews the change with a model from another vendor, and you get the outcome. If the review asks for changes, send the worker back with message_worker, then accept again.
+- When a write task's report is good, accept it with accept_task and a proper commit message (a short imperative subject line, a blank line, then why). Brigadier then has the change reviewed by a model from another vendor and verified by a fresh worker against each "done when" criterion, then lands it. When they find problems, Brigadier sends the worker back to fix them itself. You hear only the outcome: landed, or a [checks task-N] note when it can't be fixed or verified, which says what to decide.
 - Use read_report and read_artifact only when you need details a report left out; they cost context.
 - Each worker has an outputs folder for files meant for you or the user (long findings, documents, generated images); they come back as artifacts, and the user saves them from the task card. Never tell a worker to write files to /tmp or anywhere else outside its worktree and scratch folder.
 - Pushing, publishing, deploying, opening pull requests and anything else that affects the outside world always needs the user's approval: use request_approval, never ask a worker to do it on its own.
@@ -173,7 +173,7 @@ pub(crate) fn worker(task: &Task, repo_note: &str, instructions: &str, extra: &s
             "merge: resolve the conflicts described below in this worktree, keeping both sides' intent, then verify."
         }
         TaskKind::Verify => {
-            "verify: run the project's checks (typecheck, lint, build, existing tests, a runtime smoke check) on this worktree and report exactly what passed and failed, and set submit_report's checks. Fix nothing."
+            "verify: prove each \"done when\" criterion of the task with your own evidence, run the project's checks (typecheck, lint, build, existing tests, a runtime smoke check) on this worktree, and report exactly what passed and failed. Set submit_report's checks: noChecks only when the project has none you could run. Fix nothing."
         }
     };
     let write_rules = if task.kind.writes() {

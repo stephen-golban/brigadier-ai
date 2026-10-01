@@ -82,6 +82,9 @@ pub struct Query<'a> {
     pub hold_pin: bool,
     /// For reviews: the model that wrote the change.
     pub avoid: Option<Author>,
+    /// For a second reviewer or checker: the models already checking the change. Another
+    /// model takes it when one can, even of the author's vendor (never the author's model).
+    pub distinct_from: Vec<Author>,
     /// Providers or models that just failed on this task.
     pub exclude: &'a [Exclusion],
     /// The user's rules (global and per project); those for another project, category or area
@@ -350,6 +353,51 @@ pub fn preview(query: &Query) -> Preview {
                     name(author.provider)
                 ));
             }
+        }
+    }
+
+    // A second checker: another model than those already checking, when one can take it.
+    if !query.distinct_from.is_empty() {
+        let taken = |c: &Candidate| {
+            query.distinct_from.iter().any(|other| {
+                other.provider == c.model.provider
+                    && other
+                        .model
+                        .as_deref()
+                        .is_some_and(|model| is_model(&c.model, query.registry, model))
+            })
+        };
+        let is_author = |c: &Candidate| {
+            query.avoid.as_ref().is_some_and(|author| {
+                author.provider == c.model.provider
+                    && author
+                        .model
+                        .as_deref()
+                        .is_some_and(|model| is_model(&c.model, query.registry, model))
+            })
+        };
+        if !candidates.iter().any(|c| c.eligible() && !taken(c)) {
+            // Only the models already checking are left of the other vendor: a model of the
+            // author's vendor (not the author's own) is more independent than a repeat.
+            for candidate in &mut candidates {
+                if matches!(candidate.block, Some(Block::Author(_)))
+                    && !taken(candidate)
+                    && !is_author(candidate)
+                {
+                    candidate.block = None;
+                    cross_vendor = Some(false);
+                }
+            }
+        }
+        if candidates.iter().any(|c| c.eligible() && !taken(c)) {
+            for candidate in &mut candidates {
+                if candidate.eligible() && taken(candidate) {
+                    candidate.block =
+                        Some(Block::Author("it already checks this change".to_owned()));
+                }
+            }
+        } else {
+            notes.push("the same model checks it twice: no other model could take it".to_owned());
         }
     }
 

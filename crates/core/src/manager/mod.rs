@@ -28,6 +28,7 @@ pub mod fault;
 mod files;
 mod fork;
 mod gate;
+mod gates;
 mod git_actions;
 mod instructions;
 mod landing;
@@ -104,6 +105,9 @@ pub struct SessionManager {
     /// Held while a new-worktree session's own worktree is created, so parallel first tasks
     /// create it once.
     session_worktrees: tokio::sync::Mutex<()>,
+    /// Held while a gate round opens or records a result, so results can't race the round
+    /// that is still being set up.
+    gates: tokio::sync::Mutex<()>,
     waiters: Waiters,
     admitting: AtomicBool,
     background: TaskTracker,
@@ -157,6 +161,7 @@ impl SessionManager {
             convs: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
             session_worktrees: tokio::sync::Mutex::new(()),
+            gates: tokio::sync::Mutex::new(()),
             waiters: Waiters::default(),
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),

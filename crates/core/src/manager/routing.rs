@@ -28,6 +28,8 @@ pub(crate) struct Ask<'a> {
     /// The pin binds: a hand-off or a resume stays with the pinned vendor, or waits.
     pub hold_pin: bool,
     pub avoid: Option<Author>,
+    /// The models already checking the change (a second reviewer, a verifier).
+    pub distinct_from: Vec<Author>,
     pub exclude: &'a [Exclusion],
     pub project_id: Option<&'a ProjectId>,
     /// Whether it may go to a model on trial.
@@ -181,6 +183,7 @@ impl SessionManager {
             pin: ask.pin.clone(),
             hold_pin: ask.hold_pin,
             avoid: ask.avoid.clone(),
+            distinct_from: ask.distinct_from.clone(),
             exclude: ask.exclude,
             overrides: &settings.routing_overrides,
             rankings: &settings.routing_rankings,

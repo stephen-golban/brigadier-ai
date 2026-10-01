@@ -3,4 +3,4 @@
 /**
  * What a verify task found.
  */
-export type ChecksResult = "passed" | "failed" | "notRun";
+export type ChecksResult = "passed" | "failed" | "notRun" | "noChecks";

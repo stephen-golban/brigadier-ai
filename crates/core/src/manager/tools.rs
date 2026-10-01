@@ -118,6 +118,8 @@ impl SessionManager {
                         args.spec,
                         pin,
                         avoid,
+                        Vec::new(),
+                        None,
                         subject,
                         attachments,
                         areas,
@@ -168,8 +170,12 @@ impl SessionManager {
                     self.settle_requests(id).await;
                 }
                 let reply = self.message_worker(id, &task, args.text.clone()).await?;
-                self.update_task(id, &task.id, |task| task.messages.push(args.text))
-                    .await?;
+                // The orchestrator steers it now: Brigadier no longer lands it on its own.
+                self.update_task(id, &task.id, |task| {
+                    task.messages.push(args.text);
+                    task.landing = None;
+                })
+                .await?;
                 self.orchestrator_step(id, OrchestratorStepKind::Messaged { task_id: task.id })
                     .await;
                 Ok(reply)

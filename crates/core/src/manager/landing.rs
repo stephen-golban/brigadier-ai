@@ -32,27 +32,43 @@ use brigadier_providers::{ApprovalDecision, ProviderKind};
 
 use super::cards::CardAnswer;
 use super::conversation::Envelope;
+use super::outputs::outputs_dir;
 use super::workers::Workspace;
 use super::{SessionManager, blocking, git_error};
 use crate::model::{ConversationId, Environment, PermissionLevel, Setup};
 use crate::work::{
     ApprovalSubject, Candidate, DiffStat, ExcludedFile, FileStat, InjectionKind, Plan,
-    PlanApprover, PlanState, ReviewRecord, ReviewVerdict, Task, TaskKind, TaskState,
+    PlanApprover, PlanState, ReviewVerdict, Task, TaskKind, TaskState,
 };
 use crate::{Error, Result, now_ms};
 
-/// How often a landing chases a moving target before it gives up for now.
-const LAND_ATTEMPTS: usize = 3;
 /// Diffs up to this size are given to the reviewer inline.
 const INLINE_DIFF_BYTES: usize = 24_000;
+/// A worker's plan up to this size is given to the reviewer inline.
+const PLAN_INLINE_BYTES: usize = 8_000;
 
 impl SessionManager {
-    /// `accept_task`: starts the landing pipeline and returns at once.
+    /// `accept_task`: starts the landing pipeline and returns at once. The commit message is
+    /// kept: when the gate finds problems, Brigadier sends the worker back and lands its fix
+    /// with it, without the orchestrator.
     pub(crate) async fn accept_task(
         &self,
         conversation_id: &ConversationId,
         task: Task,
         message: String,
+    ) -> Result<String> {
+        self.begin_landing(conversation_id, task, message, true)
+            .await
+    }
+
+    /// Starts landing `task`; `fresh` when the orchestrator accepted it (its fix rounds start
+    /// over), not when Brigadier lands a fix on its own.
+    pub(crate) async fn begin_landing(
+        &self,
+        conversation_id: &ConversationId,
+        task: Task,
+        message: String,
+        fresh: bool,
     ) -> Result<String> {
         if !task.kind.writes() {
             return Err(Error::Invalid(format!(
@@ -74,12 +90,25 @@ impl SessionManager {
                 )));
             }
         }
-        let retry = task.state == TaskState::ReadyToLand;
+        // Only a candidate whose checks all passed lands as it is; one that couldn't be
+        // verified is built and checked again.
+        let retry = task.state == TaskState::ReadyToLand
+            && task
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.outcome == Some(crate::work::GateOutcome::Passed));
         let later = self.later_request_for(conversation_id, &task).await;
         let task = self
             .update_task(conversation_id, &task.id, |t| {
                 t.state = TaskState::Reviewing;
                 t.blocked_reason = None;
+                t.landing = Some(message.clone());
+                if fresh {
+                    t.fix_rounds = 0;
+                }
+                if !retry {
+                    t.candidate = None;
+                }
                 if later.is_some() {
                     t.request_id = later;
                 }
@@ -103,7 +132,7 @@ impl SessionManager {
             format!("Landing task-{number} again; the outcome arrives as a message.")
         } else {
             format!(
-                "Accepted task-{number}. Brigadier builds its commit and has it reviewed by another vendor's model; the outcome arrives as a message."
+                "Accepted task-{number}. Brigadier builds its commit, has it reviewed by another vendor's model and verified, sends the worker back with any findings, and lands it; the outcome arrives as a message."
             )
         })
     }
@@ -287,60 +316,18 @@ impl SessionManager {
                         }
                     })
                     .await?;
-                self.start_review(&task, unreported).await?;
+                match self
+                    .open_gate(&task, unreported, super::gates::Recheck::Full, None)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(super::gates::NotOpened::Error(err)) => return Err(err),
+                    Err(super::gates::NotOpened::Unchanged) => {
+                        self.escalate_unchanged(&task).await;
+                    }
+                }
             }
         }
-        Ok(())
-    }
-
-    /// B6: the mandatory review of a candidate, by the other vendor.
-    async fn start_review(&self, task: &Task, unreported: Vec<String>) -> Result<()> {
-        let candidate = task
-            .candidate
-            .clone()
-            .ok_or_else(|| Error::Invalid("no candidate".into()))?;
-        let mut spec = format!(
-            "Review the candidate commit {} of task-{} (\"{}\"). Decide whether it may land: it must do what the task asked, correctly, without slop, stray files or unverified claims.",
-            short(&Oid(candidate.commit.clone())),
-            task.number,
-            task.title
-        );
-        if !unreported.is_empty() {
-            spec.push_str(&format!(
-                "\nThe worker did not report these tracked changes; check they belong to the task: {}.",
-                unreported.join(", ")
-            ));
-        }
-        spec.push_str("\nEnd with submit_report and a verdict: approve, or requestChanges with the exact issues in open_questions.");
-        let review = self
-            .create_task(
-                &task.conversation_id,
-                format!("Review task-{}", task.number),
-                TaskKind::Review,
-                spec,
-                None,
-                Some(brigadier_router::Author {
-                    provider: task.route.choice.provider,
-                    model: task.route.choice.model.clone(),
-                }),
-                Some(task.clone()),
-                Vec::new(),
-                // It reviews the change where the change is.
-                Some(task.areas.clone()),
-                None,
-                Vec::new(),
-            )
-            .await?;
-        let cross_vendor = review.route.choice.provider != task.route.choice.provider;
-        self.update_task(&task.conversation_id, &task.id, |t| {
-            t.review = Some(ReviewRecord {
-                task_id: review.id.clone(),
-                commit: candidate.commit.clone(),
-                verdict: None,
-                cross_vendor,
-            });
-        })
-        .await?;
         Ok(())
     }
 
@@ -369,6 +356,41 @@ impl SessionManager {
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
+            for (heading, lines) in [
+                ("Done when, as the worker reported it", &report.done_when),
+                ("Risks the worker named", &report.risks),
+            ] {
+                if !lines.is_empty() {
+                    text.push_str(&format!("\n\n{heading}:"));
+                    for line in lines {
+                        text.push_str(&format!("\n- {line}"));
+                    }
+                }
+            }
+        }
+        // A worker on a big change writes its plan first; the change is checked against it.
+        if let Some(workspace) = &subject.workspace {
+            let plan = outputs_dir(Path::new(&workspace.scratch)).join("plan.md");
+            if let Ok(plan_text) = tokio::fs::read_to_string(&plan).await
+                && !plan_text.trim().is_empty()
+            {
+                let plan_text = if plan_text.len() > PLAN_INLINE_BYTES {
+                    let mut end = PLAN_INLINE_BYTES;
+                    while !plan_text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!(
+                        "{}\n[… cut; the full plan is {}]",
+                        &plan_text[..end],
+                        plan.display()
+                    )
+                } else {
+                    plan_text
+                };
+                text.push_str(&format!(
+                    "\n\nThe worker's plan (plan.md), which the change should follow:\n{plan_text}"
+                ));
+            }
         }
         if let Some(candidate) = &subject.candidate {
             if !candidate.excluded.is_empty() {
@@ -511,21 +533,7 @@ impl SessionManager {
         Ok((start.onto, start.commit))
     }
 
-    /// Whether a review task's report belongs to a landing or a plan review.
-    pub(crate) async fn review_in_landing(&self, review: &Task) -> bool {
-        let Ok(board) = self.core.board(&review.conversation_id).await else {
-            return false;
-        };
-        board
-            .tasks
-            .values()
-            .any(|t| t.review.as_ref().is_some_and(|r| r.task_id == review.id))
-            || board.plans.values().any(
-                |p| matches!(&p.state, PlanState::InReview { task_id } if *task_id == review.id),
-            )
-    }
-
-    /// A landing's or plan's reviewer reported.
+    /// A plan's reviewer reported.
     pub(crate) async fn review_reported(&self, review: &Task) {
         let Ok(board) = self.core.board(&review.conversation_id).await else {
             return;
@@ -549,65 +557,16 @@ impl SessionManager {
             .cloned()
         {
             self.plan_reviewed(plan, review, verdict, summary).await;
-            return;
         }
-        let Some(task) = board
-            .tasks
-            .values()
-            .find(|t| t.review.as_ref().is_some_and(|r| r.task_id == review.id))
-            .cloned()
-        else {
-            return;
-        };
-        let _ = self
-            .update_task(&task.conversation_id, &task.id, |t| {
-                if let Some(record) = t.review.as_mut() {
-                    record.verdict = verdict;
-                }
-            })
-            .await;
-        if verdict != Some(ReviewVerdict::Approve) {
-            self.announcing(&task).await;
-            let task = self
-                .set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
-                .await
-                .unwrap_or(task);
-            self.deliver(
-                &task.conversation_id,
-                Envelope {
-                    kind: InjectionKind::Report,
-                    label: format!("review of task-{}", task.number),
-                    task_id: Some(task.id.clone()),
-                    text: format!(
-                        "[review task-{} by task-{} ({})] Changes requested; nothing landed.\n{summary}\n[/review] Send task-{} back with message_worker to fix this, then accept it again.",
-                        task.number,
-                        review.number,
-                        super::workers::route_label(review),
-                        task.number
-                    ),
-                },
-            )
-            .await;
-            return;
-        }
-        let manager = self.arc();
-        self.spawn(async move {
-            if let Err(err) = manager.approve_and_land(&task).await {
-                manager
-                    .landing_problem(&task, &err.to_string(), TaskState::Reported)
-                    .await;
-            }
-        });
     }
 
-    /// A landing's or plan's reviewer failed (its provider down, signed out, …): nothing lands,
-    /// and the task goes back to reported (or the plan is turned down) so the orchestrator can
-    /// retry instead of waiting on a review that will never come.
+    /// A plan's reviewer failed (its provider down, signed out, …): the plan is turned down
+    /// so the orchestrator can propose it again instead of waiting on a review that will never
+    /// come.
     pub(crate) async fn review_failed(&self, review: &Task, reason: &str) {
         let Ok(board) = self.core.board(&review.conversation_id).await else {
             return;
         };
-        let route = super::workers::route_label(review);
         if let Some(plan) = board
             .plans
             .values()
@@ -616,43 +575,11 @@ impl SessionManager {
         {
             let summary = format!("The review could not run: {reason}");
             self.plan_reviewed(plan, review, None, summary).await;
-            return;
         }
-        let Some(task) = board
-            .tasks
-            .values()
-            .find(|t| t.review.as_ref().is_some_and(|r| r.task_id == review.id))
-            .cloned()
-        else {
-            return;
-        };
-        // Only a task still waiting on this review goes back: one the user stopped meanwhile
-        // stays stopped.
-        if task.state != TaskState::Reviewing {
-            return;
-        }
-        self.announcing(&task).await;
-        let task = self
-            .set_task_state(&task.conversation_id, &task.id, TaskState::Reported)
-            .await
-            .unwrap_or(task);
-        self.deliver(
-            &task.conversation_id,
-            Envelope {
-                kind: InjectionKind::Report,
-                label: format!("review of task-{}", task.number),
-                task_id: Some(task.id.clone()),
-                text: format!(
-                    "[review task-{} by task-{} ({route})] The review could not run; nothing landed.\n{reason}\n[/review] If that is temporary, call accept_task for task-{} again to retry the review. If it needs the user (a sign-in, a key), tell them what failed instead of retrying.",
-                    task.number, review.number, task.number
-                ),
-            },
-        )
-        .await;
     }
 
     /// Step 5 (the user's approval under "Ask for approval"), then step 6.
-    async fn approve_and_land(&self, task: &Task) -> Result<()> {
+    pub(super) async fn approve_and_land(&self, task: &Task) -> Result<()> {
         let conversation = self.core.conversation(&task.conversation_id)?;
         let permission = match conversation.setup {
             Some(Setup::Session { permission, .. }) => permission,
@@ -712,118 +639,112 @@ impl SessionManager {
         self.land_task(task).await
     }
 
-    /// Step 6: lands the candidate, chasing a target that moved.
-    async fn land_task(&self, task: &Task) -> Result<()> {
-        let mut task = self.task_by_id(&task.conversation_id, &task.id).await?;
-        for _ in 0..LAND_ATTEMPTS {
-            let candidate = task
-                .candidate
-                .clone()
-                .ok_or_else(|| Error::Invalid("no candidate".into()))?;
-            let target = task
-                .workspace
-                .as_ref()
-                .and_then(|w| w.target.clone())
-                .ok_or_else(|| Error::Invalid("no target branch".into()))?;
-            let (git, repo) = (self.git.clone(), self.task_repo(&task)?);
-            let request = LandRequest {
-                branch: target.clone(),
-                expected_tip: Oid(candidate.onto.clone()),
-                commit: Oid(candidate.commit.clone()),
-            };
-            let outcome = blocking(move || {
-                git.open(&repo)
-                    .map_err(git_error)?
-                    .land(&request)
-                    .map_err(git_error)
-            })
-            .await?;
-            match outcome {
-                LandOutcome::Landed { new_tip } => {
-                    self.landed(&task, &target, &new_tip).await;
-                    return Ok(());
-                }
-                LandOutcome::Blocked(LandBlock::TipMoved { actual }) => {
-                    let worktree = task
-                        .workspace
-                        .as_ref()
-                        .and_then(|w| w.worktree.clone())
-                        .map(PathBuf::from)
-                        .ok_or_else(|| Error::Invalid("no worktree".into()))?;
-                    let (git, old, new) = (
-                        self.git.clone(),
-                        Oid(candidate.onto.clone()),
-                        actual.clone(),
-                    );
-                    let commit = Oid(candidate.commit.clone());
-                    let rebased = blocking(move || {
-                        git.open_worktree(&worktree)
-                            .map_err(git_error)?
-                            .rebase_candidate(&commit, &old, &new)
-                            .map_err(git_error)
-                    })
-                    .await?;
-                    match rebased {
-                        RebaseOutcome::Rebased { commit, clean_fast } => {
-                            task = self
-                                .update_task(&task.conversation_id, &task.id, |t| {
-                                    if let Some(c) = t.candidate.as_mut() {
-                                        c.commit = commit.0.clone();
-                                        c.onto = actual.0.clone();
-                                    }
-                                    if let Some(w) = t.workspace.as_mut() {
-                                        w.base = Some(actual.0.clone());
-                                        w.on_snapshot = false;
-                                    }
-                                })
-                                .await?;
-                            if !clean_fast {
-                                // B11: the replay touched paths the target also changed.
-                                self.set_task_state(
-                                    &task.conversation_id,
-                                    &task.id,
-                                    TaskState::Reviewing,
-                                )
-                                .await?;
-                                return self.start_review(&task, Vec::new()).await;
-                            }
-                        }
-                        RebaseOutcome::Conflicts { paths } => {
-                            self.landing_problem(
-                                &task,
-                                &format!(
-                                    "`{target}` moved and now conflicts with it in: {}. {}",
-                                    paths.join(", "),
-                                    conflict_step(&task, &target)
-                                ),
-                                TaskState::Reported,
-                            )
-                            .await;
-                            return Ok(());
+    /// Step 6: lands the candidate. When the target moved, the candidate is replayed onto it
+    /// and the new commit goes through the gate again before it lands.
+    pub(super) async fn land_task(&self, task: &Task) -> Result<()> {
+        let task = self.task_by_id(&task.conversation_id, &task.id).await?;
+        let candidate = task
+            .candidate
+            .clone()
+            .ok_or_else(|| Error::Invalid("no candidate".into()))?;
+        let target = task
+            .workspace
+            .as_ref()
+            .and_then(|w| w.target.clone())
+            .ok_or_else(|| Error::Invalid("no target branch".into()))?;
+        let (git, repo) = (self.git.clone(), self.task_repo(&task)?);
+        let request = LandRequest {
+            branch: target.clone(),
+            expected_tip: Oid(candidate.onto.clone()),
+            commit: Oid(candidate.commit.clone()),
+        };
+        let outcome = blocking(move || {
+            git.open(&repo)
+                .map_err(git_error)?
+                .land(&request)
+                .map_err(git_error)
+        })
+        .await?;
+        match outcome {
+            LandOutcome::Landed { new_tip } => {
+                self.landed(&task, &target, &new_tip).await;
+                Ok(())
+            }
+            LandOutcome::Blocked(LandBlock::TipMoved { actual }) => {
+                let worktree = task
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| w.worktree.clone())
+                    .map(PathBuf::from)
+                    .ok_or_else(|| Error::Invalid("no worktree".into()))?;
+                let (git, old, new) = (
+                    self.git.clone(),
+                    Oid(candidate.onto.clone()),
+                    actual.clone(),
+                );
+                let commit = Oid(candidate.commit.clone());
+                let rebased = blocking(move || {
+                    git.open_worktree(&worktree)
+                        .map_err(git_error)?
+                        .rebase_candidate(&commit, &old, &new)
+                        .map_err(git_error)
+                })
+                .await?;
+                match rebased {
+                    RebaseOutcome::Rebased { commit, clean_fast } => {
+                        let task = self
+                            .update_task(&task.conversation_id, &task.id, |t| {
+                                if let Some(c) = t.candidate.as_mut() {
+                                    c.commit = commit.0.clone();
+                                    c.onto = actual.0.clone();
+                                }
+                                if let Some(w) = t.workspace.as_mut() {
+                                    w.base = Some(actual.0.clone());
+                                    w.on_snapshot = false;
+                                }
+                            })
+                            .await?;
+                        // A new commit is verified again before it lands, and reviewed
+                        // again too when the replay touched paths the target also changed
+                        // (B11).
+                        let recheck = if clean_fast {
+                            super::gates::Recheck::Verify
+                        } else {
+                            super::gates::Recheck::Full
+                        };
+                        match self.open_gate(&task, Vec::new(), recheck, None).await {
+                            Err(super::gates::NotOpened::Error(err)) => Err(err),
+                            _ => Ok(()),
                         }
                     }
-                }
-                LandOutcome::Blocked(block) => {
-                    self.landing_problem(
-                        &task,
-                        &format!(
-                            "It is ready to land, but landing now is not safe: {block} Nothing was changed. Call accept_task for task-{} again once that is resolved.",
-                            task.number
-                        ),
-                        TaskState::ReadyToLand,
-                    )
-                    .await;
-                    return Ok(());
+                    RebaseOutcome::Conflicts { paths } => {
+                        self.landing_problem(
+                            &task,
+                            &format!(
+                                "`{target}` moved and now conflicts with it in: {}. {}",
+                                paths.join(", "),
+                                conflict_step(&task, &target)
+                            ),
+                            TaskState::Reported,
+                        )
+                        .await;
+                        Ok(())
+                    }
                 }
             }
+            LandOutcome::Blocked(block) => {
+                self.landing_problem(
+                    &task,
+                    &format!(
+                        "It is ready to land, but landing now is not safe: {block} Nothing was changed. Call accept_task for task-{} again once that is resolved.",
+                        task.number
+                    ),
+                    TaskState::ReadyToLand,
+                )
+                .await;
+                Ok(())
+            }
         }
-        self.landing_problem(
-            &task,
-            "The target branch kept moving while Brigadier tried to land. Call accept_task again.",
-            TaskState::ReadyToLand,
-        )
-        .await;
-        Ok(())
     }
 
     async fn landed(&self, task: &Task, target: &str, new_tip: &Oid) {
@@ -881,9 +802,16 @@ impl SessionManager {
                 label: format!("landed task-{}", task.number),
                 task_id: Some(task.id.clone()),
                 text: format!(
-                    "[landed task-{}] Commit {} is on `{target}` ({review}).",
+                    "[landed task-{}] Commit {} is on `{target}` ({review}, and verified{}).",
                     task.number,
-                    short(new_tip)
+                    short(new_tip),
+                    match task.fix_rounds {
+                        0 => String::new(),
+                        1 => "; Brigadier had the worker fix the checks' findings once".into(),
+                        rounds => format!(
+                            "; Brigadier had the worker fix the checks' findings {rounds} times"
+                        ),
+                    }
                 ),
             },
         )
@@ -891,7 +819,7 @@ impl SessionManager {
     }
 
     /// Something stopped a landing: the task goes to `state` and the orchestrator hears why.
-    async fn landing_problem(&self, task: &Task, reason: &str, state: TaskState) {
+    pub(super) async fn landing_problem(&self, task: &Task, reason: &str, state: TaskState) {
         self.announcing(task).await;
         let _ = self
             .update_task(&task.conversation_id, &task.id, |t| {
@@ -1093,6 +1021,14 @@ impl SessionManager {
             spec,
             None,
             Some(orchestrator),
+            Vec::new(),
+            Some(crate::work::GateLink {
+                owner: crate::work::GateOwner::Plan {
+                    plan_id: plan.id.clone(),
+                },
+                round: 1,
+                role: crate::work::GateRole::Review,
+            }),
             None,
             Vec::new(),
             None,

@@ -18,7 +18,15 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { openArtifact, saveArtifact } from "@/ipc/client";
-import type { ArtifactRef, KeptWork, RestoreOutcome, Task, TaskState } from "@/ipc/generated";
+import type {
+  ArtifactRef,
+  Gate,
+  GateMember,
+  KeptWork,
+  RestoreOutcome,
+  Task,
+  TaskState,
+} from "@/ipc/generated";
 import { formatBytes } from "@/lib/format";
 import { modelName, useModelGroups } from "@/lib/setup";
 import { cn } from "@/lib/utils";
@@ -357,6 +365,85 @@ function KeptPatch({
   );
 }
 
+/** How a gate round ended, in the user's words. */
+const GATE_OUTCOME: Record<NonNullable<Gate["outcome"]>["type"], string> = {
+  passed: "Passed",
+  failed: "Changes needed",
+  unverified: "Not verified",
+  noResult: "No result",
+  superseded: "Replaced by a newer round",
+};
+
+/**
+ * The independent checks of a change before it lands: its reviewers and its verifier, each with
+ * its result. The verifier's evidence per "done when" criterion is in its own report.
+ */
+function GateSection({ gate, fixRounds }: { gate: Gate; fixRounds: number }) {
+  return (
+    <Section title="Checks">
+      <p className="flex flex-wrap items-center gap-2 text-sm">
+        {gate.outcome === null ? (
+          <Badge variant="secondary">Checking</Badge>
+        ) : (
+          <Badge variant={gate.outcome.type === "passed" ? "success" : "warning"}>
+            {GATE_OUTCOME[gate.outcome.type]}
+          </Badge>
+        )}
+        <span className="text-muted-foreground text-xs">
+          round {gate.round}
+          {gate.commit && ` · of ${short(gate.commit)}`}
+          {fixRounds > 0 && ` · sent back ${fixRounds} time${fixRounds === 1 ? "" : "s"}`}
+        </span>
+      </p>
+      <ul className="flex flex-col gap-1.5">
+        {gate.members.map((member) => (
+          <GateMemberRow key={member.taskId} member={member} />
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+function GateMemberRow({ member }: { member: GateMember }) {
+  const onBoard = useBoard((s) => Boolean(s.board?.tasks[member.taskId]));
+  const label = member.role === "verify" ? "Verified" : "Reviewed";
+  const { result } = member;
+  return (
+    <li className="flex flex-col gap-0.5">
+      <p className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+        {result === null ? (
+          <Badge variant="secondary">{member.role === "verify" ? "Verifying" : "In review"}</Badge>
+        ) : (
+          <Badge variant={result.type === "passed" ? "success" : "warning"}>
+            {result.type === "passed"
+              ? member.role === "verify"
+                ? "Verified"
+                : "Approved"
+              : result.type === "failed"
+                ? "Changes needed"
+                : result.type === "unverified"
+                  ? "Could not verify"
+                  : "No result"}
+          </Badge>
+        )}
+        {onBoard && (
+          <>
+            {label} by{" "}
+            <WorkerChip
+              taskId={member.taskId}
+              label={member.role === "verify" ? "Verify" : "Review"}
+            />
+          </>
+        )}
+      </p>
+      {result?.type === "failed" && <Lines items={result.findings} />}
+      {(result?.type === "unverified" || result?.type === "noResult") && (
+        <p className="text-muted-foreground text-xs whitespace-pre-wrap">{result.reason}</p>
+      )}
+    </li>
+  );
+}
+
 /**
  * What a worker set out to do and produced: model, workspace, report, outputs, commit, review.
  * Under its thread in the workers panel (`inThread`), the thread already shows the model, the
@@ -498,29 +585,33 @@ export function TaskDetails({
         </Section>
       )}
 
-      {review && (
-        <Section title="Review">
-          <p className="flex flex-wrap items-center gap-2 text-sm">
-            {review.verdict === null ? (
-              <Badge variant="secondary">In review</Badge>
-            ) : (
-              <Badge variant={review.verdict === "approve" ? "success" : "warning"}>
-                {review.verdict === "approve" ? "Approved" : "Changes requested"}
-              </Badge>
-            )}
-            {reviewer !== null && (
-              <span className="flex min-w-0 items-center gap-1.5 text-xs">
-                by <WorkerChip taskId={reviewer} label="Review" />
+      {task.gate ? (
+        <GateSection gate={task.gate} fixRounds={task.fixRounds} />
+      ) : (
+        review && (
+          <Section title="Review">
+            <p className="flex flex-wrap items-center gap-2 text-sm">
+              {review.verdict === null ? (
+                <Badge variant="secondary">In review</Badge>
+              ) : (
+                <Badge variant={review.verdict === "approve" ? "success" : "warning"}>
+                  {review.verdict === "approve" ? "Approved" : "Changes requested"}
+                </Badge>
+              )}
+              {reviewer !== null && (
+                <span className="flex min-w-0 items-center gap-1.5 text-xs">
+                  by <WorkerChip taskId={reviewer} label="Review" />
+                </span>
+              )}
+              <span className="text-muted-foreground text-xs">
+                {review.crossVendor
+                  ? "cross-vendor"
+                  : "same vendor (only one was available)"}{" "}
+                · of {short(review.commit)}
               </span>
-            )}
-            <span className="text-muted-foreground text-xs">
-              {review.crossVendor
-                ? "cross-vendor"
-                : "same vendor (only one was available)"}{" "}
-              · of {short(review.commit)}
-            </span>
-          </p>
-        </Section>
+            </p>
+          </Section>
+        )
       )}
 
       {task.landed && (
