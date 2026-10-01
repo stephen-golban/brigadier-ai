@@ -11,7 +11,19 @@ export type Report = { summary: string, changes: Array<string>, decisions: Array
 /**
  * What the worker verified and how.
  */
-verification: Array<string>, openQuestions: Array<string>, 
+verification: Array<string>, 
+/**
+ * Each "done when" criterion with its status and evidence ("[met] … ").
+ */
+doneWhen: Array<string>, openQuestions: Array<string>, 
+/**
+ * Risks, assumptions and what was skipped.
+ */
+risks: Array<string>, 
+/**
+ * What only the user can do.
+ */
+needsUser: Array<string>, 
 /**
  * For review tasks: the verdict.
  */

@@ -430,9 +430,24 @@ export function TaskDetails({
           <Section title="Verification">
             <Lines items={report.verification} />
           </Section>
+          {report.doneWhen.length > 0 && (
+            <Section title="Done when">
+              <Lines items={report.doneWhen} />
+            </Section>
+          )}
           {report.openQuestions.length > 0 && (
             <Section title="Open questions">
               <Lines items={report.openQuestions} />
+            </Section>
+          )}
+          {report.risks.length > 0 && (
+            <Section title="Risks">
+              <Lines items={report.risks} />
+            </Section>
+          )}
+          {report.needsUser.length > 0 && (
+            <Section title="Needs you">
+              <Lines items={report.needsUser} />
             </Section>
           )}
           {report.verdict && (

@@ -1955,7 +1955,9 @@ pub(crate) fn report_text(task: &Task, report: &Report) -> String {
         ("Decisions", &report.decisions),
         ("Changes", &report.changes),
         ("Verification", &report.verification),
+        ("Done when", &report.done_when),
         ("Open questions", &report.open_questions),
+        ("Risks", &report.risks),
     ] {
         if !items.is_empty() {
             text.push_str(&format!("\n{title}:"));

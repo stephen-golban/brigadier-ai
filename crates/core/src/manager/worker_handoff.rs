@@ -46,8 +46,9 @@ If the task is done apart from its report, call submit_report now as usual. Othe
 step you are in, but don't start another command or edit, and end your turn with a handoff note \
 for the fresh session instead of a report. Write it in plain text under these headings: Goal and \
 state; Decisions made (each with its reason); Commitments to the orchestrator; Done and verified; \
-Next steps. Include anything you found or ruled out that isn't in the code. At most about 800 \
-words. Don't call submit_report for this.",
+Traps learned (commands that fail and why, wrong turns, versions that matter); How to verify (the \
+exact commands and what passing looks like); Next steps. Include anything you found or ruled out \
+that isn't in the code. At most about 800 words. Don't call submit_report for this.",
         tokens / 1_000
     )
 }
@@ -489,7 +490,10 @@ fn handover_text(
         dir.display()
     );
     if has_note {
-        text.push_str("note.md (its own handoff note: read it first), ");
+        text.push_str(
+            "note.md (its own handoff note: read it first, including its traps learned and how \
+             to verify), ",
+        );
     }
     text.push_str(
         "spec.md (the task and every later instruction from the orchestrator), progress.md (a \

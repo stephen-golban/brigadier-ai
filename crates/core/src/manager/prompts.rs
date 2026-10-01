@@ -122,7 +122,7 @@ const ORCHESTRATOR_VOICE: &str = "
 
 /// What the voice covers for a worker, and its report's shape.
 const WORKER_VOICE: &str = "
-- Your report is for the orchestrator. Summary: the outcome first (done, partly done or blocked), then the findings that answer the task. Changes: one line per file. Verification: what you ran or read and what you saw. Open questions: risks, assumptions, what you skipped and why, and decisions you need. Report failures and unknowns plainly, and never leave out a failed check.
+- Your report is for the orchestrator. Summary: the outcome first (done, partly done or blocked), then the findings that answer the task. Changes: one line per file. Verification: what you ran or read and what you saw. Done when: each criterion of \"done\" in the task, with [met], [not met] or [not checked] and its evidence; a check you didn't run is [not checked], never [met]. Open questions: decisions you need. Risks: assumptions, risks, and what you skipped and why. Needs user: what only the user can do. Report failures and unknowns plainly, and never leave out a failed check.
 - Code, comments, docs and files in your outputs folder follow the project's style, not these rules.";
 
 /// A worker's pointer to the code index tools (PLAN.md §7).
@@ -198,8 +198,9 @@ Kind: {kind}
 Rules:
 - You work alone on this task. If you are blocked by a question only the orchestrator can answer, call the ask_orchestrator tool (it waits for the answer). Don't ask about things you can find out yourself.{write_rules}
 - Pushing, publishing, deploying and other outward actions are not yours to do; if one seems needed, say so in the report.
+- If something only the user can do blocks part of the task (a credential, a sign-in, an account, a paid signup), list it under needs_user and finish everything else around it.
 - Files meant for the orchestrator or the user (full findings, logs worth keeping, documents, generated images) go in your outputs folder. Brigadier attaches them to your report and the user saves them from the task card. Never write files to /tmp or anywhere else outside your worktree and scratch folder, even if the task names such a place: nobody could read them, and they would be left behind. Save them in your outputs folder and say so in the report.
-- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message, and never say in the report that they are below or in a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), open questions. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{practices}{VOICE}{WORKER_VOICE}{instructions}{extra}
+- The orchestrator reads only your submit_report, never your messages: don't write your findings as a message, and never say in the report that they are below or in a message. When done (or when you cannot continue), call submit_report exactly once: summary, changes, decisions, verification (exactly what you ran and what you saw), done when, open questions, risks, needs user. Keep it short (about 800 tokens at most); anything longer goes in a file in your outputs folder, named under `artifacts` with a short title.{practices}{VOICE}{WORKER_VOICE}{instructions}{extra}
 
 The task:
 {spec}"#,
@@ -245,7 +246,10 @@ pub(crate) fn report_envelope(task: &Task, report: &Report, route: &str) -> Stri
     list("Changes", &report.changes, &mut text);
     list("Decisions", &report.decisions, &mut text);
     list("Verification", &report.verification, &mut text);
+    list("Done when", &report.done_when, &mut text);
     list("Open questions", &report.open_questions, &mut text);
+    list("Risks", &report.risks, &mut text);
+    list("Needs the user", &report.needs_user, &mut text);
     if let Some(verdict) = report.verdict {
         text.push_str(&format!("\nVerdict: {verdict:?}"));
     }

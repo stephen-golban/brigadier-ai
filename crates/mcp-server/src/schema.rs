@@ -182,7 +182,14 @@ mod tests {
     fn a_report_list_is_asked_for_as_text() {
         let schema = input_schema::<brigadier_core::tools::SubmitReport>();
         let properties = &schema["properties"];
-        for field in ["decisions", "verification", "open_questions"] {
+        for field in [
+            "decisions",
+            "verification",
+            "done_when",
+            "open_questions",
+            "risks",
+            "needs_user",
+        ] {
             assert_eq!(properties[field]["type"], "string", "{field}");
             assert_eq!(properties[field]["default"], "", "{field}");
         }

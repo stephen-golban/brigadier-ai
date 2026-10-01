@@ -471,10 +471,25 @@ pub struct SubmitReport {
     #[serde(default, deserialize_with = "lines")]
     #[schemars(with = "String", extend("default" = ""))]
     pub verification: Vec<String>,
+    /// Each "done when" criterion of the task, one per line: its status in brackets, the
+    /// criterion, then the evidence, e.g. "[met] `pnpm test` passes: 41 passed, 0 failed".
+    /// The status is [met], [not met] or [not checked].
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
+    pub done_when: Vec<String>,
     /// Questions left open, or (for reviews) the exact issues to fix, one per line.
     #[serde(default, deserialize_with = "lines")]
     #[schemars(with = "String", extend("default" = ""))]
     pub open_questions: Vec<String>,
+    /// Risks and assumptions the work rests on, and what you skipped and why, one per line.
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
+    pub risks: Vec<String>,
+    /// What only the user can do (a credential, a sign-in, a push, a paid signup, an account
+    /// id), one per line. Finish everything else around it.
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
+    pub needs_user: Vec<String>,
     /// Review tasks only: the verdict on the reviewed change.
     #[serde(default)]
     pub verdict: Option<ReviewVerdict>,
@@ -662,6 +677,25 @@ mod tests {
         }));
         assert_eq!(report.decisions, ["Kept the old name."]);
         assert!(report.open_questions.is_empty());
+    }
+
+    #[test]
+    fn done_when_risks_and_needs_user_are_lines_too() {
+        let report = report(serde_json::json!({
+            "summary": "Done.",
+            "done_when": "- [met] `pnpm test` passes: 41 passed\n- [not checked] the smoke run",
+            "risks": ["Assumes Node 22."],
+            "needs_user": "Set STRIPE_KEY in .env",
+        }));
+        assert_eq!(
+            report.done_when,
+            [
+                "[met] `pnpm test` passes: 41 passed",
+                "[not checked] the smoke run"
+            ]
+        );
+        assert_eq!(report.risks, ["Assumes Node 22."]);
+        assert_eq!(report.needs_user, ["Set STRIPE_KEY in .env"]);
     }
 
     #[test]

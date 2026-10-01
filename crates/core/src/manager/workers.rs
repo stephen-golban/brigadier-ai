@@ -1864,7 +1864,10 @@ impl SessionManager {
                 &input.changes,
                 &input.decisions,
                 &input.verification,
+                &input.done_when,
                 &input.open_questions,
+                &input.risks,
+                &input.needs_user,
             ]
             .iter()
             .flat_map(|items| items.iter())
@@ -1879,7 +1882,10 @@ impl SessionManager {
         let texts: Vec<String> = std::iter::once(&input.summary)
             .chain(&input.decisions)
             .chain(&input.verification)
+            .chain(&input.done_when)
             .chain(&input.open_questions)
+            .chain(&input.risks)
+            .chain(&input.needs_user)
             .cloned()
             .collect();
         let files = self
@@ -1903,7 +1909,10 @@ impl SessionManager {
             changes: input.changes.clone(),
             decisions: self.redact_all(&live, &input.decisions).await,
             verification: self.redact_all(&live, &input.verification).await,
+            done_when: self.redact_all(&live, &input.done_when).await,
             open_questions: self.redact_all(&live, &input.open_questions).await,
+            risks: self.redact_all(&live, &input.risks).await,
+            needs_user: self.redact_all(&live, &input.needs_user).await,
             verdict: input.verdict,
             checks: input.checks.filter(|_| task.kind == TaskKind::Verify),
             artifacts,

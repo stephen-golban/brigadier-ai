@@ -218,7 +218,16 @@ pub struct Report {
     pub decisions: Vec<String>,
     /// What the worker verified and how.
     pub verification: Vec<String>,
+    /// Each "done when" criterion with its status and evidence ("[met] … ").
+    #[serde(default)]
+    pub done_when: Vec<String>,
     pub open_questions: Vec<String>,
+    /// Risks, assumptions and what was skipped.
+    #[serde(default)]
+    pub risks: Vec<String>,
+    /// What only the user can do.
+    #[serde(default)]
+    pub needs_user: Vec<String>,
     /// For review tasks: the verdict.
     pub verdict: Option<ReviewVerdict>,
     /// For verify tasks: whether the project's checks passed.
@@ -1101,4 +1110,26 @@ pub enum OrchestratorEntry {
     ContractBreach {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_report_stored_before_done_when_still_reads() {
+        let report: Report = serde_json::from_value(serde_json::json!({
+            "summary": "Done.",
+            "changes": ["a.rs"],
+            "decisions": [],
+            "verification": ["cargo test: ok"],
+            "openQuestions": [],
+            "verdict": null,
+            "artifacts": [],
+            "submittedAtMs": 1,
+        }))
+        .expect("an old report");
+        assert!(report.done_when.is_empty() && report.risks.is_empty());
+        assert!(report.needs_user.is_empty());
+    }
 }
