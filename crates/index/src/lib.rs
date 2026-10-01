@@ -618,17 +618,9 @@ impl CodeIndex {
             });
         let mut text = String::new();
         if file {
-            let hits = self.search(&CodeQuery {
-                query: name.to_owned(),
-                kind: SearchKind::File,
-                language: None,
-                path: None,
-                limit: Some(limit),
-            })?;
+            let hits = self.with_read(|conn| reads::lookup_files(conn, name, limit))?;
             for hit in hits {
-                if let CodeHit::File { path, language, .. } = hit
-                    && (path == name || path.ends_with(&format!("/{name}")))
-                {
+                if let CodeHit::File { path, language, .. } = hit {
                     text.push_str(&format!("- file {path} ({language})\n"));
                 }
             }
@@ -693,5 +685,64 @@ impl CodeIndex {
     /// A compact text overview for a model, at most `max_bytes`.
     pub fn digest(&self, max_bytes: usize) -> Result<String> {
         self.with_read(|c| reads::digest(c, max_bytes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn exact_file_lookup_filters_before_the_limit() {
+        let dir =
+            std::env::temp_dir().join(format!("index-lookup-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cleanup = TempDir(dir.clone());
+        let index = CodeIndex::open(IndexConfig {
+            db_path: dir.join("index.sqlite"),
+            root: dir.clone(),
+            threads: 1,
+            scan_helper: None,
+        })
+        .unwrap();
+        let paths = (0..10).map(|n| format!("main.rs.{n}")).chain([
+            "src/main.rs".into(),
+            "src/_main.rs".into(),
+            "src/xmain.rs".into(),
+        ]);
+        let files = paths
+            .map(|path| db::FileRow {
+                path,
+                lang: "rust".into(),
+                size: 1,
+                mtime_ns: 1,
+                hash: "h1".into(),
+                symbols: Vec::new(),
+                is_new: true,
+            })
+            .collect();
+        db::send_apply(&index.inner.writer, files, Vec::new()).unwrap();
+        assert_eq!(
+            index.lookup("main.rs", 10).unwrap(),
+            "- file src/main.rs (rust)\n"
+        );
+        assert_eq!(
+            index.lookup("src/main.rs", 10).unwrap(),
+            "- file src/main.rs (rust)\n"
+        );
+        assert_eq!(
+            index.lookup("_main.rs", 1).unwrap(),
+            "- file src/_main.rs (rust)\n"
+        );
+        drop(index);
+        drop(cleanup);
     }
 }

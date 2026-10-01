@@ -115,6 +115,27 @@ fn distance(a: &str, b: &str) -> u32 {
     previous[b.len()]
 }
 
+/// Exact paths or suffixes beginning at a path boundary, filtered before the result limit.
+pub fn lookup_files(conn: &Connection, name: &str, limit: u32) -> Result<Vec<CodeHit>> {
+    let mut statement = conn
+        .prepare_cached(
+            "SELECT path, lang, size FROM files \
+         WHERE path = ?1 OR substr(path, -(length(?1) + 1)) = '/' || ?1 \
+         ORDER BY length(path), path LIMIT ?2",
+        )
+        .map_err(err)?;
+    let rows = statement
+        .query_map(params![name, limit], |row| {
+            Ok(CodeHit::File {
+                path: row.get(0)?,
+                language: row.get(1)?,
+                bytes: row.get::<_, i64>(2)? as u64,
+            })
+        })
+        .map_err(err)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(err)
+}
+
 pub fn search(conn: &Connection, query: &CodeQuery) -> Result<Vec<CodeHit>> {
     let needle = query.query.trim();
     if needle.is_empty() {
