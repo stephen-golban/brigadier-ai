@@ -42,6 +42,7 @@ use super::brains::ReportLearning;
 use super::conversation::{Cli, Envelope, safe_file_name};
 use super::outputs::outputs_dir;
 use super::usage::TokenOwner;
+use super::worker_handoff::Handover;
 use super::{
     EventSource, SessionManager, blocking, fallback, git_error, instructions, prompts, secrets,
 };
@@ -125,6 +126,25 @@ struct TaskLiveState {
     handoff_asked: bool,
     /// A fresh session's first message, held while the task is paused: resuming starts it.
     held_handover: Option<TurnInput>,
+    /// When the worker last showed it works (an event from its CLI, or a turn started); the
+    /// stall watchdog measures silence from it.
+    last_event_ms: i64,
+    /// The commands and tool calls the worker started that have not finished.
+    running_items: std::collections::HashSet<String>,
+    /// When the watchdog nudged the silent worker of this CLI session.
+    stall_nudged_at_ms: Option<i64>,
+    /// Fresh sessions the watchdog started for stalls in the current attempt.
+    stalls: u32,
+    /// Since when the task is live without a running CLI, as the watchdog saw it.
+    orphaned_at_ms: Option<i64>,
+}
+
+impl TaskLiveState {
+    /// A turn starts: the worker works, and its silence is measured from now.
+    fn begin_turn(&mut self) {
+        self.busy = true;
+        self.last_event_ms = now_ms();
+    }
 }
 
 /// A task's live worker.
@@ -239,12 +259,123 @@ impl TaskLive {
         if state.busy {
             cli.session.steer(input).await
         } else {
-            state.busy = true;
+            state.begin_turn();
             state.nudged = false;
             cli.session.send(input).await
         }
         .map_err(|err| Error::Provider(err.to_string()))?;
         Ok(true)
+    }
+
+    /// An event came from `cli`: if it is the worker's session now, the worker shows it works,
+    /// and a command or tool call it starts or ends is noted. The user's own input echoed back
+    /// says nothing about the worker.
+    async fn note_event(&self, cli: &Arc<Cli>, event: &ProviderEvent) {
+        use brigadier_providers::ItemStatus;
+        let mut state = self.state.lock().await;
+        if !state.cli.as_ref().is_some_and(|c| Arc::ptr_eq(c, cli)) {
+            return;
+        }
+        let (item_id, status) = match event {
+            ProviderEvent::Message {
+                role: brigadier_providers::Role::User,
+                ..
+            } => return,
+            ProviderEvent::Command {
+                item_id, status, ..
+            }
+            | ProviderEvent::ToolCall {
+                item_id, status, ..
+            } => (Some(item_id), Some(*status)),
+            ProviderEvent::TurnCompleted { .. } | ProviderEvent::Exited { .. } => {
+                state.running_items.clear();
+                (None, None)
+            }
+            _ => (None, None),
+        };
+        if let (Some(item_id), Some(status)) = (item_id, status) {
+            if status == ItemStatus::InProgress {
+                state.running_items.insert(item_id.clone());
+            } else {
+                state.running_items.remove(item_id);
+            }
+        }
+        state.last_event_ms = now_ms();
+    }
+
+    /// What the stall watchdog needs to know of the worker at `now`. A task live without a
+    /// running CLI is noted from the first time it is seen so.
+    pub(crate) async fn watch(&self, now: i64) -> super::watchdog::WorkerWatch {
+        let reroute_free = self.reroute.try_lock().is_ok();
+        let mut state = self.state.lock().await;
+        let alive = state
+            .cli
+            .as_ref()
+            .is_some_and(|cli| cli.session.is_running());
+        if alive || state.stopping {
+            state.orphaned_at_ms = None;
+        } else {
+            state.orphaned_at_ms.get_or_insert(now);
+        }
+        super::watchdog::WorkerWatch {
+            generation: state.generation,
+            alive,
+            busy: state.busy,
+            stopping: state.stopping,
+            question: state.question.is_some(),
+            command_running: !state.running_items.is_empty(),
+            last_event_ms: state.last_event_ms,
+            nudged_at_ms: state.stall_nudged_at_ms,
+            stalls: state.stalls,
+            orphaned_at_ms: state.orphaned_at_ms,
+            reroute_free,
+        }
+    }
+
+    /// Asks the silent worker of CLI session `generation` (a steer) whether it is stuck. False
+    /// when that session is no longer the one at work, or not mid-turn.
+    pub(crate) async fn nudge_stall(&self, generation: u64, text: String) -> bool {
+        let mut state = self.state.lock().await;
+        if state.generation != generation || !state.busy || state.stopping {
+            return false;
+        }
+        let Some(cli) = state.cli.clone() else {
+            return false;
+        };
+        if let Err(err) = cli.session.steer(TurnInput::text(text)).await {
+            tracing::warn!(task = %self.id, error = %err, "could not nudge a silent worker");
+            return false;
+        }
+        state.stall_nudged_at_ms = Some(now_ms());
+        true
+    }
+
+    /// Takes the stall of CLI session `generation` on for a fresh session: false when that
+    /// session is no longer the one at work, or is already being closed.
+    pub(crate) async fn claim_stall(&self, generation: u64) -> bool {
+        let mut state = self.state.lock().await;
+        if state.generation != generation || state.stopping {
+            return false;
+        }
+        state.stalls += 1;
+        true
+    }
+
+    /// Takes CLI session `generation` off the task for another model: from now on its end is
+    /// this hand-off, not a reason for another. Returns a pending cut-off, which wins. `None`
+    /// when that session is no longer the one at work, or is already being closed.
+    pub(crate) async fn claim_replace(&self, generation: u64) -> Option<Option<AttemptEnd>> {
+        let mut state = self.state.lock().await;
+        if state.generation != generation || state.stopping {
+            return None;
+        }
+        state.stopping = true;
+        Some(state.cutoff.take())
+    }
+
+    /// A new attempt: its stalls are counted afresh.
+    pub(crate) async fn reset_stalls(&self) {
+        self.state.lock().await.stalls = 0;
     }
 
     /// The worker's CLI session, while one runs.
@@ -883,13 +1014,16 @@ impl SessionManager {
             state.cwd = Some(cwd);
             state.outputs = Some(outputs);
             state.redactor = redactor;
-            state.busy = true;
+            state.begin_turn();
             state.nudged = false;
             state.stopping = false;
             state.handoff_asked = false;
             // Any start supersedes a fresh session held for a paused task.
             state.held_handover = None;
             state.generation += 1;
+            state.running_items.clear();
+            state.stall_nudged_at_ms = None;
+            state.orphaned_at_ms = None;
             if !resumed {
                 state.context = None;
                 state.session_start = None;
@@ -934,7 +1068,7 @@ impl SessionManager {
             .await?;
         let from = live.generation().await;
         if self.worker_over_handoff(live, &task.id).await {
-            self.hand_over_worker(live, &task, from, None, Some(text))
+            self.hand_over_worker(live, &task, from, None, Some(text), Handover::Size)
                 .await?;
         } else {
             self.launch_worker(
@@ -1392,10 +1526,12 @@ impl SessionManager {
             tokio::select! {
                 event = events.recv() => match event {
                     Some(event) if is_delta(&event) => {
+                        live.note_event(&cli, &event).await;
                         merge_delta(&mut deltas, event);
                         deadline.get_or_insert_with(|| tokio::time::Instant::now() + DELTA_WINDOW);
                     }
                     Some(event) => {
+                        live.note_event(&cli, &event).await;
                         deadline = None;
                         self.record_worker_events(&live.id, std::mem::take(&mut deltas)).await;
                         let mut exited = false;
@@ -1593,7 +1729,7 @@ impl SessionManager {
             let live = live.clone();
             self.spawn(async move {
                 if let Err(err) = manager
-                    .hand_over_worker(&live, &task, from, note, None)
+                    .hand_over_worker(&live, &task, from, note, None, Handover::Size)
                     .await
                 {
                     let reason = format!("The task could not continue in a fresh session: {err}");
@@ -1609,7 +1745,7 @@ impl SessionManager {
             let cleared = self
                 .update_task(&task.conversation_id, &task.id, |task| task.error = None)
                 .await;
-            live.state.lock().await.busy = true;
+            live.state.lock().await.begin_turn();
             let sent = cli
                 .session
                 .send(TurnInput {
@@ -1630,7 +1766,7 @@ impl SessionManager {
                     "You ended your turn without calling submit_report. The orchestrator reads only your report, never your messages. If the task is done or you cannot continue, call submit_report now; otherwise continue working."
                 }
             };
-            live.state.lock().await.busy = true;
+            live.state.lock().await.begin_turn();
             let sent = cli
                 .session
                 .send(TurnInput {
@@ -2290,7 +2426,7 @@ impl SessionManager {
                 return Ok(format!("Sent to task-{} (it is working).", task.number));
             }
         } else {
-            state.busy = true;
+            state.begin_turn();
             cli.session
                 .send(input)
                 .await
@@ -2505,7 +2641,7 @@ impl SessionManager {
         }
         let cli = {
             let mut state = live.state.lock().await;
-            state.busy = true;
+            state.begin_turn();
             state.nudged = false;
             state.cli.clone()
         }

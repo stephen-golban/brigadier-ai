@@ -3,4 +3,4 @@
 /**
  * What went wrong, classified so the router can react (fallback, wait, ask the user).
  */
-export type ErrorKind = "usageLimit" | "rateLimit" | "overloaded" | "auth" | "billing" | "contextWindow" | "invalidRequest" | "policy" | "network" | "sandbox" | "server" | "process" | "other";
+export type ErrorKind = "usageLimit" | "rateLimit" | "overloaded" | "auth" | "billing" | "contextWindow" | "invalidRequest" | "policy" | "network" | "sandbox" | "server" | "process" | "other" | "stalled";

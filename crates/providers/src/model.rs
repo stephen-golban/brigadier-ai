@@ -299,6 +299,9 @@ pub enum ErrorKind {
     /// The CLI process itself failed (did not start, crashed, spoke garbage).
     Process,
     Other,
+    /// The worker went silent mid-turn and stayed so after a nudge and a fresh session
+    /// (Brigadier's stall watchdog; never from a CLI).
+    Stalled,
 }
 
 /// A classified provider error.

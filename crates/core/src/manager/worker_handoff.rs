@@ -13,6 +13,8 @@
 //!   fresh session gets the note and the last messages word for word, and searches the rest.
 //! - **Same model, same attempt.** It is not a reroute: the task keeps its model, attempt and
 //!   access. A limit or error hand-on still wins when both are due.
+//! - **Stalls too.** The stall watchdog ([`super::watchdog`]) hands a worker that went silent
+//!   mid-turn, and didn't answer a nudge, over the same way, closing its stuck turn.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -200,11 +202,11 @@ impl SessionManager {
         handovers_since(&events, since)
     }
 
-    /// Continues `task` in a fresh session of the same model: closes its CLI (between turns),
-    /// writes the hand-off files, and starts the new session with `note`, the last messages and
-    /// `pending` (a message still to act on). `from` is the CLI session the hand-over was
-    /// decided for ([`TaskLive::generation`]). Boxed: the worker it starts can come back here,
-    /// and a recursive future must name its `Send` bound.
+    /// Continues `task` in a fresh session of the same model: closes its CLI (between turns,
+    /// or mid-turn when it stalled), writes the hand-off files, and starts the new session with
+    /// `note`, the last messages and `pending` (a message still to act on). `from` is the CLI
+    /// session the hand-over was decided for ([`TaskLive::generation`]). Boxed: the worker it
+    /// starts can come back here, and a recursive future must name its `Send` bound.
     pub(crate) fn hand_over_worker<'a>(
         &'a self,
         live: &'a Arc<TaskLive>,
@@ -212,8 +214,9 @@ impl SessionManager {
         from: u64,
         note: Option<String>,
         pending: Option<String>,
+        why: Handover,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.hand_over(live, task, from, note, pending))
+        Box::pin(self.hand_over(live, task, from, note, pending, why))
     }
 
     async fn hand_over(
@@ -223,6 +226,7 @@ impl SessionManager {
         from: u64,
         note: Option<String>,
         pending: Option<String>,
+        why: Handover,
     ) -> Result<()> {
         let _handing = live.reroute.lock().await;
         // Another hand-over came first (a message arrived while the turn that asked for a
@@ -281,15 +285,26 @@ impl SessionManager {
         let text = handover_text(
             &task,
             &dir,
-            tokens,
-            note.is_some(),
-            has_diff,
+            HandoverFacts {
+                why,
+                tokens,
+                has_note: note.is_some(),
+                has_diff,
+            },
             &tail,
             pending,
         );
-        let size = tokens.map_or_else(String::new, |tokens| {
-            format!(" at about {}k tokens", tokens / 1_000)
-        });
+        let size = match why {
+            Handover::Size => tokens.map_or_else(String::new, |tokens| {
+                format!(" at about {}k tokens", tokens / 1_000)
+            }),
+            Handover::Stalled { silent } => {
+                format!(
+                    " after {} without activity",
+                    super::watchdog::spoken(silent)
+                )
+            }
+        };
         self.record_worker_event(
             &task.id,
             ProviderEvent::Notice {
@@ -299,7 +314,7 @@ impl SessionManager {
         )
         .await;
         live.set_handovers(live.handovers().map(|count| count + 1));
-        tracing::info!(task = %task.id, ?tokens, with_note = note.is_some(), "worker handed over to a fresh session");
+        tracing::info!(task = %task.id, ?tokens, ?why, with_note = note.is_some(), "worker handed over to a fresh session");
         let workspace = task
             .workspace
             .as_ref()
@@ -469,22 +484,57 @@ fn transcript_entry(text: &mut String, event: &ProviderEvent) {
     }
 }
 
+/// Why a worker continues in a fresh session of the same model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Handover {
+    /// Its context passed the hand-off size.
+    Size,
+    /// It went silent mid-turn (for `silent` ms) and didn't answer a nudge.
+    Stalled { silent: i64 },
+}
+
+/// What the fresh session's first message says about the hand-over.
+struct HandoverFacts {
+    why: Handover,
+    /// The earlier session's context size, when known.
+    tokens: Option<i64>,
+    has_note: bool,
+    has_diff: bool,
+}
+
 /// The fresh session's first message.
 fn handover_text(
     task: &Task,
     dir: &std::path::Path,
-    tokens: Option<i64>,
-    has_note: bool,
-    has_diff: bool,
+    facts: HandoverFacts,
     tail: &[String],
     pending: Option<String>,
 ) -> String {
-    let size = tokens.map_or_else(String::new, |tokens| {
-        format!(" (about {}k tokens)", tokens / 1_000)
-    });
+    let HandoverFacts {
+        why,
+        tokens,
+        has_note,
+        has_diff,
+    } = facts;
+    let why = match why {
+        Handover::Size => {
+            let size = tokens.map_or_else(String::new, |tokens| {
+                format!(" (about {}k tokens)", tokens / 1_000)
+            });
+            format!(
+                "Your earlier session's context had grown large{size}, so it was closed between \
+                 turns to give you room"
+            )
+        }
+        Handover::Stalled { silent } => format!(
+            "Your earlier session went silent mid-turn for {} and didn't answer a nudge (a \
+             command or the CLI may have hung), so it was closed. Don't run a command that may \
+             hang without a timeout, or start a server in the foreground",
+            super::watchdog::spoken(silent)
+        ),
+    };
     let mut text = format!(
-        "[Brigadier] You are continuing task-{} in a fresh session. Your earlier session's context \
-         had grown large{size}, so it was closed between turns to give you room; you are the same \
+        "[Brigadier] You are continuing task-{} in a fresh session. {why}; you are the same \
          model, in the same place, and nothing in the worktree was touched. Its hand-off is in {}: ",
         task.number,
         dir.display()

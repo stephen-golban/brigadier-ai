@@ -6,7 +6,8 @@
 //! - **What cuts a model off.** A usage limit (the CLI's usage-limit error, or a rate-limit
 //!   notification refusing work), an auth or billing error, a context window too small for the
 //!   conversation, and transient errors (overloaded, server, network) twice in a row. The cut
-//!   happens when the model's turn is over, so nothing is left half-run.
+//!   happens when the model's turn is over, so nothing is left half-run. A worker that stalls
+//!   a second time in one attempt is cut at once ([`super::watchdog`]).
 //! - **The hand-off.** The old CLI session is closed (its own files are cleaned up as usual);
 //!   the worktree, the task branch and the scratch folder stay. Brigadier writes
 //!   `<scratch>/handoff/`: `spec.md` (the task and every later instruction from the
@@ -113,8 +114,9 @@ impl SessionManager {
             return;
         }
         live.close_cli().await;
-        // A new attempt: its hand-overs are counted afresh.
+        // A new attempt: its hand-overs and stalls are counted afresh.
         live.set_handovers(None);
+        live.reset_stalls().await;
         let from = task.route.choice.clone();
         if let AttemptEnd::Limit { limit } = &end {
             self.runtime.note_limit(from.provider, limit.clone()).await;
@@ -710,6 +712,7 @@ pub(crate) fn end_reason(end: &AttemptEnd) -> String {
             ErrorKind::ContextWindow => "context window full".into(),
             ErrorKind::Auth => "logged out".into(),
             ErrorKind::Process => "its CLI exited".into(),
+            ErrorKind::Stalled => "went silent".into(),
             _ => "kept failing".into(),
         },
     }

@@ -53,6 +53,7 @@ mod undo;
 mod uninstall;
 mod usage;
 mod usage_view;
+mod watchdog;
 mod worker_handoff;
 mod workers;
 
@@ -189,6 +190,7 @@ impl SessionManager {
         manager.recover().await;
         manager.open_brains().await;
         manager.start_hibernation_timer();
+        manager.start_watchdog();
         manager.retry_waiting_on_provider_checks();
         manager.start_checkpoint_timer();
         Ok(manager)

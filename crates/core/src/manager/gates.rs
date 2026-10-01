@@ -17,7 +17,8 @@
 //!   nothing lands, and the orchestrator hears why.
 //!
 //! A newer candidate (a fix, or a replay onto a target that moved) opens a new round, with a
-//! new verification; results of an older round are ignored.
+//! new verification; results of an older round are ignored. A round whose members all ended
+//! but that was never decided is settled by the stall watchdog ([`super::watchdog`]).
 
 use brigadier_git::Oid;
 use brigadier_router::Author;
@@ -755,6 +756,41 @@ impl SessionManager {
             // Boxed: stopping a member records its missing result, which reaches this gate.
             let _ = Box::pin(self.stop_task(member)).await;
         }
+    }
+
+    /// Decides a round every member has a result in that was left without an outcome (the
+    /// stall watchdog found it), as the last result would have. Returns whether it did.
+    pub(crate) async fn resettle_gate(&self, task: &Task) -> bool {
+        let decided = {
+            let _held = self.gates.lock().await;
+            let Ok(now) = self.task_by_id(&task.conversation_id, &task.id).await else {
+                return false;
+            };
+            let Some(mut gate) = now.gate.clone() else {
+                return false;
+            };
+            if now.state != TaskState::Reviewing
+                || gate.outcome.is_some()
+                || gate.members.is_empty()
+                || gate.members.iter().any(|m| m.result.is_none())
+            {
+                return false;
+            }
+            gate.outcome = Some(outcome_of(&gate.members));
+            match self
+                .update_task(&now.conversation_id, &now.id, |t| t.gate = Some(gate))
+                .await
+            {
+                Ok(task) => task,
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "could not settle a gate round");
+                    return false;
+                }
+            }
+        };
+        let manager = self.arc();
+        self.spawn(async move { manager.gate_decided(decided).await });
+        true
     }
 
     /// Who a checking task must not be, for a hand-off to another model. A gate member: the
