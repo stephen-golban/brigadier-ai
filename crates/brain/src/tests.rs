@@ -674,6 +674,84 @@ fn a_node_shows_its_latest_remaining_source() {
 }
 
 #[test]
+fn forgetting_a_confirmation_removes_only_its_file_evidence() {
+    // Exercise both keyed confirmation and same-content folding.
+    for key in [Some("convention:files"), None] {
+        let brain = TestBrain::new();
+        let recording = |session: &str, path: &str| {
+            let mut rule = node(NodeKind::Convention, key, "File evidence", "Keep it");
+            rule.provenance = provenance(Some(session));
+            rule.files = vec![FileRef {
+                path: path.into(),
+                hash: Some("h1".into()),
+            }];
+            rule
+        };
+        let id = brain.record(recording("s1", "a.rs")).unwrap();
+        assert_eq!(brain.record(recording("s2", "b.rs")).unwrap(), id);
+        assert_eq!(brain.node(&id).unwrap().unwrap().files.len(), 2);
+        assert_eq!(brain.forget_session("s2").unwrap(), 0);
+        let files = brain.node(&id).unwrap().unwrap().files;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "a.rs");
+        assert!(
+            brain
+                .files_changed(&[FileRef {
+                    path: "b.rs".into(),
+                    hash: None
+                }])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            brain
+                .files_changed(&[FileRef {
+                    path: "a.rs".into(),
+                    hash: Some("h2".into())
+                }])
+                .unwrap(),
+            [id]
+        );
+    }
+}
+
+#[test]
+fn renewing_a_source_replaces_only_its_own_files() {
+    let brain = TestBrain::new();
+    let recording = |session: &str, path: &str| {
+        let mut rule = node(
+            NodeKind::Convention,
+            Some("convention:files"),
+            "Evidence",
+            "",
+        );
+        rule.provenance = provenance(Some(session));
+        rule.files = vec![FileRef {
+            path: path.into(),
+            hash: Some("h1".into()),
+        }];
+        rule
+    };
+    let id = brain.record(recording("s1", "old.rs")).unwrap();
+    brain.record(recording("s2", "retained.rs")).unwrap();
+    brain.record(recording("s1", "new.rs")).unwrap();
+    let paths: Vec<String> = brain
+        .node(&id)
+        .unwrap()
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(paths, ["new.rs", "retained.rs"]);
+    brain.forget_session("s1").unwrap();
+    assert_eq!(
+        brain.node(&id).unwrap().unwrap().files[0].path,
+        "retained.rs"
+    );
+}
+
+#[test]
 fn forgetting_an_origin_keeps_what_another_confirmed() {
     let brain = TestBrain::new();
     let module = || node(NodeKind::Module, Some("module:core"), "core", "the core");

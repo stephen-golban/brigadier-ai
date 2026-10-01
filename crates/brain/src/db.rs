@@ -244,8 +244,14 @@ pub(crate) fn attach_files(conn: &Connection, nodes: &mut [Node]) -> Result<()> 
     let mut files: HashMap<String, Vec<FileRef>> = HashMap::new();
     for chunk in nodes.chunks(CHUNK) {
         let mut statement = conn.prepare_cached(&format!(
-            "SELECT node_id, path, hash FROM node_files WHERE node_id IN ({}) \
-             ORDER BY node_id, path",
+            "SELECT node_id, path, hash FROM ( \
+                 SELECT f.node_id, f.path, f.hash, row_number() OVER ( \
+                     PARTITION BY f.node_id, f.path \
+                     ORDER BY s.recorded_ms DESC, s.source DESC) AS newest \
+                 FROM node_files f JOIN node_sources s \
+                 ON s.node_id = f.node_id AND s.source = f.source \
+                 WHERE f.node_id IN ({})) \
+             WHERE newest = 1 ORDER BY node_id, path",
             placeholders(chunk.len())
         ))?;
         let mut rows = statement.query(params_from_iter(chunk.iter().map(|node| &node.id)))?;

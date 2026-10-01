@@ -147,6 +147,24 @@ fn migrations() -> Migrations<'static> {
         FROM nodes;",
         )
         .comment("the sources that support each node"),
+        M::up(
+            "CREATE TABLE node_source_files (
+            node_id TEXT NOT NULL,
+            source  TEXT NOT NULL,
+            path    TEXT NOT NULL,
+            hash    TEXT,
+            PRIMARY KEY (node_id, source, path),
+            FOREIGN KEY (node_id, source) REFERENCES node_sources (node_id, source)
+                ON DELETE CASCADE
+        ) STRICT, WITHOUT ROWID;
+        INSERT INTO node_source_files (node_id, source, path, hash)
+        SELECT f.node_id, s.source, f.path, f.hash FROM node_files f
+        JOIN node_sources s ON s.node_id = f.node_id;
+        DROP TABLE node_files;
+        ALTER TABLE node_source_files RENAME TO node_files;
+        CREATE INDEX node_files_by_path ON node_files (path);",
+        )
+        .comment("file evidence belongs to each supporting source"),
     ])
 }
 
@@ -174,4 +192,44 @@ pub(crate) fn configure_reader(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_file_evidence_migrates_to_supporting_sources() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_writer(&conn).unwrap();
+        migrations().to_version(&mut conn, 3).unwrap();
+        conn.execute_batch(
+            "INSERT INTO nodes (id, kind, title, body, provenance, created_ms, updated_ms)
+             VALUES ('n', 'convention', 'Rule', '', '{}', 1, 1);
+             INSERT INTO node_sources (node_id, source, origin, provenance, recorded_ms)
+             VALUES ('n', 's1', 'enrichment', '{}', 1), ('n', 's2', 'enrichment', '{}', 2);
+             INSERT INTO node_files (node_id, path, hash) VALUES ('n', 'a.rs', 'h1');",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        let count = |conn: &Connection| {
+            conn.query_row("SELECT count(*) FROM node_files", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count(&conn), 2);
+        conn.execute("DELETE FROM node_sources WHERE source = 's2'", [])
+            .unwrap();
+        assert_eq!(count(&conn), 1);
+        assert!(
+            !conn
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+        conn.execute("DELETE FROM nodes", []).unwrap();
+        assert_eq!(count(&conn), 0);
+    }
 }

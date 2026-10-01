@@ -138,7 +138,7 @@ pub(crate) fn record(
     let fold = fold_key(node.kind, session, &node.title, &node.body);
     let id = match existing(tx, node, fold.as_deref())? {
         // The same text again (or a rule already known in other words): it is confirmed, so
-        // fresh, with this recording's provenance and files.
+        // fresh, with this recording's provenance and its own supporting files.
         Some(found) if !found.by_key || (found.title == node.title && found.body == node.body) => {
             let embedding = embedding.filter(|_| found.by_key);
             tx.prepare_cached(
@@ -248,19 +248,6 @@ pub(crate) fn record(
             id
         }
     };
-    tx.prepare_cached("DELETE FROM node_files WHERE node_id = ?1")?
-        .execute([&id])?;
-    // A path listed twice keeps its last hash.
-    let files: BTreeMap<&str, Option<&str>> = node
-        .files
-        .iter()
-        .map(|file| (file.path.as_str(), file.hash.as_deref()))
-        .collect();
-    let mut insert =
-        tx.prepare_cached("INSERT INTO node_files (node_id, path, hash) VALUES (?1, ?2, ?3)")?;
-    for (path, hash) in files {
-        insert.execute(params![id, path, hash])?;
-    }
     Ok(id)
 }
 
@@ -294,6 +281,19 @@ fn add_source(tx: &Transaction, id: &str, node: &NewNode, json: &str) -> Result<
         json,
         provenance.recorded_at_ms
     ])?;
+    // Renewing a source replaces only its evidence (the old rows cascade on REPLACE).
+    // A path listed twice keeps its last hash.
+    let files: BTreeMap<&str, Option<&str>> = node
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.hash.as_deref()))
+        .collect();
+    let mut insert = tx.prepare_cached(
+        "INSERT INTO node_files (node_id, source, path, hash) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (path, hash) in files {
+        insert.execute(params![id, source, path, hash])?;
+    }
     Ok(())
 }
 
@@ -318,11 +318,6 @@ fn archive(
     )?
     .execute(params![id, copy, reason, now])?;
     tx.prepare_cached(
-        "INSERT INTO node_files (node_id, path, hash) \
-         SELECT ?2, path, hash FROM node_files WHERE node_id = ?1",
-    )?
-    .execute(params![id, copy])?;
-    tx.prepare_cached(
         "INSERT OR IGNORE INTO edges (from_id, to_id, kind) \
          SELECT ?2, to_id, kind FROM edges WHERE from_id = ?1 AND kind = 'decidedIn'",
     )?
@@ -331,7 +326,12 @@ fn archive(
         "INSERT INTO node_sources (node_id, source, origin, session_id, task_id, job_id, \
          provider, model, commit_id, provenance, recorded_ms) \
          SELECT ?2, source, origin, session_id, task_id, job_id, provider, model, commit_id, \
-         provenance, recorded_ms FROM node_sources WHERE node_id = ?1",
+        provenance, recorded_ms FROM node_sources WHERE node_id = ?1",
+    )?
+    .execute(params![id, copy])?;
+    tx.prepare_cached(
+        "INSERT INTO node_files (node_id, source, path, hash) \
+         SELECT ?2, source, path, hash FROM node_files WHERE node_id = ?1",
     )?
     .execute(params![id, copy])?;
     tx.prepare_cached("UPDATE nodes SET superseded_by = ?2 WHERE superseded_by = ?1 AND id != ?2")?
