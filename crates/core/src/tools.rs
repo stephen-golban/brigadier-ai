@@ -19,7 +19,7 @@ use std::sync::Mutex;
 
 use brigadier_providers::BoxFuture;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::model::{ConversationId, ProjectId, TaskId};
 use crate::work::{ChecksResult, ReviewVerdict, TaskKind};
@@ -452,14 +452,17 @@ pub struct SubmitReport {
     /// listed).
     #[serde(default)]
     pub changes: Vec<String>,
-    /// Decisions made and why.
-    #[serde(default)]
+    /// Decisions made and why, one per line.
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
     pub decisions: Vec<String>,
-    /// Exactly what was verified and how (commands run and their results).
-    #[serde(default)]
+    /// Exactly what was verified and how (commands run and their results), one item per line.
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
     pub verification: Vec<String>,
-    /// Questions left open, or (for reviews) the exact issues to fix.
-    #[serde(default)]
+    /// Questions left open, or (for reviews) the exact issues to fix, one per line.
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
     pub open_questions: Vec<String>,
     /// Review tasks only: the verdict on the reviewed change.
     #[serde(default)]
@@ -471,6 +474,33 @@ pub struct SubmitReport {
     /// Files from your scratch folder with details the report leaves out.
     #[serde(default)]
     pub artifacts: Vec<ArtifactInput>,
+}
+
+/// A report list given as one text, one item per line, or as a list. The schema asks for text:
+/// a model writing long items full of quotes and backticks sometimes emits a list as bare text,
+/// which breaks the call's JSON, while it writes a text field reliably.
+fn lines<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lines {
+        Text(String),
+        List(Vec<String>),
+    }
+    Ok(match Option::<Lines>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(Lines::List(items)) => items,
+        Some(Lines::Text(text)) => text
+            .lines()
+            .map(|line| {
+                let line = line.trim();
+                line.strip_prefix("- ")
+                    .or_else(|| line.strip_prefix("* "))
+                    .unwrap_or(line)
+            })
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    })
 }
 
 /// A tool call from a worker.
@@ -585,4 +615,55 @@ pub trait ToolHost: Send + Sync {
     /// directory it runs in; an approval is bound to exactly these.
     fn ask_outward(&self, grant: &str, argv: Vec<String>, cwd: String)
     -> BoxFuture<'_, GateAnswer>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(json: serde_json::Value) -> SubmitReport {
+        serde_json::from_value(json).expect("a valid report")
+    }
+
+    #[test]
+    fn a_report_list_may_be_text_one_item_per_line() {
+        let report = report(serde_json::json!({
+            "summary": "Done.",
+            "verification": "- Ran `pnpm test -- \"src/api\"`: 12 passed.\n\n* Read C:\\repo\\a.ts\nNo bullet",
+        }));
+        assert_eq!(
+            report.verification,
+            [
+                "Ran `pnpm test -- \"src/api\"`: 12 passed.",
+                "Read C:\\repo\\a.ts",
+                "No bullet"
+            ]
+        );
+        assert!(report.decisions.is_empty());
+    }
+
+    #[test]
+    fn a_report_list_may_still_be_a_list_or_null() {
+        let report = report(serde_json::json!({
+            "summary": "Done.",
+            "decisions": ["Kept the old name."],
+            "open_questions": null,
+        }));
+        assert_eq!(report.decisions, ["Kept the old name."]);
+        assert!(report.open_questions.is_empty());
+    }
+
+    #[test]
+    fn the_schema_asks_for_text() {
+        let schema = serde_json::to_value(schemars::schema_for!(SubmitReport)).expect("schema");
+        let verification = &schema["properties"]["verification"];
+        assert!(
+            verification.to_string().contains("\"string\""),
+            "{verification}"
+        );
+        assert!(
+            !verification.to_string().contains("array"),
+            "{verification}"
+        );
+    }
 }
