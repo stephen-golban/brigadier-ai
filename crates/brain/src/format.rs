@@ -19,6 +19,7 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
         return "Nothing in the Brain matches.".into();
     }
     let mut out = String::new();
+    let mut shown = 0;
     for hit in hits {
         let node = &hit.node;
         let mut head = header(node);
@@ -39,9 +40,11 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
             if out.is_empty() {
                 // The best hit shows at least its header, whatever the budget.
                 out.push_str(&head);
+                shown += 1;
             }
             break;
         };
+        shown += 1;
         if separator == 1 {
             out.push('\n');
         }
@@ -53,6 +56,14 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
         out.push_str(&tail);
     }
     out.truncate(out.trim_end().len());
+    // Nothing is dropped silently.
+    if shown < hits.len() {
+        let _ = write!(
+            out,
+            "\n\n{} more hit(s) didn't fit the answer's budget; ask a narrower question to see them.",
+            hits.len() - shown
+        );
+    }
     out
 }
 
@@ -85,8 +96,17 @@ fn header(node: &Node) -> String {
         state,
         node.title.trim()
     );
-    if let NodeState::Stale { reason, .. } = &node.state {
-        let _ = write!(out, "\nSTALE: {reason} — re-check before relying on it");
+    match &node.state {
+        NodeState::Stale { reason, .. } => {
+            let _ = write!(out, "\nSTALE: {reason} — re-check before relying on it");
+        }
+        NodeState::Superseded { by, reason, .. } => {
+            let _ = write!(out, "\nSUPERSEDED by {by}");
+            if let Some(reason) = reason {
+                let _ = write!(out, ": {reason}");
+            }
+        }
+        NodeState::Fresh => {}
     }
     out
 }
@@ -109,14 +129,7 @@ fn file_line(node: &Node) -> String {
 /// `— from report task-7 (codex gpt-…), session …, commit abc1234, 2026-09-28`.
 fn provenance(provenance: &Provenance) -> String {
     let mut out = String::from("— from ");
-    out.push_str(match provenance.origin {
-        Origin::Index => "the code index",
-        Origin::Skeleton => "the skeleton pass",
-        Origin::Enrichment => "enrichment",
-        Origin::Report => "report",
-        Origin::Orchestrator => "the orchestrator",
-        Origin::User => "the user",
-    });
+    out.push_str(origin_label(provenance.origin));
     if let Some(task) = &provenance.task_id {
         let _ = write!(out, " {task}");
     }
@@ -139,6 +152,18 @@ fn provenance(provenance: &Provenance) -> String {
     }
     let _ = write!(out, ", {}", date(provenance.recorded_at_ms));
     out
+}
+
+/// Where knowledge came from, in words.
+pub(crate) fn origin_label(origin: Origin) -> &'static str {
+    match origin {
+        Origin::Index => "the code index",
+        Origin::Skeleton => "the skeleton pass",
+        Origin::Enrichment => "enrichment",
+        Origin::Report => "report",
+        Origin::Orchestrator => "the orchestrator",
+        Origin::User => "the user",
+    }
 }
 
 /// `text` within `max` bytes, cut at the end of a sentence if one ends in the second half,

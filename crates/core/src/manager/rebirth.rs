@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
-use brigadier_brain::{BrainQuery, Node, NodeFilter, NodeKind, Origin as NodeOrigin};
+use brigadier_brain::{BrainQuery, Node, NodeFilter, NodeKind, NodeState, Origin as NodeOrigin};
 use brigadier_providers::{
     Access, Origin, ProviderEvent, ProviderKind, Role as MessageAuthor, SessionSpec, Started,
     ToolSet, TurnInput,
@@ -819,6 +819,7 @@ impl SessionManager {
                         limit: Some(8),
                         max_tokens: Some(1_200),
                         files: false,
+                        history: false,
                     })
                     .ok()
             };
@@ -833,6 +834,17 @@ impl SessionManager {
         let (key, rest): (Vec<&Node>, Vec<&Node>) = structure
             .iter()
             .partition(|node| node.title.starts_with("Stack") || node.title.starts_with("Recipe"));
+        // One stack and one recipe: earlier passes may have left others under other titles.
+        // The fresh one, else the newest (the list is newest first).
+        let key = ["Stack", "Recipe"].into_iter().filter_map(|prefix| {
+            let of_prefix = || {
+                key.iter()
+                    .filter(move |node| node.title.starts_with(prefix))
+            };
+            of_prefix()
+                .find(|node| is_fresh(node))
+                .or_else(|| of_prefix().next())
+        });
         for node in key {
             items += 1;
             text.push_str(&format!(
@@ -847,7 +859,9 @@ impl SessionManager {
             NodeKind::Contract,
             NodeKind::Convention,
         ] {
-            let of_kind: Vec<&&Node> = rest.iter().filter(|node| node.kind == kind).collect();
+            let mut of_kind: Vec<&&Node> = rest.iter().filter(|node| node.kind == kind).collect();
+            // What holds now first; a stale one says so.
+            of_kind.sort_by_key(|node| !is_fresh(node));
             if of_kind.is_empty() {
                 continue;
             }
@@ -855,14 +869,19 @@ impl SessionManager {
             for node in of_kind {
                 items += 1;
                 let described = node.provenance.origin != NodeOrigin::Index;
+                let outdated = if is_fresh(node) {
+                    ""
+                } else {
+                    " (may be outdated)"
+                };
                 if described {
                     text.push_str(&format!(
-                        "- {}: {}\n",
+                        "- {}{outdated}: {}\n",
                         node.title,
                         one_line(&node.body, 200)
                     ));
                 } else {
-                    text.push_str(&format!("- {}\n", node.title));
+                    text.push_str(&format!("- {}{outdated}\n", node.title));
                 }
             }
         }
@@ -1118,4 +1137,9 @@ impl RebirthPrep {
     pub fn is_due(&self) -> bool {
         self.due.load(Ordering::Acquire)
     }
+}
+
+/// The node holds as recorded (not stale; superseded ones aren't listed).
+fn is_fresh(node: &Node) -> bool {
+    matches!(node.state, NodeState::Fresh)
 }

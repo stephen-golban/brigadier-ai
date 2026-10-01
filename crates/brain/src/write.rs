@@ -1,13 +1,129 @@
 //! The Brain's writes, each run in one transaction on the writer thread. Each returns the
 //! changes to the in-memory vectors it made, applied once it commits.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use rusqlite::{OptionalExtension, Transaction, params};
+use sha2::{Digest, Sha256};
 
 use crate::db::{self, edge_kind_str, kind_str};
 use crate::vectors::Change;
-use crate::{Error, FileRef, NewEdge, NewNode, Result, embed};
+use crate::{Error, FileRef, NewEdge, NewNode, NodeKind, Result, embed, format};
+
+/// Edges a node's current fact needs, which a node replacing it takes over. The others
+/// (`decidedIn`, `supersedes`) are its history and stay with it.
+const CURRENT_EDGES: &str = "'contains', 'about', 'dependsOn', 'implements', 'consumes', 'relates'";
+
+/// Kinds whose rewrites keep the old text as a superseded node: rules and choices, where what
+/// held before still explains the code. Summaries of modules and files describe what is there
+/// now; their old text is in the repository's history.
+fn keeps_history(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Decision | NodeKind::Convention | NodeKind::Contract | NodeKind::Preference
+    )
+}
+
+/// Text compared for sameness: lowercase; letters, digits and the symbols that change a
+/// meaning (`c++` is not `c#`) kept; `.`, `-` and `/` kept between letters or digits (`v1.2`,
+/// `src/lib`); anything else is a space, and runs of spaces are one.
+fn normalize(text: &str) -> String {
+    let chars: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let joins = |at: usize| {
+        at > 0
+            && chars[at - 1].is_alphanumeric()
+            && chars.get(at + 1).is_some_and(|next| next.is_alphanumeric())
+    };
+    let mut out = String::with_capacity(chars.len());
+    let mut gap = false;
+    for (at, &c) in chars.iter().enumerate() {
+        let keep = c.is_alphanumeric()
+            || "+#$%&*=<>@^~|\\_".contains(c)
+            || (matches!(c, '.' | '-' | '/') && joins(at));
+        if !keep {
+            gap = true;
+            continue;
+        }
+        if gap && !out.is_empty() {
+            out.push(' ');
+        }
+        gap = false;
+        out.push(c);
+    }
+    out
+}
+
+/// What makes two rules the same without a model: the same kind family, the same scope (a
+/// decision belongs to the conversation it was made in; conventions and contracts to the
+/// project) and the same title and body once [`normalize`]d. `None` for other kinds.
+pub(crate) fn fold_key(
+    kind: NodeKind,
+    session: Option<&str>,
+    title: &str,
+    body: &str,
+) -> Option<String> {
+    let (family, scope) = match kind {
+        NodeKind::Decision => ("decision", session.unwrap_or_default()),
+        NodeKind::Convention | NodeKind::Contract => ("rule", "project"),
+        _ => return None,
+    };
+    let mut hasher = Sha256::new();
+    for part in [family, scope, &normalize(title), &normalize(body)] {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    Some(
+        hasher.finalize()[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+/// The current node a new one updates: the one with its kind and key, else a rule with the
+/// same content (`by_key` false).
+struct Existing {
+    id: String,
+    title: String,
+    body: String,
+    stale_reason: Option<String>,
+    by_key: bool,
+}
+
+fn existing(tx: &Transaction, node: &NewNode, fold: Option<&str>) -> Result<Option<Existing>> {
+    let row = |by_key: bool| {
+        move |row: &rusqlite::Row<'_>| {
+            Ok(Existing {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                body: row.get(2)?,
+                stale_reason: row.get(3)?,
+                by_key,
+            })
+        }
+    };
+    if let Some(key) = &node.key {
+        let found = tx
+            .prepare_cached(
+                "SELECT id, title, body, stale_reason FROM nodes \
+                 WHERE kind = ?1 AND key = ?2 AND state != 'superseded'",
+            )?
+            .query_row(params![kind_str(node.kind), key], row(true))
+            .optional()?;
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    let Some(fold) = fold else { return Ok(None) };
+    Ok(tx
+        .prepare_cached(
+            "SELECT id, title, body, stale_reason FROM nodes \
+             WHERE fold_key = ?1 AND state != 'superseded' \
+             ORDER BY state = 'fresh' DESC, updated_ms DESC, rid DESC LIMIT 1",
+        )?
+        .query_row([fold], row(false))
+        .optional()?)
+}
 
 pub(crate) fn record(
     tx: &Transaction,
@@ -19,26 +135,57 @@ pub(crate) fn record(
     let provenance = serde_json::to_string(&node.provenance)
         .map_err(|err| Error::Invalid(format!("provenance: {err}")))?;
     let session = node.provenance.session_id.as_deref();
-    let model = embedding.as_ref().map(|_| embed::MODEL_ID);
-    let existing = match &node.key {
-        Some(key) => tx
-            .prepare_cached("SELECT id FROM nodes WHERE kind = ?1 AND key = ?2")?
-            .query_row(params![kind_str(node.kind), key], |row| {
-                row.get::<_, String>(0)
-            })
-            .optional()?,
-        None => None,
-    };
-    let id = match existing {
-        Some(id) => {
+    let fold = fold_key(node.kind, session, &node.title, &node.body);
+    let id = match existing(tx, node, fold.as_deref())? {
+        // The same text again (or a rule already known in other words): it is confirmed, so
+        // fresh, with this recording's provenance and files.
+        Some(found) if !found.by_key || (found.title == node.title && found.body == node.body) => {
+            let embedding = embedding.filter(|_| found.by_key);
+            tx.prepare_cached(
+                "UPDATE nodes SET state = 'fresh', stale_reason = NULL, stale_since_ms = NULL, \
+                 provenance = ?2, session_id = ?3, updated_ms = ?4, expires_ms = ?5, \
+                 embedding = coalesce(?6, embedding), \
+                 embed_model = iif(?6 IS NULL, embed_model, ?7) WHERE id = ?1",
+            )?
+            .execute(params![
+                found.id,
+                provenance,
+                session,
+                now,
+                node.expires_at_ms,
+                embedding,
+                embed::MODEL_ID
+            ])?;
+            if let Some(blob) = embedding {
+                changes.push(Change::Set {
+                    id: found.id.clone(),
+                    kind: node.kind,
+                    superseded: false,
+                    blob,
+                });
+            }
+            found.id
+        }
+        Some(found) => {
+            if keeps_history(node.kind) {
+                let mut reason = format!(
+                    "rewritten by {}",
+                    format::origin_label(node.provenance.origin)
+                );
+                if let Some(stale) = &found.stale_reason {
+                    reason.push_str(&format!("; it was stale: {stale}"));
+                }
+                archive(tx, &found.id, &reason, now, changes)?;
+            }
+            let model = embedding.as_ref().map(|_| embed::MODEL_ID);
             tx.prepare_cached(
                 "UPDATE nodes SET title = ?2, body = ?3, state = 'fresh', stale_reason = NULL, \
                  stale_since_ms = NULL, superseded_by = NULL, provenance = ?4, \
                  session_id = ?5, updated_ms = ?6, expires_ms = ?7, embedding = ?8, \
-                 embed_model = ?9 WHERE id = ?1",
+                 embed_model = ?9, fold_key = ?10 WHERE id = ?1",
             )?
             .execute(params![
-                id,
+                found.id,
                 node.title,
                 node.body,
                 provenance,
@@ -46,18 +193,27 @@ pub(crate) fn record(
                 now,
                 node.expires_at_ms,
                 embedding,
-                model
+                model,
+                fold
             ])?;
-            tx.prepare_cached("DELETE FROM node_files WHERE node_id = ?1")?
-                .execute([&id])?;
-            id
+            changes.push(match embedding {
+                Some(blob) => Change::Set {
+                    id: found.id.clone(),
+                    kind: node.kind,
+                    superseded: false,
+                    blob,
+                },
+                None => Change::Remove(found.id.clone()),
+            });
+            found.id
         }
         None => {
             let id = uuid::Uuid::now_v7().to_string();
+            let model = embedding.as_ref().map(|_| embed::MODEL_ID);
             tx.prepare_cached(
                 "INSERT INTO nodes (id, kind, key, title, body, provenance, session_id, \
-                 created_ms, updated_ms, expires_ms, embedding, embed_model) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11)",
+                 created_ms, updated_ms, expires_ms, embedding, embed_model, fold_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12)",
             )?
             .execute(params![
                 id,
@@ -70,11 +226,23 @@ pub(crate) fn record(
                 now,
                 node.expires_at_ms,
                 embedding,
-                model
+                model,
+                fold
             ])?;
+            changes.push(match embedding {
+                Some(blob) => Change::Set {
+                    id: id.clone(),
+                    kind: node.kind,
+                    superseded: false,
+                    blob,
+                },
+                None => Change::Remove(id.clone()),
+            });
             id
         }
     };
+    tx.prepare_cached("DELETE FROM node_files WHERE node_id = ?1")?
+        .execute([&id])?;
     // A path listed twice keeps its last hash.
     let files: BTreeMap<&str, Option<&str>> = node
         .files
@@ -86,16 +254,65 @@ pub(crate) fn record(
     for (path, hash) in files {
         insert.execute(params![id, path, hash])?;
     }
-    changes.push(match embedding {
-        Some(blob) => Change::Set {
-            id: id.clone(),
-            kind: node.kind,
-            superseded: false,
-            blob,
-        },
-        None => Change::Remove(id.clone()),
-    });
     Ok(id)
+}
+
+/// Keeps `id` as it stands now as a superseded copy, before `id` is rewritten in place: the
+/// copy has its text, files, embedding and history edges, and the older versions hang off it,
+/// so the history stays one line. `id` keeps its id, so links to it stay valid.
+fn archive(
+    tx: &Transaction,
+    id: &str,
+    reason: &str,
+    now: i64,
+    changes: &mut Vec<Change>,
+) -> Result<String> {
+    let copy = uuid::Uuid::now_v7().to_string();
+    tx.prepare_cached(
+        "INSERT INTO nodes (id, kind, key, title, body, state, stale_reason, stale_since_ms, \
+         superseded_by, superseded_reason, superseded_ms, provenance, session_id, created_ms, \
+         updated_ms, expires_ms, embedding, embed_model, fold_key) \
+         SELECT ?2, kind, key, title, body, 'superseded', stale_reason, stale_since_ms, id, ?3, \
+         ?4, provenance, session_id, created_ms, updated_ms, expires_ms, embedding, embed_model, \
+         fold_key FROM nodes WHERE id = ?1",
+    )?
+    .execute(params![id, copy, reason, now])?;
+    tx.prepare_cached(
+        "INSERT INTO node_files (node_id, path, hash) \
+         SELECT ?2, path, hash FROM node_files WHERE node_id = ?1",
+    )?
+    .execute(params![id, copy])?;
+    tx.prepare_cached(
+        "INSERT OR IGNORE INTO edges (from_id, to_id, kind) \
+         SELECT ?2, to_id, kind FROM edges WHERE from_id = ?1 AND kind = 'decidedIn'",
+    )?
+    .execute(params![id, copy])?;
+    tx.prepare_cached("UPDATE nodes SET superseded_by = ?2 WHERE superseded_by = ?1 AND id != ?2")?
+        .execute(params![id, copy])?;
+    tx.prepare_cached("UPDATE edges SET from_id = ?2 WHERE from_id = ?1 AND kind = 'supersedes'")?
+        .execute(params![id, copy])?;
+    tx.prepare_cached("INSERT INTO edges (from_id, to_id, kind) VALUES (?1, ?2, 'supersedes')")?
+        .execute(params![id, copy])?;
+    let stored = tx
+        .prepare_cached(
+            "SELECT kind, embedding FROM nodes \
+             WHERE id = ?1 AND embedding IS NOT NULL AND embed_model = ?2",
+        )?
+        .query_row(params![copy, embed::MODEL_ID], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .optional()?;
+    if let Some((kind, blob)) = stored
+        && let Some(kind) = db::parse_kind(&kind)
+    {
+        changes.push(Change::Set {
+            id: copy.clone(),
+            kind,
+            superseded: true,
+            blob,
+        });
+    }
+    Ok(copy)
 }
 
 pub(crate) fn link(tx: &Transaction, edges: &[NewEdge]) -> Result<()> {
@@ -142,6 +359,8 @@ pub(crate) fn supersede(
     tx: &Transaction,
     old: &str,
     new: &str,
+    reason: &str,
+    now: i64,
     changes: &mut Vec<Change>,
 ) -> Result<()> {
     let old = db::resolve(tx, old)?;
@@ -165,11 +384,13 @@ pub(crate) fn supersede(
         }
         at = by;
     }
+    // Its stale reason stays: if it is ever current again, it is as stale as it was.
     tx.prepare_cached(
-        "UPDATE nodes SET state = 'superseded', superseded_by = ?2, stale_reason = NULL, \
-         stale_since_ms = NULL WHERE id = ?1",
+        "UPDATE nodes SET state = 'superseded', superseded_by = ?2, superseded_reason = ?3, \
+         superseded_ms = ?4 WHERE id = ?1",
     )?
-    .execute(params![old, new])?;
+    .execute(params![old, new, reason, now])?;
+    copy_current_edges(tx, &old, &new)?;
     tx.prepare_cached("INSERT OR IGNORE INTO edges (from_id, to_id, kind) VALUES (?1, ?2, ?3)")?
         .execute(params![
             new,
@@ -183,27 +404,131 @@ pub(crate) fn supersede(
     Ok(())
 }
 
-/// Nodes superseded by one about to be deleted are current again.
-fn revive(tx: &Transaction, ids: &[String], changes: &mut Vec<Change>) -> Result<()> {
-    let mut revive = tx.prepare_cached(
-        "UPDATE nodes SET state = 'fresh', superseded_by = NULL WHERE superseded_by = ?1 \
-         RETURNING id",
+/// Gives `to` the edges `from`'s current fact has ([`CURRENT_EDGES`]), either way.
+fn copy_current_edges(tx: &Transaction, from: &str, to: &str) -> Result<()> {
+    tx.prepare_cached(&format!(
+        "INSERT OR IGNORE INTO edges (from_id, to_id, kind) \
+         SELECT ?2, to_id, kind FROM edges \
+         WHERE from_id = ?1 AND to_id != ?2 AND kind IN ({CURRENT_EDGES})"
+    ))?
+    .execute(params![from, to])?;
+    tx.prepare_cached(&format!(
+        "INSERT OR IGNORE INTO edges (from_id, to_id, kind) \
+         SELECT from_id, ?2, kind FROM edges \
+         WHERE to_id = ?1 AND from_id != ?2 AND kind IN ({CURRENT_EDGES})"
+    ))?
+    .execute(params![from, to])?;
+    Ok(())
+}
+
+/// Hangs `children` (superseded versions) off `parent`.
+fn repoint(tx: &Transaction, children: &[String], parent: &str) -> Result<()> {
+    let mut update = tx.prepare_cached("UPDATE nodes SET superseded_by = ?2 WHERE id = ?1")?;
+    let mut link = tx.prepare_cached(
+        "INSERT OR IGNORE INTO edges (from_id, to_id, kind) VALUES (?1, ?2, 'supersedes')",
     )?;
-    for id in ids {
-        let revived = revive
-            .query_map([id], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        changes.extend(revived.into_iter().map(|id| Change::Superseded {
-            id,
-            superseded: false,
-        }));
+    for child in children {
+        update.execute(params![child, parent])?;
+        link.execute(params![parent, child])?;
     }
     Ok(())
 }
 
-pub(crate) fn delete(tx: &Transaction, id: &str, changes: &mut Vec<Change>) -> Result<()> {
+/// Before `doomed` are deleted: the history they hold moves up, and where a current node goes,
+/// its latest earlier version is current again (unless another node holds its key by now),
+/// with the freshness it had.
+fn revive(tx: &Transaction, doomed: &[String], now: i64, changes: &mut Vec<Change>) -> Result<()> {
+    let gone: HashSet<&str> = doomed.iter().map(String::as_str).collect();
+    let mut state = tx.prepare_cached("SELECT state, superseded_by FROM nodes WHERE id = ?1")?;
+    let mut children = tx.prepare_cached(
+        "SELECT id, kind, key FROM nodes WHERE superseded_by = ?1 AND state = 'superseded' \
+         ORDER BY superseded_ms IS NULL, superseded_ms DESC, rid DESC",
+    )?;
+    let mut current = Vec::new();
+    for id in doomed {
+        let Some((state, by)) = state
+            .query_row([id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        match by.filter(|_| state == "superseded") {
+            // Its earlier versions now hang off what replaced it (read again each time: that
+            // may have moved too).
+            Some(by) => {
+                let below: Vec<String> = children
+                    .query_map([id], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                repoint(tx, &below, &by)?;
+            }
+            None => current.push(id),
+        }
+    }
+    // The keys of current nodes going away are free for their earlier versions.
+    let mut unkey = tx.prepare_cached("UPDATE nodes SET key = NULL WHERE id = ?1")?;
+    for id in &current {
+        unkey.execute([id])?;
+    }
+    let mut holder = tx.prepare_cached(
+        "SELECT id FROM nodes WHERE kind = ?1 AND key = ?2 AND state != 'superseded'",
+    )?;
+    let mut restore = tx.prepare_cached(
+        "UPDATE nodes SET superseded_by = NULL, superseded_reason = NULL, superseded_ms = NULL, \
+         state = CASE WHEN stale_reason IS NOT NULL THEN 'stale' \
+                      WHEN expires_ms IS NOT NULL AND expires_ms <= ?2 THEN 'stale' \
+                      ELSE 'fresh' END, \
+         stale_since_ms = CASE WHEN stale_reason IS NOT NULL THEN coalesce(stale_since_ms, ?2) \
+                               WHEN expires_ms IS NOT NULL AND expires_ms <= ?2 THEN ?2 END, \
+         stale_reason = CASE WHEN stale_reason IS NOT NULL THEN stale_reason \
+                             WHEN expires_ms IS NOT NULL AND expires_ms <= ?2 \
+                             THEN 'older than its TTL' END \
+         WHERE id = ?1",
+    )?;
+    for id in current {
+        let versions: Vec<(String, String, Option<String>)> = children
+            .query_map([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<(String, String, Option<String>)>>>()?
+            .into_iter()
+            .filter(|(child, _, _)| !gone.contains(child.as_str()))
+            .collect();
+        let Some((latest, kind, key)) = versions.first() else {
+            continue;
+        };
+        let held = match key {
+            Some(key) => holder
+                .query_map(params![kind, key], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .find(|other| !gone.contains(other.as_str())),
+            None => None,
+        };
+        let ids: Vec<String> = versions.iter().map(|(child, _, _)| child.clone()).collect();
+        match held {
+            Some(other) => repoint(tx, &ids, &other)?,
+            None => {
+                restore.execute(params![latest, now])?;
+                copy_current_edges(tx, id, latest)?;
+                repoint(tx, &ids[1..], latest)?;
+                changes.push(Change::Superseded {
+                    id: latest.clone(),
+                    superseded: false,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn delete(
+    tx: &Transaction,
+    id: &str,
+    now: i64,
+    changes: &mut Vec<Change>,
+) -> Result<()> {
     let ids = [id.to_owned()];
-    revive(tx, &ids, changes)?;
+    revive(tx, &ids, now, changes)?;
     if tx
         .prepare_cached("DELETE FROM nodes WHERE id = ?1")?
         .execute([id])?
@@ -218,13 +543,14 @@ pub(crate) fn delete(tx: &Transaction, id: &str, changes: &mut Vec<Change>) -> R
 pub(crate) fn forget_session(
     tx: &Transaction,
     session: &str,
+    now: i64,
     changes: &mut Vec<Change>,
 ) -> Result<u64> {
     let ids = tx
         .prepare_cached("SELECT id FROM nodes WHERE session_id = ?1")?
         .query_map([session], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    revive(tx, &ids, changes)?;
+    revive(tx, &ids, now, changes)?;
     tx.prepare_cached("DELETE FROM nodes WHERE session_id = ?1")?
         .execute([session])?;
     tx.prepare_cached("DELETE FROM transcript WHERE conversation_id = ?1")?
@@ -237,6 +563,7 @@ pub(crate) fn forget_session(
 pub(crate) fn forget_origins(
     tx: &Transaction,
     origins: &[String],
+    now: i64,
     changes: &mut Vec<Change>,
 ) -> Result<u64> {
     let mut select =
@@ -249,7 +576,7 @@ pub(crate) fn forget_origins(
                 .collect::<rusqlite::Result<Vec<_>>>()?,
         );
     }
-    revive(tx, &ids, changes)?;
+    revive(tx, &ids, now, changes)?;
     let mut delete = tx.prepare_cached("DELETE FROM nodes WHERE id = ?1")?;
     for id in &ids {
         delete.execute([id])?;
@@ -266,11 +593,17 @@ pub(crate) fn files_changed(
 ) -> Result<Vec<String>> {
     let mut recorded = tx.prepare_cached(
         "SELECT n.id, f.hash FROM node_files f JOIN nodes n ON n.id = f.node_id \
-         WHERE f.path = ?1 AND f.hash IS NOT NULL AND n.state = 'fresh'",
+         WHERE f.path = ?1 AND f.hash IS NOT NULL AND n.state != 'stale'",
     )?;
     let mut mark = tx.prepare_cached(
         "UPDATE nodes SET state = 'stale', stale_reason = ?2, stale_since_ms = ?3 \
          WHERE id = ?1 AND state = 'fresh'",
+    )?;
+    // An earlier version goes stale quietly: it stays history, and is stale if it is ever
+    // current again.
+    let mut mark_history = tx.prepare_cached(
+        "UPDATE nodes SET stale_reason = ?2, stale_since_ms = ?3 \
+         WHERE id = ?1 AND state = 'superseded' AND stale_reason IS NULL",
     )?;
     let mut stale = Vec::new();
     for change in changes {
@@ -289,6 +622,8 @@ pub(crate) fn files_changed(
             }
             if mark.execute(params![id, reason, now])? > 0 {
                 stale.push(id);
+            } else {
+                mark_history.execute(params![id, reason, now])?;
             }
         }
     }
@@ -348,4 +683,66 @@ pub(crate) fn set_embeddings(
         }
     }
     Ok(stored)
+}
+
+/// Gives decisions, conventions and contracts recorded before same-content keys existed their
+/// [`fold_key`], then folds current rules that say the same thing: the fresh one (else the
+/// newest) stays, the others become its history. Returns how many were folded.
+pub(crate) fn settle_rules(tx: &Transaction, now: i64, changes: &mut Vec<Change>) -> Result<u64> {
+    let unkeyed: Vec<(String, String, Option<String>, String, String)> = tx
+        .prepare_cached(
+            "SELECT id, kind, session_id, title, body FROM nodes \
+             WHERE fold_key IS NULL AND kind IN ('decision', 'convention', 'contract')",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if unkeyed.is_empty() {
+        return Ok(0);
+    }
+    let mut set = tx.prepare_cached("UPDATE nodes SET fold_key = ?2 WHERE id = ?1")?;
+    for (id, kind, session, title, body) in &unkeyed {
+        let fold =
+            db::parse_kind(kind).and_then(|kind| fold_key(kind, session.as_deref(), title, body));
+        set.execute(params![id, fold])?;
+    }
+    let groups: Vec<String> = tx
+        .prepare_cached(
+            "SELECT fold_key FROM nodes WHERE fold_key IS NOT NULL AND state != 'superseded' \
+             GROUP BY fold_key HAVING COUNT(*) > 1",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut members = tx.prepare_cached(
+        "SELECT id FROM nodes WHERE fold_key = ?1 AND state != 'superseded' \
+         ORDER BY state = 'fresh' DESC, updated_ms DESC, rid DESC",
+    )?;
+    let mut folded = 0;
+    for group in groups {
+        let ids: Vec<String> = members
+            .query_map([group], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let Some((keeper, rest)) = ids.split_first() else {
+            continue;
+        };
+        for id in rest {
+            supersede(
+                tx,
+                id,
+                keeper,
+                "the same rule as a newer node",
+                now,
+                changes,
+            )?;
+            folded += 1;
+        }
+    }
+    Ok(folded)
 }

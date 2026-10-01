@@ -52,7 +52,8 @@ your context.";
 const QUERY_BRAIN: &str = "Ask the Project Brain: what Brigadier knows about this project \
 (its modules and services, earlier scout and research findings, decisions, conventions, \
 contracts) and the user's preferences, each with where it came from. Fast and cheap: ask it \
-first, and delegate a scout only when it has no answer or marks its answer stale.";
+first, and delegate a scout only when it has no answer or marks its answer stale. It answers with \
+what holds now; set `history` to also see earlier versions and why they changed.";
 
 const REMEMBER: &str = "Keep something that later work must respect: a decision the user \
 settled or you made, a convention of this project, a contract between parts, or (personal) a \
@@ -98,7 +99,9 @@ const RECORD_NODES: &str = "Record what you found in the Project Brain: one node
 service, important file, convention or contract, each with a short title and a body of a few \
 plain sentences (what it is for, what matters about it). Give modules and file summaries their \
 repository-relative `path`, and list in `files` the files each was learned from. Call it as \
-often as you like; a node with the same kind and path replaces the earlier one.";
+often as you like; a node with the same kind and path replaces the earlier one. A node that \
+replaces one under another title or kind (a stale convention, reworded) names its key in \
+`replaces`; the old one is kept as history.";
 
 const SAVE_MEMORY: &str = "Save something about the user that will help in later \
 conversations (a preference, their role, what they work on), as one short sentence. Only when \

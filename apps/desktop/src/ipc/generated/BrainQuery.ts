@@ -20,4 +20,9 @@ maxTokens: number | null,
 /**
  * The answer names each hit's files, so knowledge leads to code.
  */
-files: boolean, };
+files: boolean, 
+/**
+ * Earlier versions (superseded nodes) may match too, marked as such. Without it, a match
+ * on an earlier version of a rule brings the current one.
+ */
+history: boolean, };

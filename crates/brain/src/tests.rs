@@ -1,0 +1,562 @@
+//! The Brain's write path: history instead of overwrites, same-content folding, ordered
+//! revival, and stale nodes not leading answers.
+
+use super::*;
+
+/// A Brain in its own temporary folder, removed on drop. No embedding model: retrieval is
+/// full-text only.
+struct TestBrain {
+    brain: Brain,
+    dir: PathBuf,
+}
+
+impl TestBrain {
+    fn new() -> Self {
+        let dir = std::env::temp_dir().join(format!("brain-test-{}", uuid::Uuid::now_v7()));
+        let embedder = Embedder::new(dir.join("models"));
+        let brain = Brain::open(&dir.join("brain.sqlite"), Scope::Project, embedder).unwrap();
+        Self { brain, dir }
+    }
+}
+
+impl Drop for TestBrain {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl std::ops::Deref for TestBrain {
+    type Target = Brain;
+    fn deref(&self) -> &Brain {
+        &self.brain
+    }
+}
+
+fn provenance(session: Option<&str>) -> Provenance {
+    Provenance {
+        origin: Origin::Enrichment,
+        session_id: session.map(str::to_owned),
+        task_id: None,
+        job_id: None,
+        worker: None,
+        commit: None,
+        recorded_at_ms: 1,
+    }
+}
+
+fn node(kind: NodeKind, key: Option<&str>, title: &str, body: &str) -> NewNode {
+    NewNode {
+        kind,
+        key: key.map(str::to_owned),
+        title: title.into(),
+        body: body.into(),
+        provenance: provenance(None),
+        files: Vec::new(),
+        expires_at_ms: None,
+    }
+}
+
+fn decision(session: &str, key: &str, title: &str) -> NewNode {
+    NewNode {
+        provenance: provenance(Some(session)),
+        ..node(NodeKind::Decision, Some(key), title, "")
+    }
+}
+
+fn all(brain: &Brain) -> Vec<Node> {
+    brain.nodes(&NodeFilter::default()).unwrap()
+}
+
+fn superseded_by(node: &Node) -> Option<&str> {
+    match &node.state {
+        NodeState::Superseded { by, .. } => Some(by),
+        _ => None,
+    }
+}
+
+fn query(brain: &Brain, text: &str, history: bool) -> Vec<BrainHit> {
+    brain
+        .query(&BrainQuery {
+            text: text.into(),
+            history,
+            ..BrainQuery::default()
+        })
+        .unwrap()
+        .hits
+}
+
+#[test]
+fn a_rewritten_rule_keeps_its_earlier_text_as_history() {
+    let brain = TestBrain::new();
+    let first = node(
+        NodeKind::Convention,
+        Some("convention:x"),
+        "Stack: Tauri 1",
+        "old",
+    );
+    let id = brain.record(first.clone()).unwrap();
+    // The same text again changes nothing.
+    assert_eq!(brain.record(first).unwrap(), id);
+    assert_eq!(all(&brain).len(), 1);
+
+    let second = node(
+        NodeKind::Convention,
+        Some("convention:x"),
+        "Stack: Tauri 2",
+        "new",
+    );
+    assert_eq!(
+        brain.record(second).unwrap(),
+        id,
+        "the current node keeps its id"
+    );
+    let nodes = all(&brain);
+    assert_eq!(nodes.len(), 2);
+    let current = nodes.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(current.title, "Stack: Tauri 2");
+    assert_eq!(current.state, NodeState::Fresh);
+    let old = nodes.iter().find(|node| node.id != id).unwrap();
+    assert_eq!(old.title, "Stack: Tauri 1");
+    assert_eq!(old.key.as_deref(), Some("convention:x"));
+    match &old.state {
+        NodeState::Superseded {
+            by,
+            reason,
+            since_ms,
+        } => {
+            assert_eq!(by, &id);
+            assert_eq!(reason.as_deref(), Some("rewritten by enrichment"));
+            assert!(since_ms.is_some());
+        }
+        other => panic!("not superseded: {other:?}"),
+    }
+    assert_eq!(
+        brain
+            .node_by_key(NodeKind::Convention, "convention:x")
+            .unwrap()
+            .unwrap()
+            .id,
+        id
+    );
+    assert!(
+        brain
+            .edges(std::slice::from_ref(&id))
+            .unwrap()
+            .contains(&Edge {
+                from: id.clone(),
+                to: old.id.clone(),
+                kind: EdgeKind::Supersedes,
+            })
+    );
+
+    // What holds now answers; the earlier text only when history is asked for.
+    let hits = query(&brain, "Tauri", false);
+    assert_eq!(
+        hits.iter()
+            .map(|hit| hit.node.id.as_str())
+            .collect::<Vec<_>>(),
+        [id.as_str()]
+    );
+    let hits = query(&brain, "Tauri", true);
+    assert_eq!(hits.len(), 2);
+    let text = brain
+        .query(&BrainQuery {
+            text: "Tauri".into(),
+            history: true,
+            ..BrainQuery::default()
+        })
+        .unwrap()
+        .text;
+    assert!(
+        text.contains(&format!("SUPERSEDED by {id}: rewritten by enrichment")),
+        "{text}"
+    );
+}
+
+#[test]
+fn summaries_are_rewritten_without_history() {
+    let brain = TestBrain::new();
+    let key = Some("file:README.md");
+    brain
+        .record(node(NodeKind::FileSummary, key, "README", "old"))
+        .unwrap();
+    brain
+        .record(node(NodeKind::FileSummary, key, "README", "new"))
+        .unwrap();
+    assert_eq!(all(&brain).len(), 1);
+}
+
+#[test]
+fn history_stays_one_line() {
+    let brain = TestBrain::new();
+    let key = Some("convention:x");
+    let id = brain
+        .record(node(NodeKind::Convention, key, "v1", ""))
+        .unwrap();
+    brain
+        .record(node(NodeKind::Convention, key, "v2", ""))
+        .unwrap();
+    brain
+        .record(node(NodeKind::Convention, key, "v3", ""))
+        .unwrap();
+    let nodes = all(&brain);
+    let by_title = |title: &str| nodes.iter().find(|node| node.title == title).unwrap();
+    assert_eq!(by_title("v3").id, id);
+    assert_eq!(superseded_by(by_title("v2")), Some(id.as_str()));
+    assert_eq!(
+        superseded_by(by_title("v1")),
+        Some(by_title("v2").id.as_str())
+    );
+}
+
+#[test]
+fn rules_with_the_same_content_fold_but_not_across_symbols_or_sessions() {
+    let brain = TestBrain::new();
+    let id = brain
+        .record(decision("s1", "d:1", "Use C++ for the engine"))
+        .unwrap();
+    assert_eq!(
+        brain
+            .record(decision("s1", "d:2", "use c++ for the engine!"))
+            .unwrap(),
+        id,
+        "the same words fold"
+    );
+    assert_ne!(
+        brain
+            .record(decision("s1", "d:3", "Use C# for the engine"))
+            .unwrap(),
+        id
+    );
+    assert_ne!(
+        brain
+            .record(decision("s2", "d:4", "Use C++ for the engine"))
+            .unwrap(),
+        id
+    );
+    assert_eq!(all(&brain).len(), 3);
+    // Conventions fold project-wide, whatever the kind of rule.
+    let rule = brain
+        .record(node(
+            NodeKind::Convention,
+            Some("convention:a"),
+            "Tabs, not spaces",
+            "Always.",
+        ))
+        .unwrap();
+    assert_eq!(
+        brain
+            .record(node(
+                NodeKind::Contract,
+                Some("contract:b"),
+                "tabs not spaces",
+                "always"
+            ))
+            .unwrap(),
+        rule
+    );
+}
+
+#[test]
+fn normalizing_keeps_what_changes_a_meaning() {
+    assert_eq!(write::fold_key(NodeKind::Module, None, "a", "b"), None);
+    let key = |title: &str| write::fold_key(NodeKind::Convention, None, title, "").unwrap();
+    assert_eq!(key("Node >= 20, v1.2"), key("node >= 20 v1.2."));
+    assert_ne!(key("Node >= 20"), key("Node 20"));
+    assert_ne!(key("v1.2"), key("v12"));
+    assert_ne!(key("a-b"), key("a b"));
+    assert_eq!(key("ends-"), key("ends"));
+}
+
+#[test]
+fn a_replacement_under_another_title_supersedes_the_old_node() {
+    let brain = TestBrain::new();
+    let module = brain
+        .record(node(
+            NodeKind::Module,
+            Some("module:core"),
+            "core",
+            "the core",
+        ))
+        .unwrap();
+    let old = brain
+        .record(node(
+            NodeKind::Convention,
+            Some("convention:old"),
+            "Old rule",
+            "x",
+        ))
+        .unwrap();
+    brain
+        .link(vec![Edge {
+            from: old.clone(),
+            to: module.clone(),
+            kind: EdgeKind::About,
+        }])
+        .unwrap();
+    let new = brain
+        .record_replacing(
+            node(
+                NodeKind::Convention,
+                Some("convention:new"),
+                "New rule",
+                "y",
+            ),
+            "key:convention:old",
+            "replaced by the enrichment job j1",
+        )
+        .unwrap();
+    let old_node = brain.node(&old).unwrap().unwrap();
+    assert_eq!(
+        old_node.state,
+        NodeState::Superseded {
+            by: new.clone(),
+            reason: Some("replaced by the enrichment job j1".into()),
+            since_ms: match old_node.state {
+                NodeState::Superseded { since_ms, .. } => since_ms,
+                _ => None,
+            },
+        }
+    );
+    let edges = brain.edges(std::slice::from_ref(&new)).unwrap();
+    assert!(edges.contains(&Edge {
+        from: new.clone(),
+        to: module,
+        kind: EdgeKind::About
+    }));
+    assert!(edges.contains(&Edge {
+        from: new.clone(),
+        to: old.clone(),
+        kind: EdgeKind::Supersedes
+    }));
+    // An unknown node to replace fails the whole write.
+    assert!(
+        brain
+            .record_replacing(
+                node(NodeKind::Convention, None, "Other", "z"),
+                "key:nope",
+                "r"
+            )
+            .is_err()
+    );
+    assert_eq!(all(&brain).len(), 3);
+    // Replacing itself (the same key) is a rewrite, not an error.
+    let same = brain
+        .record_replacing(
+            node(
+                NodeKind::Convention,
+                Some("convention:new"),
+                "New rule",
+                "y2",
+            ),
+            "key:convention:new",
+            "r",
+        )
+        .unwrap();
+    assert_eq!(same, new);
+}
+
+#[test]
+fn deleting_the_current_version_revives_only_the_latest_with_its_freshness() {
+    let brain = TestBrain::new();
+    let key = Some("convention:x");
+    let file = |hash: &str| FileRef {
+        path: "a.rs".into(),
+        hash: Some(hash.into()),
+    };
+    brain
+        .record(node(NodeKind::Convention, key, "v1", ""))
+        .unwrap();
+    let mut v2 = node(NodeKind::Convention, key, "v2", "");
+    v2.files = vec![file("h1")];
+    let id = brain.record(v2).unwrap();
+    // v2 goes stale, then v3 rewrites it.
+    assert_eq!(
+        brain.files_changed(&[file("h2")]).unwrap(),
+        vec![id.clone()]
+    );
+    brain
+        .record(node(NodeKind::Convention, key, "v3", ""))
+        .unwrap();
+
+    brain.delete(&id).unwrap();
+    let nodes = all(&brain);
+    assert_eq!(nodes.len(), 2);
+    let v2 = nodes.iter().find(|node| node.title == "v2").unwrap();
+    assert!(
+        matches!(&v2.state, NodeState::Stale { reason, .. } if reason == "a.rs changed"),
+        "{:?}",
+        v2.state
+    );
+    let v1 = nodes.iter().find(|node| node.title == "v1").unwrap();
+    assert_eq!(superseded_by(v1), Some(v2.id.as_str()));
+    assert_eq!(
+        brain
+            .node_by_key(NodeKind::Convention, "convention:x")
+            .unwrap()
+            .unwrap()
+            .id,
+        v2.id
+    );
+}
+
+#[test]
+fn a_changed_file_marks_history_quietly() {
+    let brain = TestBrain::new();
+    let key = Some("convention:x");
+    let mut v1 = node(NodeKind::Convention, key, "v1", "");
+    v1.files = vec![FileRef {
+        path: "a.rs".into(),
+        hash: Some("h1".into()),
+    }];
+    let id = brain.record(v1).unwrap();
+    brain
+        .record(node(NodeKind::Convention, key, "v2", ""))
+        .unwrap();
+    let changed = FileRef {
+        path: "a.rs".into(),
+        hash: Some("h2".into()),
+    };
+    assert!(brain.files_changed(&[changed]).unwrap().is_empty());
+    // Current again, it is as stale as the file made it.
+    brain.delete(&id).unwrap();
+    let v1 = all(&brain).pop().unwrap();
+    assert!(
+        matches!(v1.state, NodeState::Stale { .. }),
+        "{:?}",
+        v1.state
+    );
+}
+
+#[test]
+fn a_superseded_node_held_by_another_key_stays_history() {
+    let brain = TestBrain::new();
+    let a = brain
+        .record(node(NodeKind::Decision, Some("d:a"), "A", ""))
+        .unwrap();
+    let b = brain
+        .record(node(NodeKind::Decision, Some("d:b"), "B", ""))
+        .unwrap();
+    brain.supersede(&a, &b, "changed").unwrap();
+    // A newer node holds a's key by now.
+    let c = brain
+        .record(node(NodeKind::Decision, Some("d:a"), "C", ""))
+        .unwrap();
+    brain.delete(&b).unwrap();
+    let a_node = brain.node(&a).unwrap().unwrap();
+    assert_eq!(superseded_by(&a_node), Some(c.as_str()));
+}
+
+#[test]
+fn opening_folds_rules_recorded_twice_before() {
+    let brain = TestBrain::new();
+    let one = brain
+        .record(node(
+            NodeKind::Convention,
+            Some("convention:1"),
+            "Rule",
+            "x",
+        ))
+        .unwrap();
+    let two = brain
+        .record(node(
+            NodeKind::Convention,
+            Some("convention:2"),
+            "Other",
+            "y",
+        ))
+        .unwrap();
+    // As an older Brain held them: the same rule twice, without same-content keys.
+    let stale = one.clone();
+    brain
+        .write(move |tx, _| {
+            tx.execute(
+                "UPDATE nodes SET title = 'Rule', body = 'x', fold_key = NULL",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE nodes SET state = 'stale', stale_reason = 'r', stale_since_ms = 1 \
+                 WHERE id = ?1",
+                [&stale],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let folded = brain
+        .write(|tx, changes| write::settle_rules(tx, 5, changes))
+        .unwrap();
+    assert_eq!(folded, 1);
+    // The fresh one stays.
+    assert_eq!(
+        superseded_by(&brain.node(&one).unwrap().unwrap()),
+        Some(two.as_str())
+    );
+    assert_eq!(brain.node(&two).unwrap().unwrap().state, NodeState::Fresh);
+}
+
+#[test]
+fn a_stale_node_does_not_lead_a_fresh_match() {
+    let brain = TestBrain::new();
+    let mut stale = node(
+        NodeKind::FileSummary,
+        Some("file:README.md"),
+        "Router overview",
+        "router",
+    );
+    stale.files = vec![FileRef {
+        path: "README.md".into(),
+        hash: Some("h1".into()),
+    }];
+    let stale = brain.record(stale).unwrap();
+    let fresh = brain
+        .record(node(
+            NodeKind::Module,
+            Some("module:router"),
+            "routing",
+            "the query router",
+        ))
+        .unwrap();
+    let before: Vec<String> = query(&brain, "router overview", false)
+        .into_iter()
+        .map(|hit| hit.node.id)
+        .collect();
+    assert_eq!(before.first(), Some(&stale));
+    brain
+        .files_changed(&[FileRef {
+            path: "README.md".into(),
+            hash: Some("h2".into()),
+        }])
+        .unwrap();
+    let after: Vec<String> = query(&brain, "router overview", false)
+        .into_iter()
+        .map(|hit| hit.node.id)
+        .collect();
+    assert_eq!(after, [fresh, stale]);
+}
+
+#[test]
+fn an_answer_says_what_did_not_fit() {
+    let brain = TestBrain::new();
+    for index in 0..6 {
+        brain
+            .record(node(
+                NodeKind::Module,
+                Some(&format!("module:m{index}")),
+                &format!("module {index}"),
+                &"words about the module ".repeat(20),
+            ))
+            .unwrap();
+    }
+    let answer = brain
+        .query(&BrainQuery {
+            text: "module".into(),
+            max_tokens: Some(200),
+            ..BrainQuery::default()
+        })
+        .unwrap();
+    assert!(
+        answer.text.contains("more hit(s) didn't fit"),
+        "{}",
+        answer.text
+    );
+}

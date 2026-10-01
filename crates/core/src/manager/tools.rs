@@ -254,7 +254,10 @@ impl SessionManager {
                     }
                 ))
             }
-            OrchestratorCall::QueryBrain(args) => self.query_brain_tool(id, args.query).await,
+            OrchestratorCall::QueryBrain(args) => {
+                self.query_brain_tool(id, args.query, args.history.unwrap_or(false))
+                    .await
+            }
             OrchestratorCall::Remember(args) => self.remember_tool(id, args).await,
             OrchestratorCall::SearchTranscript(args) => self.search_transcript_tool(id, args).await,
             OrchestratorCall::ProposePlan(args) => self.propose_plan(id, args).await,

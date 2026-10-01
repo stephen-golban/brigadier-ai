@@ -33,6 +33,8 @@ mod embed;
 mod format;
 mod retrieve;
 mod schema;
+#[cfg(test)]
+mod tests;
 mod transcript;
 mod vectors;
 mod write;
@@ -96,9 +98,12 @@ pub enum NodeState {
         reason: String,
         since_ms: i64,
     },
-    /// A newer node replaces it.
+    /// A newer node replaces it: history, shown only when asked for.
     Superseded {
         by: String,
+        /// Why it was replaced ("rewritten by enrichment", "replaced by …").
+        reason: Option<String>,
+        since_ms: Option<i64>,
     },
 }
 
@@ -240,6 +245,10 @@ pub struct BrainQuery {
     /// The answer names each hit's files, so knowledge leads to code.
     #[serde(default)]
     pub files: bool,
+    /// Earlier versions (superseded nodes) may match too, marked as such. Without it, a match
+    /// on an earlier version of a rule brings the current one.
+    #[serde(default)]
+    pub history: bool,
 }
 
 /// One retrieved node.
@@ -456,6 +465,16 @@ fn origin_str(origin: &Origin) -> Result<String> {
         .ok_or_else(|| Error::Invalid(format!("unnamed origin {origin:?}")))
 }
 
+fn check(node: &NewNode) -> Result<()> {
+    if node.title.trim().is_empty() {
+        return Err(Error::Invalid("a node needs a title".into()));
+    }
+    if node.key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+        return Err(Error::Invalid("a node's key can't be empty".into()));
+    }
+    Ok(())
+}
+
 /// What a node's embedding is computed from.
 fn embed_text(title: &str, body: &str) -> String {
     format!("{title}\n{body}")
@@ -477,6 +496,8 @@ impl Brain {
                     "INSERT OR IGNORE INTO meta (key, value) VALUES ('scope', ?1)",
                     [scope_str(scope)],
                 )?;
+                // The vector cache isn't loaded yet; it reads the settled states.
+                write::settle_rules(tx, db::now_ms(), &mut Vec::new())?;
                 Ok(
                     tx.query_row("SELECT value FROM meta WHERE key = 'scope'", [], |row| {
                         row.get::<_, String>(0)
@@ -539,21 +560,24 @@ impl Brain {
 
     /// Records a node (see [`NewNode`] for updates by key) and returns its id. It is embedded
     /// now if the model is loaded, later by [`Self::embed_pending`] otherwise.
+    ///
+    /// A changed decision, convention, contract or preference keeps its earlier text as a
+    /// superseded node (history). A decision, convention or contract with the same content as
+    /// a current one (same scope, same words) confirms that one instead of adding a copy.
     pub fn record(&self, node: NewNode) -> Result<String> {
-        if node.title.trim().is_empty() {
-            return Err(Error::Invalid("a node needs a title".into()));
-        }
-        if node.key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Invalid("a node's key can't be empty".into()));
-        }
-        let embedding = self
-            .inner
+        check(&node)?;
+        let embedding = self.embedding(&node);
+        let now = db::now_ms();
+        self.write(move |tx, changes| write::record(tx, &node, embedding, now, changes))
+    }
+
+    /// `node`'s embedding, if the model is loaded.
+    fn embedding(&self, node: &NewNode) -> Option<Vec<u8>> {
+        self.inner
             .embedder
             .embed(&[&embed_text(&node.title, &node.body)])
             .and_then(|mut vectors| vectors.pop())
-            .map(|vector| vectors::encode(&vector));
-        let now = db::now_ms();
-        self.write(move |tx, changes| write::record(tx, &node, embedding, now, changes))
+            .map(|vector| vectors::encode(&vector))
     }
 
     /// Records edges; an endpoint may be a node id or `key:<node key>`. Unknown endpoints are
@@ -569,23 +593,45 @@ impl Brain {
         self.write(move |tx, _| write::relink_structure(tx, &sources, &edges))
     }
 
-    /// Marks `old` superseded by `new` (and links them). Either may be `key:<node key>`.
-    pub fn supersede(&self, old: &str, new: &str) -> Result<()> {
-        let (old, new) = (old.to_owned(), new.to_owned());
-        self.write(move |tx, changes| write::supersede(tx, &old, &new, changes))
+    /// Marks `old` superseded by `new`, saying why (and links them). Either may be
+    /// `key:<node key>`. `new` takes over the edges `old`'s current fact has; `old` keeps its
+    /// history.
+    pub fn supersede(&self, old: &str, new: &str, reason: &str) -> Result<()> {
+        let (old, new, reason) = (old.to_owned(), new.to_owned(), reason.to_owned());
+        let now = db::now_ms();
+        self.write(move |tx, changes| write::supersede(tx, &old, &new, &reason, now, changes))
     }
 
-    /// Deletes a node and its edges. Nodes it superseded are current again.
+    /// Records `node` (as [`Self::record`]) and marks `old` (an id or `key:<node key>`)
+    /// superseded by it, in one write: both happen or neither. Recording the node in place of
+    /// `old` itself supersedes nothing. Returns the node's id.
+    pub fn record_replacing(&self, node: NewNode, old: &str, reason: &str) -> Result<String> {
+        check(&node)?;
+        let embedding = self.embedding(&node);
+        let now = db::now_ms();
+        let (old, reason) = (old.to_owned(), reason.to_owned());
+        self.write(move |tx, changes| {
+            let id = write::record(tx, &node, embedding, now, changes)?;
+            if db::resolve(tx, &old)? != id {
+                write::supersede(tx, &old, &id, &reason, now, changes)?;
+            }
+            Ok(id)
+        })
+    }
+
+    /// Deletes a node and its edges. Its latest earlier version is current again.
     pub fn delete(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
-        self.write(move |tx, changes| write::delete(tx, &id, changes))
+        let now = db::now_ms();
+        self.write(move |tx, changes| write::delete(tx, &id, now, changes))
     }
 
     /// Deletes every node learned in `session_id`, and its transcript ("forget what the Brain
     /// learned from this session" on delete). Returns how many nodes went.
     pub fn forget_session(&self, session_id: &str) -> Result<u64> {
         let session = session_id.to_owned();
-        self.write(move |tx, changes| write::forget_session(tx, &session, changes))
+        let now = db::now_ms();
+        self.write(move |tx, changes| write::forget_session(tx, &session, now, changes))
     }
 
     /// Deletes every node that came from one of `origins` (what the code index, the skeleton
@@ -596,7 +642,8 @@ impl Brain {
             .iter()
             .map(origin_str)
             .collect::<Result<Vec<String>>>()?;
-        self.write(move |tx, changes| write::forget_origins(tx, &origins, changes))
+        let now = db::now_ms();
+        self.write(move |tx, changes| write::forget_origins(tx, &origins, now, changes))
     }
 
     /// Whether any node came from `origin`.
@@ -715,12 +762,13 @@ impl Brain {
         self.read(|conn| Ok(db::nodes_by_id(conn, &[id.to_owned()])?.pop()))
     }
 
-    /// The node with this key and kind.
+    /// The current node with this key and kind.
     pub fn node_by_key(&self, kind: NodeKind, key: &str) -> Result<Option<Node>> {
         self.read(|conn| {
             let node = conn
                 .prepare_cached(&format!(
-                    "SELECT {} FROM nodes WHERE kind = ?1 AND key = ?2",
+                    "SELECT {} FROM nodes WHERE kind = ?1 AND key = ?2 \
+                     AND state != 'superseded'",
                     db::NODE_COLUMNS
                 ))?
                 .query_row(rusqlite::params![db::kind_str(kind), key], db::node_row)

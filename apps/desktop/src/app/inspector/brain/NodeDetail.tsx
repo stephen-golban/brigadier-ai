@@ -113,7 +113,10 @@ export function NodeDetail({
         </p>
       )}
       {node.state.type === "superseded" && (
-        <p className="text-muted-foreground">Superseded by {link(node.state.by)}</p>
+        <p className="text-muted-foreground">
+          Superseded by {link(node.state.by)}
+          {node.state.reason && `: ${node.state.reason}`}
+        </p>
       )}
       {node.body && <p className="whitespace-pre-wrap wrap-break-word">{node.body}</p>}
       {node.files.length > 0 && (

@@ -787,21 +787,57 @@ impl SessionManager {
             if kind == NodeKind::FileSummary {
                 summaries.push((key.clone(), path.clone().unwrap_or_default()));
             }
-            nodes.push(NewNode {
-                kind,
-                key: Some(key),
-                title,
-                body,
-                provenance: provenance.clone(),
-                files,
-                expires_at_ms: None,
-            });
+            let replaces = input
+                .replaces
+                .as_deref()
+                .map(str::trim)
+                .filter(|old| !old.is_empty())
+                .map(|old| {
+                    // A key as listed in the prompt (`convention:…`), or a node id.
+                    if old.contains(':') && !old.starts_with("key:") {
+                        format!("key:{old}")
+                    } else {
+                        old.to_owned()
+                    }
+                });
+            nodes.push((
+                NewNode {
+                    kind,
+                    key: Some(key),
+                    title,
+                    body,
+                    provenance: provenance.clone(),
+                    files,
+                    expires_at_ms: None,
+                },
+                replaces,
+            ));
         }
         let recorded = nodes.len() as u32;
         let brain = project.brain.clone();
-        blocking(move || {
-            for node in nodes {
-                brain.record(node).map_err(brain_error)?;
+        let reason = format!(
+            "replaced by the {} job {}",
+            match job.kind {
+                BrainJobKind::Skeleton => "skeleton",
+                BrainJobKind::Enrichment => "enrichment",
+            },
+            job.id
+        );
+        let unreplaced = blocking(move || {
+            let mut unreplaced = Vec::new();
+            for (node, replaces) in nodes {
+                match replaces {
+                    Some(old) => {
+                        if let Err(err) = brain.record_replacing(node.clone(), &old, &reason) {
+                            // A wrong `replaces` doesn't lose the finding.
+                            unreplaced.push(format!("\"{}\" replaces nothing ({err})", node.title));
+                            brain.record(node).map_err(brain_error)?;
+                        }
+                    }
+                    None => {
+                        brain.record(node).map_err(brain_error)?;
+                    }
+                }
             }
             // Each file summary belongs to the deepest module above it that the Brain knows.
             let mut edges = Vec::new();
@@ -829,7 +865,7 @@ impl SessionManager {
             if !edges.is_empty() {
                 brain.link(edges).map_err(brain_error)?;
             }
-            Ok(())
+            Ok(unreplaced)
         })
         .await?;
         let snapshot = {
@@ -847,6 +883,9 @@ impl SessionManager {
         let mut reply = format!("Recorded {recorded} node(s).");
         if !refused.is_empty() {
             reply.push_str(&format!(" Not recorded: {}.", refused.join("; ")));
+        }
+        if !unreplaced.is_empty() {
+            reply.push_str(&format!(" Recorded as new: {}.", unreplaced.join("; ")));
         }
         Ok(reply)
     }
@@ -1195,13 +1234,14 @@ fn enrichment_targets(brain: &brigadier_brain::Brain) -> Result<String> {
         .take(ENRICH_TARGETS)
         .collect();
     if !stale.is_empty() {
-        text.push_str("Stale nodes (a file they describe changed); re-read and record them again with the same kind and path:\n");
+        text.push_str("Stale nodes (a file they describe changed); re-read and record them again with the same kind and path. A convention, contract or decision recorded under another title or kind passes its key below as `replaces`, so the stale one is kept as history and stops being current:\n");
         for (node, reason) in stale {
             let files: Vec<&str> = node.files.iter().map(|file| file.path.as_str()).collect();
             text.push_str(&format!(
-                "- {:?} \"{}\" ({reason}; files: {})\n",
+                "- {:?} \"{}\" (key {}; {reason}; files: {})\n",
                 node.kind,
                 node.title,
+                node.key.as_deref().unwrap_or(&node.id),
                 files.join(", ")
             ));
         }

@@ -189,7 +189,7 @@ fn corrupt(column: usize, message: String) -> rusqlite::Error {
 /// The node columns [`node_row`] reads, in order.
 pub(crate) const NODE_COLUMNS: &str = "id, kind, key, title, body, state, stale_reason, \
     stale_since_ms, superseded_by, provenance, created_ms, updated_ms, expires_ms, \
-    embedding IS NOT NULL, embed_model";
+    embedding IS NOT NULL, embed_model, superseded_reason, superseded_ms";
 
 /// A node from a row of [`NODE_COLUMNS`], without its files.
 pub(crate) fn node_row(row: &Row<'_>) -> rusqlite::Result<Node> {
@@ -212,6 +212,8 @@ pub(crate) fn node_row(row: &Row<'_>) -> rusqlite::Result<Node> {
             },
             "superseded" => NodeState::Superseded {
                 by: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                reason: row.get(15)?,
+                since_ms: row.get(16)?,
             },
             other => return Err(corrupt(5, format!("unknown node state {other}"))),
         },
@@ -284,7 +286,9 @@ pub(crate) fn nodes_by_id(conn: &Connection, ids: &[String]) -> Result<Vec<Node>
 /// share is ambiguous).
 pub(crate) fn resolve(conn: &Connection, endpoint: &str) -> Result<String> {
     if let Some(key) = endpoint.strip_prefix("key:") {
-        let mut statement = conn.prepare_cached("SELECT id FROM nodes WHERE key = ?1 LIMIT 2")?;
+        let mut statement = conn.prepare_cached(
+            "SELECT id FROM nodes WHERE key = ?1 AND state != 'superseded' LIMIT 2",
+        )?;
         let ids = statement
             .query_map([key], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -3,4 +3,8 @@
 /**
  * Whether a node can be trusted as it stands.
  */
-export type NodeState = { "type": "fresh" } | { "type": "stale", reason: string, sinceMs: number, } | { "type": "superseded", by: string, };
+export type NodeState = { "type": "fresh" } | { "type": "stale", reason: string, sinceMs: number, } | { "type": "superseded", by: string, 
+/**
+ * Why it was replaced ("rewritten by enrichment", "replaced by …").
+ */
+reason: string | null, sinceMs: number | null, };

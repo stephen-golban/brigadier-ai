@@ -666,6 +666,7 @@ impl SessionManager {
         &self,
         id: &ConversationId,
         text: String,
+        history: bool,
     ) -> Result<String> {
         let started = Instant::now();
         let project = match self.project_of(id) {
@@ -712,6 +713,7 @@ impl SessionManager {
                             limit: None,
                             max_tokens: Some(QUERY_TOKENS),
                             files: code_pointers,
+                            history,
                         })
                         .map_err(brain_error)?,
                 ),
@@ -725,6 +727,7 @@ impl SessionManager {
                         limit: Some(4),
                         max_tokens: Some(300),
                         files: false,
+                        history,
                     })
                     .ok(),
                 None => None,
@@ -808,18 +811,13 @@ impl SessionManager {
             expires_at_ms: None,
         };
         let replaces = args.replaces;
+        // One write: nothing is kept from a call that failed.
         let node_id = blocking(move || {
-            let node_id = brain.record(node).map_err(brain_error)?;
-            if let Some(old) = replaces
-                && let Err(err) = brain.supersede(&old, &node_id)
-            {
-                // Nothing is kept from a call that failed.
-                if let Err(err) = brain.delete(&node_id) {
-                    tracing::warn!(node = %node_id, error = %err, "could not take back a memory");
-                }
-                return Err(brain_error(err));
+            match replaces {
+                Some(old) => brain.record_replacing(node, &old, "replaced by the orchestrator"),
+                None => brain.record(node),
             }
-            Ok(node_id)
+            .map_err(brain_error)
         })
         .await?;
         Ok(format!(
@@ -1635,7 +1633,10 @@ fn node_text(node: &Node) -> String {
     let state = match &node.state {
         NodeState::Fresh => String::new(),
         NodeState::Stale { reason, .. } => format!(" [may be outdated: {reason}]"),
-        NodeState::Superseded { by } => format!(" [replaced by {by}]"),
+        NodeState::Superseded { by, reason, .. } => match reason {
+            Some(reason) => format!(" [replaced by {by}: {reason}]"),
+            None => format!(" [replaced by {by}]"),
+        },
     };
     let files: Vec<&str> = node.files.iter().map(|file| file.path.as_str()).collect();
     let mut text = format!(

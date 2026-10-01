@@ -19,6 +19,8 @@ const LINKED_PER_HIT: i64 = 4;
 const MAX_TERMS: usize = 24;
 /// Title matches count this much more than body matches.
 const TITLE_WEIGHT: f64 = 4.0;
+/// A stale node's score is cut to this share, so a fresh match on the same subject leads.
+const STALE_FACTOR: f64 = 0.5;
 
 /// Words too common to help, dropped from a query that has others.
 const STOP_WORDS: &[&str] = &[
@@ -76,10 +78,26 @@ fn expands(kind: NodeKind) -> bool {
     )
 }
 
-/// Superseded nodes never match, except decisions: a match on an old decision brings the one
-/// that replaced it.
-fn candidate(kind: NodeKind, superseded: bool) -> bool {
-    !superseded || kind == NodeKind::Decision
+/// Kinds whose earlier versions are kept as history.
+fn has_history(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Decision | NodeKind::Convention | NodeKind::Contract | NodeKind::Preference
+    )
+}
+
+/// Superseded nodes match only when history is asked for, or as earlier versions of a rule: a
+/// match on an old decision brings the one that replaced it.
+fn candidate(kind: NodeKind, superseded: bool, history: bool) -> bool {
+    !superseded || history || has_history(kind)
+}
+
+/// `score`, cut for a stale node.
+fn weighed(node: &Node, score: f64) -> f64 {
+    match node.state {
+        NodeState::Stale { .. } => score * STALE_FACTOR,
+        _ => score,
+    }
 }
 
 /// The ranked hits for `query`, best first, at most `limit`.
@@ -101,14 +119,14 @@ pub(crate) fn hits(
         }
     };
     let text_ranked = match fts_expression(&query.text) {
-        Some(expression) => full_text(conn, &expression, &query.kinds)?,
+        Some(expression) => full_text(conn, &expression, &query.kinds, query.history)?,
         None => Vec::new(),
     };
     add(&text_ranked, &|_| true);
     if let Some(embedding) = embedding {
         let nearest: Vec<String> = vectors
             .nearest(conn, embedding, CANDIDATES, |kind, superseded| {
-                allowed(kind) && candidate(kind, superseded)
+                allowed(kind) && candidate(kind, superseded, query.history)
             })?
             .into_iter()
             .map(|(id, _)| id)
@@ -119,15 +137,22 @@ pub(crate) fn hits(
         // older nodes for being new.
         add(&text_ranked, &|id| !vectors.contains(id));
     }
-    let mut ranked: Vec<(String, f64)> = fused.into_iter().collect();
-    ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    ranked.truncate(limit);
-
-    let ids: Vec<String> = ranked.iter().map(|(id, _)| id.clone()).collect();
+    // Every candidate is weighed before the cut, so a stale node can't take a fresh one's
+    // place.
+    let ids: Vec<String> = fused.keys().cloned().collect();
     let mut nodes: HashMap<String, Node> = db::nodes_by_id(conn, &ids)?
         .into_iter()
         .map(|node| (node.id.clone(), node))
         .collect();
+    let mut ranked: Vec<(String, f64)> = fused
+        .into_iter()
+        .filter_map(|(id, score)| {
+            let score = weighed(nodes.get(&id)?, score);
+            Some((id, score))
+        })
+        .collect();
+    ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(limit);
 
     // Direct hits first, then what they bring, each just below its source.
     let mut scored: HashMap<String, (f64, bool)> = HashMap::new();
@@ -136,6 +161,9 @@ pub(crate) fn hits(
         let Some(node) = nodes.get(id) else { continue };
         match &node.state {
             NodeState::Superseded { .. } => {
+                if query.history {
+                    scored.insert(id.clone(), (*score, false));
+                }
                 if let Some(current) = current_version(conn, id)?
                     && current != *id
                 {
@@ -167,6 +195,7 @@ pub(crate) fn hits(
         if !allowed(node.kind) || matches!(node.state, NodeState::Superseded { .. }) {
             continue;
         }
+        let score = weighed(node, score);
         let entry = scored.entry(id).or_insert((score, true));
         if entry.1 && entry.0 < score {
             entry.0 = score;
@@ -193,11 +222,22 @@ pub(crate) fn hits(
 }
 
 /// The FTS5 top candidates for `expression`, best first.
-fn full_text(conn: &Connection, expression: &str, kinds: &[NodeKind]) -> Result<Vec<String>> {
+fn full_text(
+    conn: &Connection,
+    expression: &str,
+    kinds: &[NodeKind],
+    history: bool,
+) -> Result<Vec<String>> {
     let mut sql = String::from(
         "SELECT n.id FROM nodes_fts JOIN nodes n ON n.rid = nodes_fts.rowid \
-         WHERE nodes_fts MATCH ? AND (n.state != 'superseded' OR n.kind = 'decision')",
+         WHERE nodes_fts MATCH ?",
     );
+    if !history {
+        sql.push_str(
+            " AND (n.state != 'superseded' \
+             OR n.kind IN ('decision', 'convention', 'contract', 'preference'))",
+        );
+    }
     let mut args: Vec<&str> = vec![expression];
     if !kinds.is_empty() {
         sql.push_str(&format!(

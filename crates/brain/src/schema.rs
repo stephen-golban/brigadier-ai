@@ -4,10 +4,11 @@ use rusqlite_migration::{M, Migrations};
 /// Schema migrations, applied in order by the writer when a Brain opens. Append only: unlike
 /// the code index, a Brain is not a cache and cannot be rebuilt from anything.
 fn migrations() -> Migrations<'static> {
-    Migrations::from_iter([M::up(
-        // `rid` is the rowid the FTS tables point at; an explicit INTEGER PRIMARY KEY keeps it
-        // stable across VACUUM, which an implicit rowid is not.
-        "CREATE TABLE meta (
+    Migrations::from_iter([
+        M::up(
+            // `rid` is the rowid the FTS tables point at; an explicit INTEGER PRIMARY KEY keeps it
+            // stable across VACUUM, which an implicit rowid is not.
+            "CREATE TABLE meta (
             key    TEXT PRIMARY KEY,
             value  TEXT NOT NULL
         ) STRICT, WITHOUT ROWID;
@@ -94,8 +95,21 @@ fn migrations() -> Migrations<'static> {
             INSERT INTO transcript_fts (transcript_fts, rowid, text)
                 VALUES ('delete', old.rid, old.text);
         END;",
-    )
-    .comment("knowledge graph, its full-text index and the transcript index")])
+        )
+        .comment("knowledge graph, its full-text index and the transcript index"),
+        // History instead of overwrites: a rewritten decision, convention or contract keeps its
+        // old text as a superseded node with the same key, so only current nodes hold a key.
+        M::up(
+            "ALTER TABLE nodes ADD COLUMN superseded_reason TEXT;
+        ALTER TABLE nodes ADD COLUMN superseded_ms INTEGER;
+        ALTER TABLE nodes ADD COLUMN fold_key TEXT;
+        DROP INDEX nodes_by_kind_key;
+        CREATE UNIQUE INDEX nodes_by_kind_key ON nodes (kind, key)
+            WHERE key IS NOT NULL AND state != 'superseded';
+        CREATE INDEX nodes_by_fold_key ON nodes (fold_key) WHERE fold_key IS NOT NULL;",
+        )
+        .comment("superseded history: reasons, times and the same-content key of rules"),
+    ])
 }
 
 pub(crate) fn migrate(conn: &mut Connection) -> rusqlite_migration::Result<()> {

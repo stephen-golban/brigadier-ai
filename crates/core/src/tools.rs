@@ -213,6 +213,10 @@ pub struct ReadArtifact {
 pub struct QueryBrain {
     /// What you want to know about the project.
     pub query: String,
+    /// Also show earlier versions of decisions, conventions and contracts (what held before
+    /// and why it changed). Off by default: answers give what holds now.
+    #[serde(default)]
+    pub history: Option<bool>,
 }
 
 /// What `remember` records.
@@ -311,6 +315,10 @@ pub struct NodeInput {
     /// Repository-relative files it was learned from.
     #[serde(default)]
     pub files: Vec<String>,
+    /// The key (or id) of a node this one replaces, when the replacement has another title
+    /// or kind (a stale convention, renamed). The old one is kept as history.
+    #[serde(default)]
+    pub replaces: Option<String>,
 }
 
 /// `record_nodes`: a Brain job's findings.

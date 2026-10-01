@@ -77,6 +77,7 @@ export function BrainSearch({ brainKey }: { brainKey: string }) {
       limit: null,
       maxTokens: null,
       files: false,
+      history: false,
     })
       .then((result) => setAnswer({ query, answer: result }))
       .catch((cause: unknown) => setError(errorText(cause)))
