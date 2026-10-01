@@ -255,7 +255,7 @@ impl SessionManager {
                 ))
             }
             OrchestratorCall::QueryBrain(args) => {
-                self.query_brain_tool(id, args.query, args.history.unwrap_or(false))
+                self.query_brain_tool(id, args.query, args.history.unwrap_or(false), args.page)
                     .await
             }
             OrchestratorCall::Remember(args) => self.remember_tool(id, args).await,

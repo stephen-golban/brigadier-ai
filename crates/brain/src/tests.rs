@@ -796,3 +796,71 @@ fn refreshing_a_task_drops_only_what_it_alone_no_longer_says() {
     );
     assert_eq!(ids.len(), 4);
 }
+
+#[test]
+fn capped_answers_page_each_kind_and_say_what_is_left() {
+    let brain = TestBrain::new();
+    for index in 0..5 {
+        brain
+            .record(node(
+                NodeKind::Convention,
+                Some(&format!("convention:{index}")),
+                &format!("router rule {index}"),
+                "about the router",
+            ))
+            .unwrap();
+        brain
+            .record(node(
+                NodeKind::Module,
+                Some(&format!("module:{index}")),
+                &format!("router module {index}"),
+                "the router",
+            ))
+            .unwrap();
+    }
+    let caps = BrainCaps {
+        facts: 2,
+        entities: 1,
+        passages: 1,
+        body: 200,
+    };
+    let ask = |page| {
+        brain
+            .query(&BrainQuery {
+                text: "router".into(),
+                caps: Some(caps),
+                page,
+                ..BrainQuery::default()
+            })
+            .unwrap()
+    };
+    let first = ask(None);
+    let count = |answer: &BrainAnswer, kind| {
+        answer
+            .hits
+            .iter()
+            .filter(|hit| hit.node.kind == kind)
+            .count()
+    };
+    assert_eq!(count(&first, NodeKind::Convention), 2);
+    assert_eq!(count(&first, NodeKind::Module), 1);
+    assert!(
+        first.text.ends_with(
+            "3 more facts, 4 more modules and files; ask with page 2 or a narrower question."
+        ),
+        "{}",
+        first.text
+    );
+    let second = ask(Some(2));
+    assert_eq!(count(&second, NodeKind::Convention), 2);
+    let seen: HashSet<&str> = first.hits.iter().map(|hit| hit.node.id.as_str()).collect();
+    assert!(
+        second
+            .hits
+            .iter()
+            .all(|hit| !seen.contains(hit.node.id.as_str()))
+    );
+    let last = ask(Some(5));
+    assert_eq!(count(&last, NodeKind::Module), 1);
+    assert!(!last.text.contains("more"), "{}", last.text);
+}

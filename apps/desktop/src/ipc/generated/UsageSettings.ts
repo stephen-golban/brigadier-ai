@@ -37,4 +37,9 @@ workerHandoff: boolean,
 /**
  * The worker context, in tokens, at which the hand-off happens.
  */
-workerHandoffTokens: number, };
+workerHandoffTokens: number, 
+/**
+ * `query_brain` also looks up the code index for names in a question (identifiers,
+ * paths, quoted names), and each kind of Brain result is capped, with the rest by page.
+ */
+brainRouter: boolean, };

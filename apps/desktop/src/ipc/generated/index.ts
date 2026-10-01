@@ -16,6 +16,7 @@ export type { AttachmentRef } from "./AttachmentRef";
 export type { Attempt } from "./Attempt";
 export type { AttemptEnd } from "./AttemptEnd";
 export type { BrainAnswer } from "./BrainAnswer";
+export type { BrainCaps } from "./BrainCaps";
 export type { BrainGraph } from "./BrainGraph";
 export type { BrainHit } from "./BrainHit";
 export type { BrainJob } from "./BrainJob";

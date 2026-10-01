@@ -225,6 +225,7 @@ export const useApp = create<AppState>()(() => ({
       buildRules: false,
       workerHandoff: false,
       workerHandoffTokens: 160000,
+      brainRouter: false,
     },
     disabledProviders: [],
     hiddenModels: [],

@@ -8,13 +8,13 @@ use crate::{BrainHit, Node, NodeKind, NodeState, Origin, Provenance};
 /// About four bytes per token.
 pub(crate) const BYTES_PER_TOKEN: usize = 4;
 /// One body never takes more than this, so a long report can't crowd out the rest.
-const MAX_BODY: usize = 1_600;
+pub(crate) const MAX_BODY: usize = 1_600;
 /// A hit is left out rather than shown with less body than this.
 const MIN_BODY: usize = 120;
 /// Files named per hit; the rest are counted.
 const MAX_FILES: usize = 6;
 
-pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
+pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool, max_body: usize) -> String {
     if hits.is_empty() {
         return "Nothing in the Brain matches.".into();
     }
@@ -35,7 +35,7 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
         let fixed = separator + head.len() + tail.len() + usize::from(!body.is_empty());
         let room = budget
             .checked_sub(out.len() + fixed)
-            .filter(|room| *room >= MIN_BODY.min(body.len()));
+            .filter(|room| *room >= MIN_BODY.min(body.len()).min(max_body));
         let Some(room) = room else {
             if out.is_empty() {
                 // The best hit shows at least its header, whatever the budget.
@@ -50,7 +50,7 @@ pub(crate) fn answer(hits: &[BrainHit], budget: usize, files: bool) -> String {
         }
         out.push_str(&head);
         if !body.is_empty() {
-            out.push_str(&cut(body, room.min(MAX_BODY)));
+            out.push_str(&cut(body, room.min(max_body)));
             out.push('\n');
         }
         out.push_str(&tail);

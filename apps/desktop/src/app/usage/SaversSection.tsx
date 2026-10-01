@@ -38,6 +38,11 @@ export const SAVER_ROWS = {
     description:
       "A worker whose context grows past the hand-off size writes a handoff note, and a fresh session of the same model continues from it, with the full transcript on disk.",
   },
+  brainRouter: {
+    label: "Shorter Brain answers",
+    description:
+      "Brain answers hold a few results of each kind and say when there are more. A question that names code, such as a function or a file, also gets where the code index finds it.",
+  },
 } as const satisfies Record<string, { label: string; description: string }>;
 
 const HANDOFF_ROW = {

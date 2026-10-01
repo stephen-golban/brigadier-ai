@@ -25,6 +25,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::route::{MAX_NAMES, Route, route};
 use crate::vectors::Vectors;
 
 mod db;
@@ -32,6 +33,7 @@ mod download;
 mod embed;
 mod format;
 mod retrieve;
+mod route;
 mod schema;
 #[cfg(test)]
 mod tests;
@@ -249,6 +251,40 @@ pub struct BrainQuery {
     /// on an earlier version of a rule brings the current one.
     #[serde(default)]
     pub history: bool,
+    /// Fixed caps per kind of result in place of `limit`; the answer says how many more
+    /// there are, for `page`.
+    #[serde(default)]
+    pub caps: Option<BrainCaps>,
+    /// With `caps`: which page of each kind's results, from 1.
+    #[serde(default)]
+    pub page: Option<u32>,
+}
+
+/// How many results of each kind an answer holds, and how much of each body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainCaps {
+    /// Decisions, conventions, contracts and preferences.
+    pub facts: u32,
+    /// Modules, services and file summaries.
+    pub entities: u32,
+    /// Reports, tasks and research: passages of findings.
+    pub passages: u32,
+    /// Bytes of one body at most.
+    pub body: u32,
+}
+
+impl Default for BrainCaps {
+    /// Measured on eleven real questions (2026-10): with a 1,000-token answer, the node each
+    /// needed was in 10 answers of 11 (9 with 12 uncapped hits in 1,500 tokens).
+    fn default() -> Self {
+        Self {
+            facts: 4,
+            entities: 3,
+            passages: 2,
+            body: 600,
+        }
+    }
 }
 
 /// One retrieved node.
@@ -767,7 +803,11 @@ impl Brain {
     /// Stale nodes are included and marked.
     pub fn query(&self, query: &BrainQuery) -> Result<BrainAnswer> {
         let started = std::time::Instant::now();
-        let limit = query.limit.unwrap_or(12).clamp(1, 100) as usize;
+        let limit = match query.caps {
+            // Every candidate, for the caps to choose from.
+            Some(_) => 100,
+            None => query.limit.unwrap_or(12).clamp(1, 100) as usize,
+        };
         let budget =
             query.max_tokens.unwrap_or(1500).clamp(50, 100_000) as usize * format::BYTES_PER_TOKEN;
         let embedder = &self.inner.embedder;
@@ -792,7 +832,24 @@ impl Brain {
                 limit,
             )
         })?;
-        let text = format::answer(&hits, budget, query.files);
+        let (hits, text) = match query.caps {
+            Some(caps) => {
+                let (hits, more) = retrieve::capped(hits, caps, query.page.unwrap_or(1));
+                let mut text = format::answer(&hits, budget, query.files, caps.body as usize);
+                if !more.is_empty() && !hits.is_empty() {
+                    text.push_str(&format!(
+                        "\n\n{}; ask with page {} or a narrower question.",
+                        more.join(", "),
+                        query.page.unwrap_or(1).max(1) + 1
+                    ));
+                }
+                (hits, text)
+            }
+            None => {
+                let text = format::answer(&hits, budget, query.files, format::MAX_BODY);
+                (hits, text)
+            }
+        };
         Ok(BrainAnswer {
             hits,
             text,

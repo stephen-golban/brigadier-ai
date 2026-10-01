@@ -606,6 +606,66 @@ impl CodeIndex {
         self.with_read(|c| reads::refs(c, name, limit))
     }
 
+    /// What the index has under exactly `name`, as text for a model: the files at a path
+    /// (`src/lib.rs`, `_layout.tsx`), or a symbol's definitions (the last part of
+    /// `Type::method`) and at most `limit` of its references. Empty when nothing has that
+    /// name.
+    pub fn lookup(&self, name: &str, limit: u32) -> Result<String> {
+        let limit = limit.clamp(1, 50);
+        let file = name.contains('/')
+            || name.rsplit_once('.').is_some_and(|(stem, ext)| {
+                !stem.is_empty() && ext.chars().all(char::is_alphanumeric)
+            });
+        let mut text = String::new();
+        if file {
+            let hits = self.search(&CodeQuery {
+                query: name.to_owned(),
+                kind: SearchKind::File,
+                language: None,
+                path: None,
+                limit: Some(limit),
+            })?;
+            for hit in hits {
+                if let CodeHit::File { path, language, .. } = hit
+                    && (path == name || path.ends_with(&format!("/{name}")))
+                {
+                    text.push_str(&format!("- file {path} ({language})\n"));
+                }
+            }
+            return Ok(text);
+        }
+        let symbol = name.rsplit("::").next().unwrap_or(name);
+        let refs = self.refs(symbol, limit)?;
+        if refs.definitions.is_empty() && refs.references.is_empty() {
+            return Ok(text);
+        }
+        for def in refs.definitions.iter().take(limit as usize) {
+            text.push_str(&format!(
+                "- {} {}:{} {}\n",
+                def.kind, def.path, def.line, def.signature
+            ));
+        }
+        if refs.definitions.len() > limit as usize {
+            text.push_str(&format!(
+                "  (+{} more definitions)\n",
+                refs.definitions.len() - limit as usize
+            ));
+        }
+        if !refs.references.is_empty() {
+            text.push_str("  used at:\n");
+            for reference in &refs.references {
+                text.push_str(&format!(
+                    "  - {}:{} {}\n",
+                    reference.path, reference.line, reference.context
+                ));
+            }
+            if refs.truncated {
+                text.push_str("  (more references: code_refs lists them)\n");
+            }
+        }
+        Ok(text)
+    }
+
     /// Modules, manifests, scripts, services and top-level folders.
     pub fn project_map(&self) -> Result<ProjectMap> {
         self.with_read(reads::project_map)

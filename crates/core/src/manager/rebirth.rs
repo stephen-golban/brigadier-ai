@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
-use brigadier_brain::{BrainQuery, Node, NodeFilter, NodeKind, NodeState, Origin as NodeOrigin};
+use brigadier_brain::{
+    BrainCaps, BrainQuery, Node, NodeFilter, NodeKind, NodeState, Origin as NodeOrigin,
+};
 use brigadier_providers::{
     Access, Origin, ProviderEvent, ProviderKind, Role as MessageAuthor, SessionSpec, Started,
     ToolSet, TurnInput,
@@ -794,6 +796,7 @@ impl SessionManager {
                 .unwrap_or_default(),
         };
         let brain = project.brain.clone();
+        let capped = self.core.settings().usage.brain_router;
         let digest = blocking(move || {
             let structure = brain
                 .nodes(&NodeFilter {
@@ -820,6 +823,8 @@ impl SessionManager {
                         max_tokens: Some(1_200),
                         files: false,
                         history: false,
+                        caps: capped.then(BrainCaps::default),
+                        page: None,
                     })
                     .ok()
             };

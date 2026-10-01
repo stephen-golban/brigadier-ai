@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
 use crate::db::{self, kind_str};
 use crate::vectors::Vectors;
-use crate::{BrainHit, BrainQuery, Node, NodeKind, NodeState, Result};
+use crate::{BrainCaps, BrainHit, BrainQuery, Node, NodeKind, NodeState, Result};
 
 /// Each ranking contributes this many candidates.
 const CANDIDATES: usize = 50;
@@ -289,4 +289,64 @@ fn current_version(conn: &Connection, id: &str) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+/// The kinds of result an answer caps separately.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Facts,
+    Entities,
+    Passages,
+}
+
+fn family(kind: NodeKind) -> Family {
+    match kind {
+        NodeKind::Decision | NodeKind::Convention | NodeKind::Contract | NodeKind::Preference => {
+            Family::Facts
+        }
+        NodeKind::Module | NodeKind::Service | NodeKind::FileSummary => Family::Entities,
+        NodeKind::Report | NodeKind::Task | NodeKind::Research => Family::Passages,
+    }
+}
+
+/// Page `page` (from 1) of `hits` (best first) under `caps`, still best first, and what is
+/// left after it per kind (`3 more facts`).
+pub(crate) fn capped(
+    hits: Vec<BrainHit>,
+    caps: BrainCaps,
+    page: u32,
+) -> (Vec<BrainHit>, Vec<String>) {
+    let skip = page.max(1) as usize - 1;
+    let families = [
+        (Family::Facts, caps.facts as usize, "facts"),
+        (
+            Family::Entities,
+            caps.entities as usize,
+            "modules and files",
+        ),
+        (Family::Passages, caps.passages as usize, "findings"),
+    ];
+    let mut seen = [0usize; 3];
+    let mut kept = Vec::new();
+    for hit in hits {
+        let at = families
+            .iter()
+            .position(|(of, _, _)| *of == family(hit.node.kind))
+            .unwrap_or_default();
+        let cap = families[at].1;
+        let index = seen[at];
+        seen[at] += 1;
+        if index >= skip * cap && index < (skip + 1) * cap {
+            kept.push(hit);
+        }
+    }
+    let more = families
+        .iter()
+        .zip(seen)
+        .filter_map(|((_, cap, label), seen)| {
+            let left = seen.saturating_sub((skip + 1) * cap);
+            (left > 0).then(|| format!("{left} more {label}"))
+        })
+        .collect();
+    (kept, more)
 }

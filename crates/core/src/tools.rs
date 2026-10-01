@@ -217,6 +217,9 @@ pub struct QueryBrain {
     /// and why it changed). Off by default: answers give what holds now.
     #[serde(default)]
     pub history: Option<bool>,
+    /// The next page of results, when an answer says there are more (from 1).
+    #[serde(default)]
+    pub page: Option<u32>,
 }
 
 /// What `remember` records.

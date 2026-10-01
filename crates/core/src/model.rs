@@ -580,6 +580,9 @@ pub struct UsageSettings {
     pub worker_handoff: bool,
     /// The worker context, in tokens, at which the hand-off happens.
     pub worker_handoff_tokens: u32,
+    /// `query_brain` also looks up the code index for names in a question (identifiers,
+    /// paths, quoted names), and each kind of Brain result is capped, with the rest by page.
+    pub brain_router: bool,
 }
 
 impl Default for UsageSettings {
@@ -592,6 +595,7 @@ impl Default for UsageSettings {
             build_rules: false,
             worker_handoff: false,
             worker_handoff_tokens: 160_000,
+            brain_router: false,
         }
     }
 }
@@ -1421,6 +1425,7 @@ mod tests {
         assert!(!settings.usage.concise_replies);
         assert!(!settings.usage.build_rules);
         assert!(!settings.usage.worker_handoff);
+        assert!(!settings.usage.brain_router);
 
         let settings: Settings =
             serde_json::from_str(r#"{"usage":{"buildRules":true,"leanWorkerTools":false}}"#)

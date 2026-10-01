@@ -23,9 +23,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use brigadier_brain::{
-    Brain, BrainAnswer, BrainGraph, BrainQuery, Edge, EdgeKind, Embedder, EmbedderState, FileRef,
-    NewNode, Node, NodeFilter, NodeKind, NodeState, Origin, Provenance, Scope, TranscriptEntry,
-    WorkerRef,
+    Brain, BrainAnswer, BrainCaps, BrainGraph, BrainQuery, Edge, EdgeKind, Embedder, EmbedderState,
+    FileRef, NewNode, Node, NodeFilter, NodeKind, NodeState, Origin, Provenance, Route, Scope,
+    TranscriptEntry, WorkerRef,
 };
 use brigadier_index::{
     CodeHit, CodeIndex, CodeQuery, FileChange, IndexConfig, ScanHelper, SearchKind,
@@ -51,6 +51,10 @@ const QUERY_SAMPLES: usize = 1_000;
 const EMBED_BATCH: u32 = 256;
 /// The answer budget of one `query_brain` call, in tokens.
 const QUERY_TOKENS: u32 = 1_500;
+/// `query_brain`'s budget with [`BrainCaps`] (the `brain_router` saver).
+const CAPPED_QUERY_TOKENS: u32 = 1_000;
+/// Definitions and references `query_brain` shows per name it finds in the code index.
+const CODE_LOOKUP: u32 = 10;
 /// Research nodes go stale after this (PLAN.md §6 Phase 6: a TTL of about 7 days).
 pub(crate) const RESEARCH_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// A report's findings files come into the Brain in parts of at most this many bytes, each a
@@ -667,6 +671,7 @@ impl SessionManager {
         id: &ConversationId,
         text: String,
         history: bool,
+        page: Option<u32>,
     ) -> Result<String> {
         let started = Instant::now();
         let project = match self.project_of(id) {
@@ -701,8 +706,27 @@ impl SessionManager {
             });
         }
         let query = text.clone();
-        let code_pointers = self.core.settings().usage.code_pointers;
-        let (answer, preferences) = blocking(move || {
+        let usage = self.core.settings().usage;
+        let code_pointers = usage.code_pointers;
+        let caps = usage.brain_router.then(BrainCaps::default);
+        // Names only code has also go to the code index (once, on the first page); the Brain
+        // still answers the whole question.
+        let names = match brigadier_brain::route(&text) {
+            Route::Code { names } if usage.brain_router && page.unwrap_or(1) <= 1 => names,
+            _ => Vec::new(),
+        };
+        let index = project.as_ref().and_then(|project| project.index.clone());
+        let (code, answer, preferences) = blocking(move || {
+            let code: Vec<String> = match &index {
+                Some(index) => names
+                    .iter()
+                    .filter_map(|name| {
+                        let found = index.lookup(name, CODE_LOOKUP).ok()?;
+                        (!found.is_empty()).then(|| format!("`{name}`\n{}", found.trim_end()))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
             let answer = match &project {
                 Some(project) => Some(
                     project
@@ -711,9 +735,15 @@ impl SessionManager {
                             text: query.clone(),
                             kinds: Vec::new(),
                             limit: None,
-                            max_tokens: Some(QUERY_TOKENS),
+                            max_tokens: Some(if caps.is_some() {
+                                CAPPED_QUERY_TOKENS
+                            } else {
+                                QUERY_TOKENS
+                            }),
                             files: code_pointers,
                             history,
+                            caps,
+                            page,
                         })
                         .map_err(brain_error)?,
                 ),
@@ -728,19 +758,27 @@ impl SessionManager {
                         max_tokens: Some(300),
                         files: false,
                         history,
+                        caps: None,
+                        page: None,
                     })
                     .ok(),
                 None => None,
             };
-            Ok((answer, preferences))
+            Ok((code, answer, preferences))
         })
         .await?;
         let mut reply = String::new();
+        if !code.is_empty() {
+            reply.push_str("[Code index]\n");
+            reply.push_str(&code.join("\n"));
+            reply.push_str("\n\n");
+        }
         match &answer {
             Some(answer) if !answer.hits.is_empty() => {
                 reply.push_str("[Project Brain]\n");
                 reply.push_str(&answer.text);
             }
+            _ if !code.is_empty() => reply.push_str("[Project Brain]\nNothing more on this."),
             _ => reply.push_str(
                 "The Project Brain has nothing on this yet. Delegate a scout (or research) task; its report is kept in the Brain for next time.",
             ),

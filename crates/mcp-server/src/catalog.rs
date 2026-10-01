@@ -53,7 +53,8 @@ const QUERY_BRAIN: &str = "Ask the Project Brain: what Brigadier knows about thi
 (its modules and services, earlier scout and research findings, decisions, conventions, \
 contracts) and the user's preferences, each with where it came from. Fast and cheap: ask it \
 first, and delegate a scout only when it has no answer or marks its answer stale. It answers with \
-what holds now; set `history` to also see earlier versions and why they changed.";
+what holds now; set `history` to also see earlier versions and why they changed. When it says \
+there are more results, ask again with `page`.";
 
 const REMEMBER: &str = "Keep something that later work must respect: a decision the user \
 settled or you made, a convention of this project, a contract between parts, or (personal) a \
