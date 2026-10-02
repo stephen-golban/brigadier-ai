@@ -22,6 +22,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 import { PlanCardLink } from "@/app/conversation/cards/PlanCardLink";
+import { revealOvernight } from "@/app/conversation/summaryState";
 import { useAction } from "@/app/conversation/useAction";
 import { ViewContext } from "@/app/conversation/viewContext";
 import { WorkerChip } from "@/app/conversation/WorkerChip";
@@ -68,7 +69,7 @@ import { useBoard } from "@/state/board";
  */
 
 export type PendingAction = {
-  type: "approval" | "question" | "plan";
+  type: "approval" | "question" | "plan" | "overnight";
   id: string;
 };
 
@@ -152,6 +153,15 @@ export function usePendingActions(
           if (plan.state.type === "proposed") {
             waiting.push({ key: `plan:${plan.id}`, position: plan.position });
           }
+        }
+      }
+      // An overnight proposal waits for its Start, on its card; it comes after the rest.
+      for (const run of Object.values(board.overnight)) {
+        if (run.state === "proposed") {
+          waiting.push({
+            key: `overnight:${run.id}`,
+            position: Number.MAX_SAFE_INTEGER,
+          });
         }
       }
       return waiting
@@ -264,6 +274,15 @@ export function PendingActionCard({
           onDismiss={onDismiss}
           footer={footer}
           stagger={follows}
+        />
+      );
+    case "overnight":
+      return (
+        <OvernightAction
+          key={action.id}
+          id={action.id}
+          onDismiss={onDismiss}
+          footer={footer}
         />
       );
   }
@@ -919,6 +938,43 @@ function PlanAction({
           {action.error}
         </p>
       )}
+      {footer}
+    </div>
+  );
+}
+
+/** An overnight proposal: the rail points to its card, where Start is. */
+function OvernightAction({
+  id,
+  onDismiss,
+  footer,
+}: {
+  id: string;
+  onDismiss: () => void;
+  footer: ReactNode;
+}) {
+  const run = useBoard((s) => s.board?.overnight[id]);
+  useCardKeys(Boolean(run), {
+    enter: () => revealOvernight(id),
+    escape: onDismiss,
+  });
+  if (!run) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 px-3">
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto min-w-0 justify-start px-0 text-start whitespace-normal wrap-anywhere"
+          onClick={() => revealOvernight(id)}
+        >
+          View plan: {run.name}
+        </Button>
+        <Button type="button" size="xs" variant="ghost" onClick={onDismiss}>
+          Later
+        </Button>
+      </div>
       {footer}
     </div>
   );

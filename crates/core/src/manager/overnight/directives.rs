@@ -62,27 +62,35 @@ impl Clock {
 /// The intent is read only from the user's prose, never examples/code/quoted sources.
 pub(crate) fn unattended(text: &str) -> bool {
     let prose = String::from_utf8_lossy(&mask(text)).to_lowercase();
-    let words: Vec<_> = prose.split_whitespace().collect();
-    if words.first() == Some(&"/overnight") {
+    if prose.split_whitespace().next() == Some("/overnight") {
         return true;
     }
-    (words
+    // Words without the punctuation around them ("tonight," "tonight:").
+    let words: Vec<_> = prose
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
+        .collect();
+    let night = words
         .iter()
-        .any(|word| matches!(*word, "tonight" | "overnight" | "unattended"))
-        && words.iter().any(|word| {
+        .any(|word| matches!(*word, "tonight" | "overnight" | "unattended"));
+    let deadline = || {
+        parse(text, &Clock::system())
+            .set
+            .iter()
+            .any(|(kind, _)| *kind == DirectiveKind::Deadline)
+    };
+    (night
+        && (words.iter().any(|word| {
             matches!(
                 *word,
                 "work" | "run" | "implement" | "build" | "finish" | "continue"
             )
-        }))
+        }) || deadline()))
         || prose.contains("by morning")
         || (words
             .iter()
             .any(|word| matches!(*word, "work" | "run" | "implement" | "build" | "finish"))
-            && parse(text, &Clock::system())
-                .set
-                .iter()
-                .any(|(kind, _)| *kind == DirectiveKind::Deadline))
+            && deadline())
 }
 
 pub(crate) fn continuation(text: &str) -> bool {

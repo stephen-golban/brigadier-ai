@@ -258,9 +258,10 @@ export function OvernightPlanCard({
           {restrictions.map((line) => (
             <p key={line}>{line}</p>
           ))}
-          {run.directives.ignored.length > 0 && (
-            <p className="text-muted-foreground">Ignored: {run.directives.ignored.join("; ")}</p>
-          )}
+          {/* Each line already reads "Ignored: … (Brigadier picks this itself)". */}
+          {run.directives.ignored.map((line) => (
+            <p key={line} className="text-muted-foreground">{line}</p>
+          ))}
           {run.problems.map((problem, index) => (
             <p key={index} role="alert" className="text-warning">
               {problem.message}

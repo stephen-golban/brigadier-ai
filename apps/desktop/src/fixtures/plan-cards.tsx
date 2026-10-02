@@ -284,7 +284,7 @@ const proposed: OvernightRun = {
     stopAfter: { type: "phase", number: 5 },
     skip: [3],
     maxWorkers: 2,
-    ignored: ["effort max (Brigadier picks this itself)"],
+    ignored: ["Ignored: effort max (Brigadier picks this itself)"],
     spans: [],
   },
   problems: [],
