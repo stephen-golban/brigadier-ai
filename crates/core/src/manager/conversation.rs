@@ -1778,7 +1778,11 @@ impl SessionManager {
                 .values()
                 .find(|run| run.state == crate::overnight::OvernightState::Proposed)
         {
-            parts.push(format!("[overnight proposal {} revision {}] This is preparation only. Read the user's brief and referenced plan with read-only scouts if necessary. Use propose_overnight to put its actual phases/criteria/Rules on this same proposal, keeping original phase numbers. Include every phase the user's words select (\"phases 1-3\"), also those after a \"stop after\" or a skip: Brigadier enforces those itself and keeps the rest for Continue. Do not invent scope or start implementation. For a bare goal keep phases empty (Phase 0 plans after Start). Only the user's Start begins the run. Reply with exactly [quiet] once the proposal is ready. The user's full agreement and latest corrections, verbatim:\n{}", run.id, run.revision, run.words));
+            if run.predecessor.is_some() {
+                parts.push(format!("[overnight proposal {} revision {}] This continues an earlier run on its branch: its phases, and those already verified, come from that run, so don't call propose_overnight. Only the user's Start begins it; until then you may only read.", run.id, run.revision));
+            } else {
+                parts.push(format!("[overnight proposal {} revision {}] This is preparation only. Read the user's brief and referenced plan with read-only scouts if necessary. Use propose_overnight to put its actual phases/criteria/Rules on this same proposal, keeping original phase numbers. Include every phase the user's words select (\"phases 1-3\"), also those after a \"stop after\" or a skip: Brigadier enforces those itself and keeps the rest for Continue. Do not invent scope or start implementation. For a bare goal keep phases empty (Phase 0 plans after Start). Only the user's Start begins the run. Reply with exactly [quiet] once the proposal is ready. The user's full agreement and latest corrections, verbatim:\n{}", run.id, run.revision, run.words));
+            }
         }
         // A side chat answers about the conversation beside it, as it stands now.
         if let Ok(record) = self.core.conversation(&conv.id)

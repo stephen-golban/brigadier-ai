@@ -195,6 +195,9 @@ impl SessionManager {
             if run.state != OvernightState::Proposed || run.revision != args.revision {
                 return Err(Error::Invalid("The proposal changed or started meanwhile. Do not replace it; use the current briefing.".into()));
             }
+            if run.predecessor.is_some() {
+                return Err(Error::Invalid("This proposal continues an earlier run: its phases and what they reached stay as they are. Reply with exactly [quiet].".into()));
+            }
             run.name = plan.name.clone();
             run.goal = plan.goal.clone().unwrap_or_else(|| run.words.clone());
             run.rules = plan.rules.clone().unwrap_or_default();
