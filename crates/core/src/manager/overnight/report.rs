@@ -10,7 +10,7 @@
 //! same time; the app delivers it as Brigadier and acknowledges it.
 
 use super::super::decisions::waiting_run;
-use super::super::gates::{criterion_evidence, criterion_status};
+use super::super::gates::{criterion_evidence, without_marker};
 use super::super::{SessionManager, blocking, git_error};
 use crate::board::Board;
 use crate::model::{DomainEvent, Setup};
@@ -647,7 +647,7 @@ fn role_word(role: RunRole) -> &'static str {
 /// already shows; any other text as it is.
 pub(super) fn evidence_text(line: &str) -> &str {
     let line = line.trim();
-    if criterion_status(line).is_some() {
+    if without_marker(line).starts_with('[') {
         criterion_evidence(line).unwrap_or(line)
     } else {
         line
