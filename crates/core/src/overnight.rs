@@ -117,7 +117,7 @@ pub enum PhaseState {
     /// Its whole result is being verified, reviewed and judged.
     Checking,
     Verified,
-    /// Some criteria met, the rest wait on the user or were not reached.
+    /// Unfinished: some criteria may be met, the rest wait on the user, or the run ended first.
     Partial,
     Blocked,
     /// Not selected by the user's restrictions, or left out by a stop.

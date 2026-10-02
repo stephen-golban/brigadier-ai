@@ -655,6 +655,8 @@ impl SessionManager {
                     ),
                 )
                 .await;
+                self.phase_verified_waiting(&now.conversation_id, &now.id, number)
+                    .await;
                 self.advance_soon(&now.conversation_id, &now.id);
             }
             Verdict::Fix(findings) => {

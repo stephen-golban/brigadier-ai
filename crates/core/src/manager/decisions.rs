@@ -278,6 +278,36 @@ impl SessionManager {
         }
     }
 
+    /// Phase `number` of an overnight run was verified: what this run, its earlier segments or
+    /// their leads asked of the user for that phase is over (the answer reached the phase, for
+    /// example in the words of a Continue).
+    pub(crate) async fn phase_verified_waiting(
+        &self,
+        conversation_id: &ConversationId,
+        run: &OvernightRunId,
+        number: u32,
+    ) {
+        let Ok(board) = self.core.board(conversation_id).await else {
+            return;
+        };
+        let mut lineage = HashSet::new();
+        let mut at = Some(run.clone());
+        while let Some(id) = at {
+            at = board.runs.get(&id).and_then(|run| run.predecessor.clone());
+            if !lineage.insert(id) {
+                break;
+            }
+        }
+        if self
+            .resolve_where(conversation_id, |item| {
+                asks_of_phase(&board, &lineage, item, number)
+            })
+            .await
+        {
+            self.settle_requests(conversation_id).await;
+        }
+    }
+
     /// The user edited a request or asked for a new answer: what its abandoned answer waited
     /// for is over. The caller settles the requests.
     pub(crate) async fn rework_waiting(&self, conversation_id: &ConversationId, request: &str) {
@@ -602,6 +632,30 @@ fn run_asks(board: &Board, run: &OvernightRunId, except: Option<&WaitingSource>)
         names.extend(AskNames::of(&open.what));
     }
     names
+}
+
+/// Whether `item` is a lasting ask of a run in `lineage` about phase `number` alone: listed
+/// for that phase by its checks ("Phase 2: …"), or naming only that phase's criteria.
+fn asks_of_phase(
+    board: &Board,
+    lineage: &HashSet<OvernightRunId>,
+    item: &WaitingItem,
+    number: u32,
+) -> bool {
+    if !matches!(
+        item.source,
+        WaitingSource::Run { .. } | WaitingSource::Orchestrator
+    ) || !waiting_run(&item.source, item.request_id.as_deref(), board)
+        .is_some_and(|run| lineage.contains(&run))
+    {
+        return false;
+    }
+    let criteria = AskNames::of(&item.what).criteria;
+    let prefix = format!("p{number}-c");
+    criteria
+        .iter()
+        .all(|criterion| criterion.starts_with(&prefix))
+        && (!criteria.is_empty() || item.what.starts_with(&format!("Phase {number}: ")))
 }
 
 /// In an overnight run, asks for the same config keys or criteria are one ask, however the
@@ -1139,6 +1193,47 @@ mod tests {
             ),
             lines(&["Add p2-c3's key."])
         );
+    }
+
+    #[test]
+    fn a_verified_phase_ends_only_its_own_asks_from_its_run_and_earlier_segments() {
+        // The short live run: segment 2's checks asked for the ID, the Continue's words gave it.
+        let earlier = OvernightRunId("01a0fe2c-run".into());
+        let lineage: HashSet<_> = [earlier.clone(), OvernightRunId("01a0fe3e-run".into())].into();
+        let board = Board::default();
+        let run = |run_id: &OvernightRunId, task: Option<&str>| WaitingSource::Run {
+            run_id: run_id.clone(),
+            task_id: task.map(|task| TaskId(task.into())),
+        };
+        let over = |source: WaitingSource, what: &str| {
+            asks_of_phase(&board, &lineage, &item("w", source, what), 2)
+        };
+        assert!(over(
+            run(&earlier, None),
+            "Phase 2: The owner must supply the team's real ledger account ID for ledger.ini [account].account_id."
+        ));
+        assert!(over(
+            run(&earlier, None),
+            "Set account_id in ledger.ini (criterion p2-c2)."
+        ));
+        // Another phase's, a refused outward command, another run's or a task's: still open.
+        assert!(!over(run(&earlier, None), "Phase 3: set account_id."));
+        assert!(!over(
+            run(&earlier, None),
+            "Set the IDs for p2-c2 and p3-c1."
+        ));
+        assert!(!over(
+            run(&earlier, Some("t9")),
+            "Push the run branch to origin."
+        ));
+        let other = OvernightRunId("other".into());
+        assert!(!over(run(&other, None), "Phase 2: set account_id."));
+        assert!(!over(
+            WaitingSource::Task {
+                task_id: TaskId("t9".into())
+            },
+            "Phase 2: set account_id (p2-c2)."
+        ));
     }
 
     #[test]

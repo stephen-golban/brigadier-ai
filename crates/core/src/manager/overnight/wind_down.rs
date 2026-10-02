@@ -33,7 +33,7 @@ const POLL: Duration = Duration::from_secs(5);
 pub(crate) const CLOCK: Duration = Duration::from_secs(30);
 
 /// What a live worker is told when its run ends.
-const HAND_OFF: &str = "[Brigadier] The overnight run is ending now. Finish only the step you are in the middle of, leave the worktree coherent, and call submit_report at once with a clean handoff: what you changed, what is left unfinished, decisions you made, traps you found, and the exact commands that verify your work. Start nothing new.";
+const HAND_OFF: &str = "[Brigadier] The overnight run is ending now ({reason}). Finish only the step you are in the middle of, leave the worktree coherent, and call submit_report at once with a clean handoff: what you changed, what is left unfinished, decisions you made, traps you found, and the exact commands that verify your work. Start nothing new.";
 
 impl SessionManager {
     /// Starts the deadline clock: every half minute, a run past its wind-down instant (by the
@@ -121,8 +121,9 @@ impl SessionManager {
                         TaskState::Running | TaskState::Starting | TaskState::Blocked
                     )
                 {
+                    let words = HAND_OFF.replace("{reason}", &stop_words(run.stop.as_ref()));
                     let _ = self
-                        .message_worker(&run.conversation_id, task, HAND_OFF.into(), "Brigadier")
+                        .message_worker(&run.conversation_id, task, words, "Brigadier")
                         .await;
                 }
             }
@@ -203,15 +204,8 @@ impl SessionManager {
                                 })
                                 .collect();
                         }
-                        let met = phase
-                            .criteria
-                            .iter()
-                            .any(|criterion| criterion.status == CriterionStatus::Met);
-                        phase.state = if met {
-                            PhaseState::Partial
-                        } else {
-                            PhaseState::Blocked
-                        };
+                        // Cut off by the run's end, it is unfinished, not blocked: it needs nothing.
+                        phase.state = PhaseState::Partial;
                         phase
                             .gaps
                             .push(format!("Its whole-phase checks never passed: {reason}."));
