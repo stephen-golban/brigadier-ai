@@ -27,9 +27,10 @@ use brigadier_sandbox::{Platform, PlatformOptions};
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::bridge::Bridge;
+use crate::bridge::{Bridge, Notify};
 use crate::launcher::Launcher;
 
 /// Environment variable carrying the timing tolerance (shared with the daemon).
@@ -340,6 +341,16 @@ fn app_ready(state: State<'_, AppState>, ready_ms: f64) -> f64 {
     *cold_start.get_or_insert(ready_ms - state.info.process_start_ms)
 }
 
+/// Desktop notifications from the app itself, so they show as Brigadier. Best effort.
+fn notifier(app: tauri::AppHandle) -> Notify {
+    Box::new(move |title, body| {
+        let shown = app.notification().builder().title(title).body(body).show();
+        if let Err(err) = shown {
+            tracing::debug!(error = %err, "could not show a desktop notification");
+        }
+    })
+}
+
 /// The window's backdrop behind the startup screen (the blur on macOS), from the config.
 fn startup_backdrop(app: &tauri::AppHandle) -> Option<tauri::utils::config::WindowEffectsConfig> {
     app.config()
@@ -481,10 +492,15 @@ fn main() {
             );
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let launcher = Launcher::new(platform.clone(), daemon_env);
-            let bridge = Bridge::start(platform.clone() as Arc<dyn Platform>, launcher);
+            let bridge = Bridge::start(
+                platform.clone() as Arc<dyn Platform>,
+                launcher,
+                notifier(app.handle().clone()),
+            );
             app.manage(AppState {
                 bridge,
                 info,

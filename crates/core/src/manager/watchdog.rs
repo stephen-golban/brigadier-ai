@@ -706,8 +706,7 @@ impl SessionManager {
         }
     }
 
-    /// Lists the cards the user left unanswered for long under "Waiting on you", each with
-    /// one desktop notification.
+    /// Lists the cards the user left unanswered for long under "Waiting on you".
     async fn watch_cards(
         &self,
         conversation_id: &ConversationId,
@@ -728,8 +727,8 @@ impl SessionManager {
                 .await;
             match added {
                 Ok(true) => {
+                    // The app shows it as a desktop notification too.
                     tracing::info!(conversation = %conversation_id, card = %card.card_id, "a card waits on the user");
-                    notify_desktop("Brigadier is waiting for you", &card.what);
                 }
                 Ok(false) => {}
                 Err(err) => {
@@ -747,49 +746,6 @@ impl Drop for Busy {
     fn drop(&mut self) {
         self.0.watchdog_busy.store(false, Ordering::Release);
     }
-}
-
-/// Shows a desktop notification, best effort (macOS and Linux desktops).
-fn notify_desktop(title: &str, body: &str) {
-    if cfg!(test) {
-        return;
-    }
-    let (title, body) = (title.to_owned(), body.to_owned());
-    std::thread::spawn(move || {
-        let shown = show_notification(&title, &body);
-        if let Err(err) = shown {
-            tracing::debug!(error = %err, "could not show a desktop notification");
-        }
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn show_notification(title: &str, body: &str) -> std::io::Result<()> {
-    let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
-    std::process::Command::new("/usr/bin/osascript")
-        .args([
-            "-e",
-            &format!(
-                "display notification \"{}\" with title \"{}\"",
-                quote(body),
-                quote(title)
-            ),
-        ])
-        .output()
-        .map(|_| ())
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn show_notification(title: &str, body: &str) -> std::io::Result<()> {
-    std::process::Command::new("notify-send")
-        .args(["--app-name=Brigadier", title, body])
-        .output()
-        .map(|_| ())
-}
-
-#[cfg(not(unix))]
-fn show_notification(_title: &str, _body: &str) -> std::io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

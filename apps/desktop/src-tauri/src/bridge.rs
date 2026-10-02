@@ -3,17 +3,19 @@
 //! One task owns the connection: it (re)connects, launching the daemon when nothing is
 //! listening, resubscribes from the last event it forwarded, pairs requests with responses,
 //! and forwards events and metrics to the webview channel. Requests made while disconnected
-//! wait in a bounded queue until the connection is back.
+//! wait in a bounded queue until the connection is back. It also raises the desktop
+//! notification for a card the user left unanswered for long.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use brigadier_core::{DomainEvent, WaitingItem, WaitingSource};
 use brigadier_ipc::app::BridgeEvent;
 use brigadier_ipc::protocol::{
-    ClientFrame, ClientInfo, DaemonInfo, ErrorCode, IpcError, Outcome, Request, Response,
-    ServerFrame,
+    ClientFrame, ClientInfo, DaemonInfo, ErrorCode, EventEnvelope, IpcError, Outcome, Request,
+    Response, ServerFrame,
 };
 use brigadier_ipc::{Connection, Reader};
 use brigadier_sandbox::Platform;
@@ -37,6 +39,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(2);
 const HEALTHY_CONNECTION: Duration = Duration::from_secs(5);
 
 type Reply = oneshot::Sender<Result<Response, IpcError>>;
+
+/// Shows a desktop notification as the app, given its title and body.
+pub type Notify = Box<dyn Fn(&str, &str) + Send + Sync>;
 
 /// Where the connection task is. Quitting waits out an attempt in flight, since that attempt
 /// may just have launched a daemon.
@@ -69,11 +74,14 @@ struct Inner {
     /// Highest event `seq` forwarded to the webview; the resubscribe cursor.
     last_seq: AtomicI64,
     stopping: AtomicBool,
+    notify: Notify,
+    /// "Waiting on you" items already notified, so an item's update doesn't notify again.
+    notified: Mutex<HashSet<String>>,
 }
 
 impl Bridge {
     /// Starts the connection task on Tauri's async runtime.
-    pub fn start(platform: Arc<dyn Platform>, launcher: Launcher) -> Self {
+    pub fn start(platform: Arc<dyn Platform>, launcher: Launcher, notify: Notify) -> Self {
         let (requests, queue) = mpsc::channel(QUEUED_REQUESTS);
         let bridge = Self {
             inner: Arc::new(Inner {
@@ -86,6 +94,8 @@ impl Bridge {
                 metrics_wanted: AtomicBool::new(false),
                 last_seq: AtomicI64::new(-1),
                 stopping: AtomicBool::new(false),
+                notify,
+                notified: Mutex::new(HashSet::new()),
             }),
         };
         let task = bridge.clone();
@@ -323,6 +333,7 @@ impl Bridge {
             }
             ServerFrame::Event { event } => {
                 self.inner.last_seq.fetch_max(event.seq, Ordering::AcqRel);
+                self.notify_waiting(&event);
                 self.emit(BridgeEvent::Event { event });
             }
             ServerFrame::Lagged { resume_after } => {
@@ -338,6 +349,39 @@ impl Bridge {
             ServerFrame::Welcome { .. } => return Some("unexpected second welcome".into()),
         }
         None
+    }
+
+    /// Tells the user, once per item, that a card they left unanswered for long is now
+    /// listed under "Waiting on you". The feed starts at the daemon's head and resumes after
+    /// the last event forwarded, so older items don't notify again.
+    fn notify_waiting(&self, event: &EventEnvelope) {
+        let Some(item) = stuck_card(event) else {
+            return;
+        };
+        if self
+            .inner
+            .notified
+            .lock()
+            .expect("notified lock")
+            .insert(item.id)
+        {
+            (self.inner.notify)("Waiting on you", &item.what);
+        }
+    }
+}
+
+/// The "Waiting on you" item an event lists for an unanswered card, if it lists one.
+fn stuck_card(event: &EventEnvelope) -> Option<WaitingItem> {
+    let raw = event.event.0.get();
+    // Most events aren't about waiting items: skip decoding them.
+    if !raw.contains("\"waitingOnYou\"") {
+        return None;
+    }
+    match serde_json::from_str(raw).ok()? {
+        DomainEvent::WaitingOnYou { item } if matches!(item.source, WaitingSource::Card { .. }) => {
+            Some(item)
+        }
+        _ => None,
     }
 }
 
@@ -359,5 +403,52 @@ fn unavailable(message: &str) -> IpcError {
     IpcError {
         code: ErrorCode::Internal,
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brigadier_core::{CardId, TaskId};
+    use brigadier_ipc::protocol::RawJson;
+
+    use super::*;
+
+    fn envelope(event: &DomainEvent) -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            stream: "conversation".into(),
+            stream_seq: 1,
+            at_ms: 0,
+            event: RawJson(serde_json::value::to_raw_value(event).unwrap()),
+        }
+    }
+
+    fn waiting(source: WaitingSource) -> DomainEvent {
+        DomainEvent::WaitingOnYou {
+            item: WaitingItem {
+                id: "w1".into(),
+                request_id: None,
+                source,
+                key: "k".into(),
+                what: "Answer the card".into(),
+                created_at_ms: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn only_stuck_cards_notify() {
+        let card = waiting(WaitingSource::Card {
+            card_id: CardId("c1".into()),
+        });
+        assert_eq!(
+            stuck_card(&envelope(&card)).map(|item| item.what),
+            Some("Answer the card".to_owned())
+        );
+        let task = waiting(WaitingSource::Task {
+            task_id: TaskId("task-1".into()),
+        });
+        assert!(stuck_card(&envelope(&task)).is_none());
+        assert!(stuck_card(&envelope(&waiting(WaitingSource::Orchestrator))).is_none());
     }
 }
