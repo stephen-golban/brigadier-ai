@@ -9,6 +9,7 @@ import type { MessagePage } from "./MessagePage";
 import type { MessageQueue } from "./MessageQueue";
 import type { Notice } from "./Notice";
 import type { OrchestratorStep } from "./OrchestratorStep";
+import type { OvernightRun } from "./OvernightRun";
 import type { Plan } from "./Plan";
 import type { Question } from "./Question";
 import type { Rating } from "./Rating";
@@ -77,4 +78,8 @@ notices: Array<Notice>,
  * What a Chat's model saved to the Personal Brain (its Memory chips): the latest change
  * per memory, in the order they were saved; one the user removed is `forgotten`.
  */
-memories: Array<MemoryChange>, };
+memories: Array<MemoryChange>, 
+/**
+ * Its overnight runs, a segment each, oldest first.
+ */
+overnight: Array<OvernightRun>, };

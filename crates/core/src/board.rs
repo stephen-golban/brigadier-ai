@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::knowledge::MemoryChange;
 use crate::model::ConversationId;
-use crate::model::{DomainEvent, MessageRole, Notice, Rating, StreamingMessage};
+use crate::model::{DomainEvent, MessageRole, Notice, OvernightRunId, Rating, StreamingMessage};
+use crate::overnight::OvernightRun;
 use crate::work::{
     Approval, CardId, CardState, Compaction, ConversationActivity, Decision, MessageQueue,
     OrchestratorStep, Plan, PlanState, Question, RunState, Task, TaskId, UserRequest, WaitingItem,
@@ -34,6 +35,7 @@ pub(crate) const KINDS: &[&str] = &[
     "decision.made",
     "waiting.updated",
     "waiting.resolved",
+    "overnight.updated",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -66,6 +68,8 @@ pub(crate) struct Board {
     /// The key of every item ever listed, open or over: a restart lists only what a report
     /// could not, never again what the user marked done.
     pub(crate) waits_listed: HashSet<String>,
+    /// Its overnight runs, a segment each.
+    pub(crate) runs: HashMap<OvernightRunId, OvernightRun>,
 }
 
 impl Board {
@@ -196,6 +200,9 @@ impl Board {
             DomainEvent::WaitingResolved { id, .. } => {
                 self.waiting.remove(id);
             }
+            DomainEvent::OvernightUpdated { run } => {
+                self.runs.insert(run.id.clone(), (**run).clone());
+            }
             DomainEvent::CompactionUpdated { compaction } => {
                 let position = self
                     .compactions
@@ -303,5 +310,17 @@ impl Board {
         let mut plans: Vec<Plan> = self.plans.values().cloned().collect();
         plans.sort_by_key(|plan| plan.position);
         plans
+    }
+
+    /// Its overnight runs, oldest first.
+    pub(crate) fn sorted_runs(&self) -> Vec<OvernightRun> {
+        let mut runs: Vec<OvernightRun> = self.runs.values().cloned().collect();
+        runs.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms).then(a.id.cmp(&b.id)));
+        runs
+    }
+
+    /// The run that owns the session now (started and not finished), if any.
+    pub(crate) fn active_run(&self) -> Option<&OvernightRun> {
+        self.runs.values().find(|run| run.state.is_active())
     }
 }

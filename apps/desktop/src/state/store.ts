@@ -560,6 +560,7 @@ function applyEvent(envelope: EventEnvelope, slice: Slice): Slice {
     case "approvalUpdated":
     case "questionUpdated":
     case "planUpdated":
+    case "overnightUpdated":
     case "queueChanged":
     case "workerEvent":
     case "orchestratorLogged":

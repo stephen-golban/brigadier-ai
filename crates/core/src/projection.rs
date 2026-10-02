@@ -109,6 +109,7 @@ impl Projection {
             | DomainEvent::ApprovalUpdated { .. }
             | DomainEvent::QuestionUpdated { .. }
             | DomainEvent::PlanUpdated { .. }
+            | DomainEvent::OvernightUpdated { .. }
             | DomainEvent::QueueChanged { .. }
             | DomainEvent::WorkerEvent { .. }
             | DomainEvent::OrchestratorLogged { .. }

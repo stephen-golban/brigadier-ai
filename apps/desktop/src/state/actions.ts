@@ -11,6 +11,8 @@ import type {
   ForkPlace,
   Mention,
   MessageQueue,
+  OvernightRun,
+  ProposedPlan,
   QueuedMessage,
   Project,
   ProjectPatch,
@@ -643,6 +645,80 @@ export async function decidePlan(
   message: string | null,
 ): Promise<void> {
   await request({ method: "decidePlan", conversationId, cardId, approve, message });
+}
+
+/**
+ * Overnight runs. Each command carries a fresh id, so a retried one changes nothing; Start
+ * names the proposal revision the user saw.
+ */
+export async function proposeOvernight(
+  conversationId: string,
+  words: string,
+  plan: ProposedPlan | null,
+): Promise<OvernightRun> {
+  const commandId = crypto.randomUUID();
+  const { run } = await request({
+    method: "proposeOvernight",
+    conversationId,
+    commandId,
+    words,
+    plan,
+  });
+  return run;
+}
+
+export async function startOvernight(
+  conversationId: string,
+  runId: string,
+  revision: number,
+): Promise<OvernightRun> {
+  const commandId = crypto.randomUUID();
+  const { run } = await request({
+    method: "startOvernight",
+    conversationId,
+    runId,
+    commandId,
+    revision,
+  });
+  return run;
+}
+
+export async function stopOvernight(conversationId: string, runId: string): Promise<OvernightRun> {
+  const commandId = crypto.randomUUID();
+  const { run } = await request({ method: "stopOvernight", conversationId, runId, commandId });
+  return run;
+}
+
+export async function steerOvernight(
+  conversationId: string,
+  runId: string,
+  words: string,
+): Promise<OvernightRun> {
+  const commandId = crypto.randomUUID();
+  const { run } = await request({
+    method: "steerOvernight",
+    conversationId,
+    runId,
+    commandId,
+    words,
+  });
+  return run;
+}
+
+export async function continueOvernight(
+  conversationId: string,
+  runId: string,
+  words: string,
+): Promise<OvernightRun> {
+  const commandId = crypto.randomUUID();
+  const { run } = await request({
+    method: "continueOvernight",
+    conversationId,
+    runId,
+    commandId,
+    words,
+  });
+  return run;
 }
 
 export async function stopTask(taskId: string): Promise<void> {

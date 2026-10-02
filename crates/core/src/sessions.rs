@@ -994,6 +994,7 @@ impl Core {
             streaming: board.streaming.clone(),
             notices: board.notices.clone(),
             memories: board.memories.clone(),
+            overnight: board.sorted_runs(),
         })
     }
 

@@ -402,6 +402,7 @@ dependencies = [
  "brigadier-router",
  "brigadier-sandbox",
  "brigadier-store",
+ "jiff",
  "memchr",
  "rusqlite",
  "rusqlite_migration",

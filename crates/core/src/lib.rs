@@ -9,6 +9,7 @@ pub mod knowledge;
 pub mod ledger;
 pub mod manager;
 pub mod model;
+pub mod overnight;
 mod projection;
 pub mod routing;
 pub mod runtime;
@@ -19,6 +20,7 @@ pub mod work;
 
 pub use knowledge::*;
 pub use model::*;
+pub use overnight::*;
 pub use sessions::{Core, MAX_ATTACHMENT_BYTES, ProbeBurst};
 pub use work::*;
 

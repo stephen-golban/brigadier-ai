@@ -14,6 +14,7 @@ import type {
   Notice,
   OrchestratorLogEntry,
   OrchestratorStep,
+  OvernightRun,
   Plan,
   ProviderEvent,
   Question,
@@ -55,6 +56,8 @@ export type Board = {
   approvals: Record<string, Approval>;
   questions: Record<string, Question>;
   plans: Record<string, Plan>;
+  /** Overnight runs, a segment each, by id. */
+  overnight: Record<string, OvernightRun>;
   /** What each user message set in motion, by request id (the message's id). */
   requests: Record<string, UserRequest>;
   /** Every worker step (started, finished, …), in stream order. */
@@ -202,6 +205,7 @@ export function emptyBoard(conversationId: string): Board {
     approvals: {},
     questions: {},
     plans: {},
+    overnight: {},
     requests: {},
     workerSteps: [],
     orchestratorSteps: [],
@@ -240,6 +244,7 @@ const REPLAYED = new Set<EventEnvelope["event"]["type"]>([
   "approvalUpdated",
   "questionUpdated",
   "planUpdated",
+  "overnightUpdated",
   "queueChanged",
   "runStateChanged",
   "requestUpdated",
@@ -288,6 +293,7 @@ export function boardFromView(
     approvals: byId(view.approvals),
     questions: byId(view.questions),
     plans: byId(view.plans),
+    overnight: byId(view.overnight),
     requests: byId(view.requests),
     workerSteps: view.workerSteps,
     orchestratorSteps: view.orchestratorSteps,
@@ -436,6 +442,8 @@ function applyToBoard(board: Board, envelope: EventEnvelope): Board {
       return { ...board, questions: placed(board.questions, event.question, envelope, board) };
     case "planUpdated":
       return { ...board, plans: placed(board.plans, event.plan, envelope, board) };
+    case "overnightUpdated":
+      return { ...board, overnight: { ...board.overnight, [event.run.id]: event.run } };
     case "requestUpdated":
       return { ...board, requests: { ...board.requests, [event.request.id]: event.request } };
     case "workerStepped":

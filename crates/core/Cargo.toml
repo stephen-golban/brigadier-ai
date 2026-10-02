@@ -15,6 +15,7 @@ brigadier-providers.workspace = true
 brigadier-router.workspace = true
 brigadier-sandbox.workspace = true
 brigadier-store.workspace = true
+jiff = "0.2.37"
 memchr.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true

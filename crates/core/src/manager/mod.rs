@@ -36,6 +36,7 @@ mod landing;
 mod lifecycle;
 mod outcomes;
 mod outputs;
+pub mod overnight;
 mod past_projects;
 mod plan_gates;
 mod project_removal;
@@ -133,6 +134,7 @@ pub struct SessionManager {
     #[cfg(debug_assertions)]
     faults: fault::Faults,
     research: research::Research,
+    overnight: overnight::Runs,
 }
 
 impl SessionManager {
@@ -190,6 +192,7 @@ impl SessionManager {
             #[cfg(debug_assertions)]
             faults: fault::Faults::default(),
             research: research::Research::default(),
+            overnight: overnight::Runs::default(),
         });
         manager.install_worktree_remover();
         manager.recover().await;

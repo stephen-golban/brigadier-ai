@@ -16,11 +16,11 @@ use brigadier_core::{
     AttachmentRef, BrainJobKind, BrainOverview, CardId, Catalog, CheckoutFile, CommitOutcome,
     ConventionsExport, Conversation, ConversationActivity, ConversationId, ConversationKind,
     ConversationStatus, ConversationView, DiffStat, FolderCheck, FolderListing, ForkPlace,
-    GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage, ProbeBurst, Project,
-    ProjectCandidate, ProjectId, ProjectPatch, ProvidersView, PullRequest, QueuedMessage, Rating,
-    RawApprovals, RawPage, RawSession, RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff,
-    ReviewScope, RoutePreview, Settings, Setup, SetupRequest, TaskId, UsageView, WorkerDiff,
-    WorkerPage,
+    GitState, Mention, Message, MessagePage, MessageQueue, OrchestratorPage, OvernightRun,
+    OvernightRunId, ProbeBurst, Project, ProjectCandidate, ProjectId, ProjectPatch, ProposedPlan,
+    ProvidersView, PullRequest, QueuedMessage, Rating, RawApprovals, RawPage, RawSession,
+    RawSessionId, RepoInfo, RestoreOutcome, ReviewDiff, ReviewScope, RoutePreview, Settings, Setup,
+    SetupRequest, TaskId, UsageView, WorkerDiff, WorkerPage,
 };
 use brigadier_providers::{Access, ApprovalDecision, ProviderKind};
 use brigadier_router::{Area, RegistryInfo};
@@ -440,6 +440,42 @@ pub enum Request {
         card_id: CardId,
         approve: bool,
         message: Option<String>,
+    },
+    /// Proposes an overnight run from the user's words and the plan read from them (`None`:
+    /// a bare goal). Nothing runs until `startOvernight`. Every overnight command carries a
+    /// client-chosen `commandId`; sending one again changes nothing.
+    ProposeOvernight {
+        conversation_id: ConversationId,
+        command_id: String,
+        words: String,
+        plan: Option<ProposedPlan>,
+    },
+    /// The user's Start, naming the proposal revision they saw.
+    StartOvernight {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        command_id: String,
+        revision: u32,
+    },
+    /// The user's Stop: drops a proposal, or winds a started run down now.
+    StopOvernight {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        command_id: String,
+    },
+    /// The user's words changing a run's restrictions ("until 09:00 instead").
+    SteerOvernight {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        command_id: String,
+        words: String,
+    },
+    /// Proposes the next segment of a finished run, with a new deadline from `words`.
+    ContinueOvernight {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        command_id: String,
+        words: String,
     },
     /// Stops a worker for good (its unfinished changes are kept, see `Task.kept`).
     StopTask {
@@ -864,6 +900,21 @@ pub enum Response {
     AnswerCard,
     AnswerQuestion,
     DecidePlan,
+    ProposeOvernight {
+        run: Box<OvernightRun>,
+    },
+    StartOvernight {
+        run: Box<OvernightRun>,
+    },
+    StopOvernight {
+        run: Box<OvernightRun>,
+    },
+    SteerOvernight {
+        run: Box<OvernightRun>,
+    },
+    ContinueOvernight {
+        run: Box<OvernightRun>,
+    },
     StopTask,
     PauseTask,
     ResumeTask,

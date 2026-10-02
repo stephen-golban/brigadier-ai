@@ -1066,6 +1066,65 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 .await?;
             Response::DecidePlan
         }
+        Request::ProposeOvernight {
+            conversation_id,
+            command_id,
+            words,
+            plan,
+        } => Response::ProposeOvernight {
+            run: Box::new(
+                sessions
+                    .propose_overnight(conversation_id, command_id, words, plan)
+                    .await?,
+            ),
+        },
+        Request::StartOvernight {
+            conversation_id,
+            run_id,
+            command_id,
+            revision,
+        } => Response::StartOvernight {
+            run: Box::new(
+                sessions
+                    .start_overnight(conversation_id, run_id, command_id, revision)
+                    .await?,
+            ),
+        },
+        Request::StopOvernight {
+            conversation_id,
+            run_id,
+            command_id,
+        } => Response::StopOvernight {
+            run: Box::new(
+                sessions
+                    .stop_overnight(conversation_id, run_id, command_id)
+                    .await?,
+            ),
+        },
+        Request::SteerOvernight {
+            conversation_id,
+            run_id,
+            command_id,
+            words,
+        } => Response::SteerOvernight {
+            run: Box::new(
+                sessions
+                    .steer_overnight(conversation_id, run_id, command_id, words)
+                    .await?,
+            ),
+        },
+        Request::ContinueOvernight {
+            conversation_id,
+            run_id,
+            command_id,
+            words,
+        } => Response::ContinueOvernight {
+            run: Box::new(
+                sessions
+                    .continue_overnight(conversation_id, run_id, command_id, words)
+                    .await?,
+            ),
+        },
         Request::StopTask { task_id } => {
             sessions.stop_task(task_id).await?;
             Response::StopTask

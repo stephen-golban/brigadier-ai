@@ -68,6 +68,10 @@ id_type!(
     /// Identifies a card waiting for the user: an approval, a question or a plan.
     CardId
 );
+id_type!(
+    /// Identifies one segment of an overnight run.
+    OvernightRunId
+);
 
 /// A workspace of one or more repos. Owns its sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -676,6 +680,8 @@ pub struct ConversationView {
     /// What a Chat's model saved to the Personal Brain (its Memory chips): the latest change
     /// per memory, in the order they were saved; one the user removed is `forgotten`.
     pub memories: Vec<crate::knowledge::MemoryChange>,
+    /// Its overnight runs, a segment each, oldest first.
+    pub overnight: Vec<crate::overnight::OvernightRun>,
 }
 
 /// A branch, for the composer's branch picker.
@@ -1274,6 +1280,10 @@ pub enum DomainEvent {
     WaitingOnYou {
         item: crate::work::WaitingItem,
     },
+    /// An overnight run was proposed, started or changed (full snapshot).
+    OvernightUpdated {
+        run: Box<crate::overnight::OvernightRun>,
+    },
     /// A "Waiting on you" item is done.
     WaitingResolved {
         id: String,
@@ -1335,6 +1345,7 @@ impl DomainEvent {
             Self::DecidedForYou { .. } => "decision.made",
             Self::WaitingOnYou { .. } => "waiting.updated",
             Self::WaitingResolved { .. } => "waiting.resolved",
+            Self::OvernightUpdated { .. } => "overnight.updated",
             Self::Probe { .. } => "diag.probe",
         }
     }
