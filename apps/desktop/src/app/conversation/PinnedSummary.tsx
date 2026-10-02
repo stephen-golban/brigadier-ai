@@ -23,11 +23,16 @@ import {
   useRef,
   useState,
 } from "react";
-import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 import { showCard } from "@/app/conversation/ActionCards";
-import { isFinal } from "@/app/conversation/blocks";
+import { PlanCardView } from "@/app/conversation/cards/PlanCardView";
+import { OvernightPlanCard } from "@/app/conversation/cards/OvernightPlanCard";
+import {
+  overnightActions,
+  useOvernightCards,
+} from "@/app/conversation/overnightAdapter";
+import { useSummary } from "@/app/conversation/summaryState";
 import { useAction } from "@/app/conversation/useAction";
 import { GitActions } from "@/app/conversation/GitActions";
 import { COMPOSER_EDITABLE } from "@/app/conversation/composerTarget";
@@ -39,14 +44,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { openFolder, openUrl, request } from "@/ipc/client";
 import { Button } from "@/components/ui/button";
 import type {
   Conversation,
   Decision,
   DiffStat,
-  Plan,
   PullRequest,
   PullRequestState,
   Task,
@@ -73,9 +81,15 @@ const NO_DECISIONS: readonly Decision[] = [];
 const RESTORE_MS = 1000;
 
 /** The branch's +N −N against its base, read again whenever a worker lands. */
-function useSessionDiff(conversationId: string, worktree: boolean): DiffStat | null {
+function useSessionDiff(
+  conversationId: string,
+  worktree: boolean,
+): DiffStat | null {
   const landed = useBoard(
-    (s) => Object.values(s.board?.tasks ?? {}).filter((task) => task.state === "landed").length,
+    (s) =>
+      Object.values(s.board?.tasks ?? {}).filter(
+        (task) => task.state === "landed",
+      ).length,
   );
   const [stat, setStat] = useState<DiffStat | null>(null);
   useEffect(() => {
@@ -92,28 +106,6 @@ function useSessionDiff(conversationId: string, worktree: boolean): DiffStat | n
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [conversationId, worktree, landed]);
   return worktree ? stat : null;
-}
-
-/** The plan being carried out, or waiting for the user, if any. */
-function currentPlan(plans: readonly Plan[]): Plan | null {
-  const open = plans.filter(
-    (plan) => plan.state.type !== "superseded" && plan.state.type !== "rejected",
-  );
-  return open.toSorted((a, b) => b.position - a.position)[0] ?? null;
-}
-
-function planLine(plan: Plan, tasks: Readonly<Record<string, Task>>): string {
-  const total = plan.steps.length;
-  if (plan.state.type === "proposed") return `${total} steps · waiting for you`;
-  if (plan.state.type === "inReview") return `${total} steps · in review`;
-  if (plan.state.type === "revising") return `${total} steps · being revised after review`;
-  const finished = plan.steps.filter((step) => {
-    const task = step.taskId ? tasks[step.taskId] : undefined;
-    return task !== undefined && isFinal(task);
-  }).length;
-  if (finished >= total) return `Done · ${total}/${total}`;
-  const step = plan.steps[finished];
-  return `Step ${finished + 1}/${total}${step ? ` · ${step.title}` : ""}`;
 }
 
 const Section = ({
@@ -136,7 +128,9 @@ const Section = ({
 
 /** Web links in `text`, without trailing punctuation. */
 function linksIn(text: string): string[] {
-  return (text.match(/https?:\/\/[^\s<>()"'`]+/g) ?? []).map((url) => url.replace(/[.,;:!?]+$/, ""));
+  return (text.match(/https?:\/\/[^\s<>()"'`]+/g) ?? []).map((url) =>
+    url.replace(/[.,;:!?]+$/, ""),
+  );
 }
 
 function hostOf(url: string): string {
@@ -172,7 +166,9 @@ function useSources(conversationId: string): string[] {
 
 function openLink(url: string): void {
   openUrl(url).catch((error: unknown) =>
-    toast(error instanceof Error ? error.message : String(error), { tone: "error" }),
+    toast(error instanceof Error ? error.message : String(error), {
+      tone: "error",
+    }),
   );
 }
 
@@ -202,8 +198,12 @@ function Sources({ conversationId }: { conversationId: string }) {
   const add = () => {
     const composer = aui.composer();
     const text = composer.getState().text;
-    composer.setText(text && !text.endsWith(" ") ? `${text} https://` : `${text}https://`);
-    requestAnimationFrame(() => document.querySelector<HTMLElement>(COMPOSER_EDITABLE)?.focus());
+    composer.setText(
+      text && !text.endsWith(" ") ? `${text} https://` : `${text}https://`,
+    );
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(COMPOSER_EDITABLE)?.focus(),
+    );
   };
   return (
     <Section
@@ -227,7 +227,10 @@ function Sources({ conversationId }: { conversationId: string }) {
             View all
           </button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="flex max-h-80 w-xs flex-col overflow-y-auto">
+        <PopoverContent
+          align="end"
+          className="flex max-h-80 w-xs flex-col overflow-y-auto"
+        >
           {sources.map((url) => (
             <button
               key={url}
@@ -236,7 +239,9 @@ function Sources({ conversationId }: { conversationId: string }) {
               className="hover:bg-muted rounded-control flex flex-col px-2 py-1 text-start"
             >
               <span className="truncate text-sm">{hostOf(url)}</span>
-              <span className="text-muted-foreground truncate text-xs">{url}</span>
+              <span className="text-muted-foreground truncate text-xs">
+                {url}
+              </span>
             </button>
           ))}
         </PopoverContent>
@@ -246,7 +251,10 @@ function Sources({ conversationId }: { conversationId: string }) {
 }
 
 /** Where an item waiting on the user came from, in a few words. */
-function waitingFrom(item: WaitingItem, tasks: Readonly<Record<string, Task>>): string | null {
+function waitingFrom(
+  item: WaitingItem,
+  tasks: Readonly<Record<string, Task>>,
+): string | null {
   switch (item.source.type) {
     case "task":
     case "landing": {
@@ -266,7 +274,13 @@ function waitingFrom(item: WaitingItem, tasks: Readonly<Record<string, Task>>): 
 }
 
 /** One thing only the user can do: what, where it came from, and Done (or Show, for a card). */
-function WaitingRow({ item, conversationId }: { item: WaitingItem; conversationId: string }) {
+function WaitingRow({
+  item,
+  conversationId,
+}: {
+  item: WaitingItem;
+  conversationId: string;
+}) {
   const tasks = useBoard((s) => s.board?.tasks ?? NO_TASKS);
   const action = useAction();
   const from = waitingFrom(item, tasks);
@@ -274,10 +288,17 @@ function WaitingRow({ item, conversationId }: { item: WaitingItem; conversationI
   return (
     <div className="flex flex-col gap-0.5 py-0.5">
       <div className="flex items-start gap-2 text-sm">
-        <HandRaised aria-hidden className="text-muted-foreground mt-0.5 size-icon-sm shrink-0" />
+        <HandRaised
+          aria-hidden
+          className="text-muted-foreground mt-0.5 size-icon-sm shrink-0"
+        />
         <span className="min-w-0 flex-1 wrap-break-word">{item.what}</span>
         {source.type === "card" && (
-          <Button size="xs" variant="ghost" onClick={() => showCard(conversationId, source.cardId)}>
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => showCard(conversationId, source.cardId)}
+          >
             Show
           </Button>
         )}
@@ -285,13 +306,19 @@ function WaitingRow({ item, conversationId }: { item: WaitingItem; conversationI
           size="xs"
           variant="ghost"
           disabled={action.busy}
-          onClick={() => action.run(() => resolveWaiting(conversationId, item.id))}
+          onClick={() =>
+            action.run(() => resolveWaiting(conversationId, item.id))
+          }
         >
           Done
         </Button>
       </div>
-      {from && <span className="text-muted-foreground ps-6 text-xs">{from}</span>}
-      {action.error && <span className="text-destructive ps-6 text-xs">{action.error}</span>}
+      {from && (
+        <span className="text-muted-foreground ps-6 text-xs">{from}</span>
+      )}
+      {action.error && (
+        <span className="text-destructive ps-6 text-xs">{action.error}</span>
+      )}
     </div>
   );
 }
@@ -301,7 +328,9 @@ function WaitingOnYou({ conversationId }: { conversationId: string }) {
   const items = useBoard(
     useShallow((s) =>
       s.board?.conversationId === conversationId
-        ? Object.values(s.board.waiting).toSorted((a, b) => a.createdAtMs - b.createdAtMs)
+        ? Object.values(s.board.waiting).toSorted(
+            (a, b) => a.createdAtMs - b.createdAtMs,
+          )
         : NO_WAITING,
     ),
   );
@@ -321,11 +350,16 @@ const DECISIONS = 5;
 function DecisionRow({ decision }: { decision: Decision }) {
   return (
     <div className="flex items-start gap-2 py-0.5 text-sm">
-      <CheckCircle aria-hidden className="text-muted-foreground mt-0.5 size-icon-sm shrink-0" />
+      <CheckCircle
+        aria-hidden
+        className="text-muted-foreground mt-0.5 size-icon-sm shrink-0"
+      />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="wrap-break-word">{decision.what}</span>
         {decision.why && (
-          <span className="text-muted-foreground text-xs wrap-break-word">{decision.why}</span>
+          <span className="text-muted-foreground text-xs wrap-break-word">
+            {decision.why}
+          </span>
         )}
       </span>
     </div>
@@ -335,7 +369,9 @@ function DecisionRow({ decision }: { decision: Decision }) {
 /** "Decided for you": what Brigadier decided on the user's behalf, newest first. */
 function DecidedForYou({ conversationId }: { conversationId: string }) {
   const decisions = useBoard((s) =>
-    s.board?.conversationId === conversationId ? s.board.decisions : NO_DECISIONS,
+    s.board?.conversationId === conversationId
+      ? s.board.decisions
+      : NO_DECISIONS,
   );
   const [all, setAll] = useState(false);
   if (decisions.length === 0) return null;
@@ -359,7 +395,13 @@ function DecidedForYou({ conversationId }: { conversationId: string }) {
 }
 
 /** The project's ⋯ "Actions": a new session, its folder, and its path. */
-function ProjectActions({ projectId, path }: { projectId: string; path: string }) {
+function ProjectActions({
+  projectId,
+  path,
+}: {
+  projectId: string;
+  path: string;
+}) {
   const mac = useApp((s) => s.info?.platform === "macos");
   return (
     <DropdownMenu modal={false}>
@@ -381,7 +423,9 @@ function ProjectActions({ projectId, path }: { projectId: string; path: string }
         <DropdownMenuItem
           onSelect={() =>
             void openFolder(path).catch((error: unknown) =>
-              toast(error instanceof Error ? error.message : String(error), { tone: "error" }),
+              toast(error instanceof Error ? error.message : String(error), {
+                tone: "error",
+              }),
             )
           }
         >
@@ -404,7 +448,10 @@ function ProjectActions({ projectId, path }: { projectId: string; path: string }
   );
 }
 
-const PULL_REQUEST: Record<PullRequestState, { label: string; icon: ReactNode }> = {
+const PULL_REQUEST: Record<
+  PullRequestState,
+  { label: string; icon: ReactNode }
+> = {
   open: { label: "Open", icon: <PullRequestOpen /> },
   draft: { label: "Draft", icon: <PullRequestDraft /> },
   merged: { label: "Merged", icon: <PullRequestMerged /> },
@@ -414,7 +461,10 @@ const PULL_REQUEST: Record<PullRequestState, { label: string; icon: ReactNode }>
 /** The branch's GitHub pull request (from `gh`, read only), looked up again after landings. */
 function usePullRequest(conversationId: string): PullRequest | null {
   const landed = useBoard(
-    (s) => Object.values(s.board?.tasks ?? {}).filter((task) => task.state === "landed").length,
+    (s) =>
+      Object.values(s.board?.tasks ?? {}).filter(
+        (task) => task.state === "landed",
+      ).length,
   );
   const [found, setFound] = useState<PullRequest | null>(null);
   useEffect(() => {
@@ -441,16 +491,21 @@ function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
       title={`${pullRequest.title}\n${pullRequest.url}`}
       onClick={() =>
         openUrl(pullRequest.url).catch((cause: unknown) =>
-          toast(cause instanceof Error ? cause.message : String(cause), { tone: "error" }),
+          toast(cause instanceof Error ? cause.message : String(cause), {
+            tone: "error",
+          }),
         )
       }
       className="hover:bg-foreground/5 rounded-control -mx-1 flex h-control-sm items-center gap-2 px-1 text-start text-sm transition-colors [&>svg]:size-icon-md [&>svg]:shrink-0"
     >
       {state.icon}
       <span className="min-w-0 flex-1 truncate">
-        <span className="text-muted-foreground">#{pullRequest.number}</span> {pullRequest.title}
+        <span className="text-muted-foreground">#{pullRequest.number}</span>{" "}
+        {pullRequest.title}
       </span>
-      <span className="text-muted-foreground shrink-0 text-xs">{state.label}</span>
+      <span className="text-muted-foreground shrink-0 text-xs">
+        {state.label}
+      </span>
     </button>
   );
 }
@@ -462,19 +517,19 @@ function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
  */
 type SummaryLayout = "beside" | "shift" | "float";
 
-/** The open conversation's summary layout, and whether it floats open over the thread. */
-const useSummary = create<{ layout: SummaryLayout; floating: boolean }>(() => ({
-  layout: "beside",
-  floating: false,
-}));
-
 /**
  * The thread's pane, laid out for the pinned summary when `summary` (a session's own view). It
  * follows its width without rendering: the layout goes on the element for CSS (the column's move,
  * the card's visibility), and to the store only when it changes, for the top bar's button. The
  * first layout lands before the pane eases anything, so a thread opens already in place.
  */
-export function SummaryPane({ summary, children }: { summary: boolean; children: ReactNode }) {
+export function SummaryPane({
+  summary,
+  children,
+}: {
+  summary: boolean;
+  children: ReactNode;
+}) {
   const pinned = useApp((s) => s.pinnedSummary);
   const pane = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -497,7 +552,9 @@ export function SummaryPane({ summary, children }: { summary: boolean; children:
       }
       // Only a floating summary stays open over the thread.
       useSummary.setState((state) =>
-        state.layout === layout ? state : { layout, floating: state.floating && layout === "float" },
+        state.layout === layout
+          ? state
+          : { layout, floating: state.floating && layout === "float" },
       );
     });
     observer.observe(element);
@@ -526,7 +583,11 @@ export function SummaryPane({ summary, children }: { summary: boolean; children:
  * end when pinned and out when unpinned, and hides where the pane has too little room beside the
  * thread's column (it floats from the top bar there instead).
  */
-export function PinnedSummary({ conversation }: { conversation: Conversation }) {
+export function PinnedSummary({
+  conversation,
+}: {
+  conversation: Conversation;
+}) {
   const shown = useApp((s) => s.pinnedSummary);
   const float = useSummary((s) => s.layout === "float");
   const visible = shown && !float;
@@ -572,7 +633,8 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
     if (top === 0) return;
     restoring.current = true;
     const restore = () => {
-      if (restoring.current && element.scrollTop !== top) element.scrollTop = top;
+      if (restoring.current && element.scrollTop !== top)
+        element.scrollTop = top;
     };
     const stop = () => {
       restoring.current = false;
@@ -582,12 +644,14 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
     observer.observe(element);
     if (element.firstElementChild) observer.observe(element.firstElementChild);
     const timer = setTimeout(stop, RESTORE_MS);
-    for (const type of ["wheel", "pointerdown", "keydown"]) element.addEventListener(type, stop);
+    for (const type of ["wheel", "pointerdown", "keydown"])
+      element.addEventListener(type, stop);
     return () => {
       stop();
       observer.disconnect();
       clearTimeout(timer);
-      for (const type of ["wheel", "pointerdown", "keydown"]) element.removeEventListener(type, stop);
+      for (const type of ["wheel", "pointerdown", "keydown"])
+        element.removeEventListener(type, stop);
     };
   }, [visible, content, conversation.id]);
   if (conversation.setup?.type !== "session") return null;
@@ -600,7 +664,7 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
         aria-hidden={!visible || undefined}
         data-state={shown ? "open" : "closed"}
         onScroll={onScroll}
-        className="bg-card border-border rounded-2xl shadow-summary summary-hidden:invisible summary-hidden:translate-x-full summary-hidden:scale-80 summary-hidden:opacity-0 pointer-events-auto flex max-h-full w-full origin-top-right flex-col overflow-y-auto border px-3 py-2.5 motion-safe:group-data-settled/pane:transition-[opacity,translate,scale,visibility] motion-safe:group-data-settled/pane:duration-300 motion-safe:group-data-settled/pane:ease-summary-card"
+        className="summary-hidden:invisible summary-hidden:translate-x-full summary-hidden:scale-80 summary-hidden:opacity-0 pointer-events-auto flex max-h-full w-full origin-top-right flex-col overflow-y-auto motion-safe:group-data-settled/pane:transition-[opacity,translate,scale,visibility] motion-safe:group-data-settled/pane:duration-300 motion-safe:group-data-settled/pane:ease-summary-card"
       >
         {content && <SummaryContent conversation={conversation} />}
       </aside>
@@ -610,22 +674,36 @@ export function PinnedSummary({ conversation }: { conversation: Conversation }) 
 
 /** The summary itself, pinned in the pane or floating from the top bar. */
 function SummaryContent({ conversation }: { conversation: Conversation }) {
+  const overnight = useOvernightCards(conversation.id);
   const project = useApp((s) =>
-    conversation.projectId ? (s.projects[conversation.projectId]?.name ?? null) : null,
+    conversation.projectId
+      ? (s.projects[conversation.projectId]?.name ?? null)
+      : null,
   );
   const workers = useBoard((s) =>
-    s.board?.conversationId === conversation.id ? Object.keys(s.board.tasks).length : 0,
+    s.board?.conversationId === conversation.id
+      ? Object.keys(s.board.tasks).length
+      : 0,
   );
-  const plan = useBoard((s) =>
-    s.board?.conversationId === conversation.id ? currentPlan(Object.values(s.board.plans)) : null,
+  const plans = useBoard(
+    useShallow((s) =>
+      s.board?.conversationId === conversation.id
+        ? Object.values(s.board.plans)
+            .filter((plan) => plan.state.type !== "superseded")
+            .toSorted((a, b) => a.position - b.position)
+            .map((plan) => plan.id)
+        : [],
+    ),
   );
-  const tasks = useBoard((s) => s.board?.tasks ?? NO_TASKS);
-  const setup = conversation.setup?.type === "session" ? conversation.setup : null;
+  const setup =
+    conversation.setup?.type === "session" ? conversation.setup : null;
   const worktree = setup?.environment.type === "newWorktree";
   const diff = useSessionDiff(conversation.id, worktree);
   const sources = useSources(conversation.id).length > 0;
   const waiting = useBoard((s) =>
-    s.board?.conversationId === conversation.id ? Object.keys(s.board.waiting).length : 0,
+    s.board?.conversationId === conversation.id
+      ? Object.keys(s.board.waiting).length
+      : 0,
   );
   const decided = useBoard((s) =>
     s.board?.conversationId === conversation.id ? s.board.decisions.length : 0,
@@ -633,45 +711,65 @@ function SummaryContent({ conversation }: { conversation: Conversation }) {
   const pullRequest = usePullRequest(conversation.id);
   if (!setup) return null;
   const checkout =
-    setup.environment.type === "newWorktree" ? (setup.environment.path ?? setup.repo) : setup.repo;
+    setup.environment.type === "newWorktree"
+      ? (setup.environment.path ?? setup.repo)
+      : setup.repo;
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex h-control-xs items-center gap-2">
-        <h2 className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{project ?? setup.repo}</h2>
-        {conversation.projectId && (
-          <ProjectActions projectId={conversation.projectId} path={checkout} />
-        )}
-      </div>
-      <GitActions conversationId={conversation.id}>
-        <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
-          <Branch aria-hidden className="text-muted-foreground size-icon-md shrink-0" />
-          <span className="min-w-0 flex-1 truncate" title={setup.environment.branch}>
-            {setup.environment.branch}
-          </span>
-          {diff && (diff.insertions > 0 || diff.deletions > 0) && (
-            <span className="shrink-0 text-xs tabular-nums">
-              <span className="text-success">+{diff.insertions}</span>{" "}
-              <span className="text-destructive">−{diff.deletions}</span>
-            </span>
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="bg-card border-border rounded-2xl shadow-summary flex flex-col gap-2 border px-3 py-2.5">
+        <div className="flex h-control-xs items-center gap-2">
+          <h2 className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+            {project ?? setup.repo}
+          </h2>
+          {conversation.projectId && (
+            <ProjectActions
+              projectId={conversation.projectId}
+              path={checkout}
+            />
           )}
         </div>
-      </GitActions>
-      {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
-      {(workers > 0 || plan || sources || waiting > 0 || decided > 0) && (
-        <div className="border-border border-t" />
-      )}
-      <WaitingOnYou conversationId={conversation.id} />
-      {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
-      {plan && (
-        <Section title="Plan">
-          <p className="truncate text-sm" title={plan.title}>
-            {planLine(plan, tasks)}
-          </p>
-        </Section>
-      )}
-      <DecidedForYou conversationId={conversation.id} />
-      <Sources conversationId={conversation.id} />
+        <GitActions conversationId={conversation.id}>
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+            <Branch
+              aria-hidden
+              className="text-muted-foreground size-icon-md shrink-0"
+            />
+            <span
+              className="min-w-0 flex-1 truncate"
+              title={setup.environment.branch}
+            >
+              {setup.environment.branch}
+            </span>
+            {diff && (diff.insertions > 0 || diff.deletions > 0) && (
+              <span className="shrink-0 text-xs tabular-nums">
+                <span className="text-success">+{diff.insertions}</span>{" "}
+                <span className="text-destructive">−{diff.deletions}</span>
+              </span>
+            )}
+          </div>
+        </GitActions>
+        {pullRequest && <PullRequestRow pullRequest={pullRequest} />}
+        {(workers > 0 || sources || waiting > 0 || decided > 0) && (
+          <div className="border-border border-t" />
+        )}
+        <WaitingOnYou conversationId={conversation.id} />
+        {workers > 0 && <WorkersSummary conversationId={conversation.id} />}
+        <DecidedForYou conversationId={conversation.id} />
+        <Sources conversationId={conversation.id} />
+      </div>
+      {plans
+        .filter((id) => !overnight.some((card) => card.run.planId === id))
+        .map((id) => (
+          <PlanCardView key={id} cardId={id} />
+        ))}
+      {overnight.map((model) => (
+        <OvernightPlanCard
+          key={model.run.id}
+          model={model}
+          actions={overnightActions}
+        />
+      ))}
     </div>
   );
 }
@@ -680,7 +778,11 @@ function SummaryContent({ conversation }: { conversation: Conversation }) {
  * The top bar's summary button. Where the pane keeps the summary beside the thread it pins and
  * unpins it; where the summary floats, it opens it over the thread, under the button.
  */
-export function PinnedSummaryToggle({ conversation }: { conversation: Conversation }) {
+export function PinnedSummaryToggle({
+  conversation,
+}: {
+  conversation: Conversation;
+}) {
   const pinned = useApp((s) => s.pinnedSummary);
   const float = useSummary((s) => s.layout === "float");
   const floating = useSummary((s) => s.floating);
@@ -698,7 +800,10 @@ export function PinnedSummaryToggle({ conversation }: { conversation: Conversati
     );
   }
   return (
-    <Popover open={floating} onOpenChange={(open) => useSummary.setState({ floating: open })}>
+    <Popover
+      open={floating}
+      onOpenChange={(open) => useSummary.setState({ floating: open })}
+    >
       <PopoverTrigger asChild>
         <TooltipIconButton
           tooltip="Toggle summary"
@@ -715,9 +820,10 @@ export function PinnedSummaryToggle({ conversation }: { conversation: Conversati
         // Focus the summary itself, not its first button (whose tip would open with it).
         onOpenAutoFocus={(event) => {
           event.preventDefault();
-          if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
+          if (event.currentTarget instanceof HTMLElement)
+            event.currentTarget.focus();
         }}
-        className="bg-card border-border rounded-2xl shadow-summary text-foreground w-summary max-h-(--radix-popover-content-available-height) overflow-y-auto border px-3 py-2.5 ring-0"
+        className="text-foreground w-summary max-w-(--radix-popover-content-available-width) max-h-(--radix-popover-content-available-height) overflow-y-auto border-0 bg-transparent p-0 shadow-none ring-0"
       >
         <SummaryContent conversation={conversation} />
       </PopoverContent>

@@ -1,5 +1,5 @@
 import { ApprovalCardView } from "@/app/conversation/cards/ApprovalCardView";
-import { PlanCardView } from "@/app/conversation/cards/PlanCardView";
+import { PlanCardLink } from "@/app/conversation/cards/PlanCardLink";
 import { QuestionCardView } from "@/app/conversation/cards/QuestionCardView";
 import { TaskCardView } from "@/app/conversation/cards/TaskCardView";
 
@@ -16,6 +16,6 @@ export default function CardBody({ type, id }: { type: CardType; id: string }) {
     case "question":
       return <QuestionCardView cardId={id} />;
     case "plan":
-      return <PlanCardView cardId={id} />;
+      return <PlanCardLink cardId={id} />;
   }
 }

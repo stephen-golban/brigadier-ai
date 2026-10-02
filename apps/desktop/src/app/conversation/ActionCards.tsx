@@ -21,6 +21,7 @@ import {
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
+import { PlanCardLink } from "@/app/conversation/cards/PlanCardLink";
 import { useAction } from "@/app/conversation/useAction";
 import { ViewContext } from "@/app/conversation/viewContext";
 import { WorkerChip } from "@/app/conversation/WorkerChip";
@@ -44,8 +45,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Approval, ApprovalDecision, Conversation, DiffStat } from "@/ipc/generated";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import type {
+  Approval,
+  ApprovalDecision,
+  Conversation,
+  DiffStat,
+} from "@/ipc/generated";
 import { ALWAYS_ASK_NOTE } from "@/lib/setup";
 import { answerCard, answerQuestion, decidePlan } from "@/state/actions";
 import { useBoard } from "@/state/board";
@@ -57,27 +67,44 @@ import { useBoard } from "@/state/board";
  * steers or queues as usual).
  */
 
-export type PendingAction = { type: "approval" | "question" | "plan"; id: string };
+export type PendingAction = {
+  type: "approval" | "question" | "plan";
+  id: string;
+};
 
 const NOTHING_ASIDE: readonly string[] = [];
 
 /** The cards put aside with × (their ids), by conversation. */
-const useAside = create<{ byConversation: Readonly<Record<string, readonly string[]>> }>(() => ({
+const useAside = create<{
+  byConversation: Readonly<Record<string, readonly string[]>>;
+}>(() => ({
   byConversation: {},
 }));
 
 /** The conversation's cards put aside with ×. */
-export function useAsideCards(conversationId: string | null): readonly string[] {
-  return useAside((s) => (conversationId ? s.byConversation[conversationId] : undefined) ?? NOTHING_ASIDE);
+export function useAsideCards(
+  conversationId: string | null,
+): readonly string[] {
+  return useAside(
+    (s) =>
+      (conversationId ? s.byConversation[conversationId] : undefined) ??
+      NOTHING_ASIDE,
+  );
 }
 
-export function setAsideCards(conversationId: string, ids: readonly string[]): void {
-  useAside.setState((s) => ({ byConversation: { ...s.byConversation, [conversationId]: ids } }));
+export function setAsideCards(
+  conversationId: string,
+  ids: readonly string[],
+): void {
+  useAside.setState((s) => ({
+    byConversation: { ...s.byConversation, [conversationId]: ids },
+  }));
 }
 
 /** Brings a card put aside back to the rail ("Waiting on you" links to it). */
 export function showCard(conversationId: string, cardId: string): void {
-  const aside = useAside.getState().byConversation[conversationId] ?? NOTHING_ASIDE;
+  const aside =
+    useAside.getState().byConversation[conversationId] ?? NOTHING_ASIDE;
   setAsideCards(
     conversationId,
     aside.filter((id) => id !== cardId),
@@ -91,11 +118,14 @@ const SKIPPED = "Skipped: use your best judgment.";
  * The decisions waiting for the user in a conversation, oldest first: approvals, open
  * questions, and plans a session under "Ask for approval" waits on.
  */
-export function usePendingActions(conversation: Conversation | null): PendingAction[] {
+export function usePendingActions(
+  conversation: Conversation | null,
+): PendingAction[] {
   // Plan mode hands the plan to the user whatever the permission level.
   const decidesPlans =
     conversation?.setup?.type === "session" &&
-    (conversation.setup.permission === "askForApproval" || conversation.setup.planMode);
+    (conversation.setup.permission === "askForApproval" ||
+      conversation.setup.planMode);
   const keys = useBoard(
     useShallow((s) => {
       const board = s.board;
@@ -103,12 +133,18 @@ export function usePendingActions(conversation: Conversation | null): PendingAct
       const waiting: { key: string; position: number }[] = [];
       for (const approval of Object.values(board.approvals)) {
         if (approval.state.type === "pending") {
-          waiting.push({ key: `approval:${approval.id}`, position: approval.position });
+          waiting.push({
+            key: `approval:${approval.id}`,
+            position: approval.position,
+          });
         }
       }
       for (const question of Object.values(board.questions)) {
         if (question.answer === null && question.answeredAtMs === null) {
-          waiting.push({ key: `question:${question.id}`, position: question.position });
+          waiting.push({
+            key: `question:${question.id}`,
+            position: question.position,
+          });
         }
       }
       if (decidesPlans) {
@@ -118,7 +154,9 @@ export function usePendingActions(conversation: Conversation | null): PendingAct
           }
         }
       }
-      return waiting.toSorted((a, b) => a.position - b.position).map((entry) => entry.key);
+      return waiting
+        .toSorted((a, b) => a.position - b.position)
+        .map((entry) => entry.key);
     }),
   );
   return keys.map((key) => {
@@ -128,7 +166,8 @@ export function usePendingActions(conversation: Conversation | null): PendingAct
 }
 
 /** A field the user types in; its keys are its own, not the card's. */
-const FIELD = "input, textarea, select, [contenteditable]:not([contenteditable='false' i])";
+const FIELD =
+  "input, textarea, select, [contenteditable]:not([contenteditable='false' i])";
 
 /** Open menus, dialogs and the message field's popovers, which take Enter and Esc first. */
 const OVERLAYS =
@@ -143,16 +182,24 @@ function inField(target: EventTarget | null): boolean {
  * message field sends), not Enter on a focused button or link (that clicks it), and not while
  * a menu or dialog is open (they take their keys first). A side chat's keys are its own.
  */
-function useCardKeys(enabled: boolean, keys: { enter: () => void; escape: () => void }) {
+function useCardKeys(
+  enabled: boolean,
+  keys: { enter: () => void; escape: () => void },
+) {
   const { embedded } = useContext(ViewContext);
   const onKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
     if (event.key !== "Enter" && event.key !== "Escape") return;
     if (event.defaultPrevented || event.isComposing || event.repeat) return;
-    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey)
+      return;
     const target = event.target instanceof Element ? event.target : null;
     if ((target?.closest("[data-embedded-view]") != null) !== embedded) return;
     if (inField(target)) return;
-    if (event.key === "Enter" && target?.closest("button, a[href], [role=button], summary")) return;
+    if (
+      event.key === "Enter" &&
+      target?.closest("button, a[href], [role=button], summary")
+    )
+      return;
     if (document.querySelector(OVERLAYS)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -189,7 +236,8 @@ export function PendingActionCard({
     <div className="flex flex-col gap-2 px-3 pb-3">
       {more > 0 && (
         <p className="text-foreground/50 px-1 text-xs">
-          {more} more {more === 1 ? "decision waits" : "decisions wait"} after this one
+          {more} more {more === 1 ? "decision waits" : "decisions wait"} after
+          this one
         </p>
       )}
       {message}
@@ -210,7 +258,13 @@ export function PendingActionCard({
       );
     case "plan":
       return (
-        <PlanAction key={action.id} id={action.id} onDismiss={onDismiss} footer={footer} stagger={follows} />
+        <PlanAction
+          key={action.id}
+          id={action.id}
+          onDismiss={onDismiss}
+          footer={footer}
+          stagger={follows}
+        />
       );
   }
 }
@@ -219,7 +273,9 @@ export function PendingActionCard({
 
 /** Shell-quotes an argument only where needed, so the exact argv reads unambiguously. */
 function quote(arg: string): string {
-  return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
+  return /^[\w@%+=:,./-]+$/.test(arg)
+    ? arg
+    : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
 type Shown = {
@@ -252,7 +308,11 @@ function fileStats(stat: DiffStat) {
 }
 
 /** The kinds shown ("Terminal", "Edit files", "Internet access") for what is asked. */
-function describe(approval: Approval, actorId: string | null, landingId: string | null): Shown {
+function describe(
+  approval: Approval,
+  actorId: string | null,
+  landingId: string | null,
+): Shown {
   // The worker that asks, and the one to land, as their chips; Brigadier asks for itself.
   const actor = actorId === null ? null : <WorkerChip taskId={actorId} />;
   const who = actor ?? "Brigadier";
@@ -299,7 +359,10 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
         title: request.reason || question,
         // Who asks and where it runs, quietly under the question.
         detail:
-          [request.reason && actor ? `Asked by ${actor}` : null, request.escalation ? "Runs outside the sandbox" : null]
+          [
+            request.reason && actor ? `Asked by ${actor}` : null,
+            request.escalation ? "Runs outside the sandbox" : null,
+          ]
             .filter(Boolean)
             .join(" · ") || undefined,
         body: request.command ? (
@@ -321,10 +384,13 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
           "Allow Brigadier to run a command that reaches outside?"
         ),
         detail: ALWAYS_ASK_NOTE,
-        body: <ActionCardCode>{subject.argv.map(quote).join(" ")}</ActionCardCode>,
+        body: (
+          <ActionCardCode>{subject.argv.map(quote).join(" ")}</ActionCardCode>
+        ),
       };
     case "landing": {
-      const task = landingId === null ? "this task" : <WorkerChip taskId={landingId} />;
+      const task =
+        landingId === null ? "this task" : <WorkerChip taskId={landingId} />;
       return {
         icon: <Commit />,
         kind: "Land a change",
@@ -351,7 +417,9 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
         kind: actor ?? "Action",
         title: subject.action,
         body: subject.details && (
-          <p className="text-foreground/65 px-4 pb-2 text-sm whitespace-pre-wrap">{subject.details}</p>
+          <p className="text-foreground/65 px-4 pb-2 text-sm whitespace-pre-wrap">
+            {subject.details}
+          </p>
         ),
       };
   }
@@ -364,10 +432,13 @@ function describe(approval: Approval, actorId: string | null, landingId: string 
 function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   const approval = useBoard((s) => s.board?.approvals[id]);
   const actorId = useBoard((s) =>
-    approval?.taskId && s.board?.tasks[approval.taskId] ? approval.taskId : null,
+    approval?.taskId && s.board?.tasks[approval.taskId]
+      ? approval.taskId
+      : null,
   );
   const landingId = useBoard((s) =>
-    approval?.subject.type === "landing" && s.board?.tasks[approval.subject.taskId]
+    approval?.subject.type === "landing" &&
+    s.board?.tasks[approval.subject.taskId]
       ? approval.subject.taskId
       : null,
   );
@@ -376,11 +447,14 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   // Unless the user is typing somewhere, Allow takes focus.
   useEffect(() => {
     // Focused for Enter, without a focus ring: it wasn't reached by keyboard.
-    if (!inField(document.activeElement)) allow.current?.focus({ focusVisible: false });
+    if (!inField(document.activeElement))
+      allow.current?.focus({ focusVisible: false });
   }, []);
   const answer = (decision: ApprovalDecision) => {
     if (!approval || action.busy) return;
-    action.run(() => answerCard(approval.conversationId, approval.id, decision));
+    action.run(() =>
+      answerCard(approval.conversationId, approval.id, decision),
+    );
   };
   const deny = () => answer({ type: "deny", message: "" });
   useCardKeys(approval !== undefined && !action.busy, {
@@ -390,7 +464,8 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   if (!approval) return null;
 
   const shown = describe(approval, actorId, landingId);
-  const request = approval.subject.type === "cli" ? approval.subject.request : null;
+  const request =
+    approval.subject.type === "cli" ? approval.subject.request : null;
   const grant = request?.grant ?? null;
   const allowLabel = (
     <>
@@ -400,7 +475,12 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
   );
   return (
     <ActionCard aria-label="Approval" data-action="approval">
-      <ActionCardHeader icon={shown.icon} kind={shown.kind} title={shown.title} detail={shown.detail}>
+      <ActionCardHeader
+        icon={shown.icon}
+        kind={shown.kind}
+        title={shown.title}
+        detail={shown.detail}
+      >
         {shown.note}
       </ActionCardHeader>
       {shown.body}
@@ -415,7 +495,10 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
       >
         <button
           type="button"
-          className={actionButton("outline", "@max-md/approval-card:justify-center")}
+          className={actionButton(
+            "outline",
+            "@max-md/approval-card:justify-center",
+          )}
           disabled={action.busy}
           onClick={deny}
         >
@@ -447,7 +530,10 @@ function ApprovalAction({ id, footer }: { id: string; footer: ReactNode }) {
           <button
             ref={allow}
             type="button"
-            className={actionButton("primary", "max-w-full @max-md/approval-card:justify-center")}
+            className={actionButton(
+              "primary",
+              "max-w-full @max-md/approval-card:justify-center",
+            )}
             disabled={action.busy}
             onClick={() => answer({ type: "allow" })}
           >
@@ -491,10 +577,14 @@ function GrantMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="end">
-        <DropdownMenuItem onSelect={() => onAnswer({ type: "allow" })}>Allow once</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onAnswer({ type: "allow" })}>
+          Allow once
+        </DropdownMenuItem>
         <Tooltip>
           <TooltipTrigger asChild>
-            <DropdownMenuItem onSelect={() => onAnswer({ type: "allowSimilar" })}>
+            <DropdownMenuItem
+              onSelect={() => onAnswer({ type: "allowSimilar" })}
+            >
               Don't ask again for this command
               <InfoCircle className="ms-auto opacity-75" />
             </DropdownMenuItem>
@@ -568,7 +658,8 @@ function ChoiceCard({
   // typing somewhere.
   const pickable = choices.length > 0;
   useEffect(() => {
-    if (!inField(document.activeElement)) (pickable ? card : field).current?.focus();
+    if (!inField(document.activeElement))
+      (pickable ? card : field).current?.focus();
   }, [pickable]);
   useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -595,10 +686,21 @@ function ChoiceCard({
     escape: onDismiss,
   });
   const onKeyDown = (event: KeyboardEvent) => {
-    if (!idle || inField(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (
+      !idle ||
+      inField(event.target) ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey
+    )
+      return;
     const digit = Number(event.key);
     const last = choices.length - 1;
-    if (Number.isInteger(digit) && digit >= 1 && digit <= Math.min(9, choices.length)) {
+    if (
+      Number.isInteger(digit) &&
+      digit >= 1 &&
+      digit <= Math.min(9, choices.length)
+    ) {
       event.preventDefault();
       commit(digit - 1);
     } else if (digit === choices.length + 1 && digit <= 9) {
@@ -634,7 +736,11 @@ function ChoiceCard({
         {extra && <div {...row(1)}>{extra}</div>}
         <div className="flex flex-col gap-1 px-2">
           {choices.length > 0 && (
-            <div role="radiogroup" aria-label="Answers" className="flex flex-col gap-1">
+            <div
+              role="radiogroup"
+              aria-label="Answers"
+              className="flex flex-col gap-1"
+            >
               {choices.map((choice, index) => (
                 <ActionOption
                   key={choice.label}
@@ -685,7 +791,10 @@ function ChoiceCard({
           >
             <button
               type="button"
-              className={actionButton(text ? "primary" : "outline", "font-medium")}
+              className={actionButton(
+                text ? "primary" : "outline",
+                "font-medium",
+              )}
               disabled={busy}
               onClick={send}
             >
@@ -718,32 +827,41 @@ function QuestionAction({
 }) {
   const question = useBoard((s) => s.board?.questions[id]);
   const askerId = useBoard((s) =>
-    question?.taskId && s.board?.tasks[question.taskId] ? question.taskId : null,
+    question?.taskId && s.board?.tasks[question.taskId]
+      ? question.taskId
+      : null,
   );
   const action = useAction();
   if (!question) return null;
 
-  const uncommitted = question.kind.type === "uncommittedChanges" ? question.kind.files : null;
+  const uncommitted =
+    question.kind.type === "uncommittedChanges" ? question.kind.files : null;
   const answer = (text: string) =>
-    action.run(() => answerQuestion(question.conversationId, question.id, text));
+    action.run(() =>
+      answerQuestion(question.conversationId, question.id, text),
+    );
   return (
     <ChoiceCard
       name="question"
-      title={uncommitted ? "Should workers see your uncommitted changes?" : question.text}
-      detail={
+      title={
         uncommitted
-          ? "Brigadier asks once, before the first worker starts. They are never committed either way."
-          : askerId === null
-            ? undefined
-            : (
-                <>
-                  <WorkerChip taskId={askerId} /> waits for this
-                </>
-              )
+          ? "Should workers see your uncommitted changes?"
+          : question.text
+      }
+      detail={
+        uncommitted ? (
+          "Brigadier asks once, before the first worker starts. They are never committed either way."
+        ) : askerId === null ? undefined : (
+          <>
+            <WorkerChip taskId={askerId} /> waits for this
+          </>
+        )
       }
       extra={
         uncommitted &&
-        uncommitted.length > 0 && <ActionFileList files={uncommitted.map((path) => ({ path }))} />
+        uncommitted.length > 0 && (
+          <ActionFileList files={uncommitted.map((path) => ({ path }))} />
+        )
       }
       choices={question.options.map((label, index) => ({
         label,
@@ -751,7 +869,9 @@ function QuestionAction({
       }))}
       initial={question.recommended ?? 0}
       placeholder={
-        question.options.length > 0 ? "No, and tell Brigadier what to do differently" : "Type here"
+        question.options.length > 0
+          ? "No, and tell Brigadier what to do differently"
+          : "Type here"
       }
       onChoose={(index) => answer(question.options[index] ?? "")}
       onText={answer}
@@ -765,12 +885,11 @@ function QuestionAction({
   );
 }
 
-/** "Implement this plan?": 1 approves, the free-text row rejects with what should change. */
+/** The rail points to the single plan card and keeps message entry available. */
 function PlanAction({
   id,
   onDismiss,
   footer,
-  stagger,
 }: {
   id: string;
   onDismiss: () => void;
@@ -779,28 +898,29 @@ function PlanAction({
 }) {
   const plan = useBoard((s) => s.board?.plans[id]);
   const action = useAction();
-  if (!plan) return null;
-
+  // Preserve the existing rail shortcuts; focused controls keep their own Enter.
+  useCardKeys(Boolean(plan) && !action.busy, {
+    enter: () => {
+      if (plan)
+        action.run(() => decidePlan(plan.conversationId, plan.id, true, null));
+    },
+    escape: onDismiss,
+  });
   return (
-    <ChoiceCard
-      name="plan"
-      title="Implement this plan?"
-      detail={plan.title}
-      choices={[{ label: "Yes, implement this plan" }]}
-      initial={0}
-      placeholder="No, and tell Brigadier what to do differently"
-      onChoose={() => action.run(() => decidePlan(plan.conversationId, plan.id, true, null))}
-      onText={(message) =>
-        action.run(() => decidePlan(plan.conversationId, plan.id, false, message))
-      }
-      // Skip leaves the plan undecided, put aside like ×.
-      onSkip={onDismiss}
-      onDismiss={onDismiss}
-      busy={action.busy}
-      error={action.error}
-      footer={footer}
-      stagger={stagger}
-    />
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 px-3">
+        <PlanCardLink cardId={id} />
+        <Button type="button" size="xs" variant="ghost" onClick={onDismiss}>
+          Later
+        </Button>
+      </div>
+      {action.error && (
+        <p role="alert" className="text-destructive px-3 text-xs">
+          {action.error}
+        </p>
+      )}
+      {footer}
+    </div>
   );
 }
 
@@ -816,7 +936,9 @@ export function WaitingReminder({
     <div className="text-muted-foreground min-h-row flex items-center gap-2 px-3 text-sm">
       <QuestionMarkCircle className="size-icon-sm shrink-0" />
       <span className="min-w-0 flex-1 truncate">
-        {count === 1 ? "A decision waits for you" : `${count} decisions wait for you`}
+        {count === 1
+          ? "A decision waits for you"
+          : `${count} decisions wait for you`}
       </span>
       <Button size="xs" variant="ghost" onClick={onShow}>
         Show

@@ -1,17 +1,27 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { Lines } from "@/app/conversation/cards/common";
 import { WorkerChip } from "@/app/conversation/WorkerChip";
+import { useAction } from "@/app/conversation/useAction";
 import {
   AgentPlan,
   type AgentPlanStepStatus,
 } from "@/components/assistant-ui/elements/agent-plan";
 import { Badge } from "@/components/ui/badge";
-import type { Gate, GateMember, Plan, PlanState, TaskState } from "@/ipc/generated";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import type {
+  Gate,
+  GateMember,
+  Plan,
+  PlanState,
+  TaskState,
+} from "@/ipc/generated";
 import { cn } from "@/lib/utils";
 import { useBoard } from "@/state/board";
 import { useApp } from "@/state/store";
+import { decidePlan } from "@/state/actions";
 
 function stepStatus(state: TaskState | undefined): AgentPlanStepStatus {
   switch (state) {
@@ -58,7 +68,9 @@ function PlanStateBadge({ state }: { state: PlanState }) {
 /** The reviewers of a round that are on the board, as chips. */
 function Reviewers({ members }: { members: readonly GateMember[] }) {
   const onBoard = useBoard(
-    useShallow((s) => members.map((member) => Boolean(s.board?.tasks[member.taskId]))),
+    useShallow((s) =>
+      members.map((member) => Boolean(s.board?.tasks[member.taskId])),
+    ),
   );
   const shown = members.filter((_, index) => onBoard[index]);
   if (shown.length === 0) return "the reviewer";
@@ -89,25 +101,79 @@ function PlanReview({ plan }: { plan: Plan }) {
       {before && plan.responses.length > 0 && (
         <div className="flex flex-col gap-1">
           <p className="text-muted-foreground flex flex-wrap items-center gap-1 text-xs">
-            Round {before.round} reviewed by <Reviewers members={before.members} />:{" "}
-            {count(plan.responses.length, "finding")}, {plan.responses.length - declined.length}{" "}
-            accepted, {declined.length} declined.
+            Round {before.round} reviewed by{" "}
+            <Reviewers members={before.members} />:{" "}
+            {count(plan.responses.length, "finding")},{" "}
+            {plan.responses.length - declined.length} accepted,{" "}
+            {declined.length} declined.
           </p>
           {declined.length > 0 && (
             <Lines
               items={declined.map(
-                (response) => `${response.id} declined: ${response.finding} (why: ${response.note})`,
+                (response) =>
+                  `${response.id} declined: ${response.finding} (why: ${response.note})`,
               )}
             />
           )}
         </div>
       )}
       {plan.gate && <ReviewRound gate={plan.gate} notes={plan.reviewNotes} />}
+      {plan.revises && <PlanHistory plan={plan} />}
     </>
   );
 }
 
-function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) {
+function PlanHistory({ plan }: { plan: Plan }) {
+  const revisions = useBoard(
+    useShallow((s) => {
+      const history: Plan[] = [];
+      const seen = new Set([plan.id]);
+      let id = plan.revises;
+      while (id && !seen.has(id)) {
+        seen.add(id);
+        const before = s.board?.plans[id];
+        if (!before) break;
+        history.push(before);
+        id = before.revises;
+      }
+      return history;
+    }),
+  );
+  if (revisions.length === 0) return null;
+  return (
+    <details className="text-muted-foreground text-xs">
+      <summary className="rounded-control cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        Earlier revisions ({revisions.length})
+      </summary>
+      <div className="flex flex-col gap-3 pt-2">
+        {revisions.map((revision) => (
+          <div key={revision.id} className="flex flex-col gap-1 wrap-anywhere">
+            <p className="font-medium">{revision.title}</p>
+            <ol className="list-inside list-decimal">
+              {revision.steps.map((step, index) => (
+                <li key={index}>
+                  {step.title}
+                  {step.detail && ` · ${step.detail}`}
+                </li>
+              ))}
+            </ol>
+            {revision.gate && (
+              <ReviewRound gate={revision.gate} notes={revision.reviewNotes} />
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function ReviewRound({
+  gate,
+  notes,
+}: {
+  gate: Gate;
+  notes: readonly string[];
+}) {
   const outcome = gate.outcome?.type ?? null;
   // A round cut short by a decision or a newer plan shows only what it found by then.
   if (outcome === "superseded" && gate.findings.length === 0) return null;
@@ -117,7 +183,9 @@ function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) 
       : [],
   );
   // Findings show as each reviewer's result arrives, whatever the round's outcome.
-  const findings = gate.findings.map((finding) => `${finding.id}: ${finding.text}`);
+  const findings = gate.findings.map(
+    (finding) => `${finding.id}: ${finding.text}`,
+  );
   return (
     <div className="flex flex-col gap-1">
       <p
@@ -130,7 +198,8 @@ function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) 
         {outcome === null ? (
           <>
             in review by <Reviewers members={gate.members} />
-            {findings.length > 0 && `, ${count(findings.length, "problem")} found so far`}
+            {findings.length > 0 &&
+              `, ${count(findings.length, "problem")} found so far`}
           </>
         ) : outcome === "passed" ? (
           <>
@@ -139,28 +208,33 @@ function ReviewRound({ gate, notes }: { gate: Gate; notes: readonly string[] }) 
           </>
         ) : outcome === "failed" ? (
           <>
-            <Reviewers members={gate.members} /> found {count(findings.length, "problem")}
+            <Reviewers members={gate.members} /> found{" "}
+            {count(findings.length, "problem")}
           </>
         ) : outcome === "superseded" ? (
           `stopped early, after finding ${count(findings.length, "problem")}`
         ) : (
           <>
             the review could not finish
-            {findings.length > 0 && `; it found ${count(findings.length, "problem")} first`}
+            {findings.length > 0 &&
+              `; it found ${count(findings.length, "problem")} first`}
           </>
         )}
       </p>
       {outcome === "passed" && notes.length > 0 && <Lines items={notes} />}
       {findings.length > 0 && <Lines items={findings} />}
-      {(outcome === "noResult" || outcome === "unverified") && reasons.length > 0 && (
-        <Lines items={reasons} />
-      )}
+      {(outcome === "noResult" || outcome === "unverified") &&
+        reasons.length > 0 && <Lines items={reasons} />}
     </div>
   );
 }
 
 /** The orchestrator's plan: its steps with the tasks carrying them out, and its approval. */
-export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: string }) {
+export const PlanCardView = memo(function PlanCardView({
+  cardId,
+}: {
+  cardId: string;
+}) {
   const plan = useBoard((s) => s.board?.plans[cardId]);
   // Only what the steps show of their tasks, so unrelated task updates don't rerender the plan.
   const steps = useBoard(
@@ -173,9 +247,13 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
   );
   // Who decides a proposed plan: the user under Ask for approval or in plan mode.
   const decider = useApp((s) => {
-    const setup = plan ? s.conversations[plan.conversationId]?.setup : null;
+    const conversation = plan ? s.conversations[plan.conversationId] : null;
+    const setup =
+      conversation?.lifecycle === "archived" ? null : conversation?.setup;
     if (setup?.type !== "session") return null;
-    return setup.permission === "askForApproval" || setup.planMode ? "user" : "brigadier";
+    return setup.permission === "askForApproval" || setup.planMode
+      ? "user"
+      : "brigadier";
   });
   if (!plan) return null;
 
@@ -184,6 +262,8 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
   return (
     <AgentPlan
       data-card="plan"
+      id={`plan-${plan.id}`}
+      tabIndex={-1}
       title={plan.title}
       badges={
         <>
@@ -199,6 +279,7 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
           title: step.title,
           detail: step.detail,
           status: stepStatus(state ?? undefined),
+          folded: state === "done" || state === "landed",
           // The worker carrying it out; its state shows on hover and in the step's mark.
           aside: taskId ? <WorkerChip taskId={taskId} /> : undefined,
         };
@@ -207,15 +288,18 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
         <>
           <PlanReview plan={plan} />
           {plan.state.type === "rejected" && plan.state.message && (
-            <p className="text-muted-foreground text-xs">Rejected: {plan.state.message}</p>
+            <p className="text-muted-foreground text-xs">
+              Rejected: {plan.state.message}
+            </p>
           )}
-          {proposed && decider === "user" && (
-            <p className="text-muted-foreground shimmer text-xs">Waiting for your decision</p>
-          )}
+          {proposed && decider === "user" && <PlanDecision plan={plan} />}
           {proposed && decider === "brigadier" && (
             <p className="text-muted-foreground text-xs">
               Brigadier decides this plan for you
-              {plan.risky || plan.steps.length > 1 ? " after an independent review" : ""}.
+              {plan.risky || plan.steps.length > 1
+                ? " after an independent review"
+                : ""}
+              .
             </p>
           )}
         </>
@@ -223,3 +307,57 @@ export const PlanCardView = memo(function PlanCardView({ cardId }: { cardId: str
     />
   );
 });
+
+/** The same approval command as the rail used, kept with the plan it decides. */
+function PlanDecision({ plan }: { plan: Plan }) {
+  const action = useAction();
+  const [message, setMessage] = useState("");
+  const text = message.trim();
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!action.busy && text)
+          action.run(() =>
+            decidePlan(plan.conversationId, plan.id, false, text),
+          );
+      }}
+    >
+      <Button
+        type="button"
+        size="sm"
+        className="self-start max-w-full whitespace-normal"
+        disabled={action.busy}
+        onClick={() =>
+          action.run(() => decidePlan(plan.conversationId, plan.id, true, null))
+        }
+      >
+        Yes, implement this plan
+      </Button>
+      <Input
+        aria-label="Tell Brigadier what to change in the plan"
+        placeholder="No, and tell Brigadier what to change"
+        value={message}
+        disabled={action.busy}
+        onChange={(event) => setMessage(event.target.value)}
+      />
+      {text && (
+        <Button
+          type="submit"
+          variant="outline"
+          size="xs"
+          disabled={action.busy}
+          className="self-start"
+        >
+          Submit changes
+        </Button>
+      )}
+      {action.error && (
+        <p role="alert" className="text-destructive text-xs">
+          {action.error}
+        </p>
+      )}
+    </form>
+  );
+}
