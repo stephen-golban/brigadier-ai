@@ -1006,6 +1006,15 @@ impl SessionManager {
     /// Something stopped a landing: the task goes to `state` and the orchestrator hears why,
     /// and decides what happens next.
     pub(super) async fn landing_problem(&self, task: &Task, reason: &str, state: TaskState) {
+        // The user is stopping it, or stopped it: its landing failing is no news.
+        let stopped = self
+            .task_by_id(&task.conversation_id, &task.id)
+            .await
+            .is_ok_and(|now| now.state == TaskState::Stopped);
+        if stopped || self.is_stopping(&task.id) {
+            tracing::debug!(task = %task.id, reason, "a stopped task's landing ended");
+            return;
+        }
         self.announcing(task).await;
         let addendum = self.hand_back(task, state, Some(reason)).await;
         self.deliver(
@@ -1029,12 +1038,12 @@ impl SessionManager {
     /// block for the orchestrator (empty when none was held).
     async fn hand_back(&self, task: &Task, state: TaskState, blocked: Option<&str>) -> String {
         let mut addendum = None;
-        // A task stopped meanwhile stays stopped.
+        // A task stopped meanwhile, or being stopped, stays stopped.
         let updated = self
             .update_task_if(
                 &task.conversation_id,
                 &task.id,
-                |now| !now.state.is_final(),
+                |now| !now.state.is_final() && !self.is_stopping(&now.id),
                 |t| {
                     t.state = state;
                     t.blocked_reason = blocked

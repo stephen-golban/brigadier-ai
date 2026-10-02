@@ -2759,6 +2759,9 @@ impl SessionManager {
         if task.state.is_final() {
             return Ok(());
         }
+        // Until it is recorded stopped, a landing that fails as its worktree goes hands
+        // nothing back to the orchestrator.
+        let _stopping = Stopping::mark(self, &task_id);
         // A gate member that gave its result already has its outcome under way.
         let reviewing = task.gate_link.is_some() && task.report.is_none();
         if let Some(live) = &live {
@@ -3374,6 +3377,30 @@ pub(super) fn brigadier_lands(task: &Task) -> bool {
 /// has nothing to decide about it.
 pub(super) fn relanding_pending(task: &Task) -> bool {
     task.kind.writes() && task.state == TaskState::Reported && task.landing.is_some()
+}
+
+/// Marks a task as being stopped while it lives (the first of concurrent stops does).
+struct Stopping<'a> {
+    manager: &'a SessionManager,
+    task: Option<TaskId>,
+}
+
+impl<'a> Stopping<'a> {
+    fn mark(manager: &'a SessionManager, task: &TaskId) -> Self {
+        let first = manager.stopping_lock().insert(task.clone());
+        Self {
+            manager,
+            task: first.then(|| task.clone()),
+        }
+    }
+}
+
+impl Drop for Stopping<'_> {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            self.manager.stopping_lock().remove(task);
+        }
+    }
 }
 
 /// Whether `now` still holds the report `then` had.

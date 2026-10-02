@@ -58,7 +58,7 @@ mod watchdog;
 mod worker_handoff;
 mod workers;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -122,6 +122,9 @@ pub struct SessionManager {
     /// Held while "Waiting on you" items are read, added and resolved, so one is never added
     /// twice.
     waiting: tokio::sync::Mutex<()>,
+    /// Tasks being stopped: a landing that fails meanwhile (its worktree going away under
+    /// it) is no news for the orchestrator.
+    stopping: Mutex<HashSet<TaskId>>,
     waiters: Waiters,
     admitting: AtomicBool,
     background: TaskTracker,
@@ -179,6 +182,7 @@ impl SessionManager {
             plans: tokio::sync::Mutex::new(()),
             task_writes: tokio::sync::Mutex::new(()),
             waiting: tokio::sync::Mutex::new(()),
+            stopping: Mutex::new(HashSet::new()),
             waiters: Waiters::default(),
             admitting: AtomicBool::new(true),
             background: TaskTracker::new(),
@@ -436,6 +440,15 @@ impl SessionManager {
 
     fn tasks_lock(&self) -> MutexGuard<'_, HashMap<TaskId, Arc<TaskLive>>> {
         self.tasks.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn stopping_lock(&self) -> MutexGuard<'_, HashSet<TaskId>> {
+        self.stopping.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether `task` is being stopped right now.
+    pub(crate) fn is_stopping(&self, task: &TaskId) -> bool {
+        self.stopping_lock().contains(task)
     }
 
     /// The live state of a conversation, created on first use.
