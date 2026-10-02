@@ -1369,6 +1369,7 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                 clients: u32::try_from(daemon.metrics.clients().saturating_sub(1))
                     .unwrap_or(u32::MAX),
                 running: idle::running(daemon).await,
+                overnight: daemon.sessions.overnight_active(),
             },
         },
         Request::ScanStorage => Response::ScanStorage {

@@ -29,6 +29,10 @@ pub(crate) struct ActiveRun {
     pub phase_id: Option<String>,
     /// Phase 0: only the plan is written, nothing changes yet.
     pub planning: bool,
+    /// Ending (Stop, the deadline, a block): no new work starts.
+    pub winding_down: bool,
+    /// When wind-down starts, for a deadline run (wall clock, ms).
+    pub wind_down_at_ms: Option<i64>,
 }
 
 /// The active run of each session that has one. Kept in step with every recorded run, and
@@ -43,6 +47,14 @@ impl ActiveRuns {
 
     pub fn get(&self, id: &ConversationId) -> Option<ActiveRun> {
         self.lock().get(id).cloned()
+    }
+
+    /// Every session's active run.
+    pub fn all(&self) -> Vec<(ConversationId, ActiveRun)> {
+        self.lock()
+            .iter()
+            .map(|(id, run)| (id.clone(), run.clone()))
+            .collect()
     }
 
     /// Takes in a run as just recorded: an active one is the session's run, one that ended
@@ -61,6 +73,12 @@ impl ActiveRuns {
                     max_workers: run.directives.max_workers,
                     phase_id: current_phase(run),
                     planning: run.state == crate::overnight::OvernightState::Planning,
+                    winding_down: matches!(
+                        run.state,
+                        crate::overnight::OvernightState::WindingDown
+                            | crate::overnight::OvernightState::Reporting
+                    ),
+                    wind_down_at_ms: run.wind_down_at_ms,
                 },
             );
         } else if active

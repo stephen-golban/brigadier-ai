@@ -262,6 +262,7 @@ export type { RouteCandidate } from "./RouteCandidate";
 export type { RoutePreview } from "./RoutePreview";
 export type { RoutePreviewOutcome } from "./RoutePreviewOutcome";
 export type { RoutingActivity } from "./RoutingActivity";
+export type { RunGap } from "./RunGap";
 export type { RunRole } from "./RunRole";
 export type { RunState } from "./RunState";
 export type { RunTaskContext } from "./RunTaskContext";

@@ -1200,6 +1200,9 @@ pub struct DaemonActivity {
     /// What runs, said plainly (a turn or a worker, a terminal, a Brain job, …); empty when
     /// nothing does.
     pub running: Vec<String>,
+    /// An overnight run is under way: quitting the app leaves the daemon running.
+    #[serde(default)]
+    pub overnight: bool,
 }
 
 /// Staying awake with the lid closed.

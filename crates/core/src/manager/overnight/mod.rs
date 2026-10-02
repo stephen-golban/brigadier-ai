@@ -11,6 +11,8 @@ mod conductor;
 pub mod directives;
 mod phase_gates;
 pub(crate) mod policy;
+mod recovery;
+mod wind_down;
 mod workspace;
 
 use std::path::{Path, PathBuf};
@@ -42,6 +44,11 @@ pub(crate) struct Runs {
     pub(crate) active: policy::ActiveRuns,
     /// Each run's executing tasks under its worker cap, and the build lease.
     pub(crate) admission: admission::Admission,
+    /// Runs whose clean ending is under way (it runs once).
+    winding: std::sync::Mutex<std::collections::HashSet<OvernightRunId>>,
+    /// The generic recovery is ending the old daemon's tasks: their missing results are not
+    /// verdicts on a run's checks (the round starts again afterwards).
+    pub(crate) recovering: std::sync::atomic::AtomicBool,
 }
 
 impl SessionManager {
@@ -115,6 +122,7 @@ impl SessionManager {
             workspace: None,
             planning: None,
             verified_commit: None,
+            gaps: Vec::new(),
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -461,6 +469,7 @@ impl SessionManager {
             state: OvernightState::Proposed,
             wind_down_at_ms: None,
             planning: None,
+            gaps: Vec::new(),
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -540,6 +549,9 @@ impl SessionManager {
 
     /// After a restart: each session's active run, from its board.
     pub(crate) async fn recover_active_runs(&self) {
+        self.overnight
+            .recovering
+            .store(true, std::sync::atomic::Ordering::Release);
         for conversation in self.core.catalog().conversations {
             if !matches!(conversation.setup, Some(Setup::Session { .. })) {
                 continue;

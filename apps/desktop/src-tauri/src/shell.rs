@@ -234,6 +234,19 @@ async fn stop_daemon(app: &AppHandle) {
         return;
     };
     let bridge = state.bridge.clone();
+    // An overnight run owns the daemon until it ends: the app goes, the run goes on
+    // (PLAN.md §10.10).
+    if let Ok(Ok(brigadier_ipc::protocol::Response::GetDaemonActivity { activity })) =
+        tokio::time::timeout(
+            QUIT_TIMEOUT,
+            bridge.request(brigadier_ipc::protocol::Request::GetDaemonActivity),
+        )
+        .await
+        && activity.overnight
+    {
+        tracing::info!("an overnight run is under way; brigadierd keeps running");
+        return;
+    }
     if bridge.shutdown_daemon(QUIT_TIMEOUT).await {
         tracing::info!("brigadierd drained and acknowledged the quit");
     } else {

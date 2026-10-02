@@ -12,4 +12,8 @@ clients: number,
  * What runs, said plainly (a turn or a worker, a terminal, a Brain job, …); empty when
  * nothing does.
  */
-running: Array<string>, };
+running: Array<string>, 
+/**
+ * An overnight run is under way: quitting the app leaves the daemon running.
+ */
+overnight: boolean, };

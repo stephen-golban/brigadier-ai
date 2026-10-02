@@ -801,6 +801,20 @@ impl SessionManager {
                 "The overnight run's branch and worktree are still being made; try again in a moment.".into(),
             ));
         }
+        // An ending run starts no new work; checks of what it already did may still finish.
+        if subject.is_none()
+            && extra.run.is_none()
+            && active_run.as_ref().is_some_and(|active| {
+                active.winding_down
+                    || active
+                        .wind_down_at_ms
+                        .is_some_and(|at| crate::now_ms() >= at)
+            })
+        {
+            return Err(Error::Invalid(
+                "The overnight run is ending: no new work starts now. Finish the current step; what is left goes into the morning report.".into(),
+            ));
+        }
         // Phase 0 only writes the plan: nothing changes the code before its phases are judged.
         if kind.writes()
             && extra.run.is_none()

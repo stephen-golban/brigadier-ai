@@ -266,7 +266,12 @@ impl SessionManager {
             let Some(since) = conv.idle_since_ms().await else {
                 continue;
             };
-            if since > cutoff || conv.is_busy().await || self.has_running_workers(&conv.id).await {
+            // An overnight run's session stays up while the run lasts (PLAN.md §10.10).
+            if since > cutoff
+                || conv.is_busy().await
+                || self.has_running_workers(&conv.id).await
+                || self.overnight.active.get(&conv.id).is_some()
+            {
                 continue;
             }
             if let Err(err) = self.hibernate(conv.id.clone()).await {
@@ -278,6 +283,9 @@ impl SessionManager {
     /// Whether any conversation has a turn in progress, work waiting for one, or a worker
     /// that hasn't finished: what keeping the computer awake "while agents work" means.
     pub async fn agents_working(&self) -> bool {
+        if self.overnight_active() {
+            return true;
+        }
         let convs: Vec<_> = self.convs_lock().values().cloned().collect();
         for conv in convs {
             if conv.is_busy().await || self.has_running_workers(&conv.id).await {
@@ -285,6 +293,12 @@ impl SessionManager {
             }
         }
         false
+    }
+
+    /// Whether an overnight run is under way: it is work (the daemon stays up, the computer
+    /// awake) even between its phases, while it waits for quota or writes its report.
+    pub fn overnight_active(&self) -> bool {
+        !self.overnight.active.all().is_empty()
     }
 
     pub(super) async fn has_running_workers(&self, id: &ConversationId) -> bool {

@@ -27,6 +27,7 @@ mod gate;
 mod idle;
 mod logging;
 mod metrics;
+mod overnight_supervisor;
 mod quit;
 mod registry;
 mod server;
@@ -71,12 +72,16 @@ const SQLITE_HEAP_BYTES: i64 = 16 * 1024 * 1024;
 struct Args {
     data_dir: Option<PathBuf>,
     foreground: bool,
+    /// Started by the overnight supervisor: wait until this data directory's daemon is gone,
+    /// then become it (see `overnight_supervisor`).
+    standby: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         data_dir: None,
         foreground: false,
+        standby: false,
     };
     let mut iter = std::env::args_os().skip(1);
     while let Some(arg) = iter.next() {
@@ -85,6 +90,10 @@ fn parse_args() -> Result<Args, String> {
                 args.data_dir = Some(iter.next().ok_or("--data-dir needs a path")?.into());
             }
             Some("--foreground") => args.foreground = true,
+            Some("--standby") => {
+                args.standby = true;
+                args.foreground = true;
+            }
             Some("--version") => {
                 println!("brigadierd {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -159,7 +168,7 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_FATAL);
         }
     };
-    match start(platform) {
+    match start(platform, args.standby) {
         Ok(code) => code,
         Err(err) => {
             tracing::error!(error = %format!("{err:#}"), "brigadierd failed");
@@ -168,7 +177,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn start(platform: Arc<dyn Platform>) -> anyhow::Result<ExitCode> {
+fn start(platform: Arc<dyn Platform>, standby: bool) -> anyhow::Result<ExitCode> {
     let paths = platform.paths().clone();
     // Transcripts and the token live here: nobody but the current user may read them.
     for dir in [&paths.data_dir, &paths.run_dir] {
@@ -177,10 +186,23 @@ fn start(platform: Arc<dyn Platform>) -> anyhow::Result<ExitCode> {
             .create_private_dir(dir)
             .with_context(|| format!("creating {}", dir.display()))?;
     }
-    let Some(_lock) = InstanceLock::try_acquire(&paths.lock_path).context("instance lock")? else {
+    let mut lock = InstanceLock::try_acquire(&paths.lock_path).context("instance lock")?;
+    // A standby waits for the running daemon to go, as long as an overnight run is active.
+    while lock.is_none() && standby {
+        if !overnight_supervisor::marker(&paths.data_dir).exists() {
+            tracing::info!("no overnight run is active any more; the standby ends");
+            return Ok(ExitCode::SUCCESS);
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        lock = InstanceLock::try_acquire(&paths.lock_path).context("instance lock")?;
+    }
+    let Some(_lock) = lock else {
         tracing::info!("another brigadierd owns this data directory; exiting");
         return Ok(ExitCode::SUCCESS);
     };
+    if standby {
+        tracing::info!("the daemon went away during an overnight run; this standby takes over");
+    }
     // Workers' outward commands are gated through these shims; without them they would run
     // unasked, so failing to create them is fatal.
     gate::install(&paths.data_dir).context("creating the command gate")?;
@@ -221,6 +243,8 @@ fn start(platform: Arc<dyn Platform>) -> anyhow::Result<ExitCode> {
     };
     let code = runtime.block_on(serve(platform.clone(), store, token, info));
     runtime.shutdown_timeout(Duration::from_secs(1));
+    // An orderly quit is deliberate: launchd doesn't bring this daemon back.
+    overnight_supervisor::on_quit(&paths.data_dir);
 
     if let Err(err) = std::fs::remove_file(&paths.token_path) {
         tracing::warn!(error = %err, "could not remove the IPC token");
@@ -324,6 +348,11 @@ async fn run(
     supervisor.spawn(idle::exit_when_idle(daemon.clone(), stopping.clone()));
     supervisor.spawn(storage::housekeeping(daemon.clone(), stopping.clone()));
     supervisor.spawn(registry::keep_current(daemon.clone(), stopping.clone()));
+    supervisor.spawn(overnight_supervisor::keep_in_step(
+        daemon.clone(),
+        platform.paths().data_dir.clone(),
+        stopping.clone(),
+    ));
     tracing::info!("brigadierd ready");
 
     let reason = tokio::select! {

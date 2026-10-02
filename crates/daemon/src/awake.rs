@@ -80,11 +80,14 @@ impl Awake {
     /// Starts or stops keeping awake to match the settings now, and says how it stands.
     pub async fn apply(&self) -> KeepAwakeStatus {
         let settings = self.core.settings();
-        let wanted = match settings.keep_awake {
-            KeepAwake::Off => false,
-            KeepAwake::Always => true,
-            KeepAwake::Agents => self.sessions.agents_working().await,
-        };
+        // An overnight run keeps the computer awake whatever the setting (PLAN.md §10.10):
+        // the user left it to work; the setting stays as they saved it.
+        let wanted = self.sessions.overnight_active()
+            || match settings.keep_awake {
+                KeepAwake::Off => false,
+                KeepAwake::Always => true,
+                KeepAwake::Agents => self.sessions.agents_working().await,
+            };
         let mut state = self.state.lock().await;
         let wanted = wanted && !state.stopped;
         let lid_wanted = wanted && settings.keep_awake_lid_closed;

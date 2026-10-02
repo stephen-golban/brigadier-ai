@@ -262,6 +262,16 @@ pub struct CriterionResult {
     pub by: Option<TaskId>,
 }
 
+/// A time Brigadier wasn't running during a run, and why, as far as it can tell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RunGap {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    /// "The Mac slept 01:10–03:40", or "Brigadier was unavailable …" without a sleep record.
+    pub cause: String,
+}
+
 /// Phase 0 of a bare goal: the lead writes the plan's phases, another vendor reviews them,
 /// and a fresh judge checks they follow the goal without invented scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -496,6 +506,9 @@ pub struct OvernightRun {
     /// card's Merge takes this, never the branch's head.
     #[serde(default)]
     pub verified_commit: Option<String>,
+    /// Times Brigadier wasn't running during the run (the Mac slept, the daemon was down).
+    #[serde(default)]
+    pub gaps: Vec<RunGap>,
     pub stop: Option<StopReason>,
     /// The last commands applied, newest last.
     pub commands: Vec<AppliedCommand>,

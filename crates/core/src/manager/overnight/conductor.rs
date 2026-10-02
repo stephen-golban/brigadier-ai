@@ -43,7 +43,7 @@ enum Next {
     Nothing,
     Plan(OvernightRun),
     Phase(OvernightRun, String),
-    Finish(OvernightRun),
+    WindDown(OvernightRun),
 }
 
 /// Where the plan goes after the phases settled so far.
@@ -83,7 +83,7 @@ impl SessionManager {
             Next::Nothing => {}
             Next::Plan(run) => self.lead_planning(run).await,
             Next::Phase(run, phase_id) => self.lead_phase_of(run, phase_id).await,
-            Next::Finish(run) => self.run_finished(&run).await,
+            Next::WindDown(run) => self.end_run(run).await,
         }
     }
 
@@ -124,13 +124,7 @@ impl SessionManager {
                 self.pick_and_record(run, &board).await
             }
             OvernightState::Running => self.pick_and_record(run, &board).await,
-            // The clean ending of step 4 replaces this: for now a run that winds down ends.
-            OvernightState::WindingDown => {
-                run.state = OvernightState::Finished;
-                run.finished_at_ms = Some(now_ms());
-                self.record_run(&run).await?;
-                Ok(Next::Finish(run))
-            }
+            OvernightState::WindingDown => Ok(Next::WindDown(run)),
             _ => Ok(Next::Nothing),
         }
     }
@@ -195,11 +189,7 @@ impl SessionManager {
                 run.state = OvernightState::WindingDown;
                 run.stop = Some(reason);
                 self.record_run(&run).await?;
-                // The ending itself (step 4's wind-down) follows.
-                run.state = OvernightState::Finished;
-                run.finished_at_ms = Some(now_ms());
-                self.record_run(&run).await?;
-                Ok(Next::Finish(run))
+                Ok(Next::WindDown(run))
             }
         }
     }
@@ -1036,7 +1026,7 @@ impl SessionManager {
     }
 
     /// The run ended: the orchestrator's next turn resumes without the run's instructions.
-    async fn run_finished(&self, run: &OvernightRun) {
+    pub(crate) async fn run_finished(&self, run: &OvernightRun) {
         tracing::info!(run = %run.id, stop = ?run.stop, "overnight run finished");
         self.retire_orchestrator(&run.conversation_id).await;
     }

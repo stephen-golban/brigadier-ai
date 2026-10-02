@@ -299,6 +299,15 @@ impl SessionManager {
         link: &GateLink,
         failed: Option<&str>,
     ) {
+        // Ended by the restart, not by its own result: the round starts again afterwards.
+        if failed.is_some()
+            && self
+                .overnight
+                .recovering
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
         if phase_id == PLANNING_PHASE {
             self.planning_judged(member, run_id, failed).await;
             return;
