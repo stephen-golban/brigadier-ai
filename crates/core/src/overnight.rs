@@ -538,6 +538,9 @@ pub struct OvernightRun {
     /// The report's message, once written (its id is stable per segment).
     #[serde(default)]
     pub report_message_id: Option<String>,
+    /// The report's three opening paragraphs, for a restored card whose message is off-page.
+    #[serde(default)]
+    pub report_outcome: Option<[String; 3]>,
     #[serde(default)]
     pub merged: Option<RunMerge>,
     /// The notification the report comes with, until the app shows it.

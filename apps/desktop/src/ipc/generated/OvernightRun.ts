@@ -89,7 +89,11 @@ gaps: Array<RunGap>,
 /**
  * The report's message, once written (its id is stable per segment).
  */
-reportMessageId: string | null, merged: RunMerge | null, 
+reportMessageId: string | null, 
+/**
+ * The report's three opening paragraphs, for a restored card whose message is off-page.
+ */
+reportOutcome: [string, string, string] | null, merged: RunMerge | null, 
 /**
  * The notification the report comes with, until the app shows it.
  */

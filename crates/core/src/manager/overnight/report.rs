@@ -44,7 +44,9 @@ impl SessionManager {
         // Search every branch, including messages older than the active thread's page. A
         // crash after append must not duplicate the report after a branch switch.
         let written = match self.core.all_messages(id).await {
-            Ok(messages) => messages.iter().any(|message| message.id == message_id),
+            Ok(messages) => messages
+                .into_iter()
+                .find(|message| message.id == message_id),
             Err(err) => {
                 tracing::warn!(run = %run.id, error = %err, "could not reconcile the report");
                 return;
@@ -53,7 +55,13 @@ impl SessionManager {
         let commits = self.run_commits(run).await;
         let mut text = render(run, &board, &commits);
         text.push_str(&self.run_usage(run, &board).await);
-        if !written {
+        if let Some(message) = &written {
+            // Reconciliation uses the text already posted, not newly rendered facts.
+            text = self.full_text(message).await;
+        }
+        let outcome: Vec<String> = text.split("\n\n").take(3).map(str::to_owned).collect();
+        let outcome: Option<[String; 3]> = outcome.try_into().ok();
+        if written.is_none() {
             let request_id = format!("run-{}-report", run.id.short());
             let now = now_ms();
             let request = self
@@ -113,6 +121,7 @@ impl SessionManager {
             return;
         }
         now.report_message_id = Some(message_id);
+        now.report_outcome = outcome;
         if now.notification.is_none() {
             now.notification = Some(notification);
         }

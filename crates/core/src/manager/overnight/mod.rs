@@ -129,6 +129,7 @@ impl SessionManager {
             verified_commit: None,
             gaps: Vec::new(),
             report_message_id: None,
+            report_outcome: None,
             merged: None,
             notification: None,
             stop: None,
@@ -332,11 +333,16 @@ impl SessionManager {
                 run.state == OvernightState::Proposed,
             ));
             let changed = next != run.directives;
+            let new_words = !words.trim().is_empty();
+            if new_words {
+                run.words.push_str("\n\n");
+                run.words.push_str(&words);
+            }
             if run.state == OvernightState::Proposed {
                 // Before Start, a problem blocks Start until reworded; the words still apply.
                 run.directives = next;
                 run.problems = problems;
-                if changed {
+                if changed || new_words {
                     run.revision += 1;
                 }
             } else if problems.is_empty() {
@@ -479,6 +485,7 @@ impl SessionManager {
             planning: None,
             gaps: Vec::new(),
             report_message_id: None,
+            report_outcome: None,
             notification: None,
             stop: None,
             commands: vec![AppliedCommand {

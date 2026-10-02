@@ -76,6 +76,13 @@ pub(crate) fn unattended(text: &str) -> bool {
             )
         }))
         || prose.contains("by morning")
+        || (words
+            .iter()
+            .any(|word| matches!(*word, "work" | "run" | "implement" | "build" | "finish"))
+            && parse(text, &Clock::system())
+                .set
+                .iter()
+                .any(|(kind, _)| *kind == DirectiveKind::Deadline))
 }
 
 pub(crate) fn continuation(text: &str) -> bool {

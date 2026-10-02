@@ -297,6 +297,7 @@ const proposed: OvernightRun = {
   verifiedCommit: null,
   gaps: [],
   reportMessageId: null,
+  reportOutcome: null,
   merged: null,
   notification: null,
   stop: null,

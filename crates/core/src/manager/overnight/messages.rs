@@ -53,7 +53,7 @@ impl SessionManager {
                 let working = self.working_request(id).await;
                 self.join_working(&conv, message.clone(), working).await;
             } else {
-                self.set_proposal_request_done(id, &message).await?;
+                self.prepare_proposal_turn(&conv, message.clone()).await;
             }
             return Ok(Some(SendOutcome::Sent(message)));
         }

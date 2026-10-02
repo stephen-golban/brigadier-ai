@@ -105,7 +105,8 @@ export function projectOvernight(run: OvernightRun, board: Board, report?: strin
     }];
   }));
   // The report renderer owns these three paragraphs; never infer success in the frontend.
-  const lines = report?.split(/\n\s*\n/).slice(0, 3).map((line) => line.replace(/[*`]/g, "").trim());
+  const lines = (run.reportOutcome ?? report?.split(/\n\s*\n/).slice(0, 3))
+    ?.map((line) => line.replace(/[*`]/g, "").trim());
   return { run, details: {
     waiting, decided, phaseProgress,
     ...(lines?.length === 3 ? { outcome: lines as [string, string, string] } : {}),
