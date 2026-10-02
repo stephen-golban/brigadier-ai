@@ -363,6 +363,25 @@ impl SessionManager {
                 } else {
                     run.directives = next;
                 }
+                // "until done instead" drops the earlier cutoff.
+                if run.directives.deadline == Deadline::UntilDone {
+                    run.wind_down_at_ms = None;
+                }
+                // A changed selection: phases not started yet follow it, both ways.
+                let chosen = run.directives.clone();
+                for phase in &mut run.phases {
+                    match phase.state {
+                        PhaseState::Pending if !selects(&chosen, phase.number) => {
+                            phase.state = PhaseState::Skipped;
+                        }
+                        PhaseState::Skipped
+                            if phase.start_commit.is_none() && selects(&chosen, phase.number) =>
+                        {
+                            phase.state = PhaseState::Pending;
+                        }
+                        _ => {}
+                    }
+                }
                 run.problems.clear();
                 if changed {
                     run.revision += 1;

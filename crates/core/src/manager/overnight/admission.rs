@@ -99,11 +99,32 @@ impl SessionManager {
     /// verifier), showing why it waits meanwhile. Fails when the task ends or its run is over
     /// while it waits.
     pub(crate) async fn admit_run_task(&self, task: &Task) -> Result<()> {
+        self.admit_to_run(task, false).await
+    }
+
+    /// [`Self::admit_run_task`] for a worker session that starts anew (a task's first
+    /// session, a restart, a fallback successor): once its run winds down, none starts, even
+    /// one that was already waiting for a slot. A worker that is already going may still take
+    /// a turn to hand off.
+    pub(crate) async fn admit_new_run_task(&self, task: &Task) -> Result<()> {
+        self.admit_to_run(task, true).await
+    }
+
+    async fn admit_to_run(&self, task: &Task, fresh: bool) -> Result<()> {
         if task.run.is_none() {
             return Ok(());
         }
         let mut waited = false;
         loop {
+            if fresh && self.run_winding_down(task) {
+                if waited {
+                    self.set_task_blocked(&task.id, None).await;
+                }
+                return Err(Error::Invalid(format!(
+                    "task-{} doesn't start: its overnight run is ending.",
+                    task.number
+                )));
+            }
             let freed = self.overnight.admission.freed.notified();
             match self.try_admit_run_task(task)? {
                 Slot::Admitted => break,
@@ -192,6 +213,16 @@ impl SessionManager {
         if !busy {
             self.release_run_task(&task.id);
         }
+    }
+
+    /// Whether `task`'s run is ending (Stop, the deadline, a block): nothing new starts.
+    fn run_winding_down(&self, task: &Task) -> bool {
+        task.run.as_ref().is_some_and(|context| {
+            self.overnight
+                .active
+                .get(&task.conversation_id)
+                .is_some_and(|active| active.id == context.run_id && active.winding_down)
+        })
     }
 
     fn holds_build_lease(&self, task_id: &TaskId) -> bool {

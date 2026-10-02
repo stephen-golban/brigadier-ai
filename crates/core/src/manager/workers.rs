@@ -1057,7 +1057,13 @@ impl SessionManager {
         first: TurnInput,
     ) -> Result<()> {
         // An overnight run's worker starts once its run has a worker free (PLAN.md §10.7).
-        self.admit_run_task(task).await?;
+        // A new session doesn't start at all once its run winds down (§10.9); a resumed one
+        // may still hand off.
+        if matches!(origin, Origin::New) {
+            self.admit_new_run_task(task).await?;
+        } else {
+            self.admit_run_task(task).await?;
+        }
         let launched = self
             .launch_admitted(live, task, subject, origin, first)
             .await;

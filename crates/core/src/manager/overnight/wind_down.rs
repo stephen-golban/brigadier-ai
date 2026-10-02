@@ -166,58 +166,72 @@ impl SessionManager {
                 self.release_run_task(&task);
             }
         }
-        // Phases that weren't checked settle as what they are.
+        // Phases that weren't checked settle as what they are. A run already settled (its report
+        // was cut off by a restart or failed once) goes straight on to the report.
         let reason = stop_words(run.stop.as_ref());
-        let settled = self
-            .change_run_if(&run, |now| {
-                if now.state != OvernightState::WindingDown {
-                    return None;
-                }
-                for phase in &mut now.phases {
-                    if !matches!(phase.state, PhaseState::Running | PhaseState::Checking) {
-                        continue;
+        let reporting = self
+            .core
+            .board(&run.conversation_id)
+            .await
+            .ok()
+            .and_then(|board| board.runs.get(&run.id).cloned())
+            .filter(|now| {
+                now.generation == run.generation && now.state == OvernightState::Reporting
+            });
+        let settled = match reporting {
+            Some(now) => Some(now),
+            None => {
+                self.change_run_if(&run, |now| {
+                    if now.state != OvernightState::WindingDown {
+                        return None;
                     }
-                    let candidate = phase.gate.as_ref().and_then(|gate| gate.commit.clone());
-                    if phase.criteria.is_empty() {
-                        phase.criteria = phase
-                            .done_when
+                    for phase in &mut now.phases {
+                        if !matches!(phase.state, PhaseState::Running | PhaseState::Checking) {
+                            continue;
+                        }
+                        let candidate = phase.gate.as_ref().and_then(|gate| gate.commit.clone());
+                        if phase.criteria.is_empty() {
+                            phase.criteria = phase
+                                .done_when
+                                .iter()
+                                .map(|criterion| CriterionResult {
+                                    id: criterion.id.clone(),
+                                    status: CriterionStatus::NotRun,
+                                    evidence: format!("Not checked: {reason}."),
+                                    candidate: candidate.clone(),
+                                    by: None,
+                                })
+                                .collect();
+                        }
+                        let met = phase
+                            .criteria
                             .iter()
-                            .map(|criterion| CriterionResult {
-                                id: criterion.id.clone(),
-                                status: CriterionStatus::NotRun,
-                                evidence: format!("Not checked: {reason}."),
-                                candidate: candidate.clone(),
-                                by: None,
-                            })
-                            .collect();
+                            .any(|criterion| criterion.status == CriterionStatus::Met);
+                        phase.state = if met {
+                            PhaseState::Partial
+                        } else {
+                            PhaseState::Blocked
+                        };
+                        phase
+                            .gaps
+                            .push(format!("Its whole-phase checks never passed: {reason}."));
+                        phase.settled_at_ms = Some(now_ms());
                     }
-                    let met = phase
-                        .criteria
-                        .iter()
-                        .any(|criterion| criterion.status == CriterionStatus::Met);
-                    phase.state = if met {
-                        PhaseState::Partial
-                    } else {
-                        PhaseState::Blocked
-                    };
-                    phase
-                        .gaps
-                        .push(format!("Its whole-phase checks never passed: {reason}."));
-                    phase.settled_at_ms = Some(now_ms());
-                }
-                if let Some(planning) = now.planning.as_mut()
-                    && matches!(planning.state, PhaseState::Running | PhaseState::Checking)
-                {
-                    planning.state = PhaseState::Blocked;
-                    planning
-                        .gaps
-                        .push(format!("The plan wasn't finished: {reason}."));
-                    planning.settled_at_ms = Some(now_ms());
-                }
-                now.state = OvernightState::Reporting;
-                Some(())
-            })
-            .await;
+                    if let Some(planning) = now.planning.as_mut()
+                        && matches!(planning.state, PhaseState::Running | PhaseState::Checking)
+                    {
+                        planning.state = PhaseState::Blocked;
+                        planning
+                            .gaps
+                            .push(format!("The plan wasn't finished: {reason}."));
+                        planning.settled_at_ms = Some(now_ms());
+                    }
+                    now.state = OvernightState::Reporting;
+                    Some(())
+                })
+                .await
+            }
+        };
         if let Some(reporting) = settled {
             self.write_run_report(&reporting).await;
             if let Some(finished) = self

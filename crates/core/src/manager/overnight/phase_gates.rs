@@ -117,6 +117,8 @@ impl SessionManager {
         };
         let mut members: Vec<GateMember> = Vec::new();
         let mut gaps: Vec<(crate::model::TaskId, String)> = Vec::new();
+        // A check the round needs that could not start: without it the round can't verify.
+        let mut missing = false;
         let verifier = self
             .create_task_as(
                 &run.conversation_id,
@@ -152,6 +154,7 @@ impl SessionManager {
                 avoid: Vec::new(),
             }),
             Err(err) => {
+                missing = true;
                 tracing::warn!(run = %run.id, error = %err, "could not start a phase's verifier");
             }
         }
@@ -225,9 +228,18 @@ impl SessionManager {
                     });
                 }
                 Err(err) => {
+                    missing = true;
                     tracing::warn!(run = %run.id, error = %err, "could not start a phase's reviewer");
                 }
             }
+        }
+        if missing {
+            // The checks that did start can't make up for it: they stop, and the phase settles
+            // unverified, saying its checks could not start.
+            for member in members.drain(..) {
+                let _ = Box::pin(self.stop_task(member.task_id)).await;
+            }
+            gaps.clear();
         }
         let started: Vec<crate::model::TaskId> = members
             .iter()
@@ -240,7 +252,7 @@ impl SessionManager {
                 if phase.state != PhaseState::Checking {
                     return None;
                 }
-                let mut gate = Gate {
+                let gate = Gate {
                     round,
                     commit: Some(candidate_now.clone()),
                     members: members.clone(),
@@ -250,9 +262,7 @@ impl SessionManager {
                     overridden: false,
                     findings: Vec::new(),
                 };
-                if members.is_empty() {
-                    gate.outcome = Some(GateOutcome::NoResult);
-                }
+                // An empty round stays undecided: deciding the phase closes it.
                 phase.gate = Some(gate);
                 now.state = OvernightState::PhaseGate;
                 Some(())
@@ -1264,11 +1274,9 @@ fn verdict_of(
     let ids: Vec<&str> = phase.done_when.iter().map(|c| c.id.as_str()).collect();
     let candidate = gate.commit.clone();
     // A candidate that moved under its checks: what they said is about another tree.
-    if let (Some(tip), Some(candidate)) = (tip, candidate.as_deref())
-        && tip != candidate
-        && !winding_down
-        && gate.round < MAX_ROUNDS
-    {
+    let stale =
+        matches!((tip, candidate.as_deref()), (Some(tip), Some(candidate)) if tip != candidate);
+    if stale && !winding_down && gate.round < MAX_ROUNDS {
         return Verdict::Recheck;
     }
     let report_of = |role: GateRole| -> Vec<(&GateMember, Option<&Report>)> {
@@ -1350,7 +1358,7 @@ fn verdict_of(
         })
         .collect();
     let all_met = !criteria.is_empty() && criteria.iter().all(|c| c.status == CriterionStatus::Met);
-    if verifier_passed && reviews_passed && judge_approved && all_met && !winding_down {
+    if verifier_passed && reviews_passed && judge_approved && all_met && !winding_down && !stale {
         return Verdict::Verified(criteria);
     }
     // What a worker could fix: the checks' own findings.
@@ -1422,6 +1430,15 @@ fn verdict_of(
     }
     if winding_down {
         gaps.push("The run was ending before the phase's checks could pass.".into());
+    }
+    if gate.members.is_empty() {
+        gaps.push("The phase's whole-phase checks could not start.".into());
+    }
+    if stale {
+        gaps.push(
+            "The run branch moved after its last round of checks, so its newest work was never checked."
+                .into(),
+        );
     }
     let met = criteria.iter().any(|c| c.status == CriterionStatus::Met);
     Verdict::Settle {
