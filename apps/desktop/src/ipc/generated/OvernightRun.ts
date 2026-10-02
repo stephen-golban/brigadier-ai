@@ -7,6 +7,7 @@ import type { Directives } from "./Directives";
 import type { OvernightPhase } from "./OvernightPhase";
 import type { OvernightRunId } from "./OvernightRunId";
 import type { OvernightState } from "./OvernightState";
+import type { RunWorkspace } from "./RunWorkspace";
 import type { SourceSnapshot } from "./SourceSnapshot";
 import type { StopReason } from "./StopReason";
 
@@ -63,7 +64,11 @@ generation: number, state: OvernightState,
 /**
  * When wind-down starts; set at Start for a deadline.
  */
-windDownAtMs: number | null, stop: StopReason | null, 
+windDownAtMs: number | null, 
+/**
+ * Its branch and worktree, once Start made them.
+ */
+workspace: RunWorkspace | null, stop: StopReason | null, 
 /**
  * The last commands applied, newest last.
  */

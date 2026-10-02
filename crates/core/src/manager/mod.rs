@@ -195,6 +195,7 @@ impl SessionManager {
             overnight: overnight::Runs::default(),
         });
         manager.install_worktree_remover();
+        manager.recover_active_runs().await;
         manager.recover().await;
         manager.open_brains().await;
         manager.start_hibernation_timer();

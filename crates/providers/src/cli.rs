@@ -97,7 +97,14 @@ impl CliEnv {
 }
 
 /// Adds a session's extra environment to a spawn spec and puts its directories first on PATH.
-pub fn apply_session_env(spec: &mut SpawnSpec, env: &[(String, String)], path_prepend: &[PathBuf]) {
+pub fn apply_session_env(
+    spec: &mut SpawnSpec,
+    env: &[(String, String)],
+    unset: &[String],
+    path_prepend: &[PathBuf],
+) {
+    spec.env
+        .retain(|(key, _)| !unset.iter().any(|name| key == OsStr::new(name)));
     for (name, value) in env {
         spec.env.retain(|(key, _)| key != OsStr::new(name));
         spec.env.push((name.into(), value.into()));

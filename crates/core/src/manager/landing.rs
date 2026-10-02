@@ -104,6 +104,32 @@ impl SessionManager {
         if checked != candidate.commit && !self.same_tree(task, &checked, &candidate.commit).await {
             return Ok(None);
         }
+        // An overnight run never lands past failed checks: that stays the user's call, in the
+        // morning (PLAN.md §10.8).
+        if let Some(run) = &task.run {
+            let line = format!(
+                "task-{n}'s change failed its checks. The overnight run won't land it anyway; read the findings and decide whether it lands.",
+                n = task.number
+            );
+            if let Err(err) = self
+                .wait_on_user(
+                    conversation_id,
+                    task.request_id.clone(),
+                    crate::work::WaitingSource::Run {
+                        run_id: run.run_id.clone(),
+                        task_id: Some(task.id.clone()),
+                    },
+                    &line,
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "could not list a refused override");
+            }
+            return Err(Error::Invalid(format!(
+                "task-{n} works for the overnight run, which never lands a change despite failed checks. It is listed for the user. Send it back with the findings (message_worker), or leave it for them.",
+                n = task.number
+            )));
+        }
         // The user's word, not the orchestrator's: they wrote after these findings reached it.
         let user_at_ms = self.user_spoke_at(conversation_id).await;
         if !super::gates::user_spoke_since_checks(task, user_at_ms) {
@@ -688,12 +714,8 @@ impl SessionManager {
 
     /// Step 5 (the user's approval under "Ask for approval"), then step 6.
     pub(super) async fn approve_and_land(&self, task: &Task) -> Result<()> {
-        let conversation = self.core.conversation(&task.conversation_id)?;
-        let permission = match conversation.setup {
-            Some(Setup::Session { permission, .. }) => permission,
-            _ => PermissionLevel::ApproveForMe,
-        };
-        if permission == PermissionLevel::AskForApproval {
+        let permission = self.permission(&task.conversation_id);
+        if permission == PermissionLevel::AskForApproval && task.run.is_none() {
             let candidate = task
                 .candidate
                 .clone()
@@ -1069,6 +1091,11 @@ impl SessionManager {
         id: &ConversationId,
         message: Option<String>,
     ) -> Result<String> {
+        if self.overnight.active.get(id).is_some() {
+            return Err(Error::Invalid(
+                "An overnight run is going in this session: nothing merges into the base until it ends, and then only its verified work, by the user's Merge.".into(),
+            ));
+        }
         let conversation = self.core.conversation(id)?;
         let Some(Setup::Session {
             repo,

@@ -598,6 +598,10 @@ pub struct Task {
     /// The user request it was delegated for.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// The overnight run it works for: then it runs under the run's restrictions (sandboxed,
+    /// nothing outward, the run's branch), whatever the session's own setup says.
+    #[serde(default)]
+    pub run: Option<crate::overnight::RunTaskContext>,
     /// What the orchestrator sent the worker after its spec (`message_worker`), oldest first:
     /// changes to the task that its review checks the work against too.
     #[serde(default)]
@@ -1071,6 +1075,13 @@ pub enum WaitingSource {
     Landing { task_id: TaskId },
     /// The orchestrator noted it (`note_for_user`).
     Orchestrator,
+    /// An overnight run refused something only the user may do (an outward command, leaving
+    /// the sandbox, landing despite failed checks): it stays listed for the run's report
+    /// until the user marks it done.
+    Run {
+        run_id: crate::model::OvernightRunId,
+        task_id: Option<TaskId>,
+    },
 }
 
 /// Something only the user can do, listed under "Waiting on you" until they mark it done or

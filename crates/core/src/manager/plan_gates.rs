@@ -572,11 +572,8 @@ impl SessionManager {
     /// and Full access, outside plan mode), as `propose_plan` reads it.
     pub(crate) fn brigadier_decides_plans(&self, id: &ConversationId) -> bool {
         match self.core.conversation(id).map(|c| c.setup) {
-            Ok(Some(Setup::Session {
-                plan_mode: true, ..
-            })) => false,
-            Ok(Some(Setup::Session { permission, .. })) => {
-                permission != PermissionLevel::AskForApproval
+            Ok(Some(Setup::Session { .. })) => {
+                !self.plan_mode(id) && self.permission(id) != PermissionLevel::AskForApproval
             }
             Ok(_) => true,
             Err(_) => false,

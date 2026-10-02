@@ -556,6 +556,7 @@ impl SessionManager {
             mcp_servers: vec![self.brigadier_server(grant.clone(), JOB_TOOL_TIMEOUT_SECS, true)],
             tools: ToolSet::Default,
             env: vec![("TMPDIR".into(), scratch.to_string_lossy().into_owned())],
+            unset_env: Vec::new(),
             path_prepend: Vec::new(),
             record_to: None,
             redactor: secrets::redactor(vec![grant]),

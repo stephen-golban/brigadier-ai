@@ -217,7 +217,12 @@ impl Codex {
             .collect();
         spec.cwd = Some(cwd.to_owned());
         if let Some(session) = session {
-            crate::cli::apply_session_env(&mut spec, &session.env, &session.path_prepend);
+            crate::cli::apply_session_env(
+                &mut spec,
+                &session.env,
+                &session.unset_env,
+                &session.path_prepend,
+            );
         }
         let redactor = session.and_then(|session| session.redactor.clone());
         let process::Spawned { process, stdout } = process::spawn(
@@ -1737,6 +1742,7 @@ mod tests {
             mcp_servers: Vec::new(),
             tools,
             env: Vec::new(),
+            unset_env: Vec::new(),
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,

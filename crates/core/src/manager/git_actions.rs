@@ -186,6 +186,7 @@ impl SessionManager {
             mcp_servers: Vec::new(),
             tools: ToolSet::None,
             env: Vec::new(),
+            unset_env: Vec::new(),
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,

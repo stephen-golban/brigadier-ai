@@ -16,6 +16,7 @@ import type { QuotaWait } from "./QuotaWait";
 import type { Report } from "./Report";
 import type { ReviewRecord } from "./ReviewRecord";
 import type { Route } from "./Route";
+import type { RunTaskContext } from "./RunTaskContext";
 import type { TaskId } from "./TaskId";
 import type { TaskKind } from "./TaskKind";
 import type { TaskState } from "./TaskState";
@@ -115,6 +116,11 @@ outputs: Array<ArtifactRef>,
  * The user request it was delegated for.
  */
 requestId: string | null, 
+/**
+ * The overnight run it works for: then it runs under the run's restrictions (sandboxed,
+ * nothing outward, the run's branch), whatever the session's own setup says.
+ */
+run: RunTaskContext | null, 
 /**
  * What the orchestrator sent the worker after its spec (`message_worker`), oldest first:
  * changes to the task that its review checks the work against too.

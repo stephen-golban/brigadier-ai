@@ -782,6 +782,9 @@ pub struct SessionSpec {
     /// Extra environment for the CLI and everything it starts (the process tag, the command
     /// gate).
     pub env: Vec<(String, String)>,
+    /// Variables taken out of the CLI's environment, and so out of everything it starts (an
+    /// overnight run's workers don't get the user's tokens or SSH agent).
+    pub unset_env: Vec<String>,
     /// Directories put first on the CLI's PATH (the command gate's shims).
     pub path_prepend: Vec<PathBuf>,
     /// Records the raw stdio exchange to this file (JSONL), for replay fixtures.

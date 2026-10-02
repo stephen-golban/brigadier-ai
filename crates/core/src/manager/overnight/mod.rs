@@ -7,6 +7,8 @@
 //! app sends these commands; worker and orchestrator grants can't.
 
 pub mod directives;
+pub(crate) mod policy;
+mod workspace;
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +35,8 @@ pub(crate) struct Runs {
     /// Held while a run is read, changed and recorded, so its transitions happen one at a
     /// time. Never held across model work, a process or git.
     changes: tokio::sync::Mutex<()>,
+    /// Each session's active run, for task code that can't read the board.
+    pub(crate) active: policy::ActiveRuns,
 }
 
 impl SessionManager {
@@ -103,6 +107,7 @@ impl SessionManager {
             generation: 0,
             state: OvernightState::Proposed,
             wind_down_at_ms: None,
+            workspace: None,
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -126,9 +131,7 @@ impl SessionManager {
         events.push(DomainEvent::OvernightUpdated {
             run: Box::new(run.clone()),
         });
-        self.core
-            .record_conversation(&conversation_id, events)
-            .await?;
+        self.record_runs(&conversation_id, events).await?;
         Ok(run)
     }
 
@@ -140,61 +143,74 @@ impl SessionManager {
         command_id: String,
         revision: u32,
     ) -> Result<OvernightRun> {
-        self.change_run(&conversation_id, &run_id, command_id, |run, board| {
-            if run.state != OvernightState::Proposed {
-                return Err(Error::Invalid(match run.state {
-                    OvernightState::Superseded => {
-                        "A newer proposal replaced this one; start that one.".into()
-                    }
-                    _ => "This run has already started.".into(),
-                }));
-            }
-            if run.revision != revision {
-                return Err(Error::Invalid(
-                    "The plan changed since you looked at it. Check it and press Start again."
-                        .into(),
-                ));
-            }
-            if board.active_run().is_some() {
-                return Err(Error::Invalid(
-                    "This session already has an overnight run going.".into(),
-                ));
-            }
-            let clock = Clock::system();
-            let verified = verified_numbers(board, run);
-            let numbered = (!run.phases.is_empty()).then(|| infos(&run.phases));
-            let problems = directives::check(
-                &run.directives,
-                numbered.as_deref(),
-                &verified,
-                &clock,
-                true,
-            );
-            if let Some(problem) = problems.first().or(run.problems.first()) {
-                return Err(Error::Invalid(problem.message.clone()));
-            }
-            let now = clock.now.as_millisecond();
-            if let Deadline::For { minutes } = run.directives.deadline {
-                let time = directives::resolve_duration(minutes, &clock)
-                    .ok_or_else(|| Error::Invalid("That duration is out of range.".into()))?;
-                run.directives.deadline = Deadline::At { time };
-            }
-            run.wind_down_at_ms = match &run.directives.deadline {
-                Deadline::At { time } => Some(wind_down_at(now, time.at_ms)),
-                Deadline::UntilDone | Deadline::For { .. } => None,
-            };
-            let chosen = run.directives.clone();
-            for phase in &mut run.phases {
-                if phase.state == PhaseState::Pending && !selects(&chosen, phase.number) {
-                    phase.state = PhaseState::Skipped;
+        let applied = command_id.clone();
+        let run = self
+            .change_run(&conversation_id, &run_id, command_id, |run, board| {
+                if run.state != OvernightState::Proposed {
+                    return Err(Error::Invalid(match run.state {
+                        OvernightState::Superseded => {
+                            "A newer proposal replaced this one; start that one.".into()
+                        }
+                        _ => "This run has already started.".into(),
+                    }));
                 }
-            }
-            run.state = OvernightState::Preparing;
-            run.generation += 1;
-            run.started_at_ms = Some(now);
-            Ok(())
-        })
-        .await
+                if run.revision != revision {
+                    return Err(Error::Invalid(
+                        "The plan changed since you looked at it. Check it and press Start again."
+                            .into(),
+                    ));
+                }
+                if board.active_run().is_some() {
+                    return Err(Error::Invalid(
+                        "This session already has an overnight run going.".into(),
+                    ));
+                }
+                let clock = Clock::system();
+                let verified = verified_numbers(board, run);
+                let numbered = (!run.phases.is_empty()).then(|| infos(&run.phases));
+                let problems = directives::check(
+                    &run.directives,
+                    numbered.as_deref(),
+                    &verified,
+                    &clock,
+                    true,
+                );
+                if let Some(problem) = problems.first().or(run.problems.first()) {
+                    return Err(Error::Invalid(problem.message.clone()));
+                }
+                let now = clock.now.as_millisecond();
+                if let Deadline::For { minutes } = run.directives.deadline {
+                    let time = directives::resolve_duration(minutes, &clock)
+                        .ok_or_else(|| Error::Invalid("That duration is out of range.".into()))?;
+                    run.directives.deadline = Deadline::At { time };
+                }
+                run.wind_down_at_ms = match &run.directives.deadline {
+                    Deadline::At { time } => Some(wind_down_at(now, time.at_ms)),
+                    Deadline::UntilDone | Deadline::For { .. } => None,
+                };
+                let chosen = run.directives.clone();
+                for phase in &mut run.phases {
+                    if phase.state == PhaseState::Pending && !selects(&chosen, phase.number) {
+                        phase.state = PhaseState::Skipped;
+                    }
+                }
+                run.state = OvernightState::Preparing;
+                run.generation += 1;
+                run.started_at_ms = Some(now);
+                Ok(())
+            })
+            .await?;
+        // Only the Start that started it prepares it (a repeated Start changes nothing).
+        let started = run
+            .commands
+            .last()
+            .is_some_and(|command| command.id == applied);
+        if run.state == OvernightState::Preparing && started {
+            let manager = self.arc();
+            let preparing = run.clone();
+            self.spawn(async move { manager.prepare_run(preparing).await });
+        }
+        Ok(run)
     }
 
     /// The user's Stop: a proposal is dropped; a started run winds down now, the same clean
@@ -406,14 +422,13 @@ impl SessionManager {
             finished_at_ms: None,
             ..previous.clone()
         };
-        self.core
-            .record_conversation(
-                &conversation_id,
-                vec![DomainEvent::OvernightUpdated {
-                    run: Box::new(run.clone()),
-                }],
-            )
-            .await?;
+        self.record_runs(
+            &conversation_id,
+            vec![DomainEvent::OvernightUpdated {
+                run: Box::new(run.clone()),
+            }],
+        )
+        .await?;
         Ok(run)
     }
 
@@ -447,15 +462,89 @@ impl SessionManager {
         });
         let excess = run.commands.len().saturating_sub(COMMANDS_KEPT);
         run.commands.drain(..excess);
-        self.core
-            .record_conversation(
-                conversation_id,
-                vec![DomainEvent::OvernightUpdated {
-                    run: Box::new(run.clone()),
-                }],
-            )
-            .await?;
+        self.record_runs(
+            conversation_id,
+            vec![DomainEvent::OvernightUpdated {
+                run: Box::new(run.clone()),
+            }],
+        )
+        .await?;
         Ok(run)
+    }
+
+    /// Records run events and keeps the active-run view in step with them.
+    async fn record_runs(
+        &self,
+        conversation_id: &ConversationId,
+        events: Vec<DomainEvent>,
+    ) -> Result<()> {
+        self.core
+            .record_conversation(conversation_id, events.clone())
+            .await?;
+        for event in &events {
+            if let DomainEvent::OvernightUpdated { run } = event {
+                self.overnight.active.note(run);
+            }
+        }
+        Ok(())
+    }
+
+    /// After a restart: each session's active run, from its board.
+    pub(crate) async fn recover_active_runs(&self) {
+        for conversation in self.core.catalog().conversations {
+            if !matches!(conversation.setup, Some(Setup::Session { .. })) {
+                continue;
+            }
+            if let Ok(board) = self.core.board(&conversation.id).await
+                && let Some(run) = board.active_run()
+            {
+                self.overnight.active.note(run);
+                // Interrupted while its branch and worktree were being made.
+                if run.state == OvernightState::Preparing {
+                    let manager = self.arc();
+                    let run = run.clone();
+                    self.spawn(async move { manager.prepare_run(run).await });
+                }
+            }
+        }
+    }
+
+    /// Start's first effect: the run's branch and worktree. A run that can't have them ends
+    /// before any work starts.
+    async fn prepare_run(&self, run: OvernightRun) {
+        let prepared = self.prepare_run_workspace(&run).await;
+        let _held = self.overnight.changes.lock().await;
+        let Ok(board) = self.core.board(&run.conversation_id).await else {
+            return;
+        };
+        let Some(now) = board.runs.get(&run.id) else {
+            return;
+        };
+        // Stopped or restarted meanwhile: this result is history.
+        if now.generation != run.generation || now.state != OvernightState::Preparing {
+            return;
+        }
+        let mut now = now.clone();
+        match prepared {
+            Ok(workspace) => now.workspace = Some(workspace),
+            Err(err) => {
+                tracing::warn!(run = %run.id, error = %err, "could not prepare an overnight run");
+                now.state = OvernightState::Finished;
+                now.stop = Some(StopReason::Failed {
+                    message: format!("Its branch and worktree couldn't be made: {err}"),
+                });
+                now.finished_at_ms = Some(now_ms());
+            }
+        }
+        if let Err(err) = self
+            .record_runs(
+                &run.conversation_id,
+                vec![DomainEvent::OvernightUpdated { run: Box::new(now) }],
+            )
+            .await
+        {
+            tracing::warn!(run = %run.id, error = %err, "could not record an overnight run");
+        }
     }
 
     /// Reads the plan's source files as they are now, into the blob store. A file that can't

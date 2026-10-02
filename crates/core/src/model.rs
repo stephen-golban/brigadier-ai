@@ -73,6 +73,13 @@ id_type!(
     OvernightRunId
 );
 
+impl OvernightRunId {
+    /// The last 8 characters: the run's part of its branch and folder names.
+    pub fn short(&self) -> &str {
+        &self.0[self.0.len().saturating_sub(8)..]
+    }
+}
+
 /// A workspace of one or more repos. Owns its sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

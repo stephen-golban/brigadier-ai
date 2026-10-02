@@ -267,6 +267,13 @@ impl SessionManager {
         argv: Vec<String>,
         cwd: String,
     ) -> GateAnswer {
+        // An overnight run: nobody is there to ask, and no earlier pass counts.
+        if let Some(message) = self
+            .unattended_outward(&conversation_id, task_id.as_ref(), &argv)
+            .await
+        {
+            return GateAnswer::Deny { message };
+        }
         if self
             .waiters
             .consume_pass(&task_id, &argv, &resolved(Path::new(&cwd)))

@@ -113,13 +113,26 @@ pub enum ApprovalMode {
     Delegated,
     /// Decline everything (a read-only session such as the orchestrator).
     DeclineAll,
+    /// Nobody is there to ask (an overnight run): allow what stays inside the session's
+    /// access, decline the rest, outward actions and escalations included. The caller lists
+    /// what was declined for the user.
+    Unattended,
 }
 
 /// Decides who answers `request`.
 pub fn route(request: &ApprovalRequest, access: &Access, mode: ApprovalMode) -> Route {
-    if mode == ApprovalMode::DeclineAll {
-        return Route::Deny;
+    match mode {
+        ApprovalMode::DeclineAll => Route::Deny,
+        ApprovalMode::Delegated => route_delegated(request, access),
+        ApprovalMode::Unattended => match route_delegated(request, access) {
+            Route::AskUser => Route::Deny,
+            route => route,
+        },
     }
+}
+
+/// [`route`] under Approve for me.
+fn route_delegated(request: &ApprovalRequest, access: &Access) -> Route {
     if let Some(command) = &request.command
         && is_outward(command)
     {

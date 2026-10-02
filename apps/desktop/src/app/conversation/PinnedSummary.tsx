@@ -260,6 +260,8 @@ function waitingFrom(item: WaitingItem, tasks: Readonly<Record<string, Task>>): 
       return "A card waits for your answer";
     case "orchestrator":
       return null;
+    case "run":
+      return "Declined during the overnight run";
   }
 }
 

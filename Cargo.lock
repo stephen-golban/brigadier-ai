@@ -395,6 +395,7 @@ dependencies = [
 name = "brigadier-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "brigadier-brain",
  "brigadier-git",
  "brigadier-index",

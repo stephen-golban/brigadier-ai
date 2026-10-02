@@ -1318,6 +1318,7 @@ fn spec_for(session: &RawSession, origin: Origin, record_to: Option<PathBuf>) ->
         mcp_servers: Vec::new(),
         tools: ToolSet::Default,
         env: Vec::new(),
+        unset_env: Vec::new(),
         path_prepend: Vec::new(),
         record_to,
         redactor: None,

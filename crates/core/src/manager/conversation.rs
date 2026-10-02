@@ -1531,6 +1531,7 @@ impl SessionManager {
                 ConversationKind::Chat => ToolSet::Web,
             },
             env: Vec::new(),
+            unset_env: Vec::new(),
             path_prepend: Vec::new(),
             record_to: None,
             redactor: grant_redactor.clone(),

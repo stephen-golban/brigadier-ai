@@ -11,6 +11,48 @@ use ts_rs::TS;
 
 use crate::model::{CardId, ConversationId, OvernightRunId};
 
+/// The run's own branch and worktree, made at Start from the base's committed tip. Its work
+/// lands there; only the user's Merge brings verified work into the base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWorkspace {
+    /// The branch the run started from and its verified work merges into.
+    pub base: String,
+    /// The base's tip at Start.
+    pub base_commit: String,
+    /// `overnight/<date>-<slug>-<short id>`.
+    pub branch: String,
+    /// The run's worktree, in Brigadier's data directory.
+    pub path: String,
+}
+
+/// What a task does for a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RunRole {
+    /// Work the phase lead delegated (and the checks of a plan it proposed).
+    Worker,
+    /// A reviewer or verifier of a run task's change.
+    Check,
+}
+
+/// Which run a task works for, fixed when the task is made: a late event of the task keeps
+/// it, whatever the run or the user's newest message is doing by then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTaskContext {
+    pub run_id: OvernightRunId,
+    pub segment: u32,
+    /// The phase it works on; absent before the conductor admits phases (Phase 0, setup).
+    #[serde(default)]
+    pub phase_id: Option<String>,
+    /// The run's generation when the task was made; a result from an older one is history.
+    pub generation: u32,
+    pub role: RunRole,
+    /// The run's Rules as the task was briefed (a hash of the text).
+    pub rules_hash: String,
+}
+
 /// Where a run is. `Proposed` waits for the user's Start; everything after it is the run's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -289,6 +331,9 @@ pub struct OvernightRun {
     pub state: OvernightState,
     /// When wind-down starts; set at Start for a deadline.
     pub wind_down_at_ms: Option<i64>,
+    /// Its branch and worktree, once Start made them.
+    #[serde(default)]
+    pub workspace: Option<RunWorkspace>,
     pub stop: Option<StopReason>,
     /// The last commands applied, newest last.
     pub commands: Vec<AppliedCommand>,

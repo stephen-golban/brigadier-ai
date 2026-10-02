@@ -773,7 +773,12 @@ impl Provider for Claude {
             if !spec.auto_compact {
                 env.push(("DISABLE_AUTO_COMPACT".into(), "1".into()));
             }
-            crate::cli::apply_session_env(&mut process_spec, &env, &spec.path_prepend);
+            crate::cli::apply_session_env(
+                &mut process_spec,
+                &env,
+                &spec.unset_env,
+                &spec.path_prepend,
+            );
             let process::Spawned { process, stdout } = process::spawn(
                 self.platform.clone(),
                 &process_spec,
@@ -1453,6 +1458,7 @@ mod tests {
             mcp_servers: Vec::new(),
             tools: ToolSet::Lean,
             env: Vec::new(),
+            unset_env: Vec::new(),
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,

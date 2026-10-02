@@ -352,7 +352,15 @@ impl SessionManager {
             WaitingSource::Landing { task_id } => number(task_id)
                 .map(|n| format!(" The checks of task-{n}'s change waited for it: call accept_task for task-{n} again to verify and land it."))
                 .unwrap_or_default(),
-            WaitingSource::Card { .. } | WaitingSource::Orchestrator => String::new(),
+            WaitingSource::Run {
+                task_id: Some(task_id),
+                ..
+            } => number(task_id)
+                .map(|n| format!(" (the overnight run refused it for task-{n})"))
+                .unwrap_or_default(),
+            WaitingSource::Card { .. }
+            | WaitingSource::Orchestrator
+            | WaitingSource::Run { task_id: None, .. } => String::new(),
         };
         self.deliver_for(
             &conversation_id,
@@ -393,6 +401,7 @@ pub(crate) fn waiting_key(source: &WaitingSource, text: &str) -> String {
         WaitingSource::Task { task_id } => format!("task:{task_id}"),
         WaitingSource::Landing { task_id } => format!("landing:{task_id}"),
         WaitingSource::Orchestrator => "orchestrator".to_owned(),
+        WaitingSource::Run { run_id, .. } => format!("run:{run_id}"),
     };
     let words: Vec<String> = text
         .split_whitespace()
@@ -411,7 +420,10 @@ fn ended_with(source: &WaitingSource, task: &TaskId, state: TaskState) -> bool {
     match source {
         WaitingSource::Landing { task_id } => task_id == task && state.is_final(),
         WaitingSource::Task { task_id } => task_id == task && state == TaskState::Stopped,
-        WaitingSource::Card { .. } | WaitingSource::Orchestrator => false,
+        // Kept for the run's report until the user marks it done.
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator | WaitingSource::Run { .. } => {
+            false
+        }
     }
 }
 
@@ -429,7 +441,9 @@ fn lists_still(source: &WaitingSource, synced: &Task, now: &Task) -> bool {
             submitted(synced).is_some() && submitted(synced) == submitted(now)
         }
         WaitingSource::Landing { .. } => round(synced).is_some() && round(synced) == round(now),
-        WaitingSource::Card { .. } | WaitingSource::Orchestrator => true,
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator | WaitingSource::Run { .. } => {
+            true
+        }
     }
 }
 
@@ -446,7 +460,9 @@ fn reconciled_waits(
             .tasks
             .get(task_id)
             .is_some_and(|task| ended_with(&item.source, task_id, task.state)),
-        WaitingSource::Card { .. } | WaitingSource::Orchestrator => false,
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator | WaitingSource::Run { .. } => {
+            false
+        }
     };
     let mut gone: Vec<String> = board
         .waiting

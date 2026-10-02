@@ -482,9 +482,10 @@ impl SessionManager {
     async fn check_plan_gate(&self, id: &ConversationId) -> Result<()> {
         self.check_plan_mode(id)?;
         let conversation = self.core.conversation(id)?;
-        let Some(Setup::Session { permission, .. }) = conversation.setup else {
+        if !matches!(conversation.setup, Some(Setup::Session { .. })) {
             return Ok(());
-        };
+        }
+        let permission = self.permission(id);
         let board = self.core.board(id).await?;
         if permission != PermissionLevel::AskForApproval {
             let request = self.request_for(id, None).await;
@@ -531,14 +532,11 @@ impl SessionManager {
         if args.steps.is_empty() {
             return Err(Error::Invalid("a plan needs at least one step".into()));
         }
-        let conversation = self.core.conversation(id)?;
-        let permission = match conversation.setup {
-            // In plan mode the user decides the plan, whatever the permission level.
-            Some(Setup::Session {
-                plan_mode: true, ..
-            }) => PermissionLevel::AskForApproval,
-            Some(Setup::Session { permission, .. }) => permission,
-            _ => PermissionLevel::ApproveForMe,
+        // In plan mode the user decides the plan, whatever the permission level.
+        let permission = if self.plan_mode(id) {
+            PermissionLevel::AskForApproval
+        } else {
+            self.permission(id)
         };
         let user_decides = permission == PermissionLevel::AskForApproval;
         let request_id = self.request_for(id, None).await;

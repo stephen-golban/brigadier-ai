@@ -550,23 +550,30 @@ impl SessionManager {
             .clone()
     }
 
-    /// The session's permission level.
+    /// The session's permission level. While an overnight run is active it is Approve for me,
+    /// sandboxed, whatever the user saved (PLAN.md §10.8); the saved level returns with the
+    /// run's end.
     pub(crate) fn permission(&self, id: &ConversationId) -> PermissionLevel {
+        if self.overnight.active.get(id).is_some() {
+            return PermissionLevel::ApproveForMe;
+        }
         match self.core.conversation(id).map(|c| c.setup) {
             Ok(Some(Setup::Session { permission, .. })) => permission,
             _ => PermissionLevel::ApproveForMe,
         }
     }
 
-    /// Whether the session is in plan mode (see [`Setup::Session`]).
+    /// Whether the session is in plan mode (see [`Setup::Session`]). Never during an
+    /// overnight run: the user's Start approved its reviewed plans.
     pub(crate) fn plan_mode(&self, id: &ConversationId) -> bool {
-        matches!(
-            self.core.conversation(id).map(|c| c.setup),
-            Ok(Some(Setup::Session {
-                plan_mode: true,
-                ..
-            }))
-        )
+        self.overnight.active.get(id).is_none()
+            && matches!(
+                self.core.conversation(id).map(|c| c.setup),
+                Ok(Some(Setup::Session {
+                    plan_mode: true,
+                    ..
+                }))
+            )
     }
 
     /// How many workers each provider runs now, so parallel work spreads across vendors.
@@ -736,9 +743,22 @@ impl SessionManager {
     ) -> Result<Task> {
         self.admit()?;
         let conversation = self.core.conversation(conversation_id)?;
-        let Some(Setup::Session { permission, .. }) = &conversation.setup else {
+        if !matches!(conversation.setup, Some(Setup::Session { .. })) {
             return Err(Error::Invalid("tasks belong to a session".into()));
-        };
+        }
+        let permission = self.permission(conversation_id);
+        let active_run = self.overnight.active.get(conversation_id);
+        if subject.is_none()
+            && active_run
+                .as_ref()
+                .is_some_and(|active| active.workspace.is_none())
+        {
+            return Err(Error::Invalid(
+                "The overnight run's branch and worktree are still being made; try again in a moment.".into(),
+            ));
+        }
+        let run =
+            super::overnight::policy::ActiveRun::context_for(active_run.as_ref(), subject.as_ref());
         let category = category(kind);
         let areas = areas.unwrap_or_else(|| brigadier_router::infer_areas(&spec));
         let floor = floor.unwrap_or_else(|| brigadier_router::default_floor(category));
@@ -829,7 +849,8 @@ impl SessionManager {
             title: title.trim().to_owned(),
             kind,
             spec,
-            access: access_for(kind, *permission),
+            // A run's tasks never run unsandboxed.
+            access: access_for(kind, permission, run.is_some()),
             // A waiting task's first model is recorded when it starts.
             attempts: if waits {
                 Vec::new()
@@ -874,6 +895,7 @@ impl SessionManager {
             kept: None,
             outputs: Vec::new(),
             request_id,
+            run,
             messages: Vec::new(),
             rework_rounds: 0,
             trial_slot: waits && trial_slot,
@@ -997,9 +1019,10 @@ impl SessionManager {
             .as_ref()
             .map(|p| p.prefs.secret_files.clone())
             .unwrap_or_default();
-        // A successor taking the task over finds the worktree's secrets already in place.
+        // A successor taking the task over finds the worktree's secrets already in place. An
+        // overnight run's workers get none (PLAN.md §10.8); their values are still redacted.
         let mut secret_values = match (&workspace.worktree, &origin) {
-            (Some(worktree), Origin::New) if task.attempts.len() <= 1 => {
+            (Some(worktree), Origin::New) if task.attempts.len() <= 1 && task.run.is_none() => {
                 secrets::copy_secrets(self, &owner, &workspace.repo, worktree, &secret_files)
                     .await?
             }
@@ -1009,14 +1032,22 @@ impl SessionManager {
         let provider = task.route.choice.provider;
         let write = task.kind.writes();
         // Codex cannot run with a read-only cwd: a read-only Codex worker works from its
-        // scratch folder and reads the worktree by path.
+        // scratch folder and reads the worktree by path. In a worktree Codex can't keep
+        // anything unreadable, so an overnight run's Codex writer works from its scratch
+        // folder too, with its worktree writable (PLAN.md §10.8).
+        let run_codex = provider == ProviderKind::Codex && task.run.is_some();
         let cwd = match (&workspace.worktree, provider, write) {
-            (Some(worktree), ProviderKind::Claude, _) | (Some(worktree), _, true) => {
-                worktree.clone()
-            }
+            (Some(worktree), ProviderKind::Claude, _) => worktree.clone(),
+            (Some(worktree), _, true) if !run_codex => worktree.clone(),
             _ => workspace.scratch.clone(),
         };
         let repo_note = match (&workspace.worktree, write) {
+            (Some(worktree), true) if cwd != *worktree => format!(
+                "Your worktree (a checkout of the repository on branch `{}`): {}\nYou start in your scratch folder: run every command in your worktree (`cd` there first, or `git -C <worktree>`), and edit its files by their full path.\nYour scratch folder: {}",
+                workspace.branch.clone().unwrap_or_default(),
+                worktree.display(),
+                workspace.scratch.display()
+            ),
             (Some(worktree), true) => format!(
                 "Your worktree (a checkout of the repository on branch `{}`): {}\nYour scratch folder: {}",
                 workspace.branch.clone().unwrap_or_default(),
@@ -1096,13 +1127,31 @@ impl SessionManager {
             append_system_prompt: Some(prompt),
             mcp_servers: vec![self.brigadier_server(worker_grant, WORKER_TOOL_TIMEOUT_SECS, true)],
             tools: ToolSet::Lean,
-            env: vec![
-                ("BRIGADIER_GATE".into(), gate_grant),
-                (
-                    "TMPDIR".into(),
-                    workspace.scratch.to_string_lossy().into_owned(),
-                ),
-            ],
+            env: {
+                let mut env = vec![
+                    ("BRIGADIER_GATE".into(), gate_grant),
+                    (
+                        "TMPDIR".into(),
+                        workspace.scratch.to_string_lossy().into_owned(),
+                    ),
+                ];
+                if task.run.is_some() {
+                    env.extend(super::overnight::policy::run_env());
+                }
+                env
+            },
+            // A run's workers don't get credentials from the daemon's environment.
+            unset_env: if task.run.is_some() {
+                super::overnight::policy::scrubbed_env(
+                    self.runtime
+                        .cli_env()
+                        .vars()
+                        .into_iter()
+                        .filter_map(|(name, _)| name.into_string().ok()),
+                )
+            } else {
+                Vec::new()
+            },
             path_prepend: self.config.gate_dir.iter().cloned().collect(),
             record_to: None,
             redactor: redactor.clone(),
@@ -1237,7 +1286,8 @@ impl SessionManager {
 
     /// B12: what the worker may touch.
     fn worker_access(&self, task: &Task, workspace: &Workspace, cwd: &Path) -> Access {
-        if task.access.unsandboxed {
+        // An overnight run's tasks are never unsandboxed, whatever was recorded.
+        if task.access.unsandboxed && task.run.is_none() {
             return Access::Full;
         }
         // A worker working from its scratch folder writes there (Codex needs a writable cwd);
@@ -1249,18 +1299,39 @@ impl SessionManager {
         } else {
             vec![workspace.scratch.clone()]
         };
-        if task.kind == TaskKind::Verify
-            && let Some(worktree) = &workspace.worktree
+        if let Some(worktree) = &workspace.worktree
+            && (task.kind == TaskKind::Verify || (in_scratch && task.kind.writes()))
         {
-            // Checks write build output inside the checkout; nothing from it lands.
+            // Checks write build output inside the checkout; nothing from it lands. A run's
+            // Codex writer works from its scratch folder and writes its worktree as a root.
             writable_roots.push(worktree.clone());
         }
-        let run_dir = self.runtime.platform().paths().run_dir.clone();
+        let mut deny_read = vec![self.runtime.platform().paths().run_dir.clone()];
+        if task.run.is_some() {
+            if let Some(home) = self.runtime.cli_env().home() {
+                deny_read.extend(super::overnight::policy::credential_paths(&home));
+            }
+            // The project's secret files, where they are in the user's checkout.
+            if let Ok(conversation) = self.core.conversation(&task.conversation_id)
+                && let Some(project) = conversation
+                    .project_id
+                    .as_ref()
+                    .and_then(|id| self.core.project(id).ok())
+            {
+                deny_read.extend(
+                    project
+                        .prefs
+                        .secret_files
+                        .iter()
+                        .map(|file| workspace.repo.join(file)),
+                );
+            }
+        }
         Access::Scoped {
             write_cwd,
             writable_roots,
             network: task.access.network,
-            deny_read: vec![run_dir],
+            deny_read,
             unix_sockets: self.socket_path().into_iter().collect(),
         }
     }
@@ -1293,9 +1364,19 @@ impl SessionManager {
                 scratch,
             });
         }
-        let target = self
-            .ensure_target(&task.conversation_id, &repo, environment)
-            .await?;
+        // An overnight run's work lands on the run's branch, recorded with the task so it
+        // stays there whatever happens to the run later.
+        let run_branch = match &task.run {
+            Some(run) => Some(self.run_target(&task.conversation_id, run).await?),
+            None => None,
+        };
+        let target = match &run_branch {
+            Some(branch) => branch.clone(),
+            None => {
+                self.ensure_target(&task.conversation_id, &repo, environment)
+                    .await?
+            }
+        };
         // Reviews and checks look at the candidate commit; a merge task continues from the
         // conflicting task's work (kept as a WIP commit on its branch).
         let (base, start, on_snapshot) = match (task.kind, subject) {
@@ -1310,6 +1391,19 @@ impl SessionManager {
             (TaskKind::Merge, Some(subject)) => {
                 let (base, start) = self.merge_start(subject).await?;
                 (base, start, false)
+            }
+            // A run's workers start from its branch's tip, never the user's uncommitted files.
+            _ if run_branch.is_some() => {
+                let (git, repo_path, branch) = (self.git.clone(), repo.clone(), target.clone());
+                let tip = blocking(move || {
+                    git.open(&repo_path)
+                        .map_err(git_error)?
+                        .branch_tip(&branch)
+                        .map_err(git_error)?
+                        .ok_or_else(|| Error::Invalid(format!("branch {branch} does not exist")))
+                })
+                .await?;
+                (tip.clone(), tip, false)
             }
             _ => {
                 let (base, on_snapshot) = self
@@ -1952,6 +2046,15 @@ impl SessionManager {
             .access
             .clone()
             .unwrap_or(Access::ReadOnly);
+        // An overnight run's worker: nobody is there to ask, and nothing earlier the user
+        // allowed in this CLI session counts for the run.
+        if let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await
+            && let Some(run) = task.run.clone()
+        {
+            self.route_unattended(live, cli, request, &access, &task, &run)
+                .await;
+            return;
+        }
         let mut route = policy::route(&request, &access, ApprovalMode::Delegated);
         let outward = request.command.as_deref().is_some_and(policy::is_outward);
         // The user already allowed exactly this command for the rest of the CLI session.
@@ -3270,7 +3373,7 @@ pub(crate) fn category(kind: TaskKind) -> brigadier_router::TaskCategory {
 }
 
 /// B12: repository access, network and sandbox per task kind and permission level.
-fn access_for(kind: TaskKind, permission: PermissionLevel) -> WorkerAccess {
+fn access_for(kind: TaskKind, permission: PermissionLevel, run: bool) -> WorkerAccess {
     WorkerAccess {
         repo: match kind {
             TaskKind::Research => RepoAccess::None,
@@ -3278,7 +3381,7 @@ fn access_for(kind: TaskKind, permission: PermissionLevel) -> WorkerAccess {
             TaskKind::Scout | TaskKind::Review | TaskKind::Verify => RepoAccess::Read,
         },
         network: true,
-        unsandboxed: permission == PermissionLevel::FullAccess,
+        unsandboxed: permission == PermissionLevel::FullAccess && !run,
     }
 }
 
