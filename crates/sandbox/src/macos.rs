@@ -419,6 +419,7 @@ impl Sandbox for Seatbelt {
             env: spec.env,
             clear_env: spec.clear_env,
             cwd: spec.cwd,
+            low_priority: spec.low_priority,
         })
     }
 }

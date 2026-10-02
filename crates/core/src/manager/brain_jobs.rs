@@ -557,6 +557,7 @@ impl SessionManager {
             tools: ToolSet::Default,
             env: vec![("TMPDIR".into(), scratch.to_string_lossy().into_owned())],
             unset_env: Vec::new(),
+            low_priority: false,
             path_prepend: Vec::new(),
             record_to: None,
             redactor: secrets::redactor(vec![grant]),

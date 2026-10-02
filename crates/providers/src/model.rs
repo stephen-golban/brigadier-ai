@@ -785,6 +785,9 @@ pub struct SessionSpec {
     /// Variables taken out of the CLI's environment, and so out of everything it starts (an
     /// overnight run's workers don't get the user's tokens or SSH agent).
     pub unset_env: Vec<String>,
+    /// Runs the CLI, and everything it starts, at low OS priority (an overnight run's
+    /// workers: their builds yield to the user's own work).
+    pub low_priority: bool,
     /// Directories put first on the CLI's PATH (the command gate's shims).
     pub path_prepend: Vec<PathBuf>,
     /// Records the raw stdio exchange to this file (JSONL), for replay fixtures.

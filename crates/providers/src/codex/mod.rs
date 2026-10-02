@@ -223,6 +223,7 @@ impl Codex {
                 &session.unset_env,
                 &session.path_prepend,
             );
+            spec.low_priority = session.low_priority;
         }
         let redactor = session.and_then(|session| session.redactor.clone());
         let process::Spawned { process, stdout } = process::spawn(
@@ -1743,6 +1744,7 @@ mod tests {
             tools,
             env: Vec::new(),
             unset_env: Vec::new(),
+            low_priority: false,
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,

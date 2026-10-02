@@ -23,6 +23,8 @@ pub(crate) struct ActiveRun {
     pub generation: u32,
     pub rules_hash: String,
     pub workspace: Option<RunWorkspace>,
+    /// "max N workers": its tasks executing at once.
+    pub max_workers: Option<u32>,
 }
 
 /// The active run of each session that has one. Kept in step with every recorded run, and
@@ -52,6 +54,7 @@ impl ActiveRuns {
                     generation: run.generation,
                     rules_hash: rules_hash(&run.rules),
                     workspace: run.workspace.clone(),
+                    max_workers: run.directives.max_workers,
                 },
             );
         } else if active

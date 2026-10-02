@@ -65,8 +65,23 @@ pub(crate) fn spawn_detached(spec: &SpawnSpec) -> Result<DetachedChild> {
 pub(crate) fn piped_command(spec: &SpawnSpec) -> Command {
     let mut command = spec.piped();
     command.process_group(0);
+    if spec.low_priority {
+        // SAFETY: `setpriority` is async-signal-safe and the closure touches no other state,
+        // which is the contract for code running between fork and exec.
+        #[allow(unsafe_code)]
+        unsafe {
+            command.pre_exec(|| {
+                // Lowering one's own priority needs no privilege; a failure leaves it as is.
+                libc::setpriority(libc::PRIO_PROCESS, 0, LOW_PRIORITY_NICE);
+                Ok(())
+            });
+        }
+    }
     command
 }
+
+/// The niceness of low-priority processes.
+const LOW_PRIORITY_NICE: libc::c_int = 10;
 
 pub(crate) fn is_alive(pid: u32) -> bool {
     let Some(pid) = to_pid(pid) else {

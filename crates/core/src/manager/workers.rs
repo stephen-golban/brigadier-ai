@@ -524,6 +524,11 @@ impl TaskLive {
         }
     }
 
+    /// Whether a turn of its worker runs now.
+    pub async fn busy(&self) -> bool {
+        self.state.lock().await.busy
+    }
+
     /// After a deliberate close (hibernation) the worker may be started again.
     pub async fn allow_revival(&self) {
         let mut state = self.state.lock().await;
@@ -983,6 +988,26 @@ impl SessionManager {
         origin: Origin,
         first: TurnInput,
     ) -> Result<()> {
+        // An overnight run's worker starts once its run has a worker free (PLAN.md §10.7).
+        self.admit_run_task(task).await?;
+        let launched = self
+            .launch_admitted(live, task, subject, origin, first)
+            .await;
+        if launched.is_err() {
+            self.release_run_task(&task.id);
+        }
+        launched
+    }
+
+    /// [`Self::launch_worker`] once admitted.
+    async fn launch_admitted(
+        &self,
+        live: &Arc<TaskLive>,
+        task: &Task,
+        subject: Option<&Task>,
+        origin: Origin,
+        first: TurnInput,
+    ) -> Result<()> {
         let conversation_id = task.conversation_id.clone();
         let owner = format!("task:{}", task.id);
         // A resumed Codex thread's token totals include the turns counted before.
@@ -1152,6 +1177,7 @@ impl SessionManager {
             } else {
                 Vec::new()
             },
+            low_priority: task.run.is_some(),
             path_prepend: self.config.gate_dir.iter().cloned().collect(),
             record_to: None,
             redactor: redactor.clone(),
@@ -1797,16 +1823,20 @@ impl SessionManager {
         }
         self.record_worker_events(&live.id, deltas).await;
         self.grants.revoke_owner(&cli.owner);
-        let (stopping, from) = {
+        let (stopping, from, replaced) = {
             let mut state = live.state.lock().await;
             if state.cli.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cli)) {
                 state.cli = None;
             }
             state.busy = false;
             state.question = None;
-            (state.stopping, state.generation)
+            (state.stopping, state.generation, state.cli.is_some())
         };
         cli.ended.cancel();
+        // A fresh session that already took the task over keeps its run's worker slot.
+        if !replaced {
+            self.release_run_task(&live.id);
+        }
         if !stopping
             && let Ok(task) = self.task_by_id(&live.conversation_id, &live.id).await
             && !task.state.is_final()
@@ -1911,6 +1941,11 @@ impl SessionManager {
         }
         if let Some(status) = completed {
             self.worker_turn_completed(live, cli, status).await;
+            // No turn followed (a nudge or retry would have started one): an overnight run's
+            // worker slot is free for another task.
+            if !live.busy().await {
+                self.release_run_task(&live.id);
+            }
         }
     }
 
@@ -2708,6 +2743,56 @@ impl SessionManager {
         text: String,
         from: &str,
     ) -> Result<(String, bool)> {
+        // An idle worker of an overnight run starts a turn only with a free worker slot: when
+        // its run has none, the message waits for one rather than holding up the caller.
+        if task.run.is_some()
+            && !task.state.is_final()
+            && !self.task_live(task).busy().await
+            && let super::overnight::admission::Slot::Full { cap } =
+                self.try_admit_run_task(task)?
+        {
+            let manager = self.arc();
+            let (conversation_id, waiting, from) =
+                (conversation_id.clone(), task.clone(), from.to_owned());
+            self.spawn(async move {
+                if manager.admit_run_task(&waiting).await.is_err() {
+                    return;
+                }
+                let Ok(now) = manager.task_by_id(&conversation_id, &waiting.id).await else {
+                    manager.release_run_task(&waiting.id);
+                    return;
+                };
+                if let Err(err) = manager
+                    .message_worker_admitted(&conversation_id, &now, text, &from)
+                    .await
+                {
+                    tracing::warn!(task = %now.id, error = %err, "could not deliver a message that waited for a worker");
+                }
+                manager.release_if_idle(&now).await;
+            });
+            return Ok((
+                format!(
+                    "task-{} waits for a free worker (the run works with at most {cap} at once); your message reaches it then.",
+                    task.number
+                ),
+                false,
+            ));
+        }
+        let sent = self
+            .message_worker_admitted(conversation_id, task, text, from)
+            .await;
+        self.release_if_idle(task).await;
+        sent
+    }
+
+    /// [`Self::message_worker`], admitted.
+    async fn message_worker_admitted(
+        &self,
+        conversation_id: &ConversationId,
+        task: &Task,
+        text: String,
+        from: &str,
+    ) -> Result<(String, bool)> {
         let live = self.task_live(task);
         // A program the user installed (or removed) meanwhile, e.g. after the worker said it
         // was missing.
@@ -2999,6 +3084,30 @@ impl SessionManager {
 
     /// Resumes a paused worker.
     pub async fn resume_task(&self, task_id: TaskId) -> Result<()> {
+        // A paused worker of an overnight run continues only with a free worker slot.
+        let conversation_id = self.conversation_of_task(&task_id).await?;
+        let task = self.task_by_id(&conversation_id, &task_id).await?;
+        if let super::overnight::admission::Slot::Full { .. } = self.try_admit_run_task(&task)? {
+            // It shows that it waits for a worker, and continues on its own.
+            let manager = self.arc();
+            self.spawn(async move {
+                if manager.admit_run_task(&task).await.is_err() {
+                    return;
+                }
+                if let Err(err) = manager.resume_admitted(task.id.clone()).await {
+                    tracing::warn!(task = %task.id, error = %err, "could not resume a task that waited for a worker");
+                }
+                manager.release_if_idle(&task).await;
+            });
+            return Ok(());
+        }
+        let resumed = self.resume_admitted(task_id).await;
+        self.release_if_idle(&task).await;
+        resumed
+    }
+
+    /// [`Self::resume_task`], admitted.
+    async fn resume_admitted(&self, task_id: TaskId) -> Result<()> {
         let conversation_id = self.conversation_of_task(&task_id).await?;
         let live = self
             .existing_task_live(&task_id)

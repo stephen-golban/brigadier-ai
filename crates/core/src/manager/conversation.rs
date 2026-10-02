@@ -1532,6 +1532,7 @@ impl SessionManager {
             },
             env: Vec::new(),
             unset_env: Vec::new(),
+            low_priority: false,
             path_prepend: Vec::new(),
             record_to: None,
             redactor: grant_redactor.clone(),

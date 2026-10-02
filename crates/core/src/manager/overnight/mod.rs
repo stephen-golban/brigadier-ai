@@ -6,6 +6,7 @@
 //! revision the user saw, so a proposal that changed meanwhile isn't started unseen. Only the
 //! app sends these commands; worker and orchestrator grants can't.
 
+pub(crate) mod admission;
 pub mod directives;
 pub(crate) mod policy;
 mod workspace;
@@ -37,6 +38,8 @@ pub(crate) struct Runs {
     changes: tokio::sync::Mutex<()>,
     /// Each session's active run, for task code that can't read the board.
     pub(crate) active: policy::ActiveRuns,
+    /// Each run's executing tasks under its worker cap, and the build lease.
+    pub(crate) admission: admission::Admission,
 }
 
 impl SessionManager {

@@ -779,6 +779,7 @@ impl Provider for Claude {
                 &spec.unset_env,
                 &spec.path_prepend,
             );
+            process_spec.low_priority = spec.low_priority;
             let process::Spawned { process, stdout } = process::spawn(
                 self.platform.clone(),
                 &process_spec,
@@ -1459,6 +1460,7 @@ mod tests {
             tools: ToolSet::Lean,
             env: Vec::new(),
             unset_env: Vec::new(),
+            low_priority: false,
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,

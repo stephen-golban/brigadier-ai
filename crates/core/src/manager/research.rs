@@ -204,6 +204,7 @@ impl SessionManager {
             tools: ToolSet::Web,
             env: Vec::new(),
             unset_env: Vec::new(),
+            low_priority: false,
             path_prepend: Vec::new(),
             record_to: None,
             redactor: None,

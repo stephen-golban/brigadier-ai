@@ -275,8 +275,15 @@ impl Processes for WindowsProcesses {
 
     fn piped_command(&self, spec: &SpawnSpec) -> Command {
         let mut command = spec.piped();
+        let priority = if spec.low_priority {
+            windows_sys::Win32::System::Threading::BELOW_NORMAL_PRIORITY_CLASS
+        } else {
+            0
+        };
         command.creation_flags(
-            CREATE_NEW_PROCESS_GROUP | windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+            CREATE_NEW_PROCESS_GROUP
+                | windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+                | priority,
         );
         command
     }

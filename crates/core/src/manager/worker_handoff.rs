@@ -250,7 +250,10 @@ impl SessionManager {
         if live.generation().await != from {
             tracing::info!(task = %task.id, "the worker already continues in a fresh session");
             if let Some(pending) = pending {
+                // A turn it starts counts against its overnight run's workers.
+                self.admit_run_task(task).await?;
                 live.deliver(TurnInput::text(pending)).await?;
+                self.release_if_idle(task).await;
             }
             return Ok(());
         }
