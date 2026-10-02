@@ -1366,7 +1366,15 @@ fn verdict_of(
     let independent = reviewers.iter().all(|(m, _)| {
         !matches!(&m.result, Some(GateResult::NoResult { reason }) if reason.contains("another vendor"))
     });
-    let fixable = !findings.is_empty() && independent && !winding_down;
+    // What is left only the user can give: no fix round can change that.
+    let only_user = criteria
+        .iter()
+        .filter(|c| c.status != CriterionStatus::Met)
+        .all(|c| c.status == CriterionStatus::Blocked)
+        && criteria
+            .iter()
+            .any(|c| c.status == CriterionStatus::Blocked);
+    let fixable = !findings.is_empty() && independent && !winding_down && !only_user;
     if fixable && phase.fix_rounds < FIX_ROUNDS && gate.round < MAX_ROUNDS {
         return Verdict::Fix(
             findings
