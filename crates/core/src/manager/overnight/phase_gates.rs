@@ -56,6 +56,8 @@ enum Verdict {
     },
     /// The candidate moved while it was checked: check the branch's new tip.
     Recheck,
+    /// The verifier couldn't conclude (why): a second verifier checks the same candidate, once.
+    Retry(String),
 }
 
 impl SessionManager {
@@ -65,6 +67,17 @@ impl SessionManager {
         run: &OvernightRun,
         phase_id: &str,
         candidate: String,
+    ) {
+        self.open_phase_round(run, phase_id, candidate, None).await;
+    }
+
+    /// A round of whole-phase checks; `retry` says why the last verifier couldn't conclude.
+    async fn open_phase_round(
+        &self,
+        run: &OvernightRun,
+        phase_id: &str,
+        candidate: String,
+        retry: Option<String>,
     ) {
         let Ok(board) = self.core.board(&run.conversation_id).await else {
             return;
@@ -124,7 +137,7 @@ impl SessionManager {
                 &run.conversation_id,
                 format!("Verify phase {}", phase.number),
                 TaskKind::Verify,
-                verify_spec(run, &phase, &candidate),
+                verify_spec(run, &phase, &candidate, retry.as_deref()),
                 None,
                 None,
                 // A fresh model: none of the phase's own.
@@ -258,7 +271,7 @@ impl SessionManager {
                     members: members.clone(),
                     outcome: None,
                     relanding: false,
-                    retry: false,
+                    retry: retry.is_some(),
                     overridden: false,
                     findings: Vec::new(),
                 };
@@ -577,6 +590,27 @@ impl SessionManager {
                     .await;
                 if let Some(now) = reopened {
                     Box::pin(self.open_phase_gate(&now, phase_id, tip)).await;
+                }
+            }
+            Verdict::Retry(why) => {
+                let Some(candidate) = gate.commit.clone() else {
+                    return;
+                };
+                let reopened = self
+                    .change_run_if(run, |now| {
+                        let gate = now
+                            .phases
+                            .iter_mut()
+                            .find(|p| p.id == phase_id)?
+                            .gate
+                            .as_mut()?;
+                        gate.outcome.is_none().then_some(())?;
+                        gate.outcome = Some(GateOutcome::Unverified);
+                        Some(())
+                    })
+                    .await;
+                if let Some(now) = reopened {
+                    Box::pin(self.open_phase_round(&now, phase_id, candidate, Some(why))).await;
                 }
             }
             Verdict::Verified(criteria) => {
@@ -993,7 +1027,17 @@ fn phase_text(run: &OvernightRun, phase: &OvernightPhase, candidate: &str) -> St
 }
 
 /// What the fresh verifier of a whole phase reads.
-fn verify_spec(run: &OvernightRun, phase: &OvernightPhase, candidate: &str) -> String {
+fn verify_spec(
+    run: &OvernightRun,
+    phase: &OvernightPhase,
+    candidate: &str,
+    retry: Option<&str>,
+) -> String {
+    let retry = retry.map_or_else(String::new, |why| {
+        format!(
+            "\n\nAn earlier verifier of this same candidate could not conclude:\n{why}\nCheck again, and give each [pre-existing] gap as \"[pre-existing] check: evidence from the start commit\"."
+        )
+    });
     format!(
         "Verify a whole phase independently: you are its fresh verifier, and none of its own workers.\n\n{}
 1. For each criterion above, by its id, produce your own evidence on this checkout: run the command and quote the decisive line, or read the code and say where. Workers' and the lead's claims are not evidence.
@@ -1001,7 +1045,7 @@ fn verify_spec(run: &OvernightRun, phase: &OvernightPhase, candidate: &str) -> S
 3. Check the phase as a whole: its commits must work together, not just one by one.
 4. Change no tracked file and add no source file: build output goes only into ignored folders. A verification that changed the checkout is discarded.
 5. Before you call a check not run, try it, then try another way; name each command and quote its error. A check that fails or can't run the same way on the phase's start commit (unpack it: `mkdir <scratch>/start && git archive {} | tar -x -C <scratch>/start`) is a gap the project already had: name it under risks as \"[pre-existing] check: evidence from the start commit\". It never excuses an unmet criterion.
-End with submit_report. done_when: exactly one line per criterion, starting with its status and id: \"[met] p1-c1: your evidence\", \"[not met] p1-c2: what fails\", or \"[not checked] p1-c3: the command you tried and its error\". checks: passed, failed, notRun or noChecks, as for any verification. open_questions: each problem a worker must fix, and nothing else. needs_user: exactly what only the user can do (name the config key, environment variable, account or action) before a criterion can be met.",
+End with submit_report. done_when: exactly one line per criterion, starting with its status and id: \"[met] p1-c1: your evidence\", \"[not met] p1-c2: what fails\", or \"[not checked] p1-c3: the command you tried and its error\". checks: passed, failed, notRun or noChecks, as for any verification. open_questions: each problem a worker must fix, and nothing else. needs_user: exactly what only the user can do (name the config key, environment variable, account or action) before a criterion can be met, or nothing. A problem you notice that no criterion or check of this phase covers goes under risks as a plain line, without a marker.{retry}",
         phase_text(run, phase, candidate),
         phase.start_commit.as_deref().unwrap_or("HEAD~1"),
     )
@@ -1401,10 +1445,20 @@ fn verdict_of(
                 .join("\n"),
         );
     }
+    // A verifier that couldn't conclude gets a second one on the same candidate, once.
+    if let Some(GateResult::Unverified { reason }) =
+        verifiers.first().and_then(|(m, _)| m.result.clone())
+        && !gate.retry
+        && !winding_down
+        && !stale
+        && gate.round < MAX_ROUNDS
+    {
+        return Verdict::Retry(reason);
+    }
     let mut asks: Vec<String> = Vec::new();
     for report in [verifier, judge].into_iter().flatten() {
         for line in &report.needs_user {
-            if !asks.contains(line) {
+            if is_ask(line) && !asks.contains(line) {
                 asks.push(line.clone());
             }
         }
@@ -1422,10 +1476,12 @@ fn verdict_of(
         .chain(verifiers.iter())
         .chain(judges.iter())
     {
-        if let Some(GateResult::NoResult { reason }) = &member.result
-            && !reason.contains("another vendor")
-        {
-            gaps.push(reason.clone());
+        match &member.result {
+            Some(GateResult::NoResult { reason }) if !reason.contains("another vendor") => {
+                gaps.push(reason.clone());
+            }
+            Some(GateResult::Unverified { reason }) => gaps.push(reason.clone()),
+            _ => {}
         }
     }
     if winding_down {
@@ -1451,4 +1507,16 @@ fn verdict_of(
         gaps,
         asks,
     }
+}
+
+/// Whether a `needs_user` line asks for something ("None for phase 1" asks nothing).
+fn is_ask(line: &str) -> bool {
+    let text = line
+        .trim()
+        .trim_start_matches(['-', '*', ' '])
+        .to_lowercase();
+    !(text.is_empty()
+        || ["none", "n/a", "nothing", "no user action", "not needed"]
+            .iter()
+            .any(|nothing| text.starts_with(nothing)))
 }
