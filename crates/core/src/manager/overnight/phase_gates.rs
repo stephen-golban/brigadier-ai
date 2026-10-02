@@ -1349,6 +1349,13 @@ fn verdict_of(
     let judge_approved = judge.is_some_and(|r| r.verdict == Some(ReviewVerdict::Approve));
     let verifier_lines = verifier.map(|r| criteria_in(r, &ids)).unwrap_or_default();
     let judge_lines = judge.map(|r| criteria_in(r, &ids)).unwrap_or_default();
+    // What the verifier and the judge say only the user can do.
+    let user_asks: Vec<&String> = [verifier, judge]
+        .into_iter()
+        .flatten()
+        .flat_map(|report| report.needs_user.iter())
+        .filter(|line| is_ask(line))
+        .collect();
     let shown_met = |lines: &HashMap<String, Vec<(CriterionStatus, bool, String)>>, id: &str| {
         lines.get(id).is_some_and(|found| {
             found.len() == 1 && found[0].0 == CriterionStatus::Met && found[0].1
@@ -1393,6 +1400,11 @@ fn verdict_of(
                         said(&judge_lines)
                     ),
                 )
+            } else if status == CriterionStatus::NotMet
+                && user_asks.iter().any(|ask| names(ask, &criterion.id))
+            {
+                // Unmet because it waits on the user, as a checker says: no fix round helps.
+                (CriterionStatus::Blocked, evidence)
             } else {
                 (status, evidence)
             };
@@ -1409,22 +1421,39 @@ fn verdict_of(
     if verifier_passed && reviews_passed && judge_approved && all_met && !winding_down && !stale {
         return Verdict::Verified(criteria);
     }
-    // What a worker could fix: the checks' own findings.
+    // What a worker could fix: the checks' own findings, without those about criteria only
+    // the user can complete.
+    let blocked: Vec<&str> = criteria
+        .iter()
+        .filter(|c| c.status == CriterionStatus::Blocked)
+        .map(|c| c.id.as_str())
+        .collect();
+    let fixable_line = |line: &str| {
+        let named: Vec<&&str> = ids.iter().filter(|id| names(line, id)).collect();
+        is_ask(line) && (named.is_empty() || !named.iter().all(|id| blocked.contains(id)))
+    };
     let mut findings: Vec<String> = gate
         .findings
         .iter()
+        .filter(|finding| fixable_line(&finding.text))
         .map(|finding| format!("{}: {}", finding.id, finding.text))
         .collect();
     if let Some(GateResult::Failed { findings: failed }) =
         verifiers.first().and_then(|(m, _)| m.result.clone())
     {
-        findings.extend(failed.into_iter().map(|line| format!("verifier: {line}")));
+        findings.extend(
+            failed
+                .into_iter()
+                .filter(|line| fixable_line(line))
+                .map(|line| format!("verifier: {line}")),
+        );
     }
     if let Some(judge) = judge {
         findings.extend(
             judge
                 .open_questions
                 .iter()
+                .filter(|line| fixable_line(line))
                 .map(|line| format!("judge: {line}")),
         );
     }
@@ -1513,6 +1542,17 @@ fn verdict_of(
     }
 }
 
+/// Whether `line` names criterion `id` ("p2-c2", not "p2-c20").
+fn names(line: &str, id: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    line.match_indices(id).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + id.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
 /// Whether a `needs_user` line asks for something ("None for phase 1" asks nothing).
 fn is_ask(line: &str) -> bool {
     let text = line
@@ -1523,4 +1563,20 @@ fn is_ask(line: &str) -> bool {
         || ["none", "n/a", "nothing", "no user action", "not needed"]
             .iter()
             .any(|nothing| text.starts_with(nothing)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_names_a_criterion_only_by_its_whole_id() {
+        // The live A/B run's judge: "[not met]", yet its needs_user named the criterion.
+        let ask = "Set [account] account_id in ledger.ini, then rerun whoami to establish p2-c2.";
+        assert!(names(ask, "p2-c2"));
+        assert!(names("P2-C2: blocked on the owner", "p2-c2"));
+        assert!(!names(ask, "p2-c1"));
+        assert!(!names("see p2-c20", "p2-c2"));
+        assert!(!names("xp2-c2", "p2-c2"));
+    }
 }
