@@ -10,8 +10,8 @@
 //! - **Waiting on you.** What only the user can do: a worker's `needs_user` lines, what a
 //!   change's checks need from the user first, what the orchestrator notes, and cards left
 //!   unanswered (the watchdog, with [`WaitingSource::Card`]). An item is listed once per
-//!   source and text (in an overnight run, once per criterion it names: `p2-c2`), under
-//!   the request its task works for now, and keeps that request
+//!   source and text (in an overnight run, once per config key or criterion it names:
+//!   `account_id`, `p2-c2`), under the request its task works for now, and keeps that request
 //!   waiting while other work goes on. It is over when the user clicks Done (the orchestrator
 //!   hears it), or without them: when its card settles, its task is stopped or reports again
 //!   without it, the change it held lands or a later round of its checks no longer lists it,
@@ -542,64 +542,82 @@ pub(crate) fn waiting_run(
     }
 }
 
-/// The phase criterion ids a line names ("p2-c2"), in lower case.
-fn criterion_ids(text: &str) -> Vec<String> {
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-        .map(|word| word.trim_matches('-').to_ascii_lowercase())
-        .filter(|word| {
-            word.strip_prefix('p')
+/// What an ask is about: the phase criteria it names ("p2-c2") and the config keys, the
+/// identifiers with an underscore (`account_id`, `STRIPE_KEY`), in lower case.
+#[derive(Default)]
+struct AskNames {
+    criteria: HashSet<String>,
+    keys: HashSet<String>,
+}
+
+impl AskNames {
+    fn of(text: &str) -> Self {
+        let mut names = Self::default();
+        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')) {
+            let word = word.trim_matches(['-', '_']).to_ascii_lowercase();
+            let criterion = word
+                .strip_prefix('p')
                 .and_then(|rest| rest.split_once("-c"))
                 .is_some_and(|(phase, criterion)| {
                     [phase, criterion].iter().all(|number| {
                         !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
                     })
-                })
-        })
-        .collect()
+                });
+            if criterion {
+                names.criteria.insert(word);
+            } else if word.contains('_')
+                && !word.contains('-')
+                && word.chars().any(|c| c.is_ascii_alphabetic())
+            {
+                names.keys.insert(word);
+            }
+        }
+        names
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.criteria.extend(other.criteria);
+        self.keys.extend(other.keys);
+    }
+
+    /// Whether `listed` already asks for all of this: every config key it names, or every
+    /// criterion.
+    fn within(&self, listed: &Self) -> bool {
+        (!self.keys.is_empty() && self.keys.is_subset(&listed.keys))
+            || (!self.criteria.is_empty() && self.criteria.is_subset(&listed.criteria))
+    }
 }
 
-/// The criterion ids the run's lasting open items name (the run's and its lead's: a task's
-/// are over when it stops), from any source or only other ones.
-fn run_asks(
-    board: &Board,
-    run: &OvernightRunId,
-    except: Option<&WaitingSource>,
-) -> HashSet<String> {
-    board
-        .waiting
-        .values()
-        .filter(|open| {
-            matches!(
-                open.source,
-                WaitingSource::Run { .. } | WaitingSource::Orchestrator
-            )
-        })
-        .filter(|open| except != Some(&open.source))
-        .filter(|open| {
-            waiting_run(&open.source, open.request_id.as_deref(), board).as_ref() == Some(run)
-        })
-        .flat_map(|open| criterion_ids(&open.what))
-        .collect()
+/// What the run's lasting open items ask for (the run's and its lead's: a task's are over
+/// when it stops), from any source or only other ones.
+fn run_asks(board: &Board, run: &OvernightRunId, except: Option<&WaitingSource>) -> AskNames {
+    let mut names = AskNames::default();
+    for open in board.waiting.values().filter(|open| {
+        matches!(
+            open.source,
+            WaitingSource::Run { .. } | WaitingSource::Orchestrator
+        ) && except != Some(&open.source)
+            && waiting_run(&open.source, open.request_id.as_deref(), board).as_ref() == Some(run)
+    }) {
+        names.extend(AskNames::of(&open.what));
+    }
+    names
 }
 
-/// In an overnight run, asks naming the same criteria are one ask, however the lead, a
-/// worker, a verifier and the judge word it: whether the run already lists this one.
+/// In an overnight run, asks for the same config keys or criteria are one ask, however the
+/// lead, a worker, a verifier and the judge word it: whether the run already lists this one.
 fn repeats_run_ask(
     board: &Board,
     source: &WaitingSource,
     request_id: Option<&str>,
     what: &str,
 ) -> bool {
-    let ids = criterion_ids(what);
-    let Some(run) = waiting_run(source, request_id, board).filter(|_| !ids.is_empty()) else {
-        return false;
-    };
-    let named = run_asks(board, &run, None);
-    ids.iter().all(|id| named.contains(id))
+    waiting_run(source, request_id, board)
+        .is_some_and(|run| AskNames::of(what).within(&run_asks(board, &run, None)))
 }
 
 /// A source's lines without the asks its run already lists from another source, or an
-/// earlier line names.
+/// earlier line makes.
 fn not_listed_by_run(
     board: &Board,
     source: &WaitingSource,
@@ -609,13 +627,13 @@ fn not_listed_by_run(
     let Some(run) = waiting_run(source, request_id, board) else {
         return lines.to_vec();
     };
-    let mut named = run_asks(board, &run, Some(source));
+    let mut listed = run_asks(board, &run, Some(source));
     lines
         .iter()
         .filter(|line| {
-            let ids = criterion_ids(line);
-            let repeat = !ids.is_empty() && ids.iter().all(|id| named.contains(id));
-            named.extend(ids);
+            let names = AskNames::of(line);
+            let repeat = names.within(&listed);
+            listed.extend(names);
             !repeat
         })
         .cloned()
@@ -1067,8 +1085,8 @@ mod tests {
     }
 
     #[test]
-    fn a_run_lists_one_ask_per_criterion_however_it_is_worded() {
-        // The live run's four wordings of one ask, from its lead, a verifier and the judge.
+    fn a_run_lists_one_ask_per_key_or_criterion_however_it_is_worded() {
+        // The live runs' wordings of one ask, from their leads, workers, verifiers and judges.
         let run = OvernightRunId("01a0fde6-run".into());
         let phase = |task: &str| WaitingSource::Run {
             run_id: run.clone(),
@@ -1078,27 +1096,30 @@ mod tests {
         let lead = item(
             "w1",
             phase("verifier"),
-            "Set the team's real account_id in ledger.ini (criterion p2-c2).",
+            "Set account_id in the [account] section of ledger.ini (left empty; only you have it).",
         );
         board.apply(&DomainEvent::WaitingOnYou { item: lead }, 1);
-        assert!(repeats_run_ask(
-            &board,
-            &phase("judge"),
-            None,
-            "Phase 2: set `account_id` so P2-C2 can be met."
-        ));
+        for repeat in [
+            "Phase 2: set `account_id` in `ledger.ini`. Only then can p2-c1 be met.",
+            "The owner must fill in ledger.ini ACCOUNT_ID to get a real whoami.",
+        ] {
+            assert!(
+                repeats_run_ask(&board, &phase("judge"), None, repeat),
+                "{repeat}"
+            );
+        }
+        // More than it lists, another run, or nothing named: a different item.
         assert!(!repeats_run_ask(
             &board,
             &phase("judge"),
             None,
-            "Set p2-c2 and p3-c1's export key."
+            "Set STRIPE_KEY and account_id."
         ));
-        // Another run, or an ask naming no criterion, is a different item.
         let other = WaitingSource::Run {
             run_id: OvernightRunId("other".into()),
             task_id: None,
         };
-        assert!(!repeats_run_ask(&board, &other, None, "Set p2-c2."));
+        assert!(!repeats_run_ask(&board, &other, None, "Set account_id."));
         assert!(!repeats_run_ask(
             &board,
             &phase("judge"),
