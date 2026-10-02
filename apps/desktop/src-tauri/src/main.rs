@@ -510,6 +510,7 @@ fn main() {
             if overnight_notifications::host_id(&args).is_some() {
                 return;
             }
+            overnight_notifications::leave_host();
             shell::show_main(app);
             open_folders(
                 app,
@@ -643,7 +644,10 @@ fn main() {
         }
         RunEvent::Exit => shell::quit_on_exit(app),
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } if !overnight_notifications::is_host() => shell::show_main(app),
+        RunEvent::Reopen { .. } => {
+            overnight_notifications::leave_host();
+            shell::show_main(app);
+        }
         #[cfg(target_os = "macos")]
         RunEvent::Opened { urls } => open_folders(
             app,

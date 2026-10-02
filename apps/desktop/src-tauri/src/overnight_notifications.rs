@@ -24,6 +24,12 @@ pub fn configure(args: &[String]) {
     HOST.store(host_id(args).is_some(), Ordering::Release);
 }
 
+/// The user opened Brigadier (a launch, the Dock): a hidden notification host becomes the
+/// ordinary app, so its window stays shown and quitting it behaves as usual.
+pub fn leave_host() {
+    HOST.store(false, Ordering::Release);
+}
+
 /// The bundle remembers its own last data directory for activation after a complete exit.
 /// Explicit CLI/environment paths take precedence; bare development binaries remember none.
 #[cfg(target_os = "macos")]
