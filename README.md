@@ -64,7 +64,10 @@ docs/          plan and design notes
 - `tree-sitter`, `tree-sitter-tags` and the language grammars, `ignore`, `notify`,
   `notify-debouncer-full`, `toml`, `yaml-rust2` (the code index, `crates/index`): no model
   involved. Symbols and references come from each grammar's tags query (C#, Swift and Kotlin
-  get corrected copies under `crates/index/queries/`, credited in `THIRD_PARTY_NOTICES.md`).
+  get corrected copies under `crates/index/queries/`, and TypeScript and JavaScript the
+  JavaScript query joined with the TypeScript one and our own patterns for exports, types,
+  enums, class-field functions, top-level constants and JSX components; credited in
+  `THIRD_PARTY_NOTICES.md`).
   References are matched to definitions by name, without type information.
 - `tokenizers`, `safetensors`, `memmap2` (the Brain's embedder, `crates/brain`): the embedding
   model is `minishlab/potion-retrieval-32M` (Model2Vec static embeddings, MIT, 512 dimensions,

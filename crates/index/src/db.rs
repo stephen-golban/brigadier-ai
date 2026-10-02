@@ -52,6 +52,10 @@ pub enum Command {
     },
 }
 
+/// Bumped when the tables or what a parse records change (a tags query, say): an index of
+/// another version is dropped and rebuilt from the files on its next scan.
+const SCHEMA_VERSION: i64 = 4;
+
 fn db_error(error: impl std::fmt::Display) -> Error {
     Error::Db(error.to_string())
 }
@@ -73,7 +77,7 @@ pub fn open(path: &Path) -> Result<(Sender<Command>, Vec<std::sync::Mutex<Connec
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_error)?;
-    if version != 3 {
+    if version != SCHEMA_VERSION {
         connection.execute_batch("DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS manifests; DROP TABLE IF EXISTS scripts; DROP TABLE IF EXISTS services; DROP TABLE IF EXISTS popular; DROP TABLE IF EXISTS file_fts; DROP TABLE IF EXISTS symbol_fts;").map_err(db_error)?;
     }
     connection.execute_batch("CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, lang TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, hash TEXT NOT NULL, indexed_ms INTEGER NOT NULL);
@@ -86,8 +90,10 @@ pub fn open(path: &Path) -> Result<(Sender<Command>, Vec<std::sync::Mutex<Connec
       CREATE TABLE IF NOT EXISTS popular(name TEXT NOT NULL, file TEXT NOT NULL, refs INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS popular_rank ON popular(refs DESC);
       CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(path, tokenize='trigram');
-      CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(name, file UNINDEXED, tokenize='trigram');
-      PRAGMA user_version=3;").map_err(db_error)?;
+      CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(name, file UNINDEXED, tokenize='trigram');").map_err(db_error)?;
+    connection
+        .pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(db_error)?;
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
         .name("index-writer".into())
