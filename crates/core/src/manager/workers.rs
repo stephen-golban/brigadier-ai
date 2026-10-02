@@ -56,8 +56,8 @@ use crate::runtime::{is_delta, merge_delta};
 use crate::tools::Role;
 use crate::work::{
     ApprovalSubject, ArtifactKind, ArtifactRef, AttachmentRef, Attempt, AttemptEnd, GateLink,
-    InjectionKind, QuestionKind, QuotaWait, RepoAccess, Report, Route, Task, TaskId, TaskKind,
-    TaskState, TaskWorkspace, WaitingSource, WorkerAccess,
+    GateOwner, InjectionKind, QuestionKind, QuotaWait, RepoAccess, Report, Route, Task, TaskId,
+    TaskKind, TaskState, TaskWorkspace, WaitingSource, WorkerAccess,
 };
 use crate::{Error, Result, now_ms};
 
@@ -802,9 +802,24 @@ impl SessionManager {
         };
         let waits = wait.is_some();
         let number = self.core.next_task_number(conversation_id).await?;
-        let request_id = match &subject {
-            Some(subject) => subject.request_id.clone(),
-            None => self.request_for(conversation_id, None).await,
+        // A plan's reviewer belongs to the plan's request, even when a restart reopens an
+        // older plan's review after newer requests.
+        let plan_request = match &gate_link {
+            Some(GateLink {
+                owner: GateOwner::Plan { plan_id },
+                ..
+            }) => self
+                .core
+                .board(conversation_id)
+                .await
+                .ok()
+                .and_then(|board| board.plans.get(plan_id)?.request_id.clone()),
+            _ => None,
+        };
+        let request_id = match (&subject, plan_request) {
+            (Some(subject), _) => subject.request_id.clone(),
+            (None, Some(request)) => Some(request),
+            (None, None) => self.request_for(conversation_id, None).await,
         };
         let task = Task {
             id: TaskId::generate(),

@@ -93,8 +93,8 @@ impl SessionManager {
 
     /// Opens a new gate round on the task's candidate. `unreported` lists tracked changes the
     /// worker didn't report; `retry` says why an earlier verifier couldn't check the change.
-    /// `relanding`: the user already approved this change (a clean replay); it lands as soon
-    /// as the round passes.
+    /// `relanding`: the user already approved this change (a clean replay, and a retry of its
+    /// verification); it lands as soon as the round passes.
     pub(crate) async fn open_gate(
         &self,
         task: &Task,
@@ -247,26 +247,38 @@ impl SessionManager {
                 return Err(err.into());
             }
         };
-        let relanding = recheck == Recheck::Verify && retry.is_none();
+        let relanding = round_relanding(recheck, retry.is_some(), task.gate.as_ref());
         let retrying = retry.is_some();
-        self.update_task(&task.conversation_id, &task.id, |t| {
-            t.gate = Some(Gate {
-                round,
-                commit: Some(candidate.commit.clone()),
-                members,
-                outcome: None,
-                relanding,
-                retry: retrying,
-                overridden: false,
-                findings: Vec::new(),
-            });
-            if let Some(first) = first {
-                t.review = Some(first);
+        let installed = self
+            .update_task_if(
+                &task.conversation_id,
+                &task.id,
+                |now| still_checks(now, &candidate.commit),
+                |t| {
+                    t.gate = Some(Gate {
+                        round,
+                        commit: Some(candidate.commit.clone()),
+                        members,
+                        outcome: None,
+                        relanding,
+                        retry: retrying,
+                        overridden: false,
+                        findings: Vec::new(),
+                    });
+                    if let Some(first) = first {
+                        t.review = Some(first);
+                    }
+                    t.state = TaskState::Reviewing;
+                    t.blocked_reason = None;
+                },
+            )
+            .await?;
+        if installed.is_none() {
+            drop(held);
+            for member in started {
+                let _ = Box::pin(self.stop_task(member.id)).await;
             }
-            t.state = TaskState::Reviewing;
-            t.blocked_reason = None;
-        })
-        .await?;
+        }
         Ok(())
     }
 
@@ -771,7 +783,11 @@ impl SessionManager {
     pub(crate) async fn close_gate(&self, task: &Task) {
         let open: Vec<TaskId> = {
             let _held = self.gates.lock().await;
-            let Some(gate) = task.gate.clone().filter(|gate| gate.outcome.is_none()) else {
+            // As it is now: a round may have opened since the caller read it.
+            let Ok(now) = self.task_by_id(&task.conversation_id, &task.id).await else {
+                return;
+            };
+            let Some(gate) = now.gate.filter(|gate| gate.outcome.is_none()) else {
                 return;
             };
             let _ = self
@@ -1397,6 +1413,27 @@ fn short(commit: &str) -> &str {
     &commit[..commit.len().min(10)]
 }
 
+/// Whether a new round lands its change as soon as it passes: a verify-only round on a
+/// change the user already approved (a clean replay), and a retry of such a round's
+/// verification, which checks the same change again.
+fn round_relanding(recheck: Recheck, retry: bool, previous: Option<&Gate>) -> bool {
+    match recheck {
+        Recheck::Verify if retry => previous.is_some_and(|gate| gate.relanding),
+        Recheck::Verify => true,
+        Recheck::Full => false,
+    }
+}
+
+/// Whether checks of `commit` that were starting still apply to the task as it is now: not
+/// when it was stopped, or has a newer change, meanwhile.
+fn still_checks(now: &Task, commit: &str) -> bool {
+    !now.state.is_final()
+        && now
+            .candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.commit == commit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1929,6 +1966,41 @@ mod tests {
         // A candidate that is not the commit the round passed.
         let moved = gated(TaskState::Reviewing, 1, "c1", passed, "c3");
         assert!(!candidate_passed(&moved));
+    }
+
+    #[test]
+    fn checks_that_were_starting_lapse_once_the_task_stops_or_moves_on() {
+        // Accepted, its checks starting: they apply.
+        assert!(still_checks(
+            &gated(TaskState::Reported, 1, "c0", None, "c1"),
+            "c1"
+        ));
+        // Stopped meanwhile: a round must not bring it back.
+        assert!(!still_checks(
+            &gated(TaskState::Stopped, 1, "c0", None, "c1"),
+            "c1"
+        ));
+        // A newer change meanwhile: the checks of the older one are moot.
+        assert!(!still_checks(
+            &gated(TaskState::Reported, 1, "c0", None, "c2"),
+            "c1"
+        ));
+    }
+
+    #[test]
+    fn a_retried_verification_keeps_the_users_approval() {
+        let mut previous = gated(TaskState::Reviewing, 2, "c1", None, "c1")
+            .gate
+            .expect("a gate");
+        // A clean replay of an approved change lands once verified.
+        assert!(round_relanding(Recheck::Verify, false, Some(&previous)));
+        // Its verifier couldn't check it: the retry still lands without asking again.
+        previous.relanding = true;
+        assert!(round_relanding(Recheck::Verify, true, Some(&previous)));
+        // A retry of a round the user hadn't approved yet waits for them as before.
+        previous.relanding = false;
+        assert!(!round_relanding(Recheck::Verify, true, Some(&previous)));
+        assert!(!round_relanding(Recheck::Full, false, Some(&previous)));
     }
 
     #[test]
