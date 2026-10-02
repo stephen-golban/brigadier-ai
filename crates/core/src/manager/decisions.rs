@@ -10,16 +10,19 @@
 //! - **Waiting on you.** What only the user can do: a worker's `needs_user` lines, what a
 //!   change's checks need from the user first, what the orchestrator notes, and cards left
 //!   unanswered (the watchdog, with [`WaitingSource::Card`]). An item is listed once per
-//!   source and text, under the request its task works for now, and keeps that request
+//!   source and text (in an overnight run, once per criterion it names: `p2-c2`), under
+//!   the request its task works for now, and keeps that request
 //!   waiting while other work goes on. It is over when the user clicks Done (the orchestrator
 //!   hears it), or without them: when its card settles, its task is stopped or reports again
 //!   without it, the change it held lands or a later round of its checks no longer lists it,
 //!   or the user edits its request or asks for a new answer.
 
+use std::collections::HashSet;
+
 use super::SessionManager;
 use super::conversation::Envelope;
 use crate::board::Board;
-use crate::model::{ConversationId, DomainEvent, PermissionLevel};
+use crate::model::{ConversationId, DomainEvent, OvernightRunId, PermissionLevel};
 use crate::sessions::one_line;
 use crate::work::{
     CardId, CardState, Decision, DecisionSource, InjectionKind, Plan, PlanState, ResolvedBy, Task,
@@ -130,7 +133,12 @@ impl SessionManager {
             let _held = self.waiting.lock().await;
             let board = self.core.board(conversation_id).await?;
             let key = waiting_key(&source, &what);
-            let (item, added) = match board.waiting.values().find(|open| open.key == key) {
+            let open_same = board.waiting.values().find(|open| open.key == key);
+            if open_same.is_none() && repeats_run_ask(&board, &source, request_id.as_deref(), &what)
+            {
+                return Ok(false);
+            }
+            let (item, added) = match open_same {
                 Some(open) => {
                     let request_id = request_id.or_else(|| open.request_id.clone());
                     if open.what == what && open.request_id == request_id {
@@ -199,7 +207,8 @@ impl SessionManager {
                 .filter(|item| item.source == source)
                 .cloned()
                 .collect();
-            let (listed, gone) = report_waits(&source, &open, lines, request, now_ms(), || {
+            let lines = not_listed_by_run(&board, &source, request.as_deref(), lines);
+            let (listed, gone) = report_waits(&source, &open, &lines, request, now_ms(), || {
                 uuid::Uuid::now_v7().to_string()
             });
             let events: Vec<DomainEvent> = listed
@@ -500,11 +509,117 @@ fn reconciled_waits(
             .request_id
             .clone()
             .or_else(|| board.latest_request().map(|request| request.id.clone()));
+        let lines = not_listed_by_run(board, &source, request.as_deref(), &lines);
         let (more, over) = report_waits(&source, &open, &lines, request, now, &mut new_id);
         listed.extend(more);
         gone.extend(over);
     }
     (listed, gone)
+}
+
+/// The overnight run an item belongs to: its own, its task's, or its request's.
+pub(crate) fn waiting_run(
+    source: &WaitingSource,
+    request_id: Option<&str>,
+    board: &Board,
+) -> Option<OvernightRunId> {
+    match source {
+        WaitingSource::Run { run_id, .. } => Some(run_id.clone()),
+        WaitingSource::Task { task_id } | WaitingSource::Landing { task_id } => board
+            .tasks
+            .get(task_id)?
+            .run
+            .as_ref()
+            .map(|context| context.run_id.clone()),
+        WaitingSource::Card { .. } | WaitingSource::Orchestrator => {
+            let request = request_id?;
+            board
+                .runs
+                .keys()
+                .find(|run| request.starts_with(&format!("run-{}-", run.short())))
+                .cloned()
+        }
+    }
+}
+
+/// The phase criterion ids a line names ("p2-c2"), in lower case.
+fn criterion_ids(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .map(|word| word.trim_matches('-').to_ascii_lowercase())
+        .filter(|word| {
+            word.strip_prefix('p')
+                .and_then(|rest| rest.split_once("-c"))
+                .is_some_and(|(phase, criterion)| {
+                    [phase, criterion].iter().all(|number| {
+                        !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+                    })
+                })
+        })
+        .collect()
+}
+
+/// The criterion ids the run's lasting open items name (the run's and its lead's: a task's
+/// are over when it stops), from any source or only other ones.
+fn run_asks(
+    board: &Board,
+    run: &OvernightRunId,
+    except: Option<&WaitingSource>,
+) -> HashSet<String> {
+    board
+        .waiting
+        .values()
+        .filter(|open| {
+            matches!(
+                open.source,
+                WaitingSource::Run { .. } | WaitingSource::Orchestrator
+            )
+        })
+        .filter(|open| except != Some(&open.source))
+        .filter(|open| {
+            waiting_run(&open.source, open.request_id.as_deref(), board).as_ref() == Some(run)
+        })
+        .flat_map(|open| criterion_ids(&open.what))
+        .collect()
+}
+
+/// In an overnight run, asks naming the same criteria are one ask, however the lead, a
+/// worker, a verifier and the judge word it: whether the run already lists this one.
+fn repeats_run_ask(
+    board: &Board,
+    source: &WaitingSource,
+    request_id: Option<&str>,
+    what: &str,
+) -> bool {
+    let ids = criterion_ids(what);
+    let Some(run) = waiting_run(source, request_id, board).filter(|_| !ids.is_empty()) else {
+        return false;
+    };
+    let named = run_asks(board, &run, None);
+    ids.iter().all(|id| named.contains(id))
+}
+
+/// A source's lines without the asks its run already lists from another source, or an
+/// earlier line names.
+fn not_listed_by_run(
+    board: &Board,
+    source: &WaitingSource,
+    request_id: Option<&str>,
+    lines: &[String],
+) -> Vec<String> {
+    let Some(run) = waiting_run(source, request_id, board) else {
+        return lines.to_vec();
+    };
+    let mut named = run_asks(board, &run, Some(source));
+    lines
+        .iter()
+        .filter(|line| {
+            let ids = criterion_ids(line);
+            let repeat = !ids.is_empty() && ids.iter().all(|id| named.contains(id));
+            named.extend(ids);
+            !repeat
+        })
+        .cloned()
+        .collect()
 }
 
 /// A report's lines, trimmed and on one line each, without blanks or repeats of one item.
@@ -949,6 +1064,60 @@ mod tests {
         question.answer = Some("eu".into());
         board.questions.insert(card.clone(), question);
         assert!(!card_open(&board, &card));
+    }
+
+    #[test]
+    fn a_run_lists_one_ask_per_criterion_however_it_is_worded() {
+        // The live run's four wordings of one ask, from its lead, a verifier and the judge.
+        let run = OvernightRunId("01a0fde6-run".into());
+        let phase = |task: &str| WaitingSource::Run {
+            run_id: run.clone(),
+            task_id: Some(TaskId(task.into())),
+        };
+        let mut board = Board::default();
+        let lead = item(
+            "w1",
+            phase("verifier"),
+            "Set the team's real account_id in ledger.ini (criterion p2-c2).",
+        );
+        board.apply(&DomainEvent::WaitingOnYou { item: lead }, 1);
+        assert!(repeats_run_ask(
+            &board,
+            &phase("judge"),
+            None,
+            "Phase 2: set `account_id` so P2-C2 can be met."
+        ));
+        assert!(!repeats_run_ask(
+            &board,
+            &phase("judge"),
+            None,
+            "Set p2-c2 and p3-c1's export key."
+        ));
+        // Another run, or an ask naming no criterion, is a different item.
+        let other = WaitingSource::Run {
+            run_id: OvernightRunId("other".into()),
+            task_id: None,
+        };
+        assert!(!repeats_run_ask(&board, &other, None, "Set p2-c2."));
+        assert!(!repeats_run_ask(
+            &board,
+            &phase("judge"),
+            None,
+            "Sign in to npm."
+        ));
+        assert_eq!(
+            not_listed_by_run(
+                &board,
+                &phase("judge"),
+                None,
+                &lines(&[
+                    "Owner must set account_id (p2-c2).",
+                    "Add p2-c3's key.",
+                    "Again: p2-c3."
+                ])
+            ),
+            lines(&["Add p2-c3's key."])
+        );
     }
 
     #[test]

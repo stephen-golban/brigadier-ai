@@ -1466,7 +1466,7 @@ fn verdict_of(
     let mut gaps: Vec<String> = criteria
         .iter()
         .filter(|c| c.status != CriterionStatus::Met)
-        .map(|c| format!("{}: {}", c.id, without_marker(&c.evidence)))
+        .map(|c| format!("{}: {}", c.id, super::report::evidence_text(&c.evidence)))
         .collect();
     if !independent {
         gaps.push("No reviewer of another vendor than the phase's authors could check it.".into());

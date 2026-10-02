@@ -9,15 +9,17 @@
 //! and only records it. The notification the report comes with is queued on the run at the
 //! same time; the app delivers it as Brigadier and acknowledges it.
 
+use super::super::decisions::waiting_run;
+use super::super::gates::{criterion_evidence, criterion_status};
 use super::super::{SessionManager, blocking, git_error};
 use crate::board::Board;
 use crate::model::{DomainEvent, Setup};
 use crate::now_ms;
 use crate::overnight::{
-    CriterionStatus, Deadline, OvernightPhase, OvernightRun, PhaseState, RunNotification,
+    CriterionStatus, Deadline, OvernightPhase, OvernightRun, PhaseState, RunNotification, RunRole,
     StopReason,
 };
-use crate::work::{DecisionSource, RequestState, UserRequest, WaitingSource};
+use crate::work::{DecisionSource, RequestState, UserRequest};
 
 /// Commits listed in the report, at most.
 const COMMITS: usize = 60;
@@ -184,7 +186,7 @@ impl SessionManager {
                             window
                                 .window
                                 .resets_at_ms
-                                .map_or_else(|| "unknown".into(), |at| at.to_string())
+                                .map_or_else(|| "unknown".into(), day_time)
                         ));
                     }
                 }
@@ -357,17 +359,8 @@ fn waiting<'a>(run: &OvernightRun, board: &'a Board) -> Vec<&'a str> {
     let mut items: Vec<_> = board
         .waiting
         .values()
-        .filter(|item| match &item.source {
-            WaitingSource::Run { run_id, .. } => run_id == &run.id,
-            WaitingSource::Task { task_id } | WaitingSource::Landing { task_id } => board
-                .tasks
-                .get(task_id)
-                .and_then(|task| task.run.as_ref())
-                .is_some_and(|context| context.run_id == run.id),
-            WaitingSource::Card { .. } | WaitingSource::Orchestrator => item
-                .request_id
-                .as_deref()
-                .is_some_and(|request| request.starts_with(&format!("run-{}-", run.id.short()))),
+        .filter(|item| {
+            waiting_run(&item.source, item.request_id.as_deref(), board).as_ref() == Some(&run.id)
         })
         .collect();
     items.sort_by_key(|item| item.created_at_ms);
@@ -480,7 +473,7 @@ fn render(run: &OvernightRun, board: &Board, commits: &[(String, String)]) -> St
         for criterion in &phase.done_when {
             let result = phase.criteria.iter().find(|c| c.id == criterion.id);
             let (status, evidence) = match result {
-                Some(result) => (status_word(result.status), result.evidence.as_str()),
+                Some(result) => (status_word(result.status), evidence_text(&result.evidence)),
                 None => ("not checked", "No check reached it."),
             };
             text.push_str(&format!(
@@ -563,10 +556,7 @@ fn render(run: &OvernightRun, board: &Board, commits: &[(String, String)]) -> St
     // What went wrong or was cut short.
     let mut risks: Vec<String> = Vec::new();
     for gap in &run.gaps {
-        risks.push(format!(
-            "{} ({}–{} ms; no work happened then).",
-            gap.cause, gap.from_ms, gap.to_ms
-        ));
+        risks.push(format!("{}; no work happened then.", gap.cause));
     }
     if let (Deadline::At { time }, finished) = (
         &run.directives.deadline,
@@ -604,31 +594,30 @@ fn render(run: &OvernightRun, board: &Board, commits: &[(String, String)]) -> St
         text.push_str("\nThe commit list is limited to the latest 60; inspect the run branch for its full history.\n");
     }
     // Who did the work, folded at the end.
-    let mut lineage: Vec<String> = board
+    let mut tasks: Vec<_> = board
         .tasks
         .values()
-        .filter(|task| {
+        .filter_map(|task| {
             task.run
                 .as_ref()
-                .is_some_and(|context| context.run_id == run.id)
-        })
-        .map(|task| {
-            format!(
-                "- task-{} {} ({:?}, {:?} {}): {:?}",
-                task.number,
-                task.title,
-                task.run.as_ref().map(|c| c.role),
-                task.route.choice.provider,
-                task.route.choice.model.as_deref().unwrap_or("default"),
-                task.state
-            )
+                .filter(|context| context.run_id == run.id)
+                .map(|context| (task, context.role))
         })
         .collect();
-    lineage.sort();
-    if !lineage.is_empty() {
-        text.push_str("\n<details><summary>Workers and models</summary>\n\n");
-        text.push_str(&lineage.join("\n"));
-        text.push_str("\n\n</details>\n");
+    tasks.sort_by_key(|(task, _)| task.number);
+    if !tasks.is_empty() {
+        text.push_str("\n### Workers and models\n");
+        for (task, role) in tasks {
+            text.push_str(&format!(
+                "- task-{} {} ({}, {} {}): {:?}\n",
+                task.number,
+                task.title,
+                role_word(role),
+                task.route.choice.provider.label(),
+                task.route.choice.model.as_deref().unwrap_or("default"),
+                task.state
+            ));
+        }
     }
     text
 }
@@ -642,6 +631,38 @@ fn symbol(state: PhaseState) -> &'static str {
         PhaseState::Pending => "– not reached",
         PhaseState::Running | PhaseState::Checking => "◐ unfinished",
     }
+}
+
+fn role_word(role: RunRole) -> &'static str {
+    match role {
+        RunRole::Worker => "worker",
+        RunRole::Check => "task check",
+        RunRole::PhaseVerifier => "phase verifier",
+        RunRole::PhaseReviewer => "phase reviewer",
+        RunRole::Judge => "judge",
+    }
+}
+
+/// A checker's "[met] p1-c1: evidence" line without its status and id, which the report
+/// already shows; any other text as it is.
+pub(super) fn evidence_text(line: &str) -> &str {
+    let line = line.trim();
+    if criterion_status(line).is_some() {
+        criterion_evidence(line).unwrap_or(line)
+    } else {
+        line
+    }
+}
+
+/// A local time with its weekday, for times that may be days away ("Sat 07:00").
+fn day_time(at_ms: i64) -> String {
+    jiff::Timestamp::from_millisecond(at_ms)
+        .map(|at| {
+            at.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%a %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "?".into())
 }
 
 fn status_word(status: CriterionStatus) -> &'static str {
