@@ -97,6 +97,13 @@ pub fn install(app: &AppHandle, intent: Option<String>) {
     });
 }
 
+/// Starting a run asks for notification permission, while the user is at the Mac: its
+/// report notification may come hours later, with nobody there to answer a prompt.
+pub fn ask_permission() {
+    #[cfg(target_os = "macos")]
+    mac::ask();
+}
+
 #[cfg(target_os = "macos")]
 async fn submit(_app: &AppHandle, notice: &PendingRunNotification) -> Result<(), String> {
     mac::submit(notice).await
@@ -177,6 +184,7 @@ mod mac {
             data_dir: *const c_char,
         );
         fn brigadier_notice_data_dir() -> *const c_char;
+        fn brigadier_notice_ask();
         fn brigadier_notice_send(
             identifier: *const c_char,
             title: *const c_char,
@@ -218,6 +226,10 @@ mod mac {
         // SAFETY: the synchronous adapter getter retains its NSString until the next call.
         let path = unsafe { brigadier_notice_data_dir() };
         (!path.is_null()).then(|| std::path::PathBuf::from(string(path)))
+    }
+    pub fn ask() {
+        // SAFETY: takes no arguments; the completion handler is owned by ObjC.
+        unsafe { brigadier_notice_ask() };
     }
     pub fn install(app: AppHandle) {
         let _ = APP.set(app.clone());

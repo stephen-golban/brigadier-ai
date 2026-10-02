@@ -43,6 +43,14 @@ void brigadier_notice_init(Activated callback, const char *dataDir) {
     delegate = [BrigadierRunNoticeDelegate new];
     UNUserNotificationCenter.currentNotificationCenter.delegate = delegate;
 }
+// Asks once, while the user starts a run at the Mac, so the prompt isn't left for a morning
+// notification to raise; afterwards it answers at once with the user's choice.
+void brigadier_notice_ask(void) {
+    if (!NSBundle.mainBundle.bundleIdentifier) return;
+    [UNUserNotificationCenter.currentNotificationCenter
+        requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+                      completionHandler:^(BOOL granted, NSError *error) {}];
+}
 void brigadier_notice_send(const char *identifier, const char *title, const char *body,
                           const char *conversation, const char *run, uint64_t ticket,
                           Submitted submitted) {

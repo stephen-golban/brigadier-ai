@@ -80,6 +80,9 @@ fn quit_app(app: tauri::AppHandle) {
 
 #[tauri::command]
 async fn ipc_request(state: State<'_, AppState>, request: Request) -> Result<Response, IpcError> {
+    if matches!(request, Request::StartOvernight { .. }) {
+        overnight_notifications::ask_permission();
+    }
     state.bridge.request(request).await
 }
 
