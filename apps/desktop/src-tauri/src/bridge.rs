@@ -67,6 +67,7 @@ struct Inner {
     launcher: Launcher,
     requests: mpsc::Sender<Outgoing>,
     ui: Mutex<Option<Channel<BridgeEvent>>>,
+    navigation: Mutex<Option<String>>,
     /// Latest connection state, replayed to a webview that subscribes late or reloads.
     status: Mutex<Option<BridgeEvent>>,
     link: watch::Sender<Link>,
@@ -89,6 +90,7 @@ impl Bridge {
                 launcher,
                 requests,
                 ui: Mutex::new(None),
+                navigation: Mutex::new(None),
                 status: Mutex::new(None),
                 link: watch::channel(Link::Down).0,
                 metrics_wanted: AtomicBool::new(false),
@@ -101,6 +103,11 @@ impl Bridge {
         let task = bridge.clone();
         tauri::async_runtime::spawn(async move { task.run(queue).await });
         bridge
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn data_dir(&self) -> std::path::PathBuf {
+        self.inner.platform.paths().data_dir.clone()
     }
 
     /// Sends a request and waits for its response.
@@ -137,6 +144,28 @@ impl Bridge {
             let _ = channel.send(status);
         }
         *self.inner.ui.lock().expect("ui lock") = Some(channel);
+        let navigation = self
+            .inner
+            .navigation
+            .lock()
+            .expect("navigation lock")
+            .take();
+        if let Some(id) = navigation {
+            self.emit(BridgeEvent::OpenConversation {
+                conversation_id: id,
+            });
+        }
+    }
+
+    /// Retains native activation until the webview is ready to receive it.
+    #[cfg(target_os = "macos")]
+    pub fn open_conversation(&self, conversation_id: String) {
+        let ui = self.inner.ui.lock().expect("ui lock");
+        if let Some(channel) = ui.as_ref() {
+            let _ = channel.send(BridgeEvent::OpenConversation { conversation_id });
+        } else {
+            *self.inner.navigation.lock().expect("navigation lock") = Some(conversation_id);
+        }
     }
 
     pub fn emit(&self, event: BridgeEvent) {

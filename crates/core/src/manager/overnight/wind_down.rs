@@ -52,7 +52,18 @@ impl SessionManager {
     async fn check_deadlines(&self) {
         let now = now_ms();
         for (conversation_id, active) in self.overnight.active.all() {
-            if active.winding_down || active.wind_down_at_ms.is_none_or(|at| now < at) {
+            if active.winding_down {
+                if let Ok(board) = self.core.board(&conversation_id).await
+                    && let Some(run) = board.runs.get(&active.id)
+                    && run.state == OvernightState::Reporting
+                {
+                    let manager = self.arc();
+                    let run = run.clone();
+                    self.spawn(async move { manager.end_run(run).await });
+                }
+                continue;
+            }
+            if active.wind_down_at_ms.is_none_or(|at| now < at) {
                 continue;
             }
             if let Err(err) = self.deadline_reached(&conversation_id, &active.id).await {
@@ -211,7 +222,7 @@ impl SessionManager {
             self.write_run_report(&reporting).await;
             if let Some(finished) = self
                 .change_run_if(&reporting, |now| {
-                    if now.state != OvernightState::Reporting {
+                    if now.state != OvernightState::Reporting || now.report_message_id.is_none() {
                         return None;
                     }
                     now.state = OvernightState::Finished;
@@ -229,9 +240,6 @@ impl SessionManager {
             .unwrap_or_else(|p| p.into_inner())
             .remove(&run.id);
     }
-
-    /// The morning report (step 5 writes it).
-    async fn write_run_report(&self, _run: &OvernightRun) {}
 }
 
 /// A task that works for this run's current generation.

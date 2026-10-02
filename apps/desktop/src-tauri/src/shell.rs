@@ -230,6 +230,9 @@ pub fn quit_on_exit(app: &AppHandle) {
 }
 
 async fn stop_daemon(app: &AppHandle) {
+    if crate::overnight_notifications::is_host() {
+        return;
+    }
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };

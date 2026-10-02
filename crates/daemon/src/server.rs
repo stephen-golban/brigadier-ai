@@ -1125,6 +1125,53 @@ async fn handle_request(daemon: &Arc<Daemon>, request: Request) -> Result<Respon
                     .await?,
             ),
         },
+        Request::MergeOvernight {
+            conversation_id,
+            run_id,
+            command_id,
+            verified_commit,
+        } => Response::MergeOvernight {
+            run: Box::new(
+                sessions
+                    .merge_overnight(conversation_id, run_id, command_id, verified_commit)
+                    .await?,
+            ),
+        },
+        Request::PendingOvernightNotifications => Response::PendingOvernightNotifications {
+            notifications: sessions
+                .pending_overnight_notifications()
+                .await
+                .into_iter()
+                .map(|(conversation_id, run_id, notification)| {
+                    brigadier_ipc::protocol::PendingRunNotification {
+                        conversation_id,
+                        run_id,
+                        notification,
+                    }
+                })
+                .collect(),
+        },
+        Request::FailOvernightNotification {
+            conversation_id,
+            run_id,
+            notification_id,
+            error,
+        } => {
+            sessions
+                .fail_overnight_notification(conversation_id, run_id, notification_id, error)
+                .await?;
+            Response::FailOvernightNotification
+        }
+        Request::AckOvernightNotification {
+            conversation_id,
+            run_id,
+            notification_id,
+        } => {
+            sessions
+                .ack_overnight_notification(conversation_id, run_id, notification_id)
+                .await?;
+            Response::AckOvernightNotification
+        }
         Request::StopTask { task_id } => {
             sessions.stop_task(task_id).await?;
             Response::StopTask

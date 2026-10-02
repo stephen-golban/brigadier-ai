@@ -1,0 +1,267 @@
+//! Durable run-notification delivery, as Brigadier, including a hidden app invocation.
+//! Pending is read after connecting, not inferred from the live subscription's head.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use brigadier_ipc::protocol::{PendingRunNotification, Request, Response};
+use tauri::{AppHandle, Manager};
+
+static HOST: AtomicBool = AtomicBool::new(false);
+
+pub fn is_host() -> bool {
+    HOST.load(Ordering::Acquire)
+}
+
+pub fn host_id(args: &[String]) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == "--overnight-notification")
+        .map(|pair| pair[1].clone())
+}
+
+/// Applied before platform paths/single-instance setup, so a host uses the exact daemon data.
+pub fn configure(args: &[String]) {
+    HOST.store(host_id(args).is_some(), Ordering::Release);
+}
+
+/// The bundle remembers its own last data directory for activation after a complete exit.
+/// Explicit CLI/environment paths take precedence; bare development binaries remember none.
+#[cfg(target_os = "macos")]
+pub fn activation_data_dir() -> Option<std::path::PathBuf> {
+    mac::data_dir()
+}
+
+pub fn install(app: &AppHandle, intent: Option<String>) {
+    #[cfg(target_os = "macos")]
+    mac::install(app.clone());
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut validated = intent.is_none();
+        loop {
+            let Some(state) = app.try_state::<crate::AppState>() else {
+                return;
+            };
+            let bridge = state.bridge.clone();
+            if let Ok(Response::PendingOvernightNotifications { notifications }) =
+                bridge.request(Request::PendingOvernightNotifications).await
+            {
+                // This authenticated response validates the host's intent; arbitrary CLI IDs
+                // cannot manufacture notices or change their target session.
+                if !validated {
+                    validated = notifications
+                        .iter()
+                        .any(|pending| intent.as_ref() == Some(&pending.notification.id));
+                }
+                for pending in notifications.into_iter().filter(|_| validated) {
+                    match submit(&app, &pending).await {
+                        Ok(()) => {
+                            tracing::info!(notification = %pending.notification.id, "run notification submitted as Brigadier");
+                            if let Err(err) = bridge
+                                .request(Request::AckOvernightNotification {
+                                    conversation_id: pending.conversation_id,
+                                    run_id: pending.run_id,
+                                    notification_id: pending.notification.id,
+                                })
+                                .await
+                            {
+                                tracing::warn!(error = ?err, "run notification acknowledgement failed");
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "run notification was not submitted; report retained");
+                            let _ = bridge
+                                .request(Request::FailOvernightNotification {
+                                    conversation_id: pending.conversation_id,
+                                    run_id: pending.run_id,
+                                    notification_id: pending.notification.id,
+                                    error: err,
+                                })
+                                .await;
+                        }
+                    }
+                }
+                if intent.is_some() && is_host() {
+                    // Keep a small hidden app resident to receive activation, including a
+                    // retry of an OS permission prompt. The daemon owns no UI process lifetime.
+                    crate::shell::hide_main(&app);
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+async fn submit(_app: &AppHandle, notice: &PendingRunNotification) -> Result<(), String> {
+    mac::submit(notice).await
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn submit(app: &AppHandle, notice: &PendingRunNotification) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(&notice.notification.title)
+        .body(&notice.notification.body)
+        .show()
+        .map_err(|err| err.to_string())
+}
+
+/// Activation is checked against the stored run before opening its existing session.
+#[cfg(target_os = "macos")]
+fn activate(app: &AppHandle, conversation: String, run: String, notification: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(state) = app.try_state::<crate::AppState>() else {
+            return;
+        };
+        let bridge = state.bridge.clone();
+        if let Ok(Response::GetConversation { view }) = bridge
+            .request(Request::GetConversation {
+                id: brigadier_core::ConversationId(conversation.clone()),
+                limit: 100,
+            })
+            .await
+        {
+            let Some(record) = view.overnight.iter().find(|record| {
+                record.id.0 == run
+                    && record
+                        .notification
+                        .as_ref()
+                        .is_some_and(|notice| notice.id == notification)
+            }) else {
+                return;
+            };
+            if let Some(head) = &record.report_message_id {
+                let _ = bridge
+                    .request(Request::SwitchBranch {
+                        conversation_id: brigadier_core::ConversationId(conversation.clone()),
+                        head: head.clone(),
+                    })
+                    .await;
+            }
+            HOST.store(false, Ordering::Release);
+            let target = app.clone();
+            let _ = app.run_on_main_thread(move || crate::shell::show_main(&target));
+            bridge.open_conversation(conversation);
+        }
+    });
+}
+
+// A narrow FFI boundary: Objective-C owns UNUserNotificationCenter and all copied strings;
+// Rust owns callback tickets and the app handle. No pointer survives a callback.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod mac {
+    use super::*;
+    use std::collections::HashMap;
+    use std::ffi::{CStr, CString, c_char};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Mutex, OnceLock};
+    use tokio::sync::oneshot;
+
+    static APP: OnceLock<AppHandle> = OnceLock::new();
+    type Submitted = oneshot::Sender<Result<(), String>>;
+    static PENDING: OnceLock<Mutex<HashMap<u64, Submitted>>> = OnceLock::new();
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    unsafe extern "C" {
+        fn brigadier_notice_init(
+            callback: extern "C" fn(*const c_char, *const c_char, *const c_char),
+            data_dir: *const c_char,
+        );
+        fn brigadier_notice_data_dir() -> *const c_char;
+        fn brigadier_notice_send(
+            identifier: *const c_char,
+            title: *const c_char,
+            body: *const c_char,
+            conversation: *const c_char,
+            run: *const c_char,
+            ticket: u64,
+            callback: extern "C" fn(u64, *const c_char),
+        );
+    }
+    fn string(ptr: *const c_char) -> String {
+        // SAFETY: the adapter calls back with a live UTF-8 NSString C string for this call.
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    }
+    extern "C" fn activated(
+        conversation: *const c_char,
+        run: *const c_char,
+        notice: *const c_char,
+    ) {
+        if let Some(app) = APP.get() {
+            super::activate(app, string(conversation), string(run), string(notice));
+        }
+    }
+    extern "C" fn submitted(ticket: u64, error: *const c_char) {
+        if let Some(sender) = PENDING
+            .get()
+            .and_then(|pending| pending.lock().ok()?.remove(&ticket))
+        {
+            let _ = sender.send(if error.is_null() {
+                Ok(())
+            } else {
+                Err(string(error))
+            });
+        }
+    }
+    pub fn data_dir() -> Option<std::path::PathBuf> {
+        // SAFETY: the synchronous adapter getter retains its NSString until the next call.
+        let path = unsafe { brigadier_notice_data_dir() };
+        (!path.is_null()).then(|| std::path::PathBuf::from(string(path)))
+    }
+    pub fn install(app: AppHandle) {
+        let _ = APP.set(app.clone());
+        // SAFETY: a static callback, installed during main-thread app setup. ObjC retains its delegate.
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            let path = state.bridge.data_dir();
+            if let Ok(path) = CString::new(path.to_string_lossy().as_bytes()) {
+                unsafe { brigadier_notice_init(activated, path.as_ptr()) };
+            }
+        }
+    }
+    pub async fn submit(notice: &PendingRunNotification) -> Result<(), String> {
+        let values = [
+            &notice.notification.id,
+            &notice.notification.title,
+            &notice.notification.body,
+            &notice.conversation_id.0,
+            &notice.run_id.0,
+        ];
+        let strings = values
+            .into_iter()
+            .map(|value| CString::new(value.as_str()).map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ticket = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = oneshot::channel();
+        let pending = PENDING.get_or_init(|| Mutex::new(HashMap::new()));
+        pending
+            .lock()
+            .map_err(|err| err.to_string())?
+            .insert(ticket, sender);
+        // SAFETY: all strings are NUL-terminated and live for this call; ObjC copies them
+        // before returning. The static callback resolves only its own u64 ticket.
+        unsafe {
+            brigadier_notice_send(
+                strings[0].as_ptr(),
+                strings[1].as_ptr(),
+                strings[2].as_ptr(),
+                strings[3].as_ptr(),
+                strings[4].as_ptr(),
+                ticket,
+                submitted,
+            )
+        };
+        let result = tokio::time::timeout(Duration::from_secs(15), receiver).await;
+        pending
+            .lock()
+            .map_err(|err| err.to_string())?
+            .remove(&ticket);
+        result
+            .map_err(|_| "OS notification submission timed out".to_owned())?
+            .map_err(|_| "OS notification completion disappeared".to_owned())?
+    }
+}

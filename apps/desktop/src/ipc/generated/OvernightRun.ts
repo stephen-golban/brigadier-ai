@@ -9,6 +9,8 @@ import type { OvernightRunId } from "./OvernightRunId";
 import type { OvernightState } from "./OvernightState";
 import type { PlanningPhase } from "./PlanningPhase";
 import type { RunGap } from "./RunGap";
+import type { RunMerge } from "./RunMerge";
+import type { RunNotification } from "./RunNotification";
 import type { RunWorkspace } from "./RunWorkspace";
 import type { SourceSnapshot } from "./SourceSnapshot";
 import type { StopReason } from "./StopReason";
@@ -83,7 +85,15 @@ verifiedCommit: string | null,
 /**
  * Times Brigadier wasn't running during the run (the Mac slept, the daemon was down).
  */
-gaps: Array<RunGap>, stop: StopReason | null, 
+gaps: Array<RunGap>, 
+/**
+ * The report's message, once written (its id is stable per segment).
+ */
+reportMessageId: string | null, merged: RunMerge | null, 
+/**
+ * The notification the report comes with, until the app shows it.
+ */
+notification: RunNotification | null, stop: StopReason | null, 
 /**
  * The last commands applied, newest last.
  */

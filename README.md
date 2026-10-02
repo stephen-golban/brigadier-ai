@@ -46,12 +46,17 @@ docs/          plan and design notes
   the Browser tab's page gets its own WebKit UI delegate, because wry's grants every camera and
   microphone request. Ours denies them without a prompt, sends popups to the system browser and
   leaves file uploads to wry's. This module, `apps/desktop/src-tauri/src/browser_ui.rs`, is the
-  app shell's one exception to the workspace's `unsafe_code = "deny"` (the sandbox crate's OS
+  app shell's WebKit exception to the workspace's `unsafe_code = "deny"` (the sandbox crate's OS
   calls are the only others): calling WebKit through objc2 needs `unsafe`. The `#[allow(unsafe_code)]` sits on that module alone, and each `unsafe` in it says
   why it holds. WebKit asks macOS for the microphone before it asks the delegate, so the page
   also gets a script, before any of its own and in every frame, that takes
   `navigator.mediaDevices`, `getUserMedia` and the speech-recognition APIs away for good
   (`NO_CAPTURE` in `browser.rs`). Windows' WebView2 asks the user itself.
+- Overnight run notifications use a small macOS UserNotifications adapter under the app's
+  bundle identity, retaining a stable notification ID and session/run activation payload.
+  `overnight_notifications.rs::mac` is the shell's other narrowly scoped unsafe exception:
+  its C strings live through each call, Objective-C copies them, and callback tickets carry
+  no borrowed pointers. The desktop notification plugin handles the other platforms.
 - `whisper-rs` (whisper.cpp), `ureq`, `sha2` (brigadierd): dictation turns speech into text on
   this computer; the audio never leaves it. The composer's webview records the microphone and
   streams 16 kHz PCM to the daemon, which feeds it to a short-lived `brigadierd transcribe`

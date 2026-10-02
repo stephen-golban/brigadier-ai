@@ -1085,6 +1085,146 @@ impl SessionManager {
         }
     }
 
+    /// The app's explicit Merge of this run's verified SHA, independent of session setup.
+    /// Workers have no IPC/MCP route to this action. The base must still be the reviewed base
+    /// (or this lineage's last Merge), and git rechecks its tip and checkout under its lock.
+    pub async fn merge_overnight(
+        &self,
+        id: ConversationId,
+        run_id: crate::model::OvernightRunId,
+        command_id: String,
+        verified_commit: String,
+    ) -> Result<crate::overnight::OvernightRun> {
+        use crate::overnight::{AppliedCommand, OvernightState, RunMerge};
+        let _held = self.overnight.changes.lock().await;
+        let board = self.core.board(&id).await?;
+        let mut run = board
+            .runs
+            .get(&run_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("overnight run {run_id}")))?;
+        if run.commands.iter().any(|command| command.id == command_id) {
+            return Ok(run);
+        }
+        if run.state != OvernightState::Finished {
+            return Err(Error::Invalid(
+                "This run must finish before its verified work can merge.".into(),
+            ));
+        }
+        if run.verified_commit.as_deref() != Some(&verified_commit) {
+            return Err(Error::Invalid(
+                "The verified tip changed; look again before merging.".into(),
+            ));
+        }
+        let workspace = run
+            .workspace
+            .clone()
+            .ok_or_else(|| Error::Invalid("This run has no branch to merge.".into()))?;
+        if verified_commit == workspace.base_commit {
+            return Err(Error::Invalid("Nothing new is verified to merge.".into()));
+        }
+        let lineage: Vec<_> = board
+            .runs
+            .values()
+            .filter(|other| {
+                other
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|w| w.branch == workspace.branch)
+            })
+            .collect();
+        if lineage.iter().any(|other| other.state.is_active()) {
+            return Err(Error::Invalid(
+                "A continuation is still running on this branch; let it finish first.".into(),
+            ));
+        }
+        let open: Vec<_> = board
+            .tasks
+            .values()
+            .filter(|task| {
+                task.kind.writes()
+                    && !task.state.is_final()
+                    && task.run.as_ref().is_some_and(|context| {
+                        lineage.iter().any(|other| other.id == context.run_id)
+                    })
+            })
+            .map(|task| format!("task-{}", task.number))
+            .collect();
+        if !open.is_empty() {
+            return Err(Error::Invalid(format!(
+                "This run's write tasks are still open: {}. Land or stop them first.",
+                open.join(", ")
+            )));
+        }
+        let expected_base = lineage
+            .iter()
+            .filter_map(|other| other.merged.as_ref())
+            .max_by_key(|merged| merged.at_ms)
+            .map_or_else(
+                || workspace.base_commit.clone(),
+                |merged| merged.commit.clone(),
+            );
+        let Some(Setup::Session { repo, .. }) = self.core.conversation(&id)?.setup else {
+            return Err(Error::Invalid("This run has no repository.".into()));
+        };
+        let git = self.git.clone();
+        let approved = verified_commit.clone();
+        let into = workspace.base.clone();
+        let landed = blocking(move || {
+            let repo = git.open(Path::new(&repo)).map_err(git_error)?;
+            let tip = Oid(approved);
+            let branch_tip = repo.branch_tip(&workspace.branch).map_err(git_error)?
+                .ok_or_else(|| Error::Invalid("The run branch is gone.".into()))?;
+            if !repo.ancestor(&tip, &branch_tip).map_err(git_error)? {
+                return Err(Error::Invalid("The verified commit is no longer on the run branch.".into()));
+            }
+            let base_tip = repo.branch_tip(&workspace.base).map_err(git_error)?
+                .ok_or_else(|| Error::Invalid("The base branch is gone.".into()))?;
+            // Reconcile a crash after git landed but before the run recorded it.
+            if base_tip == tip || (base_tip.0 == expected_base && repo.ancestor(&tip, &base_tip).map_err(git_error)?) {
+                return Ok(base_tip);
+            }
+            if base_tip.0 != expected_base
+                && !repo.ancestor(&base_tip, &tip).map_err(git_error)?
+            {
+                return Err(Error::Invalid(format!("`{}` moved since this work was verified. Nothing merged; review and verify the new base before merging.", workspace.base)));
+            }
+            // A base already included in this phase-verified candidate is safe. Otherwise
+            // its change requires a new candidate and fresh whole-phase checks.
+            let approved_base_tip = base_tip;
+            let message = format!("Merge verified overnight work into {}", workspace.base);
+            let (commit, base_tip) = match repo.prepare_merge_commit(&workspace.base, &tip, &message).map_err(git_error)? {
+                MergeOutcome::Ready { commit, base_tip, .. } => (commit, base_tip),
+                MergeOutcome::Conflicts { paths } => return Err(Error::Invalid(format!("The verified work conflicts in: {}. Resolve and verify these files before merging.", paths.join(", ")))),
+            };
+            if base_tip != approved_base_tip {
+                return Err(Error::Invalid("The base moved while preparing the merge; look again. Nothing merged.".into()));
+            }
+            match repo.land(&LandRequest { branch: workspace.base, expected_tip: base_tip, commit }).map_err(git_error)? {
+                LandOutcome::Landed { new_tip } => Ok(new_tip),
+                LandOutcome::Blocked(block) => Err(Error::Invalid(format!("Nothing merged: {block}"))),
+            }
+        }).await?;
+        run.merged = Some(RunMerge {
+            verified_commit,
+            commit: landed.0,
+            into,
+            at_ms: crate::now_ms(),
+        });
+        run.commands.push(AppliedCommand {
+            id: command_id,
+            at_ms: crate::now_ms(),
+        });
+        self.record_runs(
+            &id,
+            vec![crate::model::DomainEvent::OvernightUpdated {
+                run: Box::new(run.clone()),
+            }],
+        )
+        .await?;
+        Ok(run)
+    }
+
     /// `finish_session`: merges the session branch into its base after the user's click.
     pub(crate) async fn finish_session(
         &self,

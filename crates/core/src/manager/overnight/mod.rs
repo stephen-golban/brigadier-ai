@@ -12,6 +12,7 @@ pub mod directives;
 mod phase_gates;
 pub(crate) mod policy;
 mod recovery;
+mod report;
 mod wind_down;
 mod workspace;
 
@@ -38,8 +39,11 @@ const WIND_DOWN_MAX_MS: i64 = 20 * 60_000;
 #[derive(Default)]
 pub(crate) struct Runs {
     /// Held while a run is read, changed and recorded, so its transitions happen one at a
-    /// time. Never held across model work, a process or git.
-    changes: tokio::sync::Mutex<()>,
+    /// time. Never held across model work. Explicit run Merge keeps it during its bounded
+    /// git effect, so Start/Continue cannot race that approval.
+    pub(crate) changes: tokio::sync::Mutex<()>,
+    /// Serializes report reconciliation across retries.
+    reporting: tokio::sync::Mutex<()>,
     /// Each session's active run, for task code that can't read the board.
     pub(crate) active: policy::ActiveRuns,
     /// Each run's executing tasks under its worker cap, and the build lease.
@@ -123,6 +127,9 @@ impl SessionManager {
             planning: None,
             verified_commit: None,
             gaps: Vec::new(),
+            report_message_id: None,
+            merged: None,
+            notification: None,
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -470,6 +477,8 @@ impl SessionManager {
             wind_down_at_ms: None,
             planning: None,
             gaps: Vec::new(),
+            report_message_id: None,
+            notification: None,
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -531,7 +540,7 @@ impl SessionManager {
     }
 
     /// Records run events and keeps the active-run view in step with them.
-    async fn record_runs(
+    pub(crate) async fn record_runs(
         &self,
         conversation_id: &ConversationId,
         events: Vec<DomainEvent>,

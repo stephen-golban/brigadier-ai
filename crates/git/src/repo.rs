@@ -287,7 +287,8 @@ impl Repo {
     pub fn is_merged(&self, branch: &str, into: &str) -> Result<bool> {
         self.ancestor(&self.branch_commit(branch)?, &self.branch_commit(into)?)
     }
-    pub(crate) fn ancestor(&self, from: &Oid, to: &Oid) -> Result<bool> {
+    /// Whether `from` is reachable from `to` (including equality).
+    pub fn ancestor(&self, from: &Oid, to: &Oid) -> Result<bool> {
         valid_oid(from)?;
         valid_oid(to)?;
         let args = ["merge-base", "--is-ancestor", &from.0, &to.0];
@@ -1364,12 +1365,23 @@ impl Repo {
     /// Prepare a fast-forward or a two-parent session merge without touching any checkout/ref.
     /// A separate land call performs the guarded update after approval.
     pub fn prepare_merge(&self, base: &str, branch: &str, message: &str) -> Result<MergeOutcome> {
-        let base_tip = self
-            .branch_tip(base)?
-            .ok_or_else(|| Error::Invalid("base branch does not exist".into()))?;
         let tip = self
             .branch_tip(branch)?
             .ok_or_else(|| Error::Invalid("session branch does not exist".into()))?;
+        self.prepare_merge_commit(base, &tip, message)
+    }
+
+    /// Prepare only the approved commit, leaving later branch work out of the merge.
+    pub fn prepare_merge_commit(
+        &self,
+        base: &str,
+        tip: &Oid,
+        message: &str,
+    ) -> Result<MergeOutcome> {
+        let base_tip = self
+            .branch_tip(base)?
+            .ok_or_else(|| Error::Invalid("base branch does not exist".into()))?;
+        let tip = tip.clone();
         if self.ancestor(&base_tip, &tip)? {
             return Ok(MergeOutcome::Ready {
                 commit: tip,

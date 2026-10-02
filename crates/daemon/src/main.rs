@@ -27,6 +27,7 @@ mod gate;
 mod idle;
 mod logging;
 mod metrics;
+mod overnight_notifications;
 mod overnight_supervisor;
 mod quit;
 mod registry;
@@ -349,6 +350,11 @@ async fn run(
     supervisor.spawn(storage::housekeeping(daemon.clone(), stopping.clone()));
     supervisor.spawn(registry::keep_current(daemon.clone(), stopping.clone()));
     supervisor.spawn(overnight_supervisor::keep_in_step(
+        daemon.clone(),
+        platform.paths().data_dir.clone(),
+        stopping.clone(),
+    ));
+    supervisor.spawn(overnight_notifications::deliver(
         daemon.clone(),
         platform.paths().data_dir.clone(),
         stopping.clone(),

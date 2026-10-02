@@ -262,6 +262,32 @@ pub struct CriterionResult {
     pub by: Option<TaskId>,
 }
 
+/// A run's notification, queued with its report and shown by the app as Brigadier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RunNotification {
+    /// Stable per run segment, so a repeated delivery replaces rather than adds.
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub created_at_ms: i64,
+    /// When the app showed it; absent while it waits.
+    pub delivered_at_ms: Option<i64>,
+    /// The last OS refusal/submission error; the outbox stays pending.
+    #[serde(default)]
+    pub delivery_error: Option<String>,
+}
+
+/// Verified work explicitly merged by the user; continuation keeps the run branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RunMerge {
+    pub verified_commit: String,
+    pub commit: String,
+    pub into: String,
+    pub at_ms: i64,
+}
+
 /// A time Brigadier wasn't running during a run, and why, as far as it can tell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -509,6 +535,14 @@ pub struct OvernightRun {
     /// Times Brigadier wasn't running during the run (the Mac slept, the daemon was down).
     #[serde(default)]
     pub gaps: Vec<RunGap>,
+    /// The report's message, once written (its id is stable per segment).
+    #[serde(default)]
+    pub report_message_id: Option<String>,
+    #[serde(default)]
+    pub merged: Option<RunMerge>,
+    /// The notification the report comes with, until the app shows it.
+    #[serde(default)]
+    pub notification: Option<RunNotification>,
     pub stop: Option<StopReason>,
     /// The last commands applied, newest last.
     pub commands: Vec<AppliedCommand>,

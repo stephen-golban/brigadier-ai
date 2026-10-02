@@ -477,6 +477,29 @@ pub enum Request {
         command_id: String,
         words: String,
     },
+    /// The user's Merge of a run's verified work: `verifiedCommit` is the tip the card showed;
+    /// only it (never later, unverified commits) merges into the run's base.
+    MergeOvernight {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        command_id: String,
+        verified_commit: String,
+    },
+    /// Notifications of finished overnight runs the app hasn't shown yet.
+    PendingOvernightNotifications,
+    /// A native submission was refused; retain the report and pending notification.
+    FailOvernightNotification {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        notification_id: String,
+        error: String,
+    },
+    /// The app successfully submitted a run's notification to the OS.
+    AckOvernightNotification {
+        conversation_id: ConversationId,
+        run_id: OvernightRunId,
+        notification_id: String,
+    },
     /// Stops a worker for good (its unfinished changes are kept, see `Task.kept`).
     StopTask {
         task_id: TaskId,
@@ -915,6 +938,14 @@ pub enum Response {
     ContinueOvernight {
         run: Box<OvernightRun>,
     },
+    MergeOvernight {
+        run: Box<OvernightRun>,
+    },
+    PendingOvernightNotifications {
+        notifications: Vec<PendingRunNotification>,
+    },
+    AckOvernightNotification,
+    FailOvernightNotification,
     StopTask,
     PauseTask,
     ResumeTask,
@@ -1192,6 +1223,14 @@ pub struct KeepAwakeStatus {
 }
 
 /// Whether a daemon is in use, as `getDaemonActivity` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRunNotification {
+    pub conversation_id: ConversationId,
+    pub run_id: OvernightRunId,
+    pub notification: brigadier_core::overnight::RunNotification,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonActivity {

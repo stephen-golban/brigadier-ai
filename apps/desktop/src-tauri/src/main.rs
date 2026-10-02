@@ -8,11 +8,12 @@
 
 mod bridge;
 mod browser;
-// The one module allowed `unsafe` code (the workspace denies it): see its header and the README.
+// WebKit's narrow unsafe boundary (the workspace denies it): see its header and the README.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod browser_ui;
 mod launcher;
+mod overnight_notifications;
 mod shell;
 mod smoke;
 
@@ -451,8 +452,23 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    let smoke = std::env::args().any(|arg| arg == "--smoke");
-    let platform = match brigadier_sandbox::native(PlatformOptions::default()) {
+    let args: Vec<_> = std::env::args().collect();
+    overnight_notifications::configure(&args);
+    let intent = overnight_notifications::host_id(&args);
+    let smoke = args.iter().any(|arg| arg == "--smoke");
+    let data_dir = args
+        .windows(2)
+        .find(|pair| pair[0] == "--brigadier-data-dir")
+        .map(|pair| std::path::PathBuf::from(&pair[1]));
+    #[cfg(target_os = "macos")]
+    let data_dir = data_dir.or_else(|| {
+        if std::env::var_os("BRIGADIER_DATA_DIR").is_none() {
+            overnight_notifications::activation_data_dir()
+        } else {
+            None
+        }
+    });
+    let platform = match brigadier_sandbox::native(PlatformOptions { data_dir }) {
         Ok(platform) => platform,
         Err(err) => {
             eprintln!("brigadier: {err}");
@@ -483,8 +499,17 @@ fn main() {
         .map(|value| vec![(TOLERANCE_ENV.to_owned(), value)])
         .unwrap_or_default();
 
+    let mut context = tauri::generate_context!();
+    if intent.is_some() {
+        for window in &mut context.config_mut().app.windows {
+            window.visible = false;
+        }
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            if overnight_notifications::host_id(&args).is_some() {
+                return;
+            }
             shell::show_main(app);
             open_folders(
                 app,
@@ -495,6 +520,26 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            // Remember the installed/bundled host, under this exact daemon data directory.
+            if let Ok(exe) = std::env::current_exe() {
+                #[cfg(target_os = "macos")]
+                let bundled = exe
+                    .parent()
+                    .and_then(|path| path.parent())
+                    .is_some_and(|path| path.file_name().is_some_and(|name| name == "Contents"));
+                #[cfg(not(target_os = "macos"))]
+                let bundled = !tauri::is_dev();
+                if bundled {
+                    let _ = std::fs::create_dir_all(&platform.paths().data_dir);
+                    let _ = std::fs::write(
+                        platform
+                            .paths()
+                            .data_dir
+                            .join("overnight-notification-host"),
+                        exe.to_string_lossy().as_bytes(),
+                    );
+                }
+            }
             let launcher = Launcher::new(platform.clone(), daemon_env);
             let bridge = Bridge::start(
                 platform.clone() as Arc<dyn Platform>,
@@ -506,7 +551,13 @@ fn main() {
                 info,
                 cold_start_ms: Mutex::new(None),
             });
-            if let Ok(cwd) = std::env::current_dir() {
+            overnight_notifications::install(app.handle(), intent.clone());
+            if intent.is_some() {
+                shell::hide_main(app.handle());
+            }
+            if intent.is_none()
+                && let Ok(cwd) = std::env::current_dir()
+            {
                 open_folders(app.handle(), folder_args(std::env::args().skip(1), &cwd));
             }
             #[cfg(target_os = "macos")]
@@ -578,7 +629,7 @@ fn main() {
             browser::browser_go,
             browser::browser_close
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .unwrap_or_else(|err| {
             eprintln!("brigadier: failed to start: {err}");
             std::process::exit(1);
@@ -592,7 +643,7 @@ fn main() {
         }
         RunEvent::Exit => shell::quit_on_exit(app),
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => shell::show_main(app),
+        RunEvent::Reopen { .. } if !overnight_notifications::is_host() => shell::show_main(app),
         #[cfg(target_os = "macos")]
         RunEvent::Opened { urls } => open_folders(
             app,
