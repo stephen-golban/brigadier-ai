@@ -29,9 +29,13 @@ impl SessionManager {
             .as_ref()
             .map(|id| id.0.clone())
             .unwrap_or_else(|| "none".into());
-        let path = self
-            .owned_dir("worktrees", &project)
-            .join(format!("overnight-{}", run.id.short()));
+        let path = run.workspace.as_ref().map_or_else(
+            || {
+                self.owned_dir("worktrees", &project)
+                    .join(format!("overnight-{}", run.id.short()))
+            },
+            |workspace| PathBuf::from(&workspace.path),
+        );
         self.runtime
             .ledger()
             .record(
@@ -59,6 +63,18 @@ impl SessionManager {
                 .map_err(git_error)?
                 .ok_or_else(|| Error::Invalid(format!("branch {base} does not exist")))?;
             if worktree.exists() {
+                let canonical = std::fs::canonicalize(&worktree)
+                    .map_err(|err| Error::Invalid(err.to_string()))?;
+                let registered = repo.worktrees().map_err(git_error)?.into_iter().find(|item| {
+                    item.path == worktree ||
+                        std::fs::canonicalize(&item.path).is_ok_and(|path| path == canonical)
+                });
+                if !registered.is_some_and(|item| item.branch.as_deref() == Some(name.as_str())) {
+                    return Err(Error::Invalid(format!(
+                        "The run's worktree {} no longer holds branch {name}. Restore that checkout before continuing.",
+                        worktree.display()
+                    )));
+                }
                 return Ok(base_commit);
             }
             if let Some(parent) = worktree.parent() {
