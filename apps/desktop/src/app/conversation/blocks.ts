@@ -366,6 +366,11 @@ export function buildBlocks(
     return block;
   };
 
+  for (const request of Object.values(board.requests)) {
+    if (request.id.startsWith("run-") && !request.id.endsWith("-report"))
+      open(request.id, request.startedAtMs);
+  }
+
   // Items from before requests existed belong to the user message before them.
   let latest: string | null = null;
   // The block each message of the branch shows in.
@@ -385,7 +390,8 @@ export function buildBlocks(
       if (message.role === "system") continue;
       const key = message.requestId ?? latest ?? `orphan:${message.id}`;
       // A request whose message is on an older page, or on a branch not shown.
-      if (message.requestId && !blocks.has(key)) continue;
+      if (message.requestId && !blocks.has(key) &&
+        !(key.startsWith("run-") && board.requests[key])) continue;
       blockOf.set(message.id, key);
       open(key, message.createdAtMs).texts.push({
         messageId: message.id,

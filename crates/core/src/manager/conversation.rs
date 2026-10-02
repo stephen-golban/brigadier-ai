@@ -502,6 +502,14 @@ impl SessionManager {
                 )));
             }
         }
+        if conversation.kind == ConversationKind::Session
+            && queue_index.is_none()
+            && let Some(outcome) = self
+                .overnight_message(&id, &text, &attachments, &mentions)
+                .await?
+        {
+            return Ok(outcome);
+        }
         let queue_index = queue_index.filter(|_| !steer);
         let paused = queue_index.is_some() && self.core.board(&id).await?.queue.paused;
         let conv = self.conv(&id)?;
@@ -576,6 +584,11 @@ impl SessionManager {
         Ok(SendOutcome::Sent(message))
     }
 
+    pub(super) async fn prepare_proposal_turn(&self, conv: &Arc<ConvLive>, message: Message) {
+        conv.state.lock().await.pending.push(message);
+        self.kick(conv);
+    }
+
     /// Sends a queued message now, into the running turn or a session's working answer (or
     /// as a new turn when nothing works).
     pub async fn steer_queued(&self, id: ConversationId, item_id: String) -> Result<()> {
@@ -648,7 +661,12 @@ impl SessionManager {
     /// Sends `message` into the answer that works now: steered into the running turn, or (the
     /// orchestrator idle while workers run) carried by the next turn. Either way the thread
     /// shows it inside that answer's block (`working`, the newest request, when idle).
-    async fn join_working(&self, conv: &Arc<ConvLive>, message: Message, working: Option<String>) {
+    pub(super) async fn join_working(
+        &self,
+        conv: &Arc<ConvLive>,
+        message: Message,
+        working: Option<String>,
+    ) {
         let mut state = conv.state.lock().await;
         let steered = match (&state.cli, state.busy && !state.compacting) {
             (Some(cli), true) => {
@@ -1753,6 +1771,14 @@ impl SessionManager {
                 }
             }
             parts.push(text);
+        }
+        if let Ok(board) = self.core.board(&conv.id).await
+            && let Some(run) = board
+                .runs
+                .values()
+                .find(|run| run.state == crate::overnight::OvernightState::Proposed)
+        {
+            parts.push(format!("[overnight proposal {} revision {}] This is preparation only. Read the user's brief and referenced plan with read-only scouts if necessary. Use propose_overnight to put its actual phases/criteria/Rules on this same proposal, keeping original phase numbers. Do not invent scope or start implementation. For a bare goal keep phases empty (Phase 0 plans after Start). Only the user's Start begins the run. Reply with exactly [quiet] once the proposal is ready.", run.id, run.revision));
         }
         // A side chat answers about the conversation beside it, as it stands now.
         if let Ok(record) = self.core.conversation(&conv.id)

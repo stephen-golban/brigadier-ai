@@ -452,6 +452,8 @@ export const RequestBlock: FC = () => {
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
+      id={meta.answerId ? `message-${meta.answerId}` : undefined}
+      tabIndex={-1}
       data-state={meta.state}
       data-turn-phase={phase}
       data-turn-live={live ? "true" : undefined}

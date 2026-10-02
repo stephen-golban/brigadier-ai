@@ -759,7 +759,7 @@ function SummaryContent({ conversation }: { conversation: Conversation }) {
         <Sources conversationId={conversation.id} />
       </div>
       {plans
-        .filter((id) => !overnight.some((card) => card.run.planId === id))
+        .filter((id) => !overnight.some((card) => card.run.planId === id || card.run.planning?.planId === id))
         .map((id) => (
           <PlanCardView key={id} cardId={id} />
         ))}

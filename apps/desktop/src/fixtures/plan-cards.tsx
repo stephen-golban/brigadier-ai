@@ -214,6 +214,14 @@ mockIPC((command, payload) => {
   throw new Error(`Unexpected fixture request: ${req.method}`);
 });
 
+// Keep the active phase's link distinct from the normal plan's Windows-path worker.
+const fixtureBoard = useBoard.getState().board!;
+useBoard.setState({ board: { ...fixtureBoard, tasks: {
+  ...fixtureBoard.tasks,
+  "worker-phase-5": { ...fixtureBoard.tasks["worker-live"]!, id: "worker-phase-5",
+    title: "Review the whole Windows change", number: 5 },
+} } });
+
 const proposed: OvernightRun = {
   id: "proposed",
   conversationId: session.id,
@@ -376,7 +384,7 @@ const overnight: { label: string; model: OvernightCardModel }[] = [
   },
   {
     label: "Running · lead working",
-    model: variant("running", "running", { "phase-5": { workerTaskIds: ["worker-live"] } }),
+    model: variant("running", "running", { "phase-5": { workerTaskIds: ["worker-phase-5"] } }),
   },
   {
     label: "Running · checking",

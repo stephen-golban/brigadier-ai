@@ -16,7 +16,7 @@ and exercise Start/Stop/Merge/Continue/Read report against the fixture actions.
 Use `?summary=1` for the actual pinned summary and its thread links. Check a wide
 window and a 320px window: the same normal cards appear beneath the context card,
 and View plan opens the floating summary at narrow widths. Earlier revision links
-open the current card, whose history folds. No overnight Start is reachable there.
+open the current card, whose history folds. The summary fixture holds only normal plans; the application adapter uses real run records when present.
 
 Check both density modes; Tab through folds, worker/report links and buttons, and use
 Enter or Space to activate them. The `/overnight` menu item only prepares a draft.

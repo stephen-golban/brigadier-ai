@@ -1,6 +1,15 @@
-import type { OvernightRun, TaskId } from "@/ipc/generated";
+import { useEffect, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 
-/** Facts not yet projected by steps 3–5. Keep their translation and IPC wiring here. */
+import { request } from "@/ipc/client";
+import type { OvernightRun, TaskId } from "@/ipc/generated";
+import { loadConversation, loadFullText, openConversation, switchBranch } from "@/state/actions";
+import { type Board, updateBoard, useBoard } from "@/state/board";
+import { setKeepAwakeLidClosed, useKeepAwake } from "@/state/keepAwake";
+import { emptyThread, useApp } from "@/state/store";
+import { toast } from "@/state/toasts";
+
+/** Run facts translated for the shared card. */
 export type OvernightDetails = {
   /** Run-scoped counts, never the whole conversation's counts. */
   waiting: number;
@@ -24,7 +33,7 @@ export type OvernightDetails = {
   verifiedSha?: string;
   /** Use the conductor's remaining work, including intentionally skipped/deferred phases. */
   remainingPhaseIds: readonly string[];
-  power?: { onBattery: boolean; lidWillPause: boolean; offerLidSetup: boolean };
+  power?: { onBattery?: boolean; lidWillPause: boolean; offerLidSetup: boolean };
 };
 
 export type OvernightCardModel = {
@@ -52,21 +61,154 @@ export type OvernightActions = {
   setUpLidClosed: () => Promise<unknown>;
 };
 
-const NO_CARDS: readonly OvernightCardModel[] = [];
-
-/**
- * Deliberately disconnected until the conductor/report/run-merge IPC is integrated.
- * Integration is confined to this module: subscribe to board.overnight, select the latest
- * segment per plan, project the facts above, and provide the actions below using request().
- * Do not expose proposals or Start before the real path is ready.
- */
-export function useOvernightCards(
-  _conversationId: string,
-): readonly OvernightCardModel[] {
-  return NO_CARDS;
+/** A continuation replaces only its own lineage, including bare goals without plan IDs. */
+export function currentRuns(runs: Readonly<Record<string, OvernightRun>>): OvernightRun[] {
+  const continued = new Set(Object.values(runs).flatMap((run) => run.predecessor ? [run.predecessor] : []));
+  return Object.values(runs)
+    .filter((run) => run.state !== "superseded" && !continued.has(run.id))
+    .toSorted((a, b) => a.createdAtMs - b.createdAtMs);
 }
 
-export const overnightActions: OvernightActions | null = null;
+export function projectOvernight(run: OvernightRun, board: Board, report?: string): OvernightCardModel {
+  const belongs = (requestId: string | null) => requestId?.startsWith(`run-${run.id.slice(-8)}-`) ?? false;
+  const ownsTask = (taskId: string) => board.tasks[taskId]?.run?.runId === run.id;
+  const waiting = Object.values(board.waiting).filter((item) => {
+    const source = item.source;
+    if (source.type === "run") return source.runId === run.id;
+    if (source.type === "task" || source.type === "landing") return ownsTask(source.taskId);
+    return belongs(item.requestId);
+  }).length;
+  const decided = board.decisions.filter((item) => {
+    if (item.source.type === "run") return item.source.runId === run.id;
+    if (item.source.type === "task") return ownsTask(item.source.taskId);
+    return belongs(item.requestId);
+  }).length;
+  const phaseProgress: OvernightDetails["phaseProgress"] = Object.fromEntries(run.phases.map((phase) => {
+    // Verified phases retained by Continue keep their original request and task ownership.
+    const tasks = Object.values(board.tasks).filter((task) =>
+      task.run?.phaseId === phase.id &&
+      ((task.run.runId === run.id && task.run.generation === run.generation) ||
+        (phase.state === "verified" && phase.requestId !== null && task.requestId === phase.requestId)),
+    ).toSorted((a, b) => a.number - b.number);
+    const quotaTask = tasks.filter((task) => task.quotaWait?.resetsAtMs != null)
+      .toSorted((a, b) => a.quotaWait!.resetsAtMs! - b.quotaWait!.resetsAtMs!)[0];
+    return [phase.id, {
+      ...(phase.fixRounds > 0 && phase.state === "running" ? { fixRound: Math.min(2, phase.fixRounds) as 1 | 2 } : {}),
+      ...(quotaTask ? { quota: {
+        provider: quotaTask.route.choice.provider === "claude" ? "Claude" : "Codex",
+        resetsAtMs: quotaTask.quotaWait!.resetsAtMs!,
+      } } : {}),
+      workerTaskIds: tasks.map((task) => task.id),
+      criteria: Object.fromEntries(phase.criteria.map((criterion) => [criterion.id,
+        criterion.status === "met" ? "verified" : criterion.status === "blocked" ? "blocked" : "partial",
+      ])),
+    }];
+  }));
+  // The report renderer owns these three paragraphs; never infer success in the frontend.
+  const lines = report?.split(/\n\s*\n/).slice(0, 3).map((line) => line.replace(/[*`]/g, "").trim());
+  return { run, details: {
+    waiting, decided, phaseProgress,
+    ...(lines?.length === 3 ? { outcome: lines as [string, string, string] } : {}),
+    ...(run.reportMessageId ? { reportMessageId: run.reportMessageId } : {}),
+    ...(run.verifiedCommit && run.verifiedCommit !== run.workspace?.baseCommit ? { verifiedSha: run.verifiedCommit } : {}),
+    remainingPhaseIds: run.phases.length === 0 ? ["phase-0"] :
+      run.phases.filter((phase) => phase.state !== "verified").map((phase) => phase.id),
+  } };
+}
+
+export function useOvernightCards(conversationId: string): readonly OvernightCardModel[] {
+  const board = useBoard((s) => s.board?.conversationId === conversationId ? s.board : null);
+  const thread = useApp((s) => s.threads[conversationId] ?? emptyThread);
+  const status = useKeepAwake((s) => s.status);
+  const leadQuota = useApp((s) => s.conversations[conversationId]?.quotaWait);
+  const runs = useMemo(() => currentRuns(board?.overnight ?? {}), [board?.overnight]);
+  const reports = useApp(useShallow((s) => runs.map((run) => {
+    const message = s.threads[conversationId]?.items.find((item) => item.id === run.reportMessageId);
+    return message ? s.threads[conversationId]?.fullText[message.id] ?? message.text : undefined;
+  })));
+  useEffect(() => {
+    for (const run of runs) {
+      const message = thread.items.find((item) => item.id === run.reportMessageId);
+      if (message?.blob && !thread.fullText[message.id])
+        void loadFullText(conversationId, message.id, message.blob).catch((error: unknown) => console.error(error));
+    }
+  }, [conversationId, runs, thread]);
+  return useMemo(() => board ? runs.map((run, index) => {
+    const model = projectOvernight(run, board, reports[index]);
+    if (status && run.state === "proposed") model.details.power = {
+      lidWillPause: status.lidClosed !== "active",
+      offerLidSetup: status.lidClosed === "needsSetup",
+    };
+    const active = run.phases.find((phase) => phase.state === "running" || phase.state === "checking");
+    if (run.state === "waitingQuota" && active && leadQuota?.resetsAtMs) {
+      model.details.phaseProgress = { ...model.details.phaseProgress, [active.id]: {
+        ...model.details.phaseProgress[active.id], quota: {
+          provider: active.lead?.provider === "claude" ? "Claude" : "Codex", resetsAtMs: leadQuota.resetsAtMs,
+        },
+      } };
+    }
+    return model;
+  }) : [], [board, runs, reports, status, leadQuota]);
+}
+
+function seen(command: OvernightCommand): OvernightRun {
+  const current = useBoard.getState().board?.overnight[command.runId];
+  if (!current || current.revision !== command.revision || current.generation !== command.generation)
+    throw new Error("The run changed. Check the card and try again.");
+  return current;
+}
+
+function received(run: OvernightRun, before: OvernightRun): OvernightRun {
+  // Live events may have arrived before the IPC response. Never replace a newer snapshot.
+  updateBoard(run.conversationId, (board) => {
+    const current = board.overnight[run.id];
+    return current && current !== before ? board : { ...board, overnight: { ...board.overnight, [run.id]: run } };
+  });
+  return run;
+}
+
+export const overnightActions: OvernightActions = {
+  async start(command) {
+    const before = seen(command);
+    const { run } = await request({ method: "startOvernight", conversationId: command.conversationId,
+      runId: command.runId, commandId: command.commandId, revision: command.revision });
+    return received(run, before);
+  },
+  async stop(command) {
+    const before = seen(command);
+    const { run } = await request({ method: "stopOvernight", conversationId: command.conversationId,
+      runId: command.runId, commandId: command.commandId });
+    return received(run, before);
+  },
+  async continue(command, words) {
+    const before = seen(command);
+    const { run } = await request({ method: "continueOvernight", conversationId: command.conversationId,
+      runId: command.runId, commandId: command.commandId, words });
+    return received(run, before);
+  },
+  async merge(command, verifiedSha) {
+    const before = seen(command);
+    const { run } = await request({ method: "mergeOvernight", conversationId: command.conversationId,
+      runId: command.runId, commandId: command.commandId, verifiedCommit: verifiedSha });
+    return received(run, before);
+  },
+  openReport(conversationId, messageId) {
+    void (async () => {
+      const selection = useApp.getState().selection;
+      if (selection.type !== "conversation" || selection.id !== conversationId) openConversation(conversationId);
+      await switchBranch(conversationId, messageId);
+      await loadConversation(conversationId);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const message = document.getElementById(`message-${messageId}`);
+        message?.scrollIntoView({ block: "center" });
+        message?.focus({ preventScroll: true });
+      }));
+    })().catch((error: unknown) => toast(String(error), { tone: "error" }));
+  },
+  async setUpLidClosed() {
+    await setKeepAwakeLidClosed(true);
+  },
+};
 
 export function overnightCommand(run: OvernightRun): OvernightCommand {
   return {

@@ -9,6 +9,7 @@ import {
   restrictionLines,
   type OvernightActions,
   type OvernightCardModel,
+  type OvernightCommand,
 } from "@/app/conversation/overnightAdapter";
 import {
   AgentPlan,
@@ -40,6 +41,7 @@ export function OvernightPlanCard({
   const { run, details } = model;
   const action = useAction();
   const locked = useRef(false);
+  const retryCommands = useRef(new Map<string, OvernightCommand>());
   const [stopped, setStopped] = useState(false);
   const proposed = run.state === "proposed";
   const finished = run.state === "finished";
@@ -47,13 +49,16 @@ export function OvernightPlanCard({
   const running = !proposed && !finished && run.state !== "superseded";
   const restrictions = restrictionLines(run);
   const power = proposed ? details.power : undefined;
-  const send = (job: () => Promise<unknown>, stop = false) => {
-    // A double click cannot issue two commands before React has rendered busy state.
+  const send = (kind: string, job: (command: OvernightCommand) => Promise<unknown>, stop = false) => {
     if (locked.current) return;
     locked.current = true;
+    const key = `${run.id}:${run.revision}:${run.generation}:${kind}`;
+    const command = retryCommands.current.get(key) ?? overnightCommand(run);
+    retryCommands.current.set(key, command);
     action.run(async () => {
       try {
-        await job();
+        await job(command);
+        retryCommands.current.delete(key);
         if (stop) setStopped(true);
       } finally {
         locked.current = false;
@@ -63,6 +68,7 @@ export function OvernightPlanCard({
   const steps: AgentPlanStep[] = run.phases.map((phase) => {
     const progress = details.phaseProgress[phase.id];
     const quota = progress?.quota;
+    const workerTaskIds = progress?.workerTaskIds;
     const status = quota
       ? `Waiting for ${quota.provider} limits · resets ${new Date(quota.resetsAtMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
       : progress?.fixRound
@@ -95,9 +101,9 @@ export function OvernightPlanCard({
               </ul>
             </div>
           )}
-          {Boolean(progress?.workerTaskIds?.length) && (
+          {Boolean(workerTaskIds?.length) && (
             <div className="flex flex-wrap gap-1">
-              {progress?.workerTaskIds?.map((id) => (
+              {workerTaskIds?.map((id) => (
                 <WorkerChip key={id} taskId={id} />
               ))}
             </div>
@@ -153,7 +159,7 @@ export function OvernightPlanCard({
                   type="button"
                   size="sm"
                   disabled={action.busy || run.problems.length > 0}
-                  onClick={() => send(() => actions.start(overnightCommand(run)))}
+                  onClick={() => send("start", actions.start)}
                 >
                   Start
                 </Button>
@@ -164,7 +170,7 @@ export function OvernightPlanCard({
                   size="sm"
                   variant="outline"
                   disabled={action.busy || ending || stopped}
-                  onClick={() => send(() => actions.stop(overnightCommand(run)), true)}
+                  onClick={() => send("stop", actions.stop, true)}
                 >
                   {stopped ? "Stopping" : "Stop"}
                 </Button>
@@ -186,13 +192,13 @@ export function OvernightPlanCard({
                   <Button
                     type="button"
                     size="sm"
-                    disabled={action.busy || !details.verifiedSha}
+                    disabled={action.busy || !details.verifiedSha || run.merged?.verifiedCommit === details.verifiedSha}
                     onClick={() =>
                       details.verifiedSha &&
-                      send(() => actions.merge(overnightCommand(run), details.verifiedSha!))
+                      send("merge", (command) => actions.merge(command, details.verifiedSha!))
                     }
                   >
-                    Merge
+                    {run.merged?.verifiedCommit === details.verifiedSha ? "Merged" : "Merge"}
                   </Button>
                   {details.remainingPhaseIds.length > 0 && (
                     <Button
@@ -201,7 +207,7 @@ export function OvernightPlanCard({
                       variant="outline"
                       disabled={action.busy}
                       onClick={() =>
-                        send(() => actions.continue(overnightCommand(run), "continue until done"))
+                        send("continue", (command) => actions.continue(command, "continue until done"))
                       }
                     >
                       Continue
@@ -213,6 +219,11 @@ export function OvernightPlanCard({
           )}
           {finished && !details.verifiedSha && (
             <p className="text-muted-foreground text-xs">No verified work to merge yet.</p>
+          )}
+          {finished && run.notification?.deliveryError && (
+            <p role="status" className="text-muted-foreground text-xs">
+              Notification couldn’t be delivered: {run.notification.deliveryError}
+            </p>
           )}
           {action.error && (
             <p role="alert" className="text-destructive text-xs">
@@ -237,6 +248,13 @@ export function OvernightPlanCard({
               {run.directives.deadline.time.localTime} ({run.directives.deadline.time.timeZone})
             </p>
           )}
+          {(run.rules || run.sources.length > 0) && (
+            <details className="text-muted-foreground">
+              <summary className="cursor-pointer">Rules and sources</summary>
+              {run.rules && <p className="whitespace-pre-wrap">{run.rules}</p>}
+              {run.sources.map((source) => <p key={source.path}>{source.path}{source.sections ? ` · ${source.sections}` : ""}</p>)}
+            </details>
+          )}
           {restrictions.map((line) => (
             <p key={line}>{line}</p>
           ))}
@@ -257,7 +275,7 @@ export function OvernightPlanCard({
               size="xs"
               className="self-start px-0"
               disabled={action.busy}
-              onClick={() => send(actions.setUpLidClosed)}
+              onClick={() => send("lid", actions.setUpLidClosed)}
             >
               Set up lid-closed running
             </Button>

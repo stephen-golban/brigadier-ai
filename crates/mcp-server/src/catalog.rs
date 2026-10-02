@@ -5,9 +5,10 @@ use std::sync::{Arc, OnceLock};
 
 use brigadier_core::tools::{
     AcceptTask, AskOrchestrator, AskUser, ChatCall, CodeRefs, CodeSearch, DelegateTask,
-    FinishSession, JobCall, MessageWorker, NoteForUser, OrchestratorCall, PhaseDone, ProposePhases,
-    ProposePlan, QueryBrain, ReadArtifact, RecordNodes, Remember, ReportRef, RequestApproval, Role,
-    RouteFollowUp, SaveMemory, SearchTranscript, SubmitReport, TaskRef, ToolCall, WorkerCall,
+    FinishSession, JobCall, MessageWorker, NoteForUser, OrchestratorCall, PhaseDone,
+    ProposeOvernight, ProposePhases, ProposePlan, QueryBrain, ReadArtifact, RecordNodes, Remember,
+    ReportRef, RequestApproval, Role, RouteFollowUp, SaveMemory, SearchTranscript, SubmitReport,
+    TaskRef, ToolCall, WorkerCall,
 };
 use rmcp::model::{JsonObject, Tool};
 use serde::de::DeserializeOwned;
@@ -205,6 +206,11 @@ fn orchestrator_tools() -> Vec<Tool> {
         ),
         tool("propose_plan", PROPOSE_PLAN, input_schema::<ProposePlan>()),
         tool(
+            "propose_overnight",
+            "Fill the user's unstarted overnight proposal from their brief or source files. Keep source phase numbers, dependencies, done-when and Rules verbatim; no invented scope. A bare goal keeps empty phases for Phase 0. Does not start, review or implement anything: only the user's Start does that. Use the run_id and revision from the proposal briefing.",
+            input_schema::<ProposeOvernight>(),
+        ),
+        tool(
             "request_approval",
             REQUEST_APPROVAL,
             input_schema::<RequestApproval>(),
@@ -323,6 +329,7 @@ pub fn parse_call(
                 "list_tasks" => OrchestratorCall::ListTasks,
                 "phase_done" => OrchestratorCall::PhaseDone(args(name, arguments)?),
                 "propose_phases" => OrchestratorCall::ProposePhases(args(name, arguments)?),
+                "propose_overnight" => OrchestratorCall::ProposeOvernight(args(name, arguments)?),
                 _ => return Err(unknown()),
             };
             Ok(ToolCall::Orchestrator(call))

@@ -279,7 +279,7 @@ impl SessionManager {
                 Ok("Asked the user. The decision arrives later as a message.".into())
             }
             OrchestratorCall::AcceptTask(args) => {
-                self.check_plan_mode(id)?;
+                self.check_plan_mode(id).await?;
                 let task = self.find_task(id, &args.task).await?;
                 let task_id = task.id.clone();
                 let reply = self
@@ -290,12 +290,13 @@ impl SessionManager {
                 Ok(reply)
             }
             OrchestratorCall::FinishSession(args) => {
-                self.check_plan_mode(id)?;
+                self.check_plan_mode(id).await?;
                 self.finish_session(id, args.message).await
             }
             OrchestratorCall::NoteForUser(args) => self.note_for_user(id, args).await,
             OrchestratorCall::PhaseDone(args) => self.phase_done(id, args).await,
             OrchestratorCall::ProposePhases(args) => self.propose_phases(id, args).await,
+            OrchestratorCall::ProposeOvernight(args) => self.interpret_overnight(id, args).await,
             OrchestratorCall::ListTasks => {
                 let tasks = self.core.tasks(id).await?;
                 if tasks.is_empty() {
@@ -469,7 +470,8 @@ impl SessionManager {
 
     /// In plan mode nothing changes until the user approves a plan: write tasks, accepting
     /// and finishing are refused, whatever the permission level.
-    fn check_plan_mode(&self, id: &ConversationId) -> Result<()> {
+    async fn check_plan_mode(&self, id: &ConversationId) -> Result<()> {
+        self.check_overnight_proposal(id).await?;
         if self.plan_mode(id) {
             return Err(Error::Invalid(
                 "Plan mode is on: change nothing yet. Scouts and research may look around; call propose_plan and wait for the user's decision. Implement and merge tasks, accept_task and finish_session work again once the user approves a plan.".into(),
@@ -482,7 +484,7 @@ impl SessionManager {
     /// decision on a newer plan still open. Otherwise they wait while a plan of their request
     /// is in its review, or being revised after it.
     async fn check_plan_gate(&self, id: &ConversationId) -> Result<()> {
-        self.check_plan_mode(id)?;
+        self.check_plan_mode(id).await?;
         let conversation = self.core.conversation(id)?;
         if !matches!(conversation.setup, Some(Setup::Session { .. })) {
             return Ok(());

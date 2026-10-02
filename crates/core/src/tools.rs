@@ -475,6 +475,40 @@ pub struct ProposePhases {
     pub responses: Vec<String>,
 }
 
+/// `propose_overnight`: interpret a user's unstarted proposal; it cannot Start a run.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposeOvernight {
+    pub run_id: String,
+    pub revision: u32,
+    pub name: String,
+    pub goal: String,
+    /// Rules and settled decisions from the source, verbatim.
+    pub rules: String,
+    /// Source phase numbers, scope, dependencies and done-when, without invented work.
+    pub phases: Vec<OvernightPhaseInput>,
+    #[serde(default)]
+    pub sources: Vec<OvernightSourceInput>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OvernightPhaseInput {
+    pub number: Option<u32>,
+    pub name: String,
+    pub scope: String,
+    pub done_when: Vec<String>,
+    #[serde(default)]
+    pub depends_on: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OvernightSourceInput {
+    pub path: String,
+    pub sections: Option<String>,
+}
+
 /// A tool call from an orchestrator.
 #[derive(Debug, Clone)]
 pub enum OrchestratorCall {
@@ -496,6 +530,7 @@ pub enum OrchestratorCall {
     ListTasks,
     PhaseDone(PhaseDone),
     ProposePhases(ProposePhases),
+    ProposeOvernight(ProposeOvernight),
 }
 
 impl OrchestratorCall {
@@ -520,6 +555,7 @@ impl OrchestratorCall {
             Self::ListTasks => "list_tasks",
             Self::PhaseDone(_) => "phase_done",
             Self::ProposePhases(_) => "propose_phases",
+            Self::ProposeOvernight(_) => "propose_overnight",
         }
     }
 }

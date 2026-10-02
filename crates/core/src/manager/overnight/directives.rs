@@ -59,6 +59,30 @@ impl Clock {
     }
 }
 
+/// The intent is read only from the user's prose, never examples/code/quoted sources.
+pub(crate) fn unattended(text: &str) -> bool {
+    let prose = String::from_utf8_lossy(&mask(text)).to_lowercase();
+    let words: Vec<_> = prose.split_whitespace().collect();
+    if words.first() == Some(&"/overnight") {
+        return true;
+    }
+    (words
+        .iter()
+        .any(|word| matches!(*word, "tonight" | "overnight" | "unattended"))
+        && words.iter().any(|word| {
+            matches!(
+                *word,
+                "work" | "run" | "implement" | "build" | "finish" | "continue"
+            )
+        }))
+        || prose.contains("by morning")
+}
+
+pub(crate) fn continuation(text: &str) -> bool {
+    let prose = String::from_utf8_lossy(&mask(text)).trim().to_lowercase();
+    prose == "continue" || prose.starts_with("continue ")
+}
+
 /// Reads the restrictions in `text`.
 pub fn parse(text: &str, clock: &Clock) -> Parsed {
     let prose = mask(text);
