@@ -230,7 +230,9 @@ export function deadlineLabel(model: OvernightCardModel): string {
     return `until ${new Date(details.reportReadyAtMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
   }
   // A duration on an unstarted proposal has no fixed wall-clock deadline yet.
-  return `for ${deadline.minutes % 60 === 0 ? `${deadline.minutes / 60} hours` : `${deadline.minutes} minutes`}`;
+  const hours = deadline.minutes / 60;
+  if (deadline.minutes % 60 === 0) return `for ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  return `for ${deadline.minutes} ${deadline.minutes === 1 ? "minute" : "minutes"}`;
 }
 
 export function restrictionLines(run: OvernightRun): string[] {
