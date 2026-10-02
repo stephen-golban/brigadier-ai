@@ -7,6 +7,7 @@ import type { Directives } from "./Directives";
 import type { OvernightPhase } from "./OvernightPhase";
 import type { OvernightRunId } from "./OvernightRunId";
 import type { OvernightState } from "./OvernightState";
+import type { PlanningPhase } from "./PlanningPhase";
 import type { RunWorkspace } from "./RunWorkspace";
 import type { SourceSnapshot } from "./SourceSnapshot";
 import type { StopReason } from "./StopReason";
@@ -68,7 +69,16 @@ windDownAtMs: number | null,
 /**
  * Its branch and worktree, once Start made them.
  */
-workspace: RunWorkspace | null, stop: StopReason | null, 
+workspace: RunWorkspace | null, 
+/**
+ * Phase 0, for a bare goal.
+ */
+planning: PlanningPhase | null, 
+/**
+ * The newest commit of the run branch whose every phase up to it is verified: the
+ * card's Merge takes this, never the branch's head.
+ */
+verifiedCommit: string | null, stop: StopReason | null, 
 /**
  * The last commands applied, newest last.
  */

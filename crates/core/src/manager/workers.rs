@@ -746,6 +746,45 @@ impl SessionManager {
         floor: Option<QualityTier>,
         needs: Vec<brigadier_router::Capability>,
     ) -> Result<Task> {
+        self.create_task_as(
+            conversation_id,
+            title,
+            kind,
+            spec,
+            pin,
+            avoid,
+            distinct_from,
+            gate_link,
+            subject,
+            attachments,
+            areas,
+            floor,
+            needs,
+            TaskExtra::default(),
+        )
+        .await
+    }
+
+    /// [`Self::create_task`], with what only Brigadier's own tasks set (an overnight run's
+    /// whole-phase checks and judge).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_task_as(
+        &self,
+        conversation_id: &ConversationId,
+        title: String,
+        kind: TaskKind,
+        spec: String,
+        pin: Option<brigadier_router::Pin>,
+        avoid: Option<brigadier_router::Author>,
+        distinct_from: Vec<brigadier_router::Author>,
+        gate_link: Option<GateLink>,
+        subject: Option<Task>,
+        attachments: Vec<AttachmentRef>,
+        areas: Option<Vec<brigadier_router::Area>>,
+        floor: Option<QualityTier>,
+        needs: Vec<brigadier_router::Capability>,
+        extra: TaskExtra,
+    ) -> Result<Task> {
         self.admit()?;
         let conversation = self.core.conversation(conversation_id)?;
         if !matches!(conversation.setup, Some(Setup::Session { .. })) {
@@ -762,9 +801,23 @@ impl SessionManager {
                 "The overnight run's branch and worktree are still being made; try again in a moment.".into(),
             ));
         }
-        let run =
-            super::overnight::policy::ActiveRun::context_for(active_run.as_ref(), subject.as_ref());
-        let category = category(kind);
+        // Phase 0 only writes the plan: nothing changes the code before its phases are judged.
+        if kind.writes()
+            && extra.run.is_none()
+            && active_run.as_ref().is_some_and(|active| active.planning)
+        {
+            return Err(Error::Invalid(
+                "Phase 0 of this overnight run only writes the plan: propose its phases with propose_phases. Scouts and research may look around; nothing is changed before the phases are reviewed and judged.".into(),
+            ));
+        }
+        let run = match extra.run {
+            Some(run) => Some(run),
+            None => super::overnight::policy::ActiveRun::context_for(
+                active_run.as_ref(),
+                subject.as_ref(),
+            ),
+        };
+        let category = extra.category.unwrap_or_else(|| category(kind));
         let areas = areas.unwrap_or_else(|| brigadier_router::infer_areas(&spec));
         let floor = floor.unwrap_or_else(|| brigadier_router::default_floor(category));
         let (preview, trial_slot) = self
@@ -841,10 +894,11 @@ impl SessionManager {
                 .and_then(|board| board.plans.get(plan_id)?.request_id.clone()),
             _ => None,
         };
-        let request_id = match (&subject, plan_request) {
-            (Some(subject), _) => subject.request_id.clone(),
-            (None, Some(request)) => Some(request),
-            (None, None) => self.request_for(conversation_id, None).await,
+        let request_id = match (&subject, plan_request, extra.request) {
+            (_, _, Some(request)) => Some(request),
+            (Some(subject), _, None) => subject.request_id.clone(),
+            (None, Some(request), None) => Some(request),
+            (None, None, None) => self.request_for(conversation_id, None).await,
         };
         let task = Task {
             id: TaskId::generate(),
@@ -1417,6 +1471,11 @@ impl SessionManager {
             (TaskKind::Merge, Some(subject)) => {
                 let (base, start) = self.merge_start(subject).await?;
                 (base, start, false)
+            }
+            // A whole-phase check looks at the phase's candidate exactly.
+            _ if let Some(candidate) = task.run.as_ref().and_then(|run| run.candidate.clone()) => {
+                let commit = Oid(candidate);
+                (commit.clone(), commit, false)
             }
             // A run's workers start from its branch's tip, never the user's uncommitted files.
             _ if run_branch.is_some() => {
@@ -3469,6 +3528,19 @@ pub(crate) fn needs_of(
 }
 
 /// The router's category for a task kind.
+/// What only Brigadier sets on a task it makes itself.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TaskExtra {
+    /// Its overnight run context, instead of the one the session's active run gives.
+    pub run: Option<crate::overnight::RunTaskContext>,
+    /// The routing category, instead of the one its kind maps to (a phase's judge routes as
+    /// orchestration).
+    pub category: Option<brigadier_router::TaskCategory>,
+    /// The request it belongs to, instead of the one the orchestrator serves now (a phase's
+    /// checks belong to the phase).
+    pub request: Option<String>,
+}
+
 pub(crate) fn category(kind: TaskKind) -> brigadier_router::TaskCategory {
     use brigadier_router::TaskCategory;
     match kind {

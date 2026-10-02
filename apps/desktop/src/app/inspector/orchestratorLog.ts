@@ -45,6 +45,7 @@ export const KIND_LABELS: Record<InjectionKind, string> = {
   followUp: "follow-up",
   briefing: "briefing",
   reminder: "reminder",
+  phase: "overnight phase",
 };
 
 export function groupOf(kind: InjectionKind): InjectionGroup {

@@ -5,9 +5,9 @@ use std::sync::{Arc, OnceLock};
 
 use brigadier_core::tools::{
     AcceptTask, AskOrchestrator, AskUser, ChatCall, CodeRefs, CodeSearch, DelegateTask,
-    FinishSession, JobCall, MessageWorker, NoteForUser, OrchestratorCall, ProposePlan, QueryBrain,
-    ReadArtifact, RecordNodes, Remember, ReportRef, RequestApproval, Role, RouteFollowUp,
-    SaveMemory, SearchTranscript, SubmitReport, TaskRef, ToolCall, WorkerCall,
+    FinishSession, JobCall, MessageWorker, NoteForUser, OrchestratorCall, PhaseDone, ProposePhases,
+    ProposePlan, QueryBrain, ReadArtifact, RecordNodes, Remember, ReportRef, RequestApproval, Role,
+    RouteFollowUp, SaveMemory, SearchTranscript, SubmitReport, TaskRef, ToolCall, WorkerCall,
 };
 use rmcp::model::{JsonObject, Tool};
 use serde::de::DeserializeOwned;
@@ -73,6 +73,20 @@ architectural plans. Under \"Approve for me\" a plan of two or more steps is rev
 independently first; when the review asks for changes, propose the revised plan with \
 `revises` (the plan's id) and one response per finding (\"F1 accepted: …\", \"F2 declined: \
 why\").";
+
+const PHASE_DONE: &str = "Only while you lead a phase of an overnight run: say the phase's \
+work is done, or as done as it can get without the user. Call it once every task of the phase \
+has landed or ended (nothing of it may still run, wait for checks or wait to be accepted). \
+Brigadier then checks the whole phase with a fresh verifier, a reviewer from another vendor and \
+a fresh judge; the outcome arrives later as a message. After its checks sent you findings, \
+call it again once they are fixed, with one response per finding.";
+
+const PROPOSE_PHASES: &str = "Only in Phase 0 of an overnight run (the user gave a goal \
+without a plan): propose the plan's phases, each with its exact scope, \"done when\" criteria \
+anyone can check, and the phases it builds on. It is reviewed by another vendor and judged \
+against the user's goal before any phase starts; nothing beyond the goal belongs in it. When \
+the review asks for changes, propose the revision with `revises` and one response per \
+finding.";
 
 const REQUEST_APPROVAL: &str = "Ask the user to approve an action Brigadier cannot see on its \
 own. Returns at once; the decision arrives later as a message.";
@@ -207,6 +221,12 @@ fn orchestrator_tools() -> Vec<Tool> {
             input_schema::<NoteForUser>(),
         ),
         tool("list_tasks", LIST_TASKS, no_arguments()),
+        tool("phase_done", PHASE_DONE, input_schema::<PhaseDone>()),
+        tool(
+            "propose_phases",
+            PROPOSE_PHASES,
+            input_schema::<ProposePhases>(),
+        ),
     ]
 }
 
@@ -301,6 +321,8 @@ pub fn parse_call(
                 "finish_session" => OrchestratorCall::FinishSession(args(name, arguments)?),
                 "note_for_user" => OrchestratorCall::NoteForUser(args(name, arguments)?),
                 "list_tasks" => OrchestratorCall::ListTasks,
+                "phase_done" => OrchestratorCall::PhaseDone(args(name, arguments)?),
+                "propose_phases" => OrchestratorCall::ProposePhases(args(name, arguments)?),
                 _ => return Err(unknown()),
             };
             Ok(ToolCall::Orchestrator(call))

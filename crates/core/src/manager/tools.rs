@@ -294,6 +294,8 @@ impl SessionManager {
                 self.finish_session(id, args.message).await
             }
             OrchestratorCall::NoteForUser(args) => self.note_for_user(id, args).await,
+            OrchestratorCall::PhaseDone(args) => self.phase_done(id, args).await,
+            OrchestratorCall::ProposePhases(args) => self.propose_phases(id, args).await,
             OrchestratorCall::ListTasks => {
                 let tasks = self.core.tasks(id).await?;
                 if tasks.is_empty() {
@@ -526,6 +528,19 @@ impl SessionManager {
         id: &ConversationId,
         args: crate::tools::ProposePlan,
     ) -> Result<String> {
+        self.propose_plan_reviewed(id, args, false)
+            .await
+            .map(|(reply, _)| reply)
+    }
+
+    /// [`Self::propose_plan`]; `reviewed`: the plan is reviewed by another vendor even with one
+    /// step (an overnight run's Phase 0). Returns the reply and the plan's id.
+    pub(crate) async fn propose_plan_reviewed(
+        &self,
+        id: &ConversationId,
+        args: crate::tools::ProposePlan,
+        reviewed: bool,
+    ) -> Result<(String, Option<CardId>)> {
         use super::plan_gates::{
             PLAN_ROUNDS, parse_responses, repeats_rejected, review_round, reviewers_for,
         };
@@ -658,7 +673,7 @@ impl SessionManager {
                 && board.plans.values().any(|p| {
                     matches!(p.state, PlanState::Approved { .. }) && p.request_id == request_id
                 });
-            let reviewers = reviewers_for(&plan, &board.plans);
+            let reviewers = reviewers_for(&plan, &board.plans).max(usize::from(reviewed));
             let round = review_round(&plan, &board.plans);
             if reviewers == 0 && !user_decides {
                 plan.state = PlanState::Approved {
@@ -688,11 +703,14 @@ impl SessionManager {
                 )
                 .await;
             }
-            return Ok(if user_decides {
-                "The plan is shown to the user. Wait for their decision (it arrives as a message) before starting implement or merge tasks.".into()
-            } else {
-                "Approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.".into()
-            });
+            return Ok((
+                if user_decides {
+                    "The plan is shown to the user. Wait for their decision (it arrives as a message) before starting implement or merge tasks.".into()
+                } else {
+                    "Approved on the user's behalf. Go ahead, and pass each step's number as `step` when you delegate it.".into()
+                },
+                Some(plan.id),
+            ));
         }
         let started = match self
             .open_plan_gate(&plan, round, Vec::new(), reviewers, !user_decides)
@@ -700,8 +718,11 @@ impl SessionManager {
         {
             Ok(started) => started,
             Err(err) if user_decides => {
-                return Ok(format!(
-                    "The plan is shown to the user (its independent review could not start: {err}). Wait for their decision (it arrives as a message) before starting implement or merge tasks."
+                return Ok((
+                    format!(
+                        "The plan is shown to the user (its independent review could not start: {err}). Wait for their decision (it arrives as a message) before starting implement or merge tasks."
+                    ),
+                    Some(plan.id),
                 ));
             }
             Err(err) => {
@@ -735,15 +756,18 @@ impl SessionManager {
         } else {
             format!("An independent reviewer ({who}) checks the plan")
         };
-        Ok(if user_decides {
-            format!(
-                "The plan is shown to the user. {reviewed}; its findings show on the user's card. Wait for the user's decision (it arrives as a message) before starting implement or merge tasks."
-            )
-        } else {
-            format!(
-                "{reviewed} before Brigadier approves it on the user's behalf. The outcome arrives as a message; don't start write tasks before it."
-            )
-        })
+        Ok((
+            if user_decides {
+                format!(
+                    "The plan is shown to the user. {reviewed}; its findings show on the user's card. Wait for the user's decision (it arrives as a message) before starting implement or merge tasks."
+                )
+            } else {
+                format!(
+                    "{reviewed} before Brigadier approves it on the user's behalf. The outcome arrives as a message; don't start write tasks before it."
+                )
+            },
+            Some(plan.id),
+        ))
     }
 
     /// `note_for_user`: a judgement call for "Decided for you", or something only the user

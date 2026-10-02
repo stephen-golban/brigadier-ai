@@ -3,4 +3,4 @@
 /**
  * What a task does for a run.
  */
-export type RunRole = "worker" | "check";
+export type RunRole = "worker" | "check" | "phaseVerifier" | "phaseReviewer" | "judge";

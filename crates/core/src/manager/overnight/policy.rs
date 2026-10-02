@@ -25,6 +25,10 @@ pub(crate) struct ActiveRun {
     pub workspace: Option<RunWorkspace>,
     /// "max N workers": its tasks executing at once.
     pub max_workers: Option<u32>,
+    /// The phase being worked on now (`phase-0` while Phase 0 writes the plan).
+    pub phase_id: Option<String>,
+    /// Phase 0: only the plan is written, nothing changes yet.
+    pub planning: bool,
 }
 
 /// The active run of each session that has one. Kept in step with every recorded run, and
@@ -55,6 +59,8 @@ impl ActiveRuns {
                     rules_hash: rules_hash(&run.rules),
                     workspace: run.workspace.clone(),
                     max_workers: run.directives.max_workers,
+                    phase_id: current_phase(run),
+                    planning: run.state == crate::overnight::OvernightState::Planning,
                 },
             );
         } else if active
@@ -66,24 +72,50 @@ impl ActiveRuns {
     }
 }
 
+/// The phase a run works on now: Phase 0 while it plans, else the one running or checked.
+fn current_phase(run: &OvernightRun) -> Option<String> {
+    if run.state == crate::overnight::OvernightState::Planning {
+        return Some(PLANNING_PHASE.into());
+    }
+    run.phases
+        .iter()
+        .find(|phase| {
+            matches!(
+                phase.state,
+                crate::overnight::PhaseState::Running | crate::overnight::PhaseState::Checking
+            )
+        })
+        .map(|phase| phase.id.clone())
+}
+
+/// Phase 0's id.
+pub(crate) const PLANNING_PHASE: &str = "phase-0";
+
 impl ActiveRun {
     /// The context a task made now gets: a check of another task's change inherits that
     /// task's run (or none: checks of work from before the run stay the session's), anything
-    /// else works for the run.
+    /// else works for the run's current phase.
     pub fn context_for(active: Option<&Self>, subject: Option<&Task>) -> Option<RunTaskContext> {
         match subject {
             Some(subject) => subject.run.clone().map(|run| RunTaskContext {
                 role: RunRole::Check,
+                candidate: None,
                 ..run
             }),
-            None => active.map(|active| RunTaskContext {
-                run_id: active.id.clone(),
-                segment: active.segment,
-                phase_id: None,
-                generation: active.generation,
-                role: RunRole::Worker,
-                rules_hash: active.rules_hash.clone(),
-            }),
+            None => active.map(|active| active.context(RunRole::Worker)),
+        }
+    }
+
+    /// A task of the run's current phase in `role`.
+    pub fn context(&self, role: RunRole) -> RunTaskContext {
+        RunTaskContext {
+            run_id: self.id.clone(),
+            segment: self.segment,
+            phase_id: self.phase_id.clone(),
+            generation: self.generation,
+            role,
+            rules_hash: self.rules_hash.clone(),
+            candidate: None,
         }
     }
 }

@@ -687,6 +687,11 @@ impl SessionManager {
                                 .plans
                                 .get(plan_id)
                                 .map(|p| format!("the plan \u{201c}{}\u{201d}", p.title)),
+                            Some(GateOwner::Phase { run_id, phase_id }) => board
+                                .runs
+                                .get(run_id)
+                                .and_then(|run| run.phase(phase_id))
+                                .map(|p| format!("phase {} of the overnight run", p.number)),
                             None => None,
                         }
                         .unwrap_or_else(|| "a change".into());

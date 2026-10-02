@@ -7,7 +7,9 @@
 //! app sends these commands; worker and orchestrator grants can't.
 
 pub(crate) mod admission;
+mod conductor;
 pub mod directives;
+mod phase_gates;
 pub(crate) mod policy;
 mod workspace;
 
@@ -17,8 +19,8 @@ use super::{SessionManager, blocking};
 use crate::board::Board;
 use crate::model::{ConversationId, DomainEvent, OvernightRunId, Setup};
 use crate::overnight::{
-    AppliedCommand, Criterion, Deadline, Directives, OvernightPhase, OvernightRun, OvernightState,
-    PhaseState, ProposedPlan, SourceSnapshot, StopReason,
+    AppliedCommand, Deadline, Directives, OvernightPhase, OvernightRun, OvernightState, PhaseState,
+    ProposedPlan, SourceSnapshot, StopReason,
 };
 use crate::{Error, Result, now_ms};
 use directives::{Clock, PhaseInfo};
@@ -111,6 +113,8 @@ impl SessionManager {
             state: OvernightState::Proposed,
             wind_down_at_ms: None,
             workspace: None,
+            planning: None,
+            verified_commit: None,
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -224,7 +228,18 @@ impl SessionManager {
         run_id: OvernightRunId,
         command_id: String,
     ) -> Result<OvernightRun> {
-        self.change_run(&conversation_id, &run_id, command_id, |run, _| {
+        let stopped = self.stop_run(&conversation_id, &run_id, command_id).await?;
+        self.advance_soon(&conversation_id, &run_id);
+        Ok(stopped)
+    }
+
+    async fn stop_run(
+        &self,
+        conversation_id: &ConversationId,
+        run_id: &OvernightRunId,
+        command_id: String,
+    ) -> Result<OvernightRun> {
+        self.change_run(conversation_id, run_id, command_id, |run, _| {
             match run.state {
                 OvernightState::Proposed => {
                     run.state = OvernightState::Superseded;
@@ -260,7 +275,24 @@ impl SessionManager {
         command_id: String,
         words: String,
     ) -> Result<OvernightRun> {
-        self.change_run(&conversation_id, &run_id, command_id, |run, board| {
+        let steered = self
+            .steer_run(&conversation_id, &run_id, command_id, words)
+            .await?;
+        // A new restriction applies at the next boundary (a stop directive already reached).
+        if steered.state.is_active() {
+            self.advance_soon(&conversation_id, &run_id);
+        }
+        Ok(steered)
+    }
+
+    async fn steer_run(
+        &self,
+        conversation_id: &ConversationId,
+        run_id: &OvernightRunId,
+        command_id: String,
+        words: String,
+    ) -> Result<OvernightRun> {
+        self.change_run(conversation_id, run_id, command_id, |run, board| {
             if run.state.is_final() || run.state == OvernightState::Reporting {
                 return Err(Error::Invalid(
                     "This run has ended. Say \"continue\" to plan the rest.".into(),
@@ -366,11 +398,24 @@ impl SessionManager {
             .phases
             .iter()
             .cloned()
-            .map(|mut phase| {
-                if phase.state != PhaseState::Verified {
-                    phase.state = PhaseState::Pending;
+            .map(|phase| {
+                if phase.state == PhaseState::Verified {
+                    return phase;
                 }
-                phase
+                // Worked again from the start, with the same criteria; what it lacked stays
+                // in view for its next lead.
+                OvernightPhase {
+                    done_when: phase.done_when.clone(),
+                    gaps: phase.gaps.clone(),
+                    summary: phase.summary.clone(),
+                    ..OvernightPhase::new(
+                        phase.number,
+                        &phase.name,
+                        &phase.scope,
+                        &[],
+                        &phase.depends_on,
+                    )
+                }
             })
             .collect();
         if !phases.is_empty()
@@ -415,6 +460,7 @@ impl SessionManager {
             generation: 0,
             state: OvernightState::Proposed,
             wind_down_at_ms: None,
+            planning: None,
             stop: None,
             commands: vec![AppliedCommand {
                 id: command_id,
@@ -539,6 +585,7 @@ impl SessionManager {
                 now.finished_at_ms = Some(now_ms());
             }
         }
+        let (conversation_id, run_id) = (now.conversation_id.clone(), now.id.clone());
         if let Err(err) = self
             .record_runs(
                 &run.conversation_id,
@@ -547,7 +594,10 @@ impl SessionManager {
             .await
         {
             tracing::warn!(run = %run.id, error = %err, "could not record an overnight run");
+            return;
         }
+        // Its first phase (or Phase 0) starts once the lock is free.
+        self.advance_soon(&conversation_id, &run_id);
     }
 
     /// Reads the plan's source files as they are now, into the blob store. A file that can't
@@ -598,24 +648,13 @@ fn phases_of(plan: &ProposedPlan) -> Vec<OvernightPhase> {
         .iter()
         .enumerate()
         .map(|(index, phase)| {
-            let number = phase.number.unwrap_or(index as u32 + 1);
-            OvernightPhase {
-                id: format!("phase-{number}"),
-                number,
-                name: phase.name.trim().to_owned(),
-                scope: phase.scope.clone(),
-                done_when: phase
-                    .done_when
-                    .iter()
-                    .enumerate()
-                    .map(|(at, text)| Criterion {
-                        id: format!("p{number}-c{}", at + 1),
-                        text: text.clone(),
-                    })
-                    .collect(),
-                depends_on: phase.depends_on.clone(),
-                state: PhaseState::Pending,
-            }
+            OvernightPhase::new(
+                phase.number.unwrap_or(index as u32 + 1),
+                &phase.name,
+                &phase.scope,
+                &phase.done_when,
+                &phase.depends_on,
+            )
         })
         .collect()
 }

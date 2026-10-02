@@ -322,12 +322,17 @@ impl SessionManager {
                 self.plan_member_done(member, plan_id, &link, None).await;
                 return;
             }
+            GateOwner::Phase { run_id, phase_id } => {
+                self.phase_member_done(member, run_id, phase_id, &link, None)
+                    .await;
+                return;
+            }
         };
         let Some(report) = &member.report else {
             return;
         };
         let result = match link.role {
-            GateRole::Review => review_result(report),
+            GateRole::Review | GateRole::Judge => review_result(report),
             GateRole::Verify => match self.verifier_changes(member).await {
                 Some(changed) => GateResult::NoResult {
                     reason: format!(
@@ -363,6 +368,11 @@ impl SessionManager {
                     .await;
                 return;
             }
+            GateOwner::Phase { run_id, phase_id } => {
+                self.phase_member_done(member, run_id, phase_id, &link, Some(reason))
+                    .await;
+                return;
+            }
         };
         let result = GateResult::NoResult {
             reason: format!(
@@ -377,7 +387,7 @@ impl SessionManager {
 
     /// What a verifier changed in its checkout: tracked files, a new file git doesn't ignore,
     /// or another commit. `None` when its checkout is still exactly the commit it checked.
-    async fn verifier_changes(&self, member: &Task) -> Option<String> {
+    pub(super) async fn verifier_changes(&self, member: &Task) -> Option<String> {
         let workspace = member.workspace.as_ref()?;
         let worktree = std::path::PathBuf::from(workspace.worktree.clone()?);
         let base = Oid(workspace.base.clone()?);
@@ -857,6 +867,9 @@ impl SessionManager {
             GateOwner::Plan { plan_id } => {
                 return self.plan_gate_avoid(member, plan_id, link.round).await;
             }
+            GateOwner::Phase { run_id, phase_id } => {
+                return self.phase_gate_avoid(member, run_id, phase_id).await;
+            }
         };
         let Ok(board) = self.core.board(&member.conversation_id).await else {
             return (None, Vec::new());
@@ -1101,14 +1114,14 @@ fn verify_spec(task: &Task, commit: &str, retry: Option<&String>, plan: Option<&
 
 /// A "done when" line's status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Status {
+pub(super) enum Status {
     Met,
     NotMet,
     NotChecked,
 }
 
 /// A line without its list marker: "- ", "* ", "• ", "2. " or "2) ".
-fn without_marker(line: &str) -> &str {
+pub(super) fn without_marker(line: &str) -> &str {
     let line = line.trim_start_matches(['-', '*', '•', ' ', '\t']);
     let number = line.trim_start_matches(|c: char| c.is_ascii_digit());
     match number.strip_prefix(['.', ')']) {
@@ -1118,7 +1131,7 @@ fn without_marker(line: &str) -> &str {
 }
 
 /// The status a "done when" line starts with ("[met] …"), and whether evidence follows.
-fn criterion_status(line: &str) -> Option<Status> {
+pub(super) fn criterion_status(line: &str) -> Option<Status> {
     let line = without_marker(line).to_lowercase();
     if line.starts_with("[met]") {
         Some(Status::Met)
@@ -1132,14 +1145,14 @@ fn criterion_status(line: &str) -> Option<Status> {
 }
 
 /// The text after a "done when" line's status.
-fn criterion_text(line: &str) -> &str {
+pub(super) fn criterion_text(line: &str) -> &str {
     let line = without_marker(line);
     line.find(']').map_or(line, |end| line[end + 1..].trim())
 }
 
 /// The evidence a "done when" line gives after its criterion ("[met] criterion: evidence",
 /// or a dash instead of the colon), if any.
-fn criterion_evidence(line: &str) -> Option<&str> {
+pub(super) fn criterion_evidence(line: &str) -> Option<&str> {
     let text = criterion_text(line);
     let at = [": ", " — ", " – ", " - ", " -> ", " => "]
         .iter()
@@ -1184,7 +1197,7 @@ fn pre_existing_gap(line: &str) -> Option<(&str, &str)> {
 /// The checks a verifier named under risks as unable to run: those that can't run on the
 /// parent either, for the same reason ("[pre-existing] …", a gap the project already had),
 /// and the others ("[not run] …").
-fn unrun_checks(risks: &[String]) -> (Vec<&String>, Vec<&String>) {
+pub(super) fn unrun_checks(risks: &[String]) -> (Vec<&String>, Vec<&String>) {
     let marked = |line: &String, marker: &str| {
         without_marker(line)
             .get(..marker.len())
@@ -1209,7 +1222,7 @@ fn unrun_checks(risks: &[String]) -> (Vec<&String>, Vec<&String>) {
 /// under risks as "[pre-existing] check: evidence", it doesn't hold the change ("never land
 /// unverified" is about the checks this change could have run). Checks reported `notRun`
 /// never pass, whatever gaps are named beside them.
-fn verify_result(report: &Report, listed: usize) -> GateResult {
+pub(super) fn verify_result(report: &Report, listed: usize) -> GateResult {
     use crate::work::ChecksResult;
     let mut unmet = Vec::new();
     let mut unchecked = Vec::new();
@@ -1398,6 +1411,7 @@ fn role_name(role: GateRole) -> &'static str {
     match role {
         GateRole::Review => "review",
         GateRole::Verify => "verification",
+        GateRole::Judge => "judgement",
     }
 }
 

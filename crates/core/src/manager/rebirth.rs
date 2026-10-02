@@ -106,6 +106,13 @@ const NOTE_HEADINGS: &[&str] = &[
 /// How long a briefing waits for the conversation's Brain writes in flight.
 const LEARN_WAIT: Duration = Duration::from_secs(10);
 
+const PHASE_FRAMING: &str = "[Brigadier briefing: only you see this] You are the orchestrator \
+of this Brigadier session, starting fresh to lead one phase of an overnight run. The user started \
+the run and is away: Brigadier conducts it phase by phase, and you lead this phase only. The \
+phase's scope, its \"done when\" criteria and the user's Rules below are fixed: work within \
+them, add nothing the plan doesn't ask for, and never undo what is settled. Don't greet anyone or \
+mention this briefing.";
+
 const FRAMING: &str = "[Brigadier briefing: only you see this] You are the orchestrator of this \
 Brigadier session, continuing the conversation summarized below. Brigadier replaced your earlier \
 context with this briefing so you have room to work; the user sees one unbroken conversation. \
@@ -164,6 +171,9 @@ pub(crate) struct BriefingPlan {
     pub window: Option<i64>,
     /// When the swap began: the old CLI was retired from here on.
     pub swap_started_at_ms: i64,
+    /// An overnight phase's briefing: the new CLI leads that phase from it alone, without the
+    /// conversation's recent messages (earlier phases' talk must not set its scope).
+    pub phase: Option<String>,
 }
 
 /// A briefing section while it is put together.
@@ -274,6 +284,11 @@ impl SessionManager {
                 &conversation,
                 project.as_ref(),
                 &preferences,
+                self.overnight
+                    .active
+                    .get(id)
+                    .and_then(|active| active.workspace)
+                    .as_ref(),
             )),
             mcp_servers: Vec::new(),
             tools: ToolSet::None,
@@ -367,6 +382,11 @@ impl SessionManager {
         carried: &[Message],
     ) -> (String, RebirthRecord) {
         let generation = self.rebirths(id).await + 1;
+        if let Some(phase) = &plan.phase {
+            return self
+                .phase_briefing(id, provider, model, plan, phase, generation)
+                .await;
+        }
         let handoff = match &plan.prep {
             Some(prep) => prep.note(Duration::ZERO).await,
             None => None,
@@ -544,6 +564,83 @@ impl SessionManager {
         (text, record)
     }
 
+    /// A phase lead's briefing: the phase itself (scope, criteria, Rules, what earlier phases
+    /// verified, the user's own words since Start), the session's settled decisions, the live
+    /// board and the Brain. No handoff note and no recent messages.
+    async fn phase_briefing(
+        &self,
+        id: &ConversationId,
+        provider: ProviderKind,
+        model: Option<String>,
+        plan: &BriefingPlan,
+        phase: &str,
+        generation: u32,
+    ) -> (String, RebirthRecord) {
+        self.learned(id, LEARN_WAIT).await;
+        let (decisions, decisions_in_full) = self.decision_part(id).await;
+        let state = self.state_part(id).await;
+        let mut brain = self.brain_part(id, &[]).await;
+        if brain.text.len() > BRAIN_BUDGET {
+            brain.text = cut(&brain.text, BRAIN_BUDGET);
+            brain.truncated = true;
+        }
+        let parts = [
+            Part::new("framing", PHASE_FRAMING.into(), 0),
+            Part::new("phase", phase.to_owned(), 1),
+            decisions,
+            state,
+            brain,
+            Part::new(
+                "search",
+                "[Older context] search_transcript searches this conversation's whole transcript; query_brain finds decisions, reports and findings; read_report gives a task's report in full.".into(),
+                0,
+            ),
+        ];
+        let text = parts
+            .iter()
+            .filter(|part| !part.text.is_empty())
+            .map(|part| part.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+            + "\n\n[End of briefing]";
+        let sections: Vec<BriefingSection> = parts
+            .iter()
+            .filter(|part| !part.text.is_empty())
+            .map(Part::section)
+            .collect();
+        let briefing_blob = self
+            .core
+            .store()
+            .blobs()
+            .put(text.clone().into_bytes())
+            .await
+            .map(|hash| hash.to_string())
+            .unwrap_or_default();
+        let record = RebirthRecord {
+            id: uuid::Uuid::now_v7().to_string(),
+            generation,
+            trigger: plan.trigger,
+            provider,
+            model,
+            at_tokens: plan.at_tokens,
+            window_tokens: plan.window,
+            prepare_started_at_ms: plan.swap_started_at_ms,
+            handoff_ready_at_ms: None,
+            swap_started_at_ms: Some(plan.swap_started_at_ms),
+            swapped_at_ms: now_ms(),
+            handoff_blob: None,
+            briefing_blob,
+            briefing_tokens: (text.len() / BYTES_PER_TOKEN) as u64,
+            sections,
+            decisions: parts[2].items,
+            decisions_in_full,
+            recent_messages: 0,
+            old_native_id: None,
+            new_native_id: None,
+        };
+        (text, record)
+    }
+
     /// Keeps the decisions a handoff note lists as nodes of the conversation (idempotent: a
     /// line's node is keyed by its text). Returns how many it kept.
     async fn keep_handoff_decisions(
@@ -640,22 +737,36 @@ impl SessionManager {
         let mut text = String::from("[Where things stand now]\n");
         let mut items = 0;
         if let Ok(conversation) = self.core.conversation(id)
-            && let Some(Setup::Session {
-                environment,
-                permission,
-                plan_mode,
-                ..
-            }) = &conversation.setup
+            && let Some(Setup::Session { environment, .. }) = &conversation.setup
         {
-            let place = match environment {
-                Environment::LocalCheckout { branch } => format!("local checkout on `{branch}`"),
-                Environment::NewWorktree { branch, base, .. } => {
-                    format!("worktree on `{branch}` (from `{base}`)")
-                }
+            // What applies now: an overnight run works on its own branch under Approve for me.
+            let place = match self
+                .overnight
+                .active
+                .get(id)
+                .and_then(|active| active.workspace)
+            {
+                Some(run) => format!(
+                    "the overnight run's branch `{}` (from `{}`)",
+                    run.branch, run.base
+                ),
+                None => match environment {
+                    Environment::LocalCheckout { branch } => {
+                        format!("local checkout on `{branch}`")
+                    }
+                    Environment::NewWorktree { branch, base, .. } => {
+                        format!("worktree on `{branch}` (from `{base}`)")
+                    }
+                },
             };
             text.push_str(&format!(
-                "Environment: {place}. Permission: {permission:?}.{}\n",
-                if *plan_mode { " Plan mode is on." } else { "" }
+                "Environment: {place}. Permission: {:?}.{}\n",
+                self.permission(id),
+                if self.plan_mode(id) {
+                    " Plan mode is on."
+                } else {
+                    ""
+                }
             ));
         }
         let Ok(board) = self.core.board(id).await else {

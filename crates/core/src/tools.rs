@@ -426,6 +426,55 @@ pub struct NoteForUser {
     pub why: Option<String>,
 }
 
+/// `phase_done`: the lead of an overnight phase says its work is done (or as done as it can
+/// get without the user), so Brigadier checks the whole phase.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseDone {
+    /// What the phase changed and how it was verified, in a few sentences, and anything left
+    /// for the user.
+    pub summary: String,
+    /// After the phase's checks found gaps: one line per finding, "F1 fixed: how" or "F2
+    /// declined: why".
+    #[serde(default, deserialize_with = "lines")]
+    #[schemars(with = "String", extend("default" = ""))]
+    pub responses: Vec<String>,
+}
+
+/// One phase of a plan Phase 0 writes.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseInput {
+    /// The phase, in a few words.
+    pub name: String,
+    /// Exactly what it covers.
+    pub scope: String,
+    /// Its "done when" criteria, one per line, each checkable by running something or reading
+    /// the code.
+    #[serde(deserialize_with = "lines")]
+    #[schemars(with = "String")]
+    pub done_when: Vec<String>,
+    /// Numbers (1-based, in this list) of the phases it builds on.
+    #[serde(default)]
+    pub depends_on: Vec<u32>,
+}
+
+/// `propose_phases`: Phase 0 of an overnight run with a bare goal writes the plan's phases.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposePhases {
+    /// The plan's name, a few words ("Windows support").
+    pub name: String,
+    pub phases: Vec<PhaseInput>,
+    /// The id of the plan this one revises after its review asked for changes.
+    #[serde(default)]
+    pub revises: Option<String>,
+    /// With `revises`: one line per finding of that review, "F1 accepted: what changed" or
+    /// "F2 declined: why".
+    #[serde(default)]
+    pub responses: Vec<String>,
+}
+
 /// A tool call from an orchestrator.
 #[derive(Debug, Clone)]
 pub enum OrchestratorCall {
@@ -445,6 +494,8 @@ pub enum OrchestratorCall {
     FinishSession(FinishSession),
     NoteForUser(NoteForUser),
     ListTasks,
+    PhaseDone(PhaseDone),
+    ProposePhases(ProposePhases),
 }
 
 impl OrchestratorCall {
@@ -467,6 +518,8 @@ impl OrchestratorCall {
             Self::FinishSession(_) => "finish_session",
             Self::NoteForUser(_) => "note_for_user",
             Self::ListTasks => "list_tasks",
+            Self::PhaseDone(_) => "phase_done",
+            Self::ProposePhases(_) => "propose_phases",
         }
     }
 }

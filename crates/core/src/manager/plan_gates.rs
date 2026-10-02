@@ -394,6 +394,8 @@ impl SessionManager {
                 plan.request_id.clone(),
             )
             .await;
+            // An overnight run's Phase 0 plan goes on to its judge (or ends Phase 0).
+            self.planning_plan_decided(&plan).await;
         }
     }
 

@@ -9,7 +9,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::model::{CardId, ConversationId, OvernightRunId};
+use crate::model::{CardId, ConversationId, OvernightRunId, TaskId};
+use crate::work::Gate;
 
 /// The run's own branch and worktree, made at Start from the base's committed tip. Its work
 /// lands there; only the user's Merge brings verified work into the base.
@@ -34,6 +35,22 @@ pub enum RunRole {
     Worker,
     /// A reviewer or verifier of a run task's change.
     Check,
+    /// Verifies every "done when" criterion of a whole phase, fresh.
+    PhaseVerifier,
+    /// Reviews a whole phase's diff, from another vendor than its authors.
+    PhaseReviewer,
+    /// Judges a whole phase (or Phase 0's plan) from the evidence, in a fresh context.
+    Judge,
+}
+
+impl RunRole {
+    /// Checks a whole phase: its candidate stays as it is while they work.
+    pub fn checks_phase(self) -> bool {
+        matches!(
+            self,
+            Self::PhaseVerifier | Self::PhaseReviewer | Self::Judge
+        )
+    }
 }
 
 /// Which run a task works for, fixed when the task is made: a late event of the task keeps
@@ -51,6 +68,9 @@ pub struct RunTaskContext {
     pub role: RunRole,
     /// The run's Rules as the task was briefed (a hash of the text).
     pub rules_hash: String,
+    /// The phase candidate a whole-phase check works on (its checkout is at this commit).
+    #[serde(default)]
+    pub candidate: Option<String>,
 }
 
 /// Where a run is. `Proposed` waits for the user's Start; everything after it is the run's own.
@@ -128,6 +148,141 @@ pub struct OvernightPhase {
     /// Numbers of the phases it builds on.
     pub depends_on: Vec<u32>,
     pub state: PhaseState,
+    /// The request its lead's turns, tasks and reports belong to; set when it starts.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// The run branch's tip when the phase started: the whole phase is checked against it.
+    #[serde(default)]
+    pub start_commit: Option<String>,
+    /// The commit its checks verified, once the phase is verified.
+    #[serde(default)]
+    pub verified_commit: Option<String>,
+    /// The latest round of whole-phase checks: its commit is the candidate they check.
+    #[serde(default)]
+    pub gate: Option<Gate>,
+    /// Fix rounds after its checks found gaps (at most two).
+    #[serde(default)]
+    pub fix_rounds: u32,
+    /// What each criterion came to, from the judge and the fresh verifier's evidence.
+    #[serde(default)]
+    pub criteria: Vec<CriterionResult>,
+    /// What the phase still lacks after its last checks, each in one line.
+    #[serde(default)]
+    pub gaps: Vec<String>,
+    /// The lead's own summary when it said the phase's work was done.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// The lead's answers to the findings of the checks before its last fix round.
+    #[serde(default)]
+    pub responses: Vec<String>,
+    /// The lead's model, the vendor whose work its reviewers must not be.
+    #[serde(default)]
+    pub lead: Option<crate::model::ModelChoice>,
+    /// Times the lead was reminded to say whether the phase's work is done.
+    #[serde(default)]
+    pub nudges: u32,
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
+    #[serde(default)]
+    pub settled_at_ms: Option<i64>,
+}
+
+impl OvernightPhase {
+    /// Settled: verified, partial, blocked or skipped.
+    pub fn is_settled(&self) -> bool {
+        matches!(
+            self.state,
+            PhaseState::Verified | PhaseState::Partial | PhaseState::Blocked | PhaseState::Skipped
+        )
+    }
+
+    /// A new phase from a plan, with stable ids: `phase-<number>`, criteria `p<number>-c<n>`.
+    pub fn new(
+        number: u32,
+        name: &str,
+        scope: &str,
+        done_when: &[String],
+        depends_on: &[u32],
+    ) -> Self {
+        Self {
+            id: format!("phase-{number}"),
+            number,
+            name: name.trim().to_owned(),
+            scope: scope.to_owned(),
+            done_when: done_when
+                .iter()
+                .enumerate()
+                .map(|(at, text)| Criterion {
+                    id: format!("p{number}-c{}", at + 1),
+                    text: text.clone(),
+                })
+                .collect(),
+            depends_on: depends_on.to_vec(),
+            state: PhaseState::Pending,
+            request_id: None,
+            start_commit: None,
+            verified_commit: None,
+            gate: None,
+            fix_rounds: 0,
+            criteria: Vec::new(),
+            gaps: Vec::new(),
+            summary: None,
+            responses: Vec::new(),
+            lead: None,
+            nudges: 0,
+            started_at_ms: None,
+            settled_at_ms: None,
+        }
+    }
+}
+
+/// What a criterion came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CriterionStatus {
+    Met,
+    NotMet,
+    /// Its check couldn't run, or nobody checked it before the run ended.
+    NotRun,
+    /// It needs something only the user can give.
+    Blocked,
+}
+
+/// One criterion's result, checked on one candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CriterionResult {
+    pub id: String,
+    pub status: CriterionStatus,
+    /// The evidence, or what is missing, in the checker's words.
+    pub evidence: String,
+    /// The commit it was checked on.
+    pub candidate: Option<String>,
+    /// The task whose report gave the evidence.
+    pub by: Option<TaskId>,
+}
+
+/// Phase 0 of a bare goal: the lead writes the plan's phases, another vendor reviews them,
+/// and a fresh judge checks they follow the goal without invented scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningPhase {
+    pub request_id: String,
+    pub state: PhaseState,
+    /// The plan card the phases were proposed on (reviewed like any plan).
+    pub plan_id: Option<CardId>,
+    /// The phases as proposed, kept until the judge accepts them.
+    pub proposed: Vec<ProposedPhase>,
+    /// The judge of the latest proposal.
+    pub judge: Option<TaskId>,
+    /// Judge rounds so far (at most two).
+    pub rounds: u32,
+    /// What the judge found missing or invented.
+    pub gaps: Vec<String>,
+    pub lead: Option<crate::model::ModelChoice>,
+    pub nudges: u32,
+    pub started_at_ms: i64,
+    pub settled_at_ms: Option<i64>,
 }
 
 /// A file the plan was read from, as it was when proposed.
@@ -334,6 +489,13 @@ pub struct OvernightRun {
     /// Its branch and worktree, once Start made them.
     #[serde(default)]
     pub workspace: Option<RunWorkspace>,
+    /// Phase 0, for a bare goal.
+    #[serde(default)]
+    pub planning: Option<PlanningPhase>,
+    /// The newest commit of the run branch whose every phase up to it is verified: the
+    /// card's Merge takes this, never the branch's head.
+    #[serde(default)]
+    pub verified_commit: Option<String>,
     pub stop: Option<StopReason>,
     /// The last commands applied, newest last.
     pub commands: Vec<AppliedCommand>,

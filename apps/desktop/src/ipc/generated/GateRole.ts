@@ -4,4 +4,4 @@
  * What a gate member does. The Phase 6 fusion panel adds an analyst that weighs the
  * reviewers' findings (`SessionManager::panel_size` decides the panel).
  */
-export type GateRole = "review" | "verify";
+export type GateRole = "review" | "verify" | "judge";

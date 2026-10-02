@@ -37,6 +37,7 @@ pub(crate) fn orchestrator(
     conversation: &Conversation,
     project: Option<&Project>,
     preferences: &[String],
+    run: Option<&crate::overnight::RunWorkspace>,
 ) -> String {
     let (repo, environment, permission) = match &conversation.setup {
         Some(Setup::Session {
@@ -69,6 +70,20 @@ pub(crate) fn orchestrator(
         PermissionLevel::FullAccess => format!(
             "Full access: like Approve for me, but workers run without the OS sandbox. Be careful.{PLAN_REVIEW}"
         ),
+    };
+    // An overnight run works on its own branch under sandboxed Approve for me, whatever the
+    // session's own setup says.
+    let (environment, permission) = match run {
+        Some(run) => (
+            format!(
+                "Overnight run: the user started an overnight run and is away. Accepted tasks land as commits on the run's own branch `{}` (from `{}`), never on the user's branch; only the user merges verified work, in the morning. Never call finish_session.",
+                run.branch, run.base
+            ),
+            format!(
+                "Approve for me, for this run only: Brigadier approves plans and changes on the user's behalf, and every worker stays in its sandbox.{PLAN_REVIEW} Nobody can answer questions or approvals before the morning: decide what the plan and the Rules settle (and note it with note_for_user, kind decided), and list what only the user can do (a key, an account, a push, a product choice the Rules leave open) with note_for_user, kind waiting, then carry on with everything that doesn't depend on it. Never ask the user, and never use request_approval."
+            ),
+        ),
+        None => (environment, permission),
     };
     let project = project.map_or("(no project)", |p| p.name.as_str());
     format!(

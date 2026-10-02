@@ -443,6 +443,8 @@ pub enum GateRole {
     Review,
     /// Runs the checks and proves each "done when" criterion of the task.
     Verify,
+    /// Judges a whole overnight phase from its verification and review, in a fresh context.
+    Judge,
 }
 
 /// A gate member's result.
@@ -507,6 +509,11 @@ pub enum GateOwner {
     Task { task_id: TaskId },
     /// A proposed plan.
     Plan { plan_id: CardId },
+    /// A whole phase of an overnight run: its candidate is the run branch's tip.
+    Phase {
+        run_id: crate::model::OvernightRunId,
+        phase_id: String,
+    },
 }
 
 /// A delegated unit of work and its worker.
@@ -1032,6 +1039,11 @@ pub enum DecisionSource {
     Plan { plan_id: CardId },
     /// A judgement call the orchestrator noted (`note_for_user`).
     Orchestrator,
+    /// An overnight run's conductor: a phase verified, judged partial or moved past.
+    Run {
+        run_id: crate::model::OvernightRunId,
+        phase_id: Option<String>,
+    },
 }
 
 /// Something decided on the user's behalf (under "Approve for me" and "Full access"), and
@@ -1378,6 +1390,8 @@ pub enum InjectionKind {
     Briefing,
     /// Brigadier asks for an answer the orchestrator left out.
     Reminder,
+    /// An overnight run hands the orchestrator a phase to lead, or its checks' outcome.
+    Phase,
 }
 
 /// One thing Brigadier put into the orchestrator's context, for the Inspector.
