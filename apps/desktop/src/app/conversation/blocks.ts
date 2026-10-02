@@ -429,8 +429,17 @@ export function buildBlocks(
     });
   }
 
+  // Synthetic phase requests have no user anchor. Interleave them by their recorded start,
+  // so preparing them before the event walk cannot put a phase above the user's brief.
+  const chronological = order.some((key) => key.startsWith("run-"))
+    ? order.toSorted((a, b) => {
+        const first = blocks.get(a)!;
+        const second = blocks.get(b)!;
+        return blockTime(first) - blockTime(second);
+      })
+    : order;
   const result = joinSteered(
-    order.map((key) => blocks.get(key) as Block),
+    chronological.map((key) => blocks.get(key) as Block),
     board.requests,
   );
   // Sent but not yet stored: the bubble, and a block that works on it.
@@ -453,6 +462,10 @@ export function buildBlocks(
     });
   }
   return result;
+}
+
+function blockTime(block: Block): number {
+  return block.user?.kind === "message" ? block.user.message.createdAtMs : block.startedAtMs;
 }
 
 /**

@@ -414,6 +414,8 @@ export const RequestBlock: FC = () => {
   const fold = useFold();
   const quotaWait = useViewConversation()?.quotaWait ?? null;
   const requestIds = meta?.requestIds;
+  const phaseTitle = useBoard((s) => meta?.requestId.startsWith("run-")
+    ? s.board?.requests[meta.requestId]?.preview : undefined);
   const workersActive = useBoard((s) =>
     Object.values(s.board?.tasks ?? {}).some(
       (task) => task.requestId !== null && !!requestIds?.includes(task.requestId) && !isFinal(task),
@@ -460,6 +462,7 @@ export const RequestBlock: FC = () => {
       data-turn-steers={String(meta.steers.length)}
       className="group/answer relative flex flex-col gap-2 px-2"
     >
+      {phaseTitle && <p className="text-sm font-medium">{phaseTitle}</p>}
       <ModelChanged model={meta.texts[last]?.model ?? null} picked={meta.picked} />
       {header && (
         <WorkHeader
