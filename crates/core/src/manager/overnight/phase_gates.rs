@@ -1023,6 +1023,12 @@ fn phase_text(run: &OvernightRun, phase: &OvernightPhase, candidate: &str) -> St
             run.rules.as_str()
         }
     ));
+    // Answers the user gave on starting or continuing the run are theirs to give: a checker
+    // that only saw the Rules took a supplied account ID for an invented one.
+    text.push_str(&format!(
+        "\nThe user's words for this run, verbatim (a value they give here is theirs, not invented):\n{}\n",
+        run.words
+    ));
     text
 }
 
@@ -1088,10 +1094,6 @@ fn judge_spec(
         "Judge a whole phase in a fresh context: decide from the evidence whether it is done as its plan says. You change nothing.\n\n{}",
         phase_text(run, phase, candidate)
     );
-    text.push_str(&format!(
-        "\nThe user's words when they started the run:\n{}\n",
-        run.words
-    ));
     if let Some(summary) = &phase.summary {
         text.push_str(&format!(
             "\nThe lead's own summary (a claim, not evidence):\n{summary}\n"
