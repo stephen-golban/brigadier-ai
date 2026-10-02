@@ -7,6 +7,7 @@ import {
   Document,
   InfoCircle,
   Lightbulb,
+  Moon,
   Pencil,
   Pin,
   SettingsSlider,
@@ -15,6 +16,7 @@ import {
 import { type FC, useContext, useMemo, useState } from "react";
 
 import { ForkPlaces } from "@/app/conversation/ForkMenu";
+import { COMPOSER_EDITABLE } from "@/app/conversation/composerTarget";
 import { StatusCardContext } from "@/app/conversation/StatusCard";
 import { useAction } from "@/app/conversation/useAction";
 import { NameDialog } from "@/app/NameDialog";
@@ -182,7 +184,9 @@ export const SlashCommands: FC<{
           run(() =>
             updateSetup(
               id,
-              setup.type === "session" ? { ...setup, orchestrator: next } : { ...setup, model: next },
+              setup.type === "session"
+                ? { ...setup, orchestrator: next }
+                : { ...setup, model: next },
             ),
           ),
       });
@@ -197,6 +201,18 @@ export const SlashCommands: FC<{
       });
     }
     if (conversation.kind === "session") {
+      list.push({
+        id: "overnight",
+        label: "Overnight",
+        description: "Describe a plan and when it should be ready",
+        icon: <Moon />,
+        run: () => {
+          aui.composer().setText("/overnight ");
+          requestAnimationFrame(() =>
+            document.querySelector<HTMLElement>(COMPOSER_EDITABLE)?.focus(),
+          );
+        },
+      });
       list.push({
         id: "init",
         label: "Init",
@@ -227,9 +243,7 @@ export const SlashCommands: FC<{
           </DropdownMenuTrigger>
           <ForkPlaces
             side="top"
-            onPick={(place) =>
-              run(() => forkConversation(conversation.id, answer, place))
-            }
+            onPick={(place) => run(() => forkConversation(conversation.id, answer, place))}
           />
         </DropdownMenu>
       )}

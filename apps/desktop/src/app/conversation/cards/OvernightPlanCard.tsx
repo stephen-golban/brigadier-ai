@@ -76,9 +76,9 @@ export function OvernightPlanCard({
       key: phase.id,
       title: `Phase ${phase.number} · ${phase.name}`,
       status: MARK[phase.state],
-      statusLabel: status,
-      folded:
-        proposed || (phase.state !== "running" && phase.state !== "checking"),
+      statusLabel: proposed ? "" : status,
+      live: running,
+      folded: proposed || (phase.state !== "running" && phase.state !== "checking"),
       detail: (
         <div className="flex flex-col gap-1.5">
           {phase.scope && <p>{phase.scope}</p>}
@@ -89,8 +89,7 @@ export function OvernightPlanCard({
                 {phase.doneWhen.map((criterion) => (
                   <li key={criterion.id}>
                     {criterion.text}
-                    {progress?.criteria?.[criterion.id] &&
-                      ` · ${progress.criteria[criterion.id]}`}
+                    {progress?.criteria?.[criterion.id] && ` · ${progress.criteria[criterion.id]}`}
                   </li>
                 ))}
               </ul>
@@ -126,10 +125,7 @@ export function OvernightPlanCard({
       badges={
         <>
           {running && (
-            <Moon
-              aria-label="Running unattended"
-              className="text-muted-foreground size-icon-sm"
-            />
+            <Moon aria-label="Running unattended" className="text-muted-foreground size-icon-sm" />
           )}
           {proposed && <Badge variant="warning">Proposed</Badge>}
           {finished && <Badge variant="secondary">Finished</Badge>}
@@ -141,10 +137,7 @@ export function OvernightPlanCard({
       footer={
         <div className="flex flex-col gap-2">
           {!proposed && (
-            <p
-              className="text-muted-foreground text-xs tabular-nums"
-              role="status"
-            >
+            <p className="text-muted-foreground text-xs tabular-nums" role="status">
               {details.waiting} Waiting · {details.decided} Decided
             </p>
           )}
@@ -160,9 +153,7 @@ export function OvernightPlanCard({
                   type="button"
                   size="sm"
                   disabled={action.busy || run.problems.length > 0}
-                  onClick={() =>
-                    send(() => actions.start(overnightCommand(run)))
-                  }
+                  onClick={() => send(() => actions.start(overnightCommand(run)))}
                 >
                   Start
                 </Button>
@@ -173,9 +164,7 @@ export function OvernightPlanCard({
                   size="sm"
                   variant="outline"
                   disabled={action.busy || ending || stopped}
-                  onClick={() =>
-                    send(() => actions.stop(overnightCommand(run)), true)
-                  }
+                  onClick={() => send(() => actions.stop(overnightCommand(run)), true)}
                 >
                   {stopped ? "Stopping" : "Stop"}
                 </Button>
@@ -188,10 +177,7 @@ export function OvernightPlanCard({
                       size="sm"
                       variant="link"
                       onClick={() =>
-                        actions.openReport(
-                          run.conversationId,
-                          details.reportMessageId!,
-                        )
+                        actions.openReport(run.conversationId, details.reportMessageId!)
                       }
                     >
                       Read report
@@ -203,12 +189,7 @@ export function OvernightPlanCard({
                     disabled={action.busy || !details.verifiedSha}
                     onClick={() =>
                       details.verifiedSha &&
-                      send(() =>
-                        actions.merge(
-                          overnightCommand(run),
-                          details.verifiedSha!,
-                        ),
-                      )
+                      send(() => actions.merge(overnightCommand(run), details.verifiedSha!))
                     }
                   >
                     Merge
@@ -220,12 +201,7 @@ export function OvernightPlanCard({
                       variant="outline"
                       disabled={action.busy}
                       onClick={() =>
-                        send(() =>
-                          actions.continue(
-                            overnightCommand(run),
-                            "continue until done",
-                          ),
-                        )
+                        send(() => actions.continue(overnightCommand(run), "continue until done"))
                       }
                     >
                       Continue
@@ -236,9 +212,7 @@ export function OvernightPlanCard({
             </div>
           )}
           {finished && !details.verifiedSha && (
-            <p className="text-muted-foreground text-xs">
-              No verified work to merge yet.
-            </p>
+            <p className="text-muted-foreground text-xs">No verified work to merge yet.</p>
           )}
           {action.error && (
             <p role="alert" className="text-destructive text-xs">
@@ -260,29 +234,22 @@ export function OvernightPlanCard({
           {run.directives.deadline.type === "at" && (
             <p className="text-muted-foreground">
               Report ready {run.directives.deadline.time.day} ·{" "}
-              {run.directives.deadline.time.localTime} (
-              {run.directives.deadline.time.timeZone})
+              {run.directives.deadline.time.localTime} ({run.directives.deadline.time.timeZone})
             </p>
           )}
           {restrictions.map((line) => (
             <p key={line}>{line}</p>
           ))}
           {run.directives.ignored.length > 0 && (
-            <p className="text-muted-foreground">
-              Ignored: {run.directives.ignored.join("; ")}
-            </p>
+            <p className="text-muted-foreground">Ignored: {run.directives.ignored.join("; ")}</p>
           )}
           {run.problems.map((problem, index) => (
             <p key={index} role="alert" className="text-warning">
               {problem.message}
             </p>
           ))}
-          {power?.onBattery && (
-            <p className="text-warning">On battery: plug in to be safe</p>
-          )}
-          {power?.lidWillPause && (
-            <p className="text-warning">Lid closed will pause the run</p>
-          )}
+          {power?.onBattery && <p className="text-warning">On battery: plug in to be safe</p>}
+          {power?.lidWillPause && <p className="text-warning">Lid closed will pause the run</p>}
           {power?.lidWillPause && power.offerLidSetup && actions && (
             <Button
               type="button"

@@ -1,22 +1,11 @@
-import {
-  Check,
-  ChevronRight,
-  Minus,
-  X,
-} from "@openai/apps-sdk-ui/components/Icon";
+import { Check, ChevronRight, Minus, X } from "@openai/apps-sdk-ui/components/Icon";
 import { type ComponentProps, type ReactNode, useId, useState } from "react";
 
 import { paper } from "@/components/assistant-ui/elements/surfaces";
 import { Spinner } from "@/components/glyphs/spinner";
 import { cn } from "@/lib/utils";
 
-export type AgentPlanStepStatus =
-  | "pending"
-  | "active"
-  | "done"
-  | "partial"
-  | "failed"
-  | "skipped";
+export type AgentPlanStepStatus = "pending" | "active" | "done" | "partial" | "failed" | "skipped";
 
 export type AgentPlanStep = {
   key: string;
@@ -24,9 +13,10 @@ export type AgentPlanStep = {
   detail?: ReactNode;
   status: AgentPlanStepStatus;
   statusLabel?: string;
+  live?: boolean;
   /** When supplied, details fold independently of the worker link. */
   folded?: boolean;
-  /** Shown at the end of the row (e.g. the task carrying the step out). */
+  /** Worker links below the text leave room for titles in the narrow summary. */
   aside?: ReactNode;
 };
 
@@ -57,25 +47,17 @@ export function AgentPlan({
   const completed = steps.filter((step) => step.status === "done").length;
   const progress = total > 0 ? (completed / total) * 100 : 0;
   // A phase that is working stays visible even beyond the initial short list.
-  const shown = steps.filter(
-    (step, index) => showAll || index < limit || step.status === "active",
-  );
+  const shown = steps.filter((step, index) => showAll || index < limit || step.status === "active");
   const hidden = total - shown.length;
 
   return (
     <div
       data-slot="agent-plan"
-      className={cn(
-        paper,
-        "rounded-thread flex w-full min-w-0 flex-col gap-3 p-3.5",
-        className,
-      )}
+      className={cn(paper, "rounded-thread flex w-full min-w-0 flex-col gap-3 p-3.5", className)}
       {...props}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="min-w-0 flex-1 text-sm font-medium wrap-anywhere">
-          {title}
-        </h3>
+        <h3 className="w-full min-w-0 text-sm font-medium wrap-anywhere">{title}</h3>
         {badges}
         {showProgress && (
           <span className="text-muted-foreground text-xs tabular-nums">
@@ -128,9 +110,7 @@ function StepRow({ step }: { step: AgentPlanStep }) {
   } | null>(null);
   const open = fold?.status === step.status ? fold.open : !step.folded;
   const foldable = step.folded !== undefined && Boolean(step.detail);
-  const title = (
-    <span className="min-w-0 flex-1 wrap-anywhere">{step.title}</span>
-  );
+  const title = <span className="min-w-0 flex-1 wrap-anywhere">{step.title}</span>;
   return (
     <li className="flex items-start gap-2 text-sm">
       <span className="flex h-(--text-sm--line-height) w-icon-md shrink-0 items-center justify-center">
@@ -143,22 +123,15 @@ function StepRow({ step }: { step: AgentPlanStep }) {
         ) : step.status === "skipped" ? (
           <Minus className="text-muted-foreground size-icon-sm" />
         ) : step.status === "partial" ? (
-          <svg
-            aria-hidden
-            viewBox="0 0 16 16"
-            className="text-muted-foreground size-icon-sm"
-          >
+          <svg aria-hidden viewBox="0 0 16 16" className="text-muted-foreground size-icon-sm">
             <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" />
             <path d="M8 2.5a5.5 5.5 0 0 0 0 11z" fill="currentColor" />
           </svg>
         ) : (
-          <span
-            aria-hidden
-            className="bg-foreground/20 size-1.5 rounded-full"
-          />
+          <span aria-hidden className="bg-foreground/20 size-1.5 rounded-full" />
         )}
       </span>
-      <span className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
         {foldable ? (
           <button
             type="button"
@@ -170,18 +143,17 @@ function StepRow({ step }: { step: AgentPlanStep }) {
             {title}
             <ChevronRight
               aria-hidden
-              className={cn(
-                "mt-0.5 size-icon-xs shrink-0",
-                open && "rotate-90",
-              )}
+              className={cn("mt-0.5 size-icon-xs shrink-0", open && "rotate-90")}
             />
           </button>
         ) : (
           title
         )}
-        <span className="text-muted-foreground text-xs">
-          {step.statusLabel ?? step.status}
-        </span>
+        {(step.statusLabel ?? step.status) && (
+          <span role={step.live ? "status" : undefined} className="text-muted-foreground text-xs">
+            {step.statusLabel ?? step.status}
+          </span>
+        )}
         {step.detail && (
           <div
             id={id}
@@ -191,8 +163,8 @@ function StepRow({ step }: { step: AgentPlanStep }) {
             {step.detail}
           </div>
         )}
-      </span>
-      {step.aside}
+        {step.aside && <div className="flex min-w-0 pt-1">{step.aside}</div>}
+      </div>
     </li>
   );
 }
